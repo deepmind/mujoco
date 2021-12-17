@@ -1,5 +1,6 @@
 COMMON=-O2 -I../include -L../bin -std=c++11 -stdlib=libc++ -mavx -pthread
 
+.PHONY: all
 all:
 	clang++ $(COMMON) testxml.cc    -lmujoco210nogl      -o ../bin/testxml
 	clang++ $(COMMON) testspeed.cc  -lmujoco210nogl      -o ../bin/testspeed

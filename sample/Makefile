@@ -1,5 +1,6 @@
 COMMON=-O2 -I../include -L../bin -std=c++11 -mavx -pthread -Wl,-rpath,'$$ORIGIN'
 
+.PHONY: all
 all:
 	g++ $(COMMON) testxml.cc    -lmujoco210nogl                             -o ../bin/testxml
 	g++ $(COMMON) testspeed.cc  -lmujoco210nogl                             -o ../bin/testspeed

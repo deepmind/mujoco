@@ -1,5 +1,6 @@
 COMMON=/O2 /MT /EHsc /arch:AVX /I../include /Fe../bin/
 
+.PHONY: all
 all:
 	cl $(COMMON) testxml.cc                 ../bin/mujoco210nogl.lib
 	cl $(COMMON) testspeed.cc               ../bin/mujoco210nogl.lib
