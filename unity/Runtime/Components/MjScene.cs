@@ -75,9 +75,10 @@ public class MjScene : MonoBehaviour {
   private static MjScene _instance = null;
 
   private List<MjComponent> _orderedComponents;
-
+  public XmlDocument default_mjcf;
   protected unsafe void Start() {
-    CreateScene();
+    if (default_mjcf == null) 
+      default_mjcf = CreateScene();
   }
 
   protected unsafe void OnDestroy() {
@@ -446,6 +447,16 @@ public class MjScene : MonoBehaviour {
     } catch (IOException ex) {
       Debug.LogWarning("Failed to save Xml to a file: " + ex.ToString(), this);
     }
+  }
+  public unsafe void ResetScene()
+  {
+    if (default_mjcf == null)
+    {
+      default_mjcf = CreateScene();
+    }
+    MujocoLib.mj_resetData(Model, Data);
+    MujocoLib.mj_kinematics(Model, Data);
+    SyncUnityToMjState();
   }
 }
 }
