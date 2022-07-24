@@ -100,3 +100,17 @@ if(NOT SAMPLE_STANDALONE)
   target_compile_options(glfw PRIVATE ${MUJOCO_MACOS_COMPILE_OPTIONS})
   target_link_options(glfw PRIVATE ${MUJOCO_MACOS_LINK_OPTIONS})
 endif()
+
+findorfetch(
+  USE_SYSTEM_PACKAGE
+  OFF
+  LIBRARY_NAME
+  portable-file-dialogs
+  GIT_REPO
+  https://github.com/samhocevar/portable-file-dialogs.git
+  GIT_TAG
+  main
+  TARGETS
+  portable-file-dialogs
+  EXCLUDE_FROM_ALL
+)

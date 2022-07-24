@@ -153,6 +153,7 @@ target_link_libraries(
   uitools
   glfw
   Threads::Threads
+  portable-file-dialogs
 )
 target_link_options(simulate PRIVATE ${MUJOCO_SAMPLE_LINK_OPTIONS})
 
