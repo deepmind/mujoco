@@ -25,8 +25,6 @@
 #include <string>
 #include <vector>
 
-#define TINYOBJLOADER_IMPLEMENTATION
-
 #include <mujoco/mjmodel.h>
 #include "engine/engine_crossplatform.h"
 #include "engine/engine_file.h"
