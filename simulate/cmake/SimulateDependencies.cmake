@@ -14,20 +14,20 @@
 
 include(FindOrFetch)
 
-if(SAMPLE_STANDALONE)
+if(SIMULATE_STANDALONE)
   # If standalone, by default look for MuJoCo binary version.
   set(DEFAULT_USE_SYSTEM_MUJOCO ON)
 else()
   set(DEFAULT_USE_SYSTEM_MUJOCO OFF)
 endif()
 
-option(MUJOCO_SAMPLES_USE_SYSTEM_MUJOCO "Use installed MuJoCo version."
+option(MUJOCO_SIMULATE_USE_SYSTEM_MUJOCO "Use installed MuJoCo version."
        ${DEFAULT_USE_SYSTEM_MUJOCO}
 )
 unset(DEFAULT_USE_SYSTEM_MUJOCO)
 
-option(MUJOCO_SAMPLES_USE_SYSTEM_MUJOCO "Use installed MuJoCo version." OFF)
-option(MUJOCO_SAMPLES_USE_SYSTEM_GLFW "Use installed GLFW version." OFF)
+option(MUJOCO_SIMULATE_USE_SYSTEM_MUJOCO "Use installed MuJoCo version." OFF)
+option(MUJOCO_SIMULATE_USE_SYSTEM_GLFW "Use installed GLFW version." OFF)
 
 set(MUJOCO_DEP_VERSION_glfw
     7d5a16ce714f0b5f4efa3262de22e4d948851525 # 3.3.6
@@ -44,7 +44,7 @@ set(MUJOCO_TEST_PYTHON_UTIL OFF)
 
 findorfetch(
   USE_SYSTEM_PACKAGE
-  MUJOCO_SAMPLES_USE_SYSTEM_MUJOCO
+  MUJOCO_SIMULATE_USE_SYSTEM_MUJOCO
   PACKAGE_NAME
   mujoco
   LIBRARY_NAME
@@ -93,10 +93,10 @@ if(MUJOCO_EXTRAS_STATIC_GLFW)
       ${BUILD_SHARED_LIBS_OLD}
       CACHE BOOL "Build SHARED libraries" FORCE
   )
-  unset(MUJOCO_EXTRAS_STATIC_GLFW)
+  unset(BUILD_SHARED_LIBS_OLD)
 endif()
 
-if(NOT SAMPLE_STANDALONE)
+if(NOT SIMULATE_STANDALONE)
   target_compile_options(glfw PRIVATE ${MUJOCO_MACOS_COMPILE_OPTIONS})
   target_link_options(glfw PRIVATE ${MUJOCO_MACOS_LINK_OPTIONS})
 endif()

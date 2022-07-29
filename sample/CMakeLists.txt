@@ -70,14 +70,6 @@ if(MUJOCO_HARDEN)
   endif()
 endif()
 
-# Utility library
-add_library(uitools STATIC)
-target_sources(uitools PRIVATE uitools.h uitools.c)
-target_include_directories(uitools PUBLIC ${CMAKE_CURRENT_SOURCE_DIR})
-target_compile_options(uitools PUBLIC ${MUJOCO_SAMPLE_COMPILE_OPTIONS})
-target_link_libraries(uitools PUBLIC glfw mujoco::mujoco)
-target_link_options(uitools PRIVATE ${MUJOCO_SAMPLE_LINK_OPTIONS})
-
 # Build sample binaries
 add_executable(compile compile.cc)
 target_compile_options(compile PUBLIC ${MUJOCO_SAMPLE_COMPILE_OPTIONS})
@@ -125,41 +117,6 @@ target_link_libraries(
   Threads::Threads
 )
 target_link_options(record PRIVATE ${MUJOCO_SAMPLE_LINK_OPTIONS})
-
-if(APPLE)
-  set(SIMULATE_RESOURCE_FILES ${CMAKE_CURRENT_SOURCE_DIR}/../dist/mujoco.icns)
-elseif(WIN32)
-  set(SIMULATE_RESOURCE_FILES ${CMAKE_CURRENT_SOURCE_DIR}/../dist/appicon.rc)
-else()
-  set(SIMULATE_RESOURCE_FILES "")
-endif()
-
-add_executable(simulate simulate.cc array_safety.h ${SIMULATE_RESOURCE_FILES})
-target_compile_options(simulate PUBLIC ${MUJOCO_SAMPLE_COMPILE_OPTIONS})
-if(WIN32)
-  add_custom_command(
-    TARGET simulate
-    PRE_BUILD
-    COMMAND ${CMAKE_COMMAND} -E copy ${CMAKE_CURRENT_SOURCE_DIR}/../dist/mujoco.ico
-            ${CMAKE_CURRENT_SOURCE_DIR}
-    POST_BUILD
-    COMMAND ${CMAKE_COMMAND} -E rm ${CMAKE_CURRENT_SOURCE_DIR}/mujoco.ico
-  )
-endif()
-
-target_link_libraries(
-  simulate
-  mujoco::mujoco
-  uitools
-  glfw
-  Threads::Threads
-)
-target_link_options(simulate PRIVATE ${MUJOCO_SAMPLE_LINK_OPTIONS})
-
-if(APPLE)
-  target_sources(simulate PRIVATE macos_save.mm)
-  target_link_libraries(simulate "-framework Cocoa")
-endif()
 
 if(APPLE AND MUJOCO_BUILD_MACOS_FRAMEWORKS)
   set_target_properties(
@@ -225,7 +182,6 @@ if(_INSTALL_SAMPLES)
     record
     testspeed
     testxml
-    simulate
     INSTALL_DIRECTORY
     "${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_BINDIR}"
     LIB_DIRS
@@ -241,7 +197,6 @@ if(_INSTALL_SAMPLES)
             record
             testspeed
             testxml
-            simulate
     EXPORT ${PROJECT_NAME}
     RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}" COMPONENT samples
     LIBRARY DESTINATION "${CMAKE_INSTALL_LIBDIR}" COMPONENT samples

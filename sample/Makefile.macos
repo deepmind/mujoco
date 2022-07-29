@@ -17,7 +17,3 @@ all:
 	clang++ $(ALLFLAGS)    derivative.cc -framework mujoco        -o derivative
 	clang++ $(ALLFLAGS)    basic.cc      -framework mujoco -lglfw -o basic
 	clang++ $(ALLFLAGS)    record.cc     -framework mujoco -lglfw -o record
-	clang   -c $(CFLAGS)   uitools.c
-	clang++ -c $(CXXFLAGS) macos_save.mm
-	clang++ $(ALLFLAGS)    simulate.cc uitools.o macos_save.o -framework mujoco -framework Cocoa -lglfw -o simulate
-	rm *.o

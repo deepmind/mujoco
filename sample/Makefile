@@ -11,6 +11,3 @@ all:
 	$(CXX) $(COMMON) derivative.cc         -lmujoco -fopenmp -o ../bin/derivative
 	$(CXX) $(COMMON) basic.cc              -lmujoco -lglfw   -o ../bin/basic
 	$(CXX) $(COMMON) record.cc             -lmujoco -lglfw   -o ../bin/record
-	$(CC) -c -O2 -I../include uitools.c
-	$(CXX) $(COMMON) uitools.o simulate.cc -lmujoco -lglfw   -o ../bin/simulate
-	rm *.o

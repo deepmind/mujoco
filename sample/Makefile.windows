@@ -15,5 +15,4 @@ all:
 	cl $(COMMON) derivative.cc /openmp                     ../lib/mujoco.lib
 	cl $(COMMON) basic.cc              ../lib/glfw3dll.lib ../lib/mujoco.lib
 	cl $(COMMON) record.cc             ../lib/glfw3dll.lib ../lib/mujoco.lib
-	cl $(COMMON) simulate.cc uitools.c ../lib/glfw3dll.lib ../lib/mujoco.lib
 	del *.obj
