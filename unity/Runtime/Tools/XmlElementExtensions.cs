@@ -108,6 +108,7 @@ public static class XmlElementExtensions {
     var defaultValues = new float[] {
         defaultValue.x, defaultValue.y, defaultValue.z};
     var components = element.GetFloatArrayAttribute(name, defaultValues, fillMissingValues: false);
+    if (components.Length == 1) { return new Vector3(components[0], components[0], components[0]); }
     if (components.Length != 3) {
       throw new ArgumentException("Invalid Vector3 string representation.");
     }

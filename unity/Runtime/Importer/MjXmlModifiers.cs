@@ -43,6 +43,7 @@ namespace Mujoco {
         var defaultClassElement =
             _root.SelectSingleNode($"descendant::default[@class='{className}']") as XmlElement;
         // Ancestry iterates up in the tree, but we want to apply changes from remote to specific.
+        if (defaultClassElement == null) { continue; }
         var ancestors = GetDefaultAncestry(defaultClassElement, element.Name).Reverse();
         foreach (var defaultAncestor in ancestors) {
           CopyAttributesOverwriteExisting(defaultAncestor, aggregateDefaults);
