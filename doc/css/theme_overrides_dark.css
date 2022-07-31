@@ -4,95 +4,103 @@
 @import url('https://fonts.googleapis.com/css2?family=DM+Mono:ital,wght@0,400;0,500;1,400;1,500&display=swap');
 
 body {
-  font-family: 'DM Sans', 'Helvetica Neue', 'Arial', sans-serif;
-  -webkit-font-smoothing: antialiased;
-  color: rgb(20, 35, 75);
+    font-family: 'DM Sans', 'Helvetica Neue', 'Arial', sans-serif;
+    -webkit-font-smoothing: antialiased;
+    color: rgb(20, 35, 75);
 }
 
 .rst-content .toctree-wrapper>p.caption,h1 {
-  font-size: 250%;
-  font-family: 'DM Serif Display', 'Times New Roman', serif;
-  font-weight: 400;
-  color: rgb(0, 83, 214);
+    font-size: 250%;
+    font-family: 'DM Serif Display', 'Times New Roman', serif;
+    font-weight: 400;
+    color: rgb(0, 83, 214);
 }
 
 .rst-content .toctree-wrapper>p.caption,h2,h3,h4,h5,h6,legend {
-  font-family: 'DM Sans', 'Helvetica Neue', 'Arial', sans-serif;
-  -webkit-font-smoothing: antialiased;
-  font-weight: 700;
-  color: rgb(18, 54, 147);
+    font-family: 'DM Sans', 'Helvetica Neue', 'Arial', sans-serif;
+    -webkit-font-smoothing: antialiased;
+    font-weight: 700;
+    color: rgb(18, 54, 147);
 }
 
 /* Decrease bottom margin of some headings for tighter vertical spacing. */
 .rst-content h2 {
-  margin-bottom: 20px;
+    margin-bottom: 20px;
 }
+
 .rst-content h3 {
-  margin-bottom: 10px;
+    margin-bottom: 10px;
 }
+
 .rst-content h4 {
-  margin-bottom: 5px;
+    margin-bottom: 5px;
 }
 
 /* Paragraph margins don't apply to table cell contents. */
 .rst-content table.docutils td>p {
-  margin-top: 0px;
+    margin-top: 0px;
 }
 
 /* Set padding of in-line highlighted text. */
 .rst-content div[class^=highlight] pre {
-  padding: 6px;
+    padding: 6px;
 }
 
 /* Don't change color of visited links. */
 .rst-content a.reference:visited {
-  color: #2980b9;
+    color: #2980b9;
 }
 
-.rst-content code, .rst-content tt {
-  font-size: 90%;
-  padding: inherit;
-  border: inherit;
+.rst-content code,
+.rst-content tt {
+    font-size: 90%;
+    padding: inherit;
+    border: inherit;
 }
 
 .rst-content table.align-default {
-  margin-left: auto;
-  margin-right: auto;
+    margin-left: auto;
+    margin-right: auto;
 }
 
 ul.simple {
-  list-style: disc;
-  margin-left: 24px;
+    list-style: disc;
+    margin-left: 24px;
 }
 
 ul.simple li {
-  list-style: disc;
+    list-style: disc;
 }
 
 /* Change background color of the nav bars. */
 .wy-side-nav-search,
 .wy-nav-top,
 .wy-nav-side {
-  background-color: rgb(0, 83, 214);
+    background-color: rgb(13, 16, 19);
+}
+
+.wy-nav-content,
+.wy-nav-content-wrap {
+    background-color: rgb(136, 136, 136);
 }
 
 /* Make text wrap in table cells. */
 .wy-table-responsive table td,
 .wy-table-responsive table th {
-  white-space: normal;
+    white-space: normal;
 }
 
 html.writer-html5 .rst-content table.docutils td>p,
 html.writer-html5 .rst-content table.docutils th>p {
-  line-height: normal;
+    line-height: normal;
 }
 
 .wy-menu-vertical li.toctree-l1>a {
-  font-size: 115%;
+    font-size: 115%;
 }
 
 .wy-menu-vertical li.toctree-l1.current>a {
-  font-weight: 700;
+    font-weight: 700;
 }
 
 /* Change color of TOC text. */
@@ -121,7 +129,7 @@ html.writer-html5 .rst-content table.docutils th>p {
 .wy-menu-vertical li.toctree-l8 a:hover span.toctree-expand,
 .wy-menu-vertical li.toctree-l9 a:hover span.toctree-expand,
 .wy-menu-vertical li.toctree-l10 a:hover span.toctree-expand {
-  color: white;
+    color: white;
 }
 
 /* Change color of TOC background. */
@@ -139,65 +147,65 @@ html.writer-html5 .rst-content table.docutils th>p {
 .wy-menu-vertical li.toctree-l7.current li.toctree-l8>a,
 .wy-menu-vertical li.toctree-l8.current li.toctree-l9>a,
 .wy-menu-vertical li.toctree-l9.current li.toctree-l10>a {
-  background-color: rgb(0, 83, 214);
-  border: none;
+    background-color: rgb(27, 36, 50);
+    border: none;
 }
 
 /* MJCF attributes table. */
 .rst-content table.mjcf-attributes {
-  border-style: none;
-  margin-left: 0px;
-  margin-right: 0px;
-  width: 100%;
+    border-style: none;
+    margin-left: 0px;
+    margin-right: 0px;
+    width: 100%;
 }
 
 .rst-content table.mjcf-attributes:not(.field-list) tr td,
 .rst-content table.mjcf-attributes:not(.field-list) tr:nth-child(2n-1) td {
-  border-style: none;
-  background-color: rgba(255, 255, 255, 0);
-  padding: 0px 0px 0px 0px;
-  width: 33%;
+    border-style: none;
+    background-color: rgba(184, 30, 30, 0);
+    padding: 0px 0px 0px 0px;
+    width: 33%;
 }
 
 table td > div.wy-table-responsive {
-  margin-bottom: 0px;
+    margin-bottom: 0px;
 }
 
 /* MJCF element names. */
 .el {
-  font-weight: bold;
+    font-weight: bold;
 }
 
 /* MJCF attribute names. */
 .at {
-  color: darkred;
+    color: darkred;
 }
 
 /* MJCF attribute value specs. */
 .at-val {
-  color: darkred;
-  font-weight: normal;
+    color: darkred;
+    font-weight: normal;
 }
 
 /* Hide the prefix for XML element names, but only in toctree */
 .toctree-l1 .el-prefix {
-  display: none;
+    display: none;
 }
 
 .theme-switcher {
-  border-radius: 50%;
-  position: fixed;
-  right: 1.6em;
-  bottom: 1.4em;
-  z-index: 3;
-  border: none;
-  height: 2.2em;
-  width: 2.2em;
-  background-color: #fcfcfc;
-  font-size: 24px;
-  -webkit-box-shadow: 0px 3px 14px 4px rgba(0, 0, 0, 0.62);
-  box-shadow: 0px 3px 14px 4px rgba(0, 0, 0, 0.62);
-  color: #404040;
-  transition: all 0.3s ease-in-out;
-  padding: 11px 14px 11px 14px;
+    border-radius: 50%;
+    position: fixed;
+    right: 1.6em;
+    bottom: 1.4em;
+    z-index: 3;
+    border: none;
+    height: 2.2em;
+    width: 2.2em;
+    background-color: #fcfcfc;
+    font-size: 24px;
+    -webkit-box-shadow: 0px 3px 14px 4px rgba(0, 0, 0, 0.62);
+    box-shadow: 0px 3px 14px 4px rgba(0, 0, 0, 0.62);
+    color: #404040;
+    transition: all 0.3s ease-in-out;
+    padding: 11px 14px 11px 14px;
 }

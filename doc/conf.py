@@ -89,9 +89,9 @@ html_static_path = [
     'css',
     'favicons',
 ]
-html_css_files = [
-    'theme_overrides.css',
-]
+# html_css_files = [
+#     'theme_overrides.css', # In templates/layout.html change style sheet's href
+# ]
 
 html_favicon = 'favicons/favicon-32x32.png'
 

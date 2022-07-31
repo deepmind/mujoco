@@ -9,13 +9,92 @@
   {# Override home link to point to MuJoCo homepage.
      Ideally this would be done as part of the theme rather than in JS.
    #}
-  <script>
-    document.addEventListener('DOMContentLoaded', (event) => {
+   
+<link id="pagestyle" rel="stylesheet" type="text/css" href="_static/theme_overrides.css">
+<script>
+  function initiate() {
+    maintained_theme = localStorage.getItem('maintained-theme');
+    if (maintained_theme === null) {
+      theme_href = document.getElementById('pagestyle').getAttribute('href')
+      if (theme_href === '_static/theme_overrides.css') {
+        localStorage.setItem('maintained-theme', 'light');
+        sessionStorage.setItem('current-theme', 'light');
+        $('#theme_button').removeClass('fa fa-sun-o');
+        $('#theme_button').addClass('fa fa-moon-o');
+      }
+      if (theme_href === '_static/theme_overrides_dark.css') {
+        localStorage.setItem('maintained-theme', 'dark');
+        sessionStorage.setItem('current-theme', 'dark');
+        $('#theme_button').removeClass('fa fa-moon-o');
+        $('#theme_button').addClass('fa fa-sun-o');
+      }
+    }
+    if (maintained_theme === 'light') {
+      localStorage.setItem('maintained-theme', 'light');
+      sessionStorage.setItem('current-theme', 'light');
+      set_theme('light');
+    }
+    if (maintained_theme === 'dark') {
+      localStorage.setItem('maintained-theme', 'dark');
+      sessionStorage.setItem('current-theme', 'dark');
+      set_theme('dark');
+    }
+  };
+  initiate();
+
+  function swapStyleSheet() {
+    maintained_theme = localStorage.getItem('maintained-theme');
+    current_theme = sessionStorage.getItem('current-theme');
+
+    if (maintained_theme === 'light') {
+      set_theme('dark');
+      set_current_theme('dark');
+      set_maintained_theme('dark');
+      // console.log('case_1');
+    }
+    else {
+      set_theme('light');
+      set_current_theme('light');
+      set_maintained_theme('light');
+      // console.log('case_4');
+    }
+  }
+
+  function set_maintained_theme(theme) {
+    localStorage.setItem('maintained-theme', theme);
+  }
+
+  function set_current_theme(theme) {
+    sessionStorage.setItem('current-theme', theme);
+  }
+
+  function set_theme(theme) {
+    if (theme === 'dark') {
+      document.getElementById('pagestyle').setAttribute('href', '_static/theme_overrides_dark.css');
+      $('#theme_button').removeClass('fa fa-moon-o');
+      $('#theme_button').addClass('fa fa-sun-o');
+    }
+    if (theme === 'light') {
+      document.getElementById('pagestyle').setAttribute('href', '_static/theme_overrides.css');
+      $('#theme_button').removeClass('fa fa-sun-o');
+      $('#theme_button').addClass('fa fa-moon-o');
+    }
+  };
+
+  document.addEventListener('DOMContentLoaded', (event) => {
         let home_link = document.querySelector('a.icon');
         {# Be extra safe and don't break the page if theme changes and querySelector can't match. #}
         if (home_link) {
           home_link.href="https://mujoco.org";
-        }
+        };
+    initiate();
     });
-  </script>
+</script>
+<body>
+  <div class="theme-switcher">
+    <span>
+      <i id=theme_button style="text-align:center" class="fa fa-moon-o" onclick="swapStyleSheet()"></i>
+    </span>
+  </div>
+</body>
 {% endblock %}
