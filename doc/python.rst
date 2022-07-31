@@ -94,6 +94,9 @@ Functions
   arguments other than array sizes in the same order as they appear in :ref:`mujoco.h<inHeader>`, or use keyword
   arguments. For example, :ref:`mj_jac` should be called as ``mujoco.mj_jac(m, d, jacp, jacr, point, body)`` in Python.
 
+  Certain functions in the C API have been implemented differently in Python.  For example, the `mj_copyData` function 
+  is implemented as the `__copy__` dunder method. Therefore, `mj_copyData` is replaced with `copy.copy(data)` in Python.
+
   The bindings **releases the Python Global Interpreter Lock (GIL)** before calling the underlying MuJoCo function.
   This allows for some thread-based parallelism, however users should bear in mind that the GIL is only released for the
   duration of the MuJoCo C function itself, and not during the execution of any other Python code.
