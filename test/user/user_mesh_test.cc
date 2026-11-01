@@ -376,6 +376,79 @@ TEST_F(MjCMeshTest, LoadMSH) {
 
 using MjCMeshTest = MujocoTest;
 
+TEST_F(MjCMeshTest, LoadMSHMirroredScale) {
+  const std::string msh_path = GetTestDataFilePath("user/testdata/cube.msh");
+  std::string xml = absl::StrFormat(
+      R"(
+  <mujoco>
+    <asset>
+      <mesh name="unmirrored" file="%s" scale="1 1 1" inertia="exact"/>
+      <mesh name="mirrored" file="%s" scale="-1 1 1" inertia="exact"/>
+    </asset>
+    <worldbody>
+      <geom type="mesh" mesh="unmirrored"/>
+      <geom type="mesh" mesh="mirrored"/>
+    </worldbody>
+  </mujoco>
+  )",
+      msh_path, msh_path);
+  char error[1024];
+  MjModelPtr model = LoadModelFromString(xml.c_str(), error, sizeof(error));
+  ASSERT_THAT(model.get(), NotNull()) << error;
+  ASSERT_EQ(model->nmesh, 2);
+  ASSERT_GT(model->mesh_facenum[0], 0);
+  ASSERT_EQ(model->mesh_facenum[0], model->mesh_facenum[1]);
+  ASSERT_GT(model->mesh_texcoordnum[1], 0);
+
+  int fadr0 = model->mesh_faceadr[0];
+  int fadr1 = model->mesh_faceadr[1];
+  for (int f = 0; f < model->mesh_facenum[1]; ++f) {
+    // mirrored face winding is flipped once relative to unmirrored
+    EXPECT_EQ(model->mesh_face[3 * (fadr1 + f) + 0],
+              model->mesh_face[3 * (fadr0 + f) + 0]);
+    EXPECT_EQ(model->mesh_face[3 * (fadr1 + f) + 1],
+              model->mesh_face[3 * (fadr0 + f) + 2]);
+    EXPECT_EQ(model->mesh_face[3 * (fadr1 + f) + 2],
+              model->mesh_face[3 * (fadr0 + f) + 1]);
+    // mesh_facetexcoord keeps the same winding as mesh_face
+    for (int k = 0; k < 3; ++k) {
+      EXPECT_EQ(model->mesh_facetexcoord[3 * (fadr1 + f) + k],
+                model->mesh_face[3 * (fadr1 + f) + k]);
+    }
+  }
+}
+
+TEST_F(MjCMeshTest, LoadMSHWithUserNormals) {
+  const std::string msh_path = GetTestDataFilePath("user/testdata/cube.msh");
+  std::unique_ptr<mjSpec, void (*)(mjSpec*)> spec(mj_makeSpec(), mj_deleteSpec);
+  mjsMesh* mesh = mjs_addMesh(spec.get(), nullptr);
+  mjs_setName(mesh->element, "cube");
+  *mesh->file = msh_path;
+  mesh->usernormal->assign(36 * 3, 0.0f);
+  for (int i = 0; i < 36; ++i) {
+    (*mesh->usernormal)[3 * i + 2] = 1.0f;
+  }
+  mjModel* model = mj_compile(spec.get(), nullptr);
+  std::unique_ptr<mjModel, void (*)(mjModel*)> model_ptr(model, mj_deleteModel);
+  ASSERT_THAT(model, NotNull()) << mjs_getError(spec.get());
+  EXPECT_EQ(model->nmeshvert, 36);
+}
+
+TEST_F(MjCMeshTest, RepeatedFaceNormalSpecification) {
+  const std::string obj_path =
+      GetTestDataFilePath("user/testdata/cube_complete.obj");
+  std::unique_ptr<mjSpec, void (*)(mjSpec*)> spec(mj_makeSpec(), mj_deleteSpec);
+  mjsMesh* mesh = mjs_addMesh(spec.get(), nullptr);
+  mjs_setName(mesh->element, "cube");
+  *mesh->file = obj_path;
+  mesh->userfacenormal->assign(36, 0);
+  mjModel* model = mj_compile(spec.get(), nullptr);
+  std::unique_ptr<mjModel, void (*)(mjModel*)> model_ptr(model, mj_deleteModel);
+  EXPECT_THAT(model, IsNull());
+  EXPECT_THAT(mjs_getError(spec.get()),
+              HasSubstr("repeated facenormal specification"));
+}
+
 TEST_F(MjCMeshTest, LoadCube) {
   const std::string xml_path = GetTestDataFilePath(kCubePath);
   mjModel* model = mj_loadXML(xml_path.c_str(), 0, nullptr, 0);
@@ -1885,6 +1958,49 @@ TEST_F(MjCMeshTest, LoadSKNMalformed) {
   }
 }
 
+TEST_F(MjCMeshTest, SkinFaceIndexOutOfRange) {
+  static constexpr char xml_high[] = R"(
+  <mujoco>
+    <worldbody>
+      <body name="body">
+        <geom type="box" size="1 1 1"/>
+      </body>
+    </worldbody>
+    <deformable>
+      <skin name="skin" vertex="0 0 0 1 0 0 0 1 0" face="0 1 99">
+        <bone body="body" bindpos="0 0 0" bindquat="1 0 0 0"
+              vertid="0 1 2" vertweight="1 1 1"/>
+      </skin>
+    </deformable>
+  </mujoco>
+  )";
+  std::array<char, 1024> error;
+  MjModelPtr model_high =
+      LoadModelFromString(xml_high, error.data(), error.size());
+  EXPECT_THAT(model_high.get(), IsNull());
+  EXPECT_THAT(error.data(), HasSubstr("face vertex index"));
+
+  static constexpr char xml_neg[] = R"(
+  <mujoco>
+    <worldbody>
+      <body name="body">
+        <geom type="box" size="1 1 1"/>
+      </body>
+    </worldbody>
+    <deformable>
+      <skin name="skin" vertex="0 0 0 1 0 0 0 1 0" face="0 -1 2">
+        <bone body="body" bindpos="0 0 0" bindquat="1 0 0 0"
+              vertid="0 1 2" vertweight="1 1 1"/>
+      </skin>
+    </deformable>
+  </mujoco>
+  )";
+  MjModelPtr model_neg =
+      LoadModelFromString(xml_neg, error.data(), error.size());
+  EXPECT_THAT(model_neg.get(), IsNull());
+  EXPECT_THAT(error.data(), HasSubstr("face vertex index"));
+}
+
 // ------------- test octree ---------------------------------------------------
 
 TEST_F(MjCMeshTest, Octree) {
@@ -2412,6 +2528,14 @@ TEST_F(MjCMeshTest, MakeBuiltinInvalidParams) {
       // boxes need at least two points per side
       {mjMESH_BUILTIN_BOX, {3, 1, 3, 1, 1, 1, 3}, "at least 2"},
       {mjMESH_BUILTIN_CYLINDER, {3, 3, 1, 1, 1, 1, 2}, "at least 2"},
+      // cone nvert >= 3 and radius in [0, 1]
+      {mjMESH_BUILTIN_CONE, {2, 0.5}, "at least 3"},
+      {mjMESH_BUILTIN_CONE, {-2, 0.5}, "at least 3"},
+      {mjMESH_BUILTIN_CONE, {4, -0.1}, "must be in [0, 1]"},
+      {mjMESH_BUILTIN_CONE, {4, 1.5}, "must be in [0, 1]"},
+      {mjMESH_BUILTIN_CONE,
+       {4, std::numeric_limits<double>::quiet_NaN()},
+       "must be in [0, 1]"},
   };
   for (const Case& c : cases) {
     mjSpec* spec = mj_makeSpec();

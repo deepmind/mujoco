@@ -1422,6 +1422,14 @@ int mjs_makeMesh(mjsMesh* mesh, mjtMeshBuiltin builtin, double* params, int npar
         return -1;
       }
       int nedge = static_cast<int>(params[0]);
+      if (nedge < 3) {
+        m->SetError(mjCError(0, "Cone nvert must be at least 3"));
+        return -1;
+      }
+      if (!(params[1] >= 0 && params[1] <= 1)) {
+        m->SetError(mjCError(0, "Cone radius must be in [0, 1]"));
+        return -1;
+      }
       meshC->MakeCone(nedge, params[1]);
       return 0;
     }

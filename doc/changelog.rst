@@ -216,6 +216,13 @@ Compiler
      pulley divisors are positive, and cameras referenced by ``camprojection`` or ``rangefinder`` sensors have
      positive resolution.
 
+   - :ref:`Skins<deformable-skin>` with out-of-range face vertex indices and :ref:`mjs_makeMesh`
+     ``mjMESH_BUILTIN_CONE`` calls with fewer than 3 edges or ``radius`` outside ``[0, 1]`` are now rejected at
+     compile time.
+
+     **Migration:** Ensure skin face indices are in ``[0, nvert)`` and cone mesh parameters specify at least 3 edges
+     and a radius in ``[0, 1]``.
+
 - :ref:`default/tendon<default-tendon>` in MJCF now accepts :ref:`armature<tendon-fixed-armature>`,
   :ref:`actuatorfrclimited<tendon-spatial-actuatorfrclimited>`, and
   :ref:`actuatorfrcrange<tendon-spatial-actuatorfrcrange>` (previously emitted when saving XML, which then failed
@@ -273,6 +280,9 @@ Bug fixes
   instead of leaving dangling pointers; :ref:`mj_copyBack` (``MjSpec.copy_back`` in Python) preserves material
   ``metallic``, ``roughness``, and ``texuniform`` attributes; :ref:`mjs_findChild` no longer matches a non-world body
   against itself; and :ref:`mjs_setToMuscle` accepts ``NULL`` ``timeconst`` and ``range`` pointers.
+- Legacy ``.msh`` meshes with mirrored :ref:`scale<asset-mesh-scale>` no longer double-flip face winding (which
+  inverted faces), and ``.msh`` files without vertex normals no longer populate empty face normals or reject custom
+  normals on recompilation.
 
 Documentation
 ^^^^^^^^^^^^^

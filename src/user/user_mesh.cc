@@ -825,7 +825,7 @@ void mjCMesh::TryCompile(const mjVFS* vfs) {
       } else if (vert_.empty()) {
         ProcessVertices(spec_vert_);
       }
-      if (!facenormal_.empty() && !spec_normal_.empty()) {
+      if (!facenormal_.empty() && !spec_facenormal_.empty()) {
         throw mjCError(this, "repeated facenormal specification");
       } else if (facenormal_.empty()) {
         facenormal_ = spec_facenormal_;
@@ -1144,8 +1144,6 @@ bool mjCMesh::LoadCachedMesh(mjCCache* cache, const mjResource* resource) {
 
 // load MSH binary mesh
 void mjCMesh::LoadMSH(mjResource* resource, bool remove_repeated) {
-  bool righthand = scale[0] * scale[1] * scale[2] > 0;
-
   // get file data in buffer
   char* buffer    = 0;
   int   buffer_sz = mju_readResource(resource, (const void**)&buffer);
@@ -1217,8 +1215,10 @@ void mjCMesh::LoadMSH(mjResource* resource, bool remove_repeated) {
   }
   if (nfbuf) {
     face_.assign(3 * nfbuf, 0);
-    facenormal_.assign(3 * nfbuf, 0);
     memcpy(face_.data(), fdata, 3 * nfbuf * sizeof(int));
+  }
+  if (nfbuf && !normal_.empty()) {
+    facenormal_.assign(3 * nfbuf, 0);
     memcpy(facenormal_.data(), fdata, 3 * nfbuf * sizeof(int));
   }
   if (nfbuf && !texcoord_.empty()) {
@@ -1226,14 +1226,6 @@ void mjCMesh::LoadMSH(mjResource* resource, bool remove_repeated) {
     memcpy(facetexcoord_.data(), fdata, 3 * nfbuf * sizeof(int));
   }
 
-  // rearrange face data if left-handed scaling
-  if (nfbuf && !righthand) {
-    for (int i = 0; i < nfbuf; i++) {
-      int tmp          = face_[3 * i + 1];
-      face_[3 * i + 1] = face_[3 * i + 2];
-      face_[3 * i + 2] = tmp;
-    }
-  }
   ProcessVertices(vert, remove_repeated);
 }
 
@@ -3726,6 +3718,12 @@ void mjCSkin::Compile(const mjVFS* vfs) {
     throw mjCError(this, "Vertex and texcoord data incompatible size");
   }
   if (face_.size() % 3) { throw mjCError(this, "Face data must be multiple of 3"); }
+  size_t nvert = vert_.size() / 3;
+  for (size_t i = 0; i < face_.size(); i++) {
+    if (face_[i] < 0 || static_cast<size_t>(face_[i]) >= nvert) {
+      throw mjCError(this, "face vertex index %d out of range in skin", nullptr, face_[i]);
+    }
+  }
 
   // check bone sizes
   size_t nbone = bodyname_.size();
@@ -3747,7 +3745,6 @@ void mjCSkin::Compile(const mjVFS* vfs) {
 
   // set total vertex weights to 0
   std::vector<float> vw;
-  size_t             nvert = vert_.size() / 3;
   vw.resize(nvert);
   fill(vw.begin(), vw.end(), 0.0f);
 
