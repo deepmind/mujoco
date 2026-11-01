@@ -5385,5 +5385,275 @@ TEST_F(XMLReaderTest, DeepBodyNesting) {
   mj_deleteSpec(spec);
 }
 
+TEST_F(XMLReaderTest, DefaultTendonArmatureAndActuatorfrc) {
+  static constexpr char xml[] = R"(
+  <mujoco>
+    <default>
+      <tendon armature="0.5" actuatorfrclimited="true" actuatorfrcrange="-2 3"/>
+    </default>
+    <worldbody>
+      <body>
+        <joint name="j" type="slide"/>
+        <geom size="0.1"/>
+      </body>
+    </worldbody>
+    <tendon>
+      <fixed name="t">
+        <joint joint="j" coef="1"/>
+      </fixed>
+    </tendon>
+  </mujoco>
+  )";
+  std::array<char, 1024> error;
+  mjSpec* spec = mj_parseXMLString(xml, nullptr, error.data(), error.size());
+  ASSERT_THAT(spec, NotNull()) << error.data();
+  mjModel* m = mj_compile(spec, nullptr);
+  ASSERT_THAT(m, NotNull()) << mjs_getError(spec);
+  EXPECT_MJTNUM_EQ(m->tendon_armature[0], 0.5);
+  EXPECT_EQ(m->tendon_actfrclimited[0], 1);
+  EXPECT_MJTNUM_EQ(m->tendon_actfrcrange[0], -2);
+  EXPECT_MJTNUM_EQ(m->tendon_actfrcrange[1], 3);
+
+  std::array<char, 2048> saved_xml;
+  ASSERT_EQ(mj_saveXMLString(spec, saved_xml.data(), saved_xml.size(),
+                             error.data(), error.size()),
+            0)
+      << error.data();
+  MjModelPtr reloaded =
+      LoadModelFromString(saved_xml.data(), error.data(), error.size());
+  ASSERT_THAT(reloaded.get(), NotNull()) << error.data();
+  EXPECT_MJTNUM_EQ(reloaded->tendon_armature[0], 0.5);
+  EXPECT_EQ(reloaded->tendon_actfrclimited[0], 1);
+  EXPECT_MJTNUM_EQ(reloaded->tendon_actfrcrange[0], -2);
+  EXPECT_MJTNUM_EQ(reloaded->tendon_actfrcrange[1], 3);
+
+  mj_deleteModel(m);
+  mj_deleteSpec(spec);
+}
+
+TEST_F(XMLReaderTest, NestedFallbackAndDuplicateInclude) {
+  static constexpr char root_ok[] = R"(
+  <mujoco>
+    <worldbody>
+      <include file="sub/mid.xml"/>
+    </worldbody>
+  </mujoco>
+  )";
+  static constexpr char mid_xml[] = R"(
+  <mujoco>
+    <include file="other/leaf.xml"/>
+  </mujoco>
+  )";
+  static constexpr char leaf_xml[] = R"(
+  <mujoco>
+    <include file="deep.xml"/>
+  </mujoco>
+  )";
+  static constexpr char deep_xml[] = R"(
+  <mujoco>
+    <geom name="deep_geom" size="0.1"/>
+  </mujoco>
+  )";
+
+  MockFilesystem fs("NestedFallbackAndDuplicateInclude");
+  fs.AddFile("root.xml", (const unsigned char*)root_ok, sizeof(root_ok));
+  fs.AddFile("sub/mid.xml", (const unsigned char*)mid_xml, sizeof(mid_xml));
+  fs.AddFile("other/leaf.xml", (const unsigned char*)leaf_xml,
+             sizeof(leaf_xml));
+  fs.AddFile("other/deep.xml", (const unsigned char*)deep_xml,
+             sizeof(deep_xml));
+
+  std::array<char, 1024> error;
+  std::string root_path = fs.FullPath("root.xml");
+  mjModel* m =
+      mj_loadXML(root_path.c_str(), nullptr, error.data(), error.size());
+  ASSERT_THAT(m, NotNull()) << error.data();
+  EXPECT_GE(mj_name2id(m, mjOBJ_GEOM, "deep_geom"), 0);
+  mj_deleteModel(m);
+
+  // duplicate include via fallback path and direct path must be rejected
+  static constexpr char root_dup_fallback[] = R"(
+  <mujoco>
+    <worldbody>
+      <include file="other/leaf.xml"/>
+      <include file="sub/mid.xml"/>
+    </worldbody>
+  </mujoco>
+  )";
+  fs.AddFile("root_dup1.xml", (const unsigned char*)root_dup_fallback,
+             sizeof(root_dup_fallback));
+  std::string dup1_path = fs.FullPath("root_dup1.xml");
+  EXPECT_THAT(
+      mj_loadXML(dup1_path.c_str(), nullptr, error.data(), error.size()),
+      IsNull());
+  EXPECT_THAT(error.data(), HasSubstr("already included"));
+
+  // duplicate include via relative path after direct include must be rejected
+  static constexpr char root_dup_rel[] = R"(
+  <mujoco>
+    <worldbody>
+      <include file="other/deep.xml"/>
+      <include file="other/leaf.xml"/>
+    </worldbody>
+  </mujoco>
+  )";
+  fs.AddFile("root_dup2.xml", (const unsigned char*)root_dup_rel,
+             sizeof(root_dup_rel));
+  std::string dup2_path = fs.FullPath("root_dup2.xml");
+  EXPECT_THAT(
+      mj_loadXML(dup2_path.c_str(), nullptr, error.data(), error.size()),
+      IsNull());
+  EXPECT_THAT(error.data(), HasSubstr("already included"));
+
+  // duplicate nested include in VFS must not double-prefix filename
+  static constexpr char vfs_root[] = R"(
+  <mujoco>
+    <worldbody>
+      <include file="submodels/model1.xml"/>
+    </worldbody>
+  </mujoco>
+  )";
+  static constexpr char vfs_mid[] = R"(
+  <mujoco>
+    <include file="subsubmodels/model2.xml"/>
+    <include file="subsubmodels/model2.xml"/>
+  </mujoco>
+  )";
+  mjVFS vfs;
+  mj_defaultVFS(&vfs);
+  mj_addBufferVFS(&vfs, "model.xml", vfs_root, sizeof(vfs_root));
+  mj_addBufferVFS(&vfs, "submodels/model1.xml", vfs_mid, sizeof(vfs_mid));
+  mj_addBufferVFS(&vfs, "submodels/subsubmodels/model2.xml", deep_xml,
+                  sizeof(deep_xml));
+  EXPECT_THAT(mj_loadXML("model.xml", &vfs, error.data(), error.size()),
+              IsNull());
+  EXPECT_THAT(error.data(), HasSubstr("already included"));
+  mj_deleteVFS(&vfs);
+
+  // nested relative includes when root model itself is loaded by relative path
+  static constexpr char rel_root[] = R"(
+  <mujoco>
+    <worldbody>
+      <include file="sub/a.xml"/>
+    </worldbody>
+  </mujoco>
+  )";
+  static constexpr char rel_a[] = R"(
+  <mujoco>
+    <include file="b.xml"/>
+  </mujoco>
+  )";
+  static constexpr char rel_b[] = R"(
+  <mujoco>
+    <include file="other/c.xml"/>
+  </mujoco>
+  )";
+  static constexpr char rel_c[] = R"(
+  <mujoco>
+    <geom name="rel_geom" size="0.1"/>
+  </mujoco>
+  )";
+  mjVFS rel_vfs;
+  mj_defaultVFS(&rel_vfs);
+  mj_addBufferVFS(&rel_vfs, "models/root.xml", rel_root, sizeof(rel_root));
+  mj_addBufferVFS(&rel_vfs, "models/sub/a.xml", rel_a, sizeof(rel_a));
+  mj_addBufferVFS(&rel_vfs, "models/sub/b.xml", rel_b, sizeof(rel_b));
+  mj_addBufferVFS(&rel_vfs, "models/other/c.xml", rel_c, sizeof(rel_c));
+  mjModel* m_rel =
+      mj_loadXML("models/root.xml", &rel_vfs, error.data(), error.size());
+  ASSERT_THAT(m_rel, NotNull()) << error.data();
+  EXPECT_GE(mj_name2id(m_rel, mjOBJ_GEOM, "rel_geom"), 0);
+  mj_deleteModel(m_rel);
+  mj_deleteVFS(&rel_vfs);
+}
+
+TEST_F(XMLReaderTest, TextureGridsizePreservesSameAndResetsDifferentLayout) {
+  static constexpr char xml[] = R"(
+  <mujoco>
+    <default>
+      <default class="grid_cls">
+        <texture type="skybox" gridsize="3 4" gridlayout=".U..LFRB.D.."/>
+      </default>
+    </default>
+    <asset>
+      <texture name="inherited" class="grid_cls" file="sky.png"/>
+      <texture name="same_size" class="grid_cls" file="sky.png" gridsize="3 4"/>
+      <texture name="diff_size" class="grid_cls" file="sky.png" gridsize="2 3"/>
+    </asset>
+  </mujoco>
+  )";
+  std::array<char, 1024> error;
+  mjSpec* spec = mj_parseXMLString(xml, nullptr, error.data(), error.size());
+  ASSERT_THAT(spec, NotNull()) << error.data();
+
+  auto tex = [spec](const char* name) {
+    return mjs_asTexture(mjs_findElement(spec, mjOBJ_TEXTURE, name));
+  };
+  ASSERT_THAT(tex("inherited"), NotNull());
+  ASSERT_THAT(tex("same_size"), NotNull());
+  ASSERT_THAT(tex("diff_size"), NotNull());
+  EXPECT_EQ(std::string(tex("inherited")->gridlayout, 12), ".U..LFRB.D..");
+  EXPECT_EQ(std::string(tex("same_size")->gridlayout, 12), ".U..LFRB.D..");
+  EXPECT_EQ(std::string(tex("diff_size")->gridlayout, 12), "............");
+
+  mj_deleteSpec(spec);
+}
+
+TEST_F(ActuatorParseTest, ShortcutInheritrangeDefaultOverride) {
+  static constexpr char xml[] = R"(
+  <mujoco>
+    <default>
+      <default class="pos_inh">
+        <position inheritrange="1"/>
+      </default>
+      <default class="intvel_inh">
+        <intvelocity inheritrange="1"/>
+      </default>
+      <default class="pid_inh">
+        <pid inheritrange="1" kp="2"/>
+      </default>
+      <default class="pos_exp">
+        <position ctrlrange="-3 3"/>
+      </default>
+      <default class="intvel_exp">
+        <intvelocity actrange="-4 4"/>
+      </default>
+      <default class="pid_exp">
+        <pid ctrlrange="-5 5" kp="2"/>
+      </default>
+    </default>
+    <worldbody>
+      <body>
+        <joint name="j" type="slide" range="-1 2"/>
+        <geom size="0.1"/>
+      </body>
+    </worldbody>
+    <actuator>
+      <position class="pos_inh" joint="j" ctrlrange="-3 3"/>
+      <intvelocity class="intvel_inh" joint="j" actrange="-4 4"/>
+      <pid class="pid_inh" joint="j" ctrlrange="-5 5"/>
+      <position class="pos_exp" joint="j" inheritrange="1"/>
+      <intvelocity class="intvel_exp" joint="j" inheritrange="1"/>
+      <pid class="pid_exp" joint="j" inheritrange="1"/>
+    </actuator>
+  </mujoco>
+  )";
+  std::array<char, 1024> error;
+  MjModelPtr m = LoadModelFromString(xml, error.data(), error.size());
+  ASSERT_THAT(m.get(), NotNull()) << error.data();
+  EXPECT_MJTNUM_EQ(m->actuator_ctrlrange[2 * m->actuator_ctrladr[0] + 0], -3);
+  EXPECT_MJTNUM_EQ(m->actuator_ctrlrange[2 * m->actuator_ctrladr[0] + 1], 3);
+  EXPECT_MJTNUM_EQ(m->actuator_actrange[1 * 2 + 0], -4);
+  EXPECT_MJTNUM_EQ(m->actuator_actrange[1 * 2 + 1], 4);
+  EXPECT_MJTNUM_EQ(m->actuator_ctrlrange[2 * m->actuator_ctrladr[2] + 0], -5);
+  EXPECT_MJTNUM_EQ(m->actuator_ctrlrange[2 * m->actuator_ctrladr[2] + 1], 5);
+  EXPECT_MJTNUM_EQ(m->actuator_ctrlrange[2 * m->actuator_ctrladr[3] + 0], -1);
+  EXPECT_MJTNUM_EQ(m->actuator_ctrlrange[2 * m->actuator_ctrladr[3] + 1], 2);
+  EXPECT_MJTNUM_EQ(m->actuator_actrange[4 * 2 + 0], -1);
+  EXPECT_MJTNUM_EQ(m->actuator_actrange[4 * 2 + 1], 2);
+  EXPECT_MJTNUM_EQ(m->actuator_ctrlrange[2 * m->actuator_ctrladr[5] + 0], -1);
+  EXPECT_MJTNUM_EQ(m->actuator_ctrlrange[2 * m->actuator_ctrladr[5] + 1], 2);
+}
+
 }  // namespace
 }  // namespace mujoco

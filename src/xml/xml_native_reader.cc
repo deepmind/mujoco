@@ -729,6 +729,7 @@ void mjXReader::OneSkin(XMLElement* elem, mjsSkin* skin, const mjVFS* vfs) {
 // texture element parser
 void mjXReader::OneTexture(XMLElement* elem, mjsTexture* texture, const mjVFS* vfs) {
   string text;
+  int    inherited_gridsize[2] = {texture->gridsize[0], texture->gridsize[1]};
 
   // mechanical attributes
   ReadAttrTable(elem, texture, texture->element, kTextureAttrs, kTextureAttrsN);
@@ -739,9 +740,13 @@ void mjXReader::OneTexture(XMLElement* elem, mjsTexture* texture, const mjVFS* v
   NameFromFile(elem, texture->element, texture->file);
 
   // gridlayout length must equal the gridsize product (value-conditional)
-  if (ReadAttrTxt(elem, "gridlayout", text) &&
-      text.length() != texture->gridsize[0] * texture->gridsize[1]) {
-    throw mjXError(elem, "gridlayout length must match gridsize");
+  if (ReadAttrTxt(elem, "gridlayout", text)) {
+    if (text.length() != texture->gridsize[0] * texture->gridsize[1]) {
+      throw mjXError(elem, "gridlayout length must match gridsize");
+    }
+  } else if (elem->Attribute("gridsize") && (texture->gridsize[0] != inherited_gridsize[0] ||
+                                             texture->gridsize[1] != inherited_gridsize[1])) {
+    std::memcpy(texture->gridlayout, "............", sizeof(texture->gridlayout));
   }
 
   // separate files
@@ -1282,25 +1287,43 @@ void mjXReader::OneActuator(XMLElement* elem, mjsActuator* actuator, const mjsDe
 
     switch (acttype) {
       case mjACTUATOR_POSITION:
-      case mjACTUATOR_INTVELOCITY:
+      case mjACTUATOR_INTVELOCITY: {
         ReadAttr(elem, "kp", 1, &s.kp, text);
-        ReadAttr(elem, "inheritrange", 1, &s.inheritrange, text);
+        bool has_inherit = ReadAttr(elem, "inheritrange", 1, &s.inheritrange, text);
+        bool has_range =
+            elem->Attribute(acttype == mjACTUATOR_POSITION ? "ctrlrange" : "actrange") != nullptr;
+        if (has_range && !has_inherit) {
+          s.inheritrange = 0;
+        } else if (has_inherit && s.inheritrange > 0 && !has_range) {
+          double* range = acttype == mjACTUATOR_POSITION ? actuator->ctrlrange : actuator->actrange;
+          range[0]      = 0;
+          range[1]      = 0;
+        }
         if (ReadAttr(elem, "timeconst", 1, s.timeconst, text)) { s.has_timeconst = true; }
         break;
+      }
       case mjACTUATOR_ORIENTATION:
         ReadAttr(elem, "kp", 1, &s.kp, text);
         ReadInputSpec(elem, &s.ctrlspec);
         break;
-      case mjACTUATOR_PID:
+      case mjACTUATOR_PID: {
         ReadAttr(elem, "kp", 1, &s.kp, text);
         ReadAttr(elem, "ki", 1, &s.ki, text);
         ReadAttr(elem, "imax", 1, &s.imax, text);
         ReadAttr(elem, "slewmax", 1, &s.slewmax, text);
-        ReadAttr(elem, "inheritrange", 1, &s.inheritrange, text);
+        bool has_inherit = ReadAttr(elem, "inheritrange", 1, &s.inheritrange, text);
         ReadInputSpec(elem, &s.ctrlspec);
         // posrange is an alias of ctrlrange (the position-setpoint input)
-        ReadAttr(elem, "posrange", 2, actuator->ctrlrange, text);
+        bool has_posrange = ReadAttr(elem, "posrange", 2, actuator->ctrlrange, text) ||
+                            elem->Attribute("ctrlrange") != nullptr;
+        if (has_posrange && !has_inherit) {
+          s.inheritrange = 0;
+        } else if (has_inherit && s.inheritrange > 0 && !has_posrange) {
+          actuator->ctrlrange[0] = 0;
+          actuator->ctrlrange[1] = 0;
+        }
         break;
+      }
       case mjACTUATOR_CYLINDER:
         ReadAttr(elem, "timeconst", 1, s.timeconst, text);
         ReadAttr(elem, "bias", 3, s.bias, text);
@@ -1515,7 +1538,7 @@ void mjXReader::OneComposite(XMLElement*       elem,
 
 
 // make flexcomp
-void mjXReader::OneFlexcomp(XMLElement* elem, mjsBody* body, const mjVFS* vfs) {
+void mjXReader::OneFlexcomp(XMLElement* elem, mjsBody* body, mjsFrame* frame, const mjVFS* vfs) {
   string text, material;
   int    n;
 
@@ -1523,6 +1546,7 @@ void mjXReader::OneFlexcomp(XMLElement* elem, mjsBody* body, const mjVFS* vfs) {
   auto         fcomp_ptr = std::make_unique<mjCFlexcomp>();
   mjCFlexcomp& fcomp     = *fcomp_ptr;
   mjsFlex&     dflex     = *fcomp.def.spec.flex;
+  fcomp.frame            = frame;
 
   // common properties
   ReadAttrTxt(elem, "name", fcomp.name, true);
@@ -2312,7 +2336,7 @@ void mjXReader::Body(XMLElement* section, mjsBody* body, mjsFrame* frame, const 
     // flexcomp sub-element
     else if (name == "flexcomp") {
       // parse flexcomp
-      OneFlexcomp(elem, body, vfs);
+      OneFlexcomp(elem, body, frame, vfs);
     }
 
     // frame sub-element

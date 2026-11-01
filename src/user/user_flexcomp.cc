@@ -76,6 +76,7 @@ mjCFlexcomp::mjCFlexcomp(void) {
   equality   = 0;
   mjuu_setvec(pos, 0, 0, 0);
   mjuu_setvec(quat, 1, 0, 0, 0);
+  frame        = nullptr;
   rigid        = false;
   centered     = false;
   doftype      = mjFCOMPDOF_FULL;
@@ -172,6 +173,18 @@ bool mjCFlexcomp::Make(mjsBody* body, char* error, int error_sz, const mjVFS* vf
   // compute orientation
   const char* alterr = mjs_resolveOrientation(quat, compiler->degree, compiler->eulerseq, &alt);
   if (alterr) { return comperr(error, alterr, error_sz); }
+
+  // accumulate enclosing frame chain if present
+  for (const mjCFrame* f = frame ? static_cast<const mjCFrame*>(frame->element) : nullptr; f;
+       f                 = f->frame) {
+    double framequat[4];
+    mjuu_copyvec(framequat, f->spec.quat, 4);
+    const char* ferr =
+        mjs_resolveOrientation(framequat, compiler->degree, compiler->eulerseq, &f->spec.alt);
+    if (ferr) { return comperr(error, ferr, error_sz); }
+    mjuu_normvec(framequat, 4);
+    mjuu_frameaccumChild(f->spec.pos, framequat, pos, quat);
+  }
 
   // type-specific constructor: populate point and element, possibly set dim
   bool res;

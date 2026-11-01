@@ -190,6 +190,21 @@ Engine
 - Added ``xiquat``, ``geom_xquat``, and ``site_xquat`` to :ref:`mjData`, storing the Cartesian quaternion orientations
   of body inertias, geoms, and sites alongside ``ximat``, ``geom_xmat``, and ``site_xmat``.
 
+Compiler
+^^^^^^^^
+.. admonition:: Breaking changes
+   :class: attention
+
+   - Models that :ref:`include<include>` the same file through different paths, which previously loaded, are now
+     rejected with ``already included``.
+
+     **Migration:** Remove redundant ``<include>`` elements referencing the same file.
+
+- :ref:`default/tendon<default-tendon>` in MJCF now accepts :ref:`armature<tendon-fixed-armature>`,
+  :ref:`actuatorfrclimited<tendon-spatial-actuatorfrclimited>`, and
+  :ref:`actuatorfrcrange<tendon-spatial-actuatorfrcrange>` (previously emitted when saving XML, which then failed
+  schema validation on reload).
+
 Filament Rendering
 ^^^^^^^^^^^^^^^^^^
 - Added horizon haze and skybox visibility support: infinite planes are centered beneath the camera and blend smoothly
@@ -221,6 +236,18 @@ Bug fixes
   with tracking or targeting at their fixed-mode poses.
 - Fixed a bug where tendon actuators saturated by :ref:`actuatorfrcrange<tendon-spatial-actuatorfrcrange>` still
   contributed to implicit actuator derivatives.
+- Fixed several MJCF XML loading and saving bugs:
+
+  - :ref:`include<include>` no longer double-prefixes the model directory on nested or relative paths.
+  - Loading MJCF now applies enclosing :ref:`frame<frame>` transforms to :ref:`flexcomp<body-flexcomp>`, and allows
+    explicit :at:`range` or :ref:`inheritrange<actuator-position-inheritrange>` attributes on actuator shortcuts to
+    override conflicting defaults.
+  - Saving MJCF (:ref:`mj_saveLastXML`, :ref:`mj_saveXML`, :ref:`mj_saveXMLString`) now preserves
+    :ref:`texture<asset-texture>` :ref:`nchannel<asset-texture-nchannel>` and clamps emitted
+    :ref:`gridlayout<asset-texture-gridlayout>` to ``gridsize`` (while loading resets ``gridlayout`` when an authored
+    ``gridsize`` differs from the inherited default), compares material :ref:`layer<material-layer>` textures, camera
+    :ref:`sensorsize<body-camera-sensorsize>`, and light :ref:`texture<body-light-texture>` against default classes, and
+    writes all attributes on plugin-backed meshes and :at:`reftype`/:at:`refname` on plugin sensors.
 
 Documentation
 ^^^^^^^^^^^^^

@@ -109,6 +109,7 @@ class mjCFlexcomp {
   double         pos[3];   // position
   double         quat[4];  // orientation
   mjsOrientation alt;      // alternative orientation
+  mjsFrame*      frame;    // enclosing frame
 
   // set by user or computed internally
   bool                rigid;         // all vertices are in parent body (all pinned)

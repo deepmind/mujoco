@@ -101,7 +101,7 @@ class mjXReader : public mjXBase {
                     mjsBody*              pbody,
                     mjsFrame*             pframe,
                     const mjsDefault*     def);
-  void OneFlexcomp(tinyxml2::XMLElement* elem, mjsBody* pbody, const mjVFS* vfs);
+  void OneFlexcomp(tinyxml2::XMLElement* elem, mjsBody* pbody, mjsFrame* pframe, const mjVFS* vfs);
   void OnePlugin(tinyxml2::XMLElement* elem, mjsPlugin* plugin);
 
   mjXSchema         schema;                                   // schema used for validation

@@ -113,9 +113,9 @@ void ExpandIncludeXML(mjXReader&                       reader,
   if (!elem->NoChildren()) { throw mjXError(elem, "Include element cannot have children"); }
 
   // get filename
-  auto file_attr = mjXUtil::ReadAttrFile(elem, "file", vfs, reader.ModelFileDir(), true);
+  auto file_attr = mjXUtil::ReadAttrStr(elem, "file", true);
   if (!file_attr.has_value()) { throw mjXError(elem, "Include element missing file attribute"); }
-  FilePath filename = file_attr.value();
+  FilePath filename = FilePath(file_attr.value());
 
   // block repeated include files
   if (included.find(filename.Str()) != included.end()) {
@@ -133,19 +133,23 @@ void ExpandIncludeXML(mjXReader&                       reader,
                                                      error.size());
   if (resource == nullptr) {
     // new behavior: try to load in relative directory
-    if (!filename.IsAbs()) {
+    if (!filename.IsAbs() && !dir.empty()) {
       FilePath fullname = dir + filename;
-      resource          = mju_openResource(reader.ModelFileDir().c_str(),
-                                           fullname.c_str(),
-                                           vfs,
-                                           error.data(),
-                                           error.size());
+      if (included.find(fullname.Str()) != included.end()) {
+        throw mjXError(elem, "File '%s' already included", fullname.c_str());
+      }
+      resource = mju_openResource("", fullname.c_str(), vfs, error.data(), error.size());
+      if (resource != nullptr) { filename = fullname; }
     }
   }
 
   if (resource == nullptr) { throw mjXError(elem, "%s", error.data()); }
 
-  filename = dir + filename;
+  FilePath canonical(resource->name ? resource->name : "");
+  if (!canonical.Str().empty() && included.find(canonical.Str()) != included.end()) {
+    mju_closeResource(resource);
+    throw mjXError(elem, "File '%s' already included", filename.c_str());
+  }
 
   const char* include_dir  = nullptr;
   int         ninclude_dir = 0;
@@ -179,6 +183,7 @@ void ExpandIncludeXML(mjXReader&                       reader,
 
   // remember that file was included
   included.insert(filename.Str());
+  if (!canonical.Str().empty()) { included.insert(canonical.Str()); }
 
   // get and check root element
   XMLElement* docroot = doc.RootElement();

@@ -6060,7 +6060,13 @@
                :ref:`limited<default-tendon-limited>`
 
             .. grid-item::
+               :ref:`actuatorfrclimited<default-tendon-actuatorfrclimited>`
+
+            .. grid-item::
                :ref:`range<default-tendon-range>`
+
+            .. grid-item::
+               :ref:`actuatorfrcrange<default-tendon-actuatorfrcrange>`
 
             .. grid-item::
                :ref:`solreflimit<default-tendon-solreflimit>`
@@ -6097,6 +6103,9 @@
 
             .. grid-item::
                :ref:`damping<default-tendon-damping>`
+
+            .. grid-item::
+               :ref:`armature<default-tendon-armature>`
 
             .. grid-item::
                :ref:`rgba<default-tendon-rgba>`

@@ -4943,5 +4943,49 @@ TEST_F(UserFlexTest, FlexcompUnusedVertexPreservesFaceTexcoords) {
   EXPECT_THAT(error.data(), HasSubstr("two texture coordinates per vertex"));
 }
 
+TEST_F(UserFlexTest, FlexcompEnclosingFrame) {
+  static constexpr char xml_framed[] = R"(
+  <mujoco>
+    <worldbody>
+      <frame pos="1 2 3" euler="0 0 90">
+        <frame pos="0.5 0 0">
+          <flexcomp name="f" type="grid" count="2 2 1" spacing="0.2 0.2 0.2"
+                    pos="0 0.1 0" dim="2" radius="0.01">
+            <edge equality="true"/>
+          </flexcomp>
+        </frame>
+      </frame>
+    </worldbody>
+  </mujoco>
+  )";
+  // outer frame rotates +90 deg around Z: local (0.5, 0.1, 0) -> (-0.1, 0.5, 0)
+  // plus outer pos (1, 2, 3) = (0.9, 2.5, 3.0) with +90 deg Z rotation
+  static constexpr char xml_direct[] = R"(
+  <mujoco>
+    <worldbody>
+      <flexcomp name="f" type="grid" count="2 2 1" spacing="0.2 0.2 0.2"
+                pos="0.9 2.5 3" euler="0 0 90" dim="2" radius="0.01">
+        <edge equality="true"/>
+      </flexcomp>
+    </worldbody>
+  </mujoco>
+  )";
+  std::array<char, 1024> error;
+  MjModelPtr m_framed =
+      LoadModelFromString(xml_framed, error.data(), error.size());
+  ASSERT_THAT(m_framed.get(), NotNull()) << error.data();
+  MjModelPtr m_direct =
+      LoadModelFromString(xml_direct, error.data(), error.size());
+  ASSERT_THAT(m_direct.get(), NotNull()) << error.data();
+
+  ASSERT_EQ(m_framed->nbody, m_direct->nbody);
+  for (int b = 1; b < m_framed->nbody; b++) {
+    for (int k = 0; k < 3; k++) {
+      EXPECT_NEAR(m_framed->body_pos[3 * b + k], m_direct->body_pos[3 * b + k],
+                  MjTol(1e-12, 1e-6));
+    }
+  }
+}
+
 }  // namespace
 }  // namespace mujoco

@@ -456,7 +456,9 @@
               <attributes>
                 <attribute name="group" type="int"/>
                 <attribute name="limited" type="keyword" valid_values="false true auto" default="auto"/>
+                <attribute name="actuatorfrclimited" type="keyword" valid_values="false true auto" default="auto"/>
                 <attribute name="range" type="array" array_type="float" array_size="2"/>
+                <attribute name="actuatorfrcrange" type="array" array_type="float" array_size="2"/>
                 <attribute name="solreflimit" type="array" array_type="float" array_size="2"/>
                 <attribute name="solimplimit" type="array" array_type="float" array_size="5"/>
                 <attribute name="solreffriction" type="array" array_type="float" array_size="2"/>
@@ -469,6 +471,7 @@
                 <attribute name="margin" type="float"/>
                 <attribute name="stiffness" type="array" array_type="float" array_size="3"/>
                 <attribute name="damping" type="array" array_type="float" array_size="3"/>
+                <attribute name="armature" type="float"/>
                 <attribute name="rgba" type="array" array_type="float" array_size="4"/>
                 <attribute name="user" type="array" array_type="float"/>
               </attributes>
@@ -877,7 +880,9 @@
           <attributes>
             <attribute name="group" type="int"/>
             <attribute name="limited" type="keyword" valid_values="false true auto" default="auto"/>
+            <attribute name="actuatorfrclimited" type="keyword" valid_values="false true auto" default="auto"/>
             <attribute name="range" type="array" array_type="float" array_size="2"/>
+            <attribute name="actuatorfrcrange" type="array" array_type="float" array_size="2"/>
             <attribute name="solreflimit" type="array" array_type="float" array_size="2"/>
             <attribute name="solimplimit" type="array" array_type="float" array_size="5"/>
             <attribute name="solreffriction" type="array" array_type="float" array_size="2"/>
@@ -890,6 +895,7 @@
             <attribute name="margin" type="float"/>
             <attribute name="stiffness" type="array" array_type="float" array_size="3"/>
             <attribute name="damping" type="array" array_type="float" array_size="3"/>
+            <attribute name="armature" type="float"/>
             <attribute name="rgba" type="array" array_type="float" array_size="4"/>
             <attribute name="user" type="array" array_type="float"/>
           </attributes>

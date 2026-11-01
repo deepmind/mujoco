@@ -1624,7 +1624,9 @@
   <xs:complexType name="default_tendon">
     <xs:attribute name="group" type="xs:int"/>
     <xs:attribute name="limited" type="kw_FalseTrueAuto" default="auto"/>
+    <xs:attribute name="actuatorfrclimited" type="kw_FalseTrueAuto" default="auto"/>
     <xs:attribute name="range" type="double2"/>
+    <xs:attribute name="actuatorfrcrange" type="double2"/>
     <xs:attribute name="solreflimit" type="double1to2"/>
     <xs:attribute name="solimplimit" type="double1to5"/>
     <xs:attribute name="solreffriction" type="double1to2"/>
@@ -1637,6 +1639,7 @@
     <xs:attribute name="margin" type="xs:double"/>
     <xs:attribute name="stiffness" type="double1to3"/>
     <xs:attribute name="damping" type="double1to3"/>
+    <xs:attribute name="armature" type="xs:double"/>
     <xs:attribute name="rgba" type="float4"/>
     <xs:attribute name="user" type="doublelist"/>
   </xs:complexType>

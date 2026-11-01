@@ -1946,13 +1946,14 @@ Only ``image/png`` and ``image/ktx`` are supported.
    specifies which grid cells are used and which side of the cube they correspond to. There are many skybox textures
    available online as composite images, but they do not use the same convention, which is why we have designed a
    flexible mechanism for decoding them. The string specified here must be composed of characters from the set {'.',
-   'R', 'L', 'U', 'D', 'F', 'B'}. The number of characters must equal the product of the two grid sizes. The grid is
-   scanned in row-major order. The '.' character denotes an unused cell. The other characters are the first letters of
-   Right, Left, Up, Down, Front, Back; see below for coordinate frame description. If the symbol for a given side
-   appears more than once, the last definition is used. If a given side is omitted, it is filled with the color
-   specified by the rgb1 attribute. For example, the desert landscape below can be loaded as a skybox or a cube map
-   using gridsize = "3 4" and gridlayout = ".U..LFRB.D.." The full-resolution image file without the markings can be
-   downloaded `here <_static/desert.png>`__.
+   'R', 'L', 'U', 'D', 'F', 'B'}. The number of characters must equal the product of the two grid sizes. Setting
+   :at:`gridsize` to a value that differs from the inherited default without specifying :at:`gridlayout` resets
+   :at:`gridlayout` to all ``'.'``. The grid is scanned in row-major order. The '.' character denotes an unused cell.
+   The other characters are the first letters of Right, Left, Up, Down, Front, Back; see below for coordinate frame
+   description. If the symbol for a given side appears more than once, the last definition is used. If a given side is
+   omitted, it is filled with the color specified by the rgb1 attribute. For example, the desert landscape below can be
+   loaded as a skybox or a cube map using gridsize = "3 4" and gridlayout = ".U..LFRB.D.." The full-resolution image
+   file without the markings can be downloaded `here <_static/desert.png>`__.
 
 .. _asset-texture-fileright:
 
@@ -10825,6 +10826,8 @@ if omitted.
 .. _default-tendon-springyield:
 
 .. _default-tendon-damping:
+
+.. _default-tendon-armature:
 
 .. _default-tendon-rgba:
 

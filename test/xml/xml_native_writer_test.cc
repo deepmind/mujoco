@@ -3983,5 +3983,225 @@ TEST_F(XMLWriterTest, MeshGeomRoundTripPreservesSurfacevel) {
       Pointwise(MjNear(1e-12, 1e-6), AsVector(model->geom_surfacevel, 6)));
 }
 
+TEST_F(XMLWriterTest, TextureGridsizeWithoutGridlayoutAndCompiledNchannel) {
+  static constexpr char xml[] = R"(
+  <mujoco>
+    <default>
+      <default class="grid_cls">
+        <texture type="skybox" gridsize="2 4" gridlayout="LFRB.D.."/>
+      </default>
+    </default>
+    <asset>
+      <texture name="sky1" type="skybox" file="dummy.png" gridsize="2 3"/>
+      <texture name="sky2" class="grid_cls" file="dummy.png" gridsize="2 3"/>
+      <texture name="ktx" type="2d" file="tex.ktx" content_type="image/ktx"/>
+    </asset>
+  </mujoco>
+  )";
+  mjVFS vfs;
+  mj_defaultVFS(&vfs);
+  static constexpr char kDummy[] = "ktxblob";
+  mj_addBufferVFS(&vfs, "tex.ktx", kDummy, sizeof(kDummy));
+
+  std::array<char, 1024> error;
+  mjSpec* spec = mj_parseXMLString(xml, &vfs, error.data(), error.size());
+  ASSERT_THAT(spec, NotNull()) << error.data();
+
+  // authored save: sky1 and sky2 omit default-dots gridlayout, resetting sky2
+  spec->compiler.savecompiled = 0;
+  std::string saved_authored = SaveToString(spec);
+  EXPECT_THAT(saved_authored, Not(HasSubstr("gridlayout=\".")));
+  mjSpec* reloaded_authored = mj_parseXMLString(saved_authored.c_str(), &vfs,
+                                                error.data(), error.size());
+  ASSERT_THAT(reloaded_authored, NotNull()) << error.data() << "\n"
+                                            << saved_authored;
+  mjsTexture* sky2 =
+      mjs_asTexture(mjs_findElement(reloaded_authored, mjOBJ_TEXTURE, "sky2"));
+  ASSERT_THAT(sky2, NotNull());
+  EXPECT_EQ(std::string(sky2->gridlayout, 12), "............");
+  mj_deleteSpec(reloaded_authored);
+
+  // compiled save on ktx texture: compiled nchannel=1 is written
+  mjs_delete(spec, mjs_findElement(spec, mjOBJ_TEXTURE, "sky1"));
+  mjs_delete(spec, mjs_findElement(spec, mjOBJ_TEXTURE, "sky2"));
+  mjModel* model = mj_compile(spec, &vfs);
+  ASSERT_THAT(model, NotNull()) << mjs_getError(spec);
+  EXPECT_EQ(model->tex_nchannel[0], 1);
+  spec->compiler.savecompiled = 1;
+  std::string saved_compiled = SaveToString(spec);
+  EXPECT_THAT(saved_compiled, HasSubstr("nchannel=\"1\""));
+
+  mj_deleteModel(model);
+  mj_deleteSpec(spec);
+  mj_deleteVFS(&vfs);
+}
+
+TEST_F(XMLWriterTest, MaterialDefaultLayerRoundtrip) {
+  static constexpr char xml[] = R"(
+  <mujoco>
+    <default>
+      <default class="layered">
+        <material>
+          <layer role="normal" texture="norm"/>
+        </material>
+      </default>
+    </default>
+    <asset>
+      <texture name="rgb" type="2d" builtin="flat" width="4" height="4"/>
+      <texture name="norm" type="2d" builtin="flat" width="4" height="4"/>
+      <material name="m" class="layered" texture="rgb"/>
+    </asset>
+  </mujoco>
+  )";
+  std::array<char, 1024> error;
+  MjModelPtr model = LoadModelFromString(xml, error.data(), error.size());
+  ASSERT_THAT(model.get(), NotNull()) << error.data();
+
+  std::string saved = SaveAndReadXml(model.get());
+  MjModelPtr reloaded =
+      LoadModelFromString(saved.c_str(), error.data(), error.size());
+  ASSERT_THAT(reloaded.get(), NotNull()) << error.data() << "\n" << saved;
+  EXPECT_EQ(reloaded->mat_texid[mjNTEXROLE * 0 + mjTEXROLE_RGB], 0);
+  EXPECT_EQ(reloaded->mat_texid[mjNTEXROLE * 0 + mjTEXROLE_NORMAL], 1);
+}
+
+TEST_F(XMLWriterTest, CameraDefaultSensorsizeAndDefaultLightTexture) {
+  static constexpr char xml[] = R"(
+  <mujoco>
+    <default>
+      <default class="cam_cls">
+        <camera sensorsize="0.036 0.024" focal="0.05 0.05" resolution="640 480"/>
+        <light directional="true"/>
+      </default>
+    </default>
+    <worldbody>
+      <camera name="c1" class="cam_cls"/>
+      <camera name="c2" class="cam_cls" sensorsize="0.02 0.02"/>
+      <light name="l1" class="cam_cls"/>
+    </worldbody>
+  </mujoco>
+  )";
+  std::array<char, 1024> error;
+  mjSpec* spec = mj_parseXMLString(xml, nullptr, error.data(), error.size());
+  ASSERT_THAT(spec, NotNull()) << error.data();
+  mjsDefault* def = mjs_findDefault(spec, "cam_cls");
+  ASSERT_THAT(def, NotNull());
+  mjs_setString(def->light->texture, "ignored_in_default");
+
+  mjModel* model = mj_compile(spec, nullptr);
+  ASSERT_THAT(model, NotNull()) << mjs_getError(spec);
+  spec->compiler.savecompiled = 1;
+  std::string saved = SaveToString(spec);
+  EXPECT_THAT(saved, HasSubstr("<camera name=\"c1\" class=\"cam_cls\"/>"));
+  EXPECT_THAT(
+      saved,
+      HasSubstr(
+          "<camera name=\"c2\" class=\"cam_cls\" sensorsize=\"0.02 0.02\"/>"));
+  EXPECT_THAT(saved, Not(HasSubstr("ignored_in_default")));
+
+  MjModelPtr reloaded =
+      LoadModelFromString(saved.c_str(), error.data(), error.size());
+  ASSERT_THAT(reloaded.get(), NotNull()) << error.data() << "\n" << saved;
+
+  mj_deleteModel(model);
+  mj_deleteSpec(spec);
+}
+
+TEST_F(XMLWriterTest, PluginMeshPreservesAttributes) {
+  static constexpr char xml[] = R"(
+  <mujoco>
+    <extension>
+      <plugin plugin="mujoco.sdf.torus"/>
+    </extension>
+    <asset>
+      <material name="mat"/>
+      <mesh name="torus" refpos="0.1 0.2 0.3" refquat="0 1 0 0"
+            maxhullvert="16" material="mat">
+        <plugin plugin="mujoco.sdf.torus"/>
+      </mesh>
+    </asset>
+    <worldbody>
+      <geom type="sdf" mesh="torus">
+        <plugin plugin="mujoco.sdf.torus"/>
+      </geom>
+    </worldbody>
+  </mujoco>
+  )";
+  std::array<char, 1024> error;
+  mjSpec* spec = mj_parseXMLString(xml, nullptr, error.data(), error.size());
+  ASSERT_THAT(spec, NotNull()) << error.data();
+  mjModel* model = mj_compile(spec, nullptr);
+  std::string compile_error = model ? "" : mjs_getError(spec);
+  if (!model) {
+    mj_deleteSpec(spec);
+  }
+  ASSERT_THAT(model, NotNull()) << compile_error;
+
+  for (int savecompiled : {0, 1}) {
+    spec->compiler.savecompiled = savecompiled;
+    std::string saved = SaveToString(spec);
+    EXPECT_THAT(saved, HasSubstr("refpos=\"0.1 0.2 0.3\""));
+    EXPECT_THAT(saved, HasSubstr("refquat=\"0 1 0 0\""));
+    EXPECT_THAT(saved, HasSubstr("maxhullvert=\"16\""));
+    EXPECT_THAT(saved, HasSubstr("material=\"mat\""));
+    EXPECT_THAT(saved, Not(HasSubstr("vertex=")));
+    MjModelPtr reloaded =
+        LoadModelFromString(saved.c_str(), error.data(), error.size());
+    ASSERT_THAT(reloaded.get(), NotNull()) << error.data() << "\n" << saved;
+    EXPECT_EQ(reloaded->geom_matid[0], 0);
+  }
+
+  mj_deleteModel(model);
+  mj_deleteSpec(spec);
+}
+
+TEST_F(XMLWriterTest, PluginSensorPreservesReftypeRefname) {
+  static constexpr char xml[] = R"(
+  <mujoco>
+    <extension>
+      <plugin plugin="mujoco.sensor.touch_grid"/>
+    </extension>
+    <worldbody>
+      <site name="ref_site"/>
+      <body>
+        <geom size="0.1"/>
+        <site name="touch_site"/>
+      </body>
+    </worldbody>
+    <sensor>
+      <plugin name="touch" plugin="mujoco.sensor.touch_grid"
+              objtype="site" objname="touch_site"
+              reftype="site" refname="ref_site">
+        <config key="size" value="4 4"/>
+        <config key="fov" value="10 10"/>
+        <config key="gamma" value="0"/>
+        <config key="nchannel" value="1"/>
+      </plugin>
+    </sensor>
+  </mujoco>
+  )";
+  std::array<char, 1024> error;
+  mjSpec* spec = mj_parseXMLString(xml, nullptr, error.data(), error.size());
+  ASSERT_THAT(spec, NotNull()) << error.data();
+  mjModel* model = mj_compile(spec, nullptr);
+  ASSERT_THAT(model, NotNull()) << mjs_getError(spec);
+
+  for (int savecompiled : {0, 1}) {
+    spec->compiler.savecompiled = savecompiled;
+    std::string saved = SaveToString(spec);
+    EXPECT_THAT(saved, HasSubstr("reftype=\"site\""));
+    EXPECT_THAT(saved, HasSubstr("refname=\"ref_site\""));
+    MjModelPtr reloaded =
+        LoadModelFromString(saved.c_str(), error.data(), error.size());
+    ASSERT_THAT(reloaded.get(), NotNull()) << error.data() << "\n" << saved;
+    EXPECT_EQ(reloaded->sensor_reftype[0], mjOBJ_SITE);
+    EXPECT_EQ(reloaded->sensor_refid[0],
+              mj_name2id(reloaded.get(), mjOBJ_SITE, "ref_site"));
+  }
+
+  mj_deleteModel(model);
+  mj_deleteSpec(spec);
+}
+
 }  // namespace
 }  // namespace mujoco
