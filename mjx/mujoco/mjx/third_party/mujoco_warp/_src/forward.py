@@ -2375,8 +2375,10 @@ def _launch_discrete_free_gyro(m: Model, d: Data, out: wp.array2d[float], qacc: 
   )
 
 
-def implicit_qlu(m: Model, d: Data):
-  """Sets d.qLU = M - dt * qDeriv in D-structure, including RNE derivatives."""
+def implicit_qlu(m: Model, d: Data, qLU: Optional[wp.array2d[float]] = None):
+  """Sets qLU (d.qLU if None) = M - dt * qDeriv in D-structure, including RNE derivatives."""
+  qLU = d.qLU if qLU is None else qLU
+
   # Smooth velocity derivatives into M-structure
   qH_M = wp.empty((d.nworld, m.nC), dtype=float)
   derivative.deriv_smooth_vel(m, d, qH_M)
@@ -2386,13 +2388,13 @@ def implicit_qlu(m: Model, d: Data):
     _map_m2d,
     dim=(d.nworld, m.nD),
     inputs=[m.mapM2D, qH_M],
-    outputs=[d.qLU],
+    outputs=[qLU],
   )
 
   # Compute RNE derivatives, scale by timestep, and add in-place to qLU.
   # Note: inverse dynamics Coriolis enters equations of motion as -qfrc_bias,
   # so M - dt * df/dv = M + dt * d(qfrc_bias)/dv.
-  derivative.deriv_rne_vel(m, d, d.qLU)
+  derivative.deriv_rne_vel(m, d, qLU)
 
 
 @event_scope

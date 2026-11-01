@@ -130,7 +130,7 @@ def discrete_acc(m: Model, d: Data, qacc: wp.array2d[float]):
   if m.opt.integrator == IntegratorType.RK4:
     raise NotImplementedError("discrete inverse dynamics is not supported by RK4 integrator")
   elif m.opt.integrator == IntegratorType.EULER:
-    if m.opt.disableflags & DisableBit.EULERDAMP:
+    if m.opt.disableflags & (DisableBit.EULERDAMP | DisableBit.DAMPER):
       wp.copy(qacc, d.qacc)
       return
 
@@ -162,14 +162,15 @@ def discrete_acc(m: Model, d: Data, qacc: wp.array2d[float]):
       outputs=[qfrc],
     )
   elif m.opt.integrator == IntegratorType.IMPLICIT:
-    # set qLU = M - dt * qDeriv
-    forward.implicit_qlu(m, d)
+    # set qLU = M - dt * qDeriv, in scratch: d.qLU holds the forward factorization
+    qLU = wp.empty((d.nworld, m.nD), dtype=float)
+    forward.implicit_qlu(m, d, qLU)
 
     # set qfrc = qLU * qacc
     wp.launch(
       _mul_qLU,
       dim=(d.nworld, m.nv),
-      inputs=[m.D_rownnz, m.D_rowadr, m.D_colind, d.qLU, d.qacc],
+      inputs=[m.D_rownnz, m.D_rowadr, m.D_colind, qLU, d.qacc],
       outputs=[qfrc],
     )
     forward.implicit_free_body(m, d, d.qacc, qfrc, solve=False)

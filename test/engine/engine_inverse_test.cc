@@ -288,5 +288,105 @@ TEST_F(InverseTest, DiscreteFreeJointInverseConsistency) {
   EXPECT_LT(d->solver_fwdinv[1], epsilon);
 }
 
+// discrete inverse dynamics must not overwrite the forward factorizations
+TEST_F(InverseTest, CompareFwdInvPreservesFactoredMass) {
+  static constexpr char xml[] = R"(
+  <mujoco>
+    <option timestep="0.01" integrator="implicit">
+      <flag invdiscrete="enable"/>
+    </option>
+    <worldbody>
+      <body pos="0 0 1">
+        <joint name="j1" type="hinge" axis="1 0 0" damping="0.5"/>
+        <geom type="capsule" size="0.05 0.2" mass="1"/>
+        <body pos="0 0.2 0">
+          <joint name="j2" type="hinge" axis="1 0 0" damping="0.5"/>
+          <geom type="capsule" size="0.05 0.2" mass="1"/>
+        </body>
+      </body>
+    </worldbody>
+    <equality>
+      <joint joint1="j1" joint2="j2" polycoef="0 1 0 0 0"/>
+    </equality>
+  </mujoco>
+  )";
+  char error[1024];
+  MjModelPtr model = LoadModelFromString(xml, error, sizeof(error));
+  ASSERT_THAT(model.get(), NotNull()) << error;
+  MjDataPtr data = MakeData(model);
+  mjModel* m = model.get();
+  mjData* d = data.get();
+  d->qvel[0] = 1.0;
+
+  // implicit: factored qLU
+  mj_step(m, d);
+  ASSERT_GT(d->nefc, 0);
+  std::vector<mjtNum> qLU(d->qLU, d->qLU + m->nD);
+  mj_compareFwdInv(m, d);
+  for (int i = 0; i < m->nD; i++) {
+    EXPECT_EQ(d->qLU[i], qLU[i]) << "qLU[" << i << "]";
+  }
+
+  // implicitfast: factored qH
+  m->opt.integrator = mjINT_IMPLICITFAST;
+  mj_step(m, d);
+  ASSERT_GT(d->nefc, 0);
+  std::vector<mjtNum> qH(d->qH, d->qH + m->nC);
+  mj_compareFwdInv(m, d);
+  for (int i = 0; i < m->nC; i++) {
+    EXPECT_EQ(d->qH[i], qH[i]) << "qH[" << i << "]";
+  }
+}
+
+// with damping disabled, Euler integrates without the implicit damping term, so
+// discrete inverse dynamics must not add it either
+TEST_F(InverseTest, DiscreteInverseEulerDamperDisabled) {
+  static constexpr char xml[] = R"(
+  <mujoco>
+    <option integrator="Euler" timestep="0.01">
+      <flag invdiscrete="enable" damper="disable"/>
+    </option>
+    <worldbody>
+      <body>
+        <joint name="slide" type="slide" damping="5"/>
+        <geom type="sphere" size="0.1" mass="1"/>
+      </body>
+    </worldbody>
+    <equality>
+      <joint joint1="slide"/>
+    </equality>
+  </mujoco>
+  )";
+  char error[1024];
+  MjModelPtr model = LoadModelFromString(xml, error, sizeof(error));
+  ASSERT_THAT(model.get(), NotNull()) << error;
+  MjDataPtr data = MakeData(model);
+  mjModel* m = model.get();
+  mjData* d = data.get();
+  int nv = m->nv;
+
+  d->qvel[0] = 1.0;
+  d->qfrc_applied[0] = 3.0;
+
+  // finite-differenced discrete acceleration of one step
+  int nstate = mj_stateSize(m, mjSTATE_INTEGRATION);
+  std::vector<mjtNum> state(nstate), qvel_next(nv), qacc_fd(nv);
+  mj_getState(m, d, state.data(), mjSTATE_INTEGRATION);
+  mj_step(m, d);
+  mju_copy(qvel_next.data(), d->qvel, nv);
+  mj_setState(m, d, state.data(), mjSTATE_INTEGRATION);
+  mju_sub(qacc_fd.data(), qvel_next.data(), d->qvel, nv);
+  mju_scl(qacc_fd.data(), qacc_fd.data(), 1 / m->opt.timestep, nv);
+
+  mj_forward(m, d);
+  ASSERT_GT(d->nefc, 0);
+  mju_copy(d->qacc, qacc_fd.data(), nv);
+  mj_compareFwdInv(m, d);
+
+  mjtNum epsilon = MjTol(1e-9, 1e-4);
+  EXPECT_LT(d->solver_fwdinv[0], epsilon);
+  EXPECT_LT(d->solver_fwdinv[1], epsilon);
+}
+
 }  // namespace
 }  // namespace mujoco
