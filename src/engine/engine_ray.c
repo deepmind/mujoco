@@ -158,19 +158,37 @@ mjtNum mju_rayTriangle(mjtNum v[][3], const mjtNum lpnt[3], const mjtNum lvec[3]
   }
 
   // determine if origin is inside planar projection of triangle
-  // A = (p0-p2, p1-p2), b = -p2, solve A*t = b
-  mjtNum A[4] = {planar[0][0]-planar[2][0], planar[1][0]-planar[2][0],
-                 planar[0][1]-planar[2][1], planar[1][1]-planar[2][1]};
-  mjtNum b[2] = {-planar[2][0], -planar[2][1]};
-  mjtNum det = A[0]*A[3] - A[1]*A[2];
-  if (mju_abs(det) < mjMINVAL) {
+  // the projected ray origin is exactly (0,0), so the three edge functions
+  // (signed areas of the sub-triangles opposite each vertex) are computed from
+  // the vertex projections alone, without solving a linear system. Two
+  // triangles sharing an edge evaluate the same two projections for that edge
+  // in swapped order, yielding exactly negated results: a ray through the
+  // shared edge is accepted by both triangles (edge function exactly 0), while
+  // a ray strictly inside is accepted by exactly the triangle containing it.
+  // the four products of each edge function are computed as separate
+  // statements so each is rounded individually; contracting them into a
+  // fused multiply-add would destroy the negation property, since the fused
+  // product does not round and the residual would get the same sign in both
+  // triangles instead of the opposite one
+  mjtNum w0a = planar[1][0]*planar[2][1];
+  mjtNum w0b = planar[1][1]*planar[2][0];
+  mjtNum w1a = planar[2][0]*planar[0][1];
+  mjtNum w1b = planar[2][1]*planar[0][0];
+  mjtNum w2a = planar[0][0]*planar[1][1];
+  mjtNum w2b = planar[0][1]*planar[1][0];
+  mjtNum w0 = w0a - w0b;
+  mjtNum w1 = w1a - w1b;
+  mjtNum w2 = w2a - w2b;
+
+  // reject if outside: mixed edge-function signs mean the projected origin is
+  // not within the projected triangle
+  if ((w0 > 0 || w1 > 0 || w2 > 0) && (w0 < 0 || w1 < 0 || w2 < 0)) {
     return -1;
   }
-  mjtNum t0 = ( A[3]*b[0] - A[1]*b[1]) / det;
-  mjtNum t1 = (-A[2]*b[0] + A[0]*b[1]) / det;
 
-  // check if outside
-  if (t0 < 0 || t1 < 0|| t0+t1 > 1) {
+  // reject if degenerate: all edge functions zero means the projected triangle
+  // is a line through the origin, i.e. the ray is parallel to the triangle
+  if (w0 == 0 && w1 == 0 && w2 == 0) {
     return -1;
   }
 
@@ -1567,4 +1585,3 @@ void mj_multiRay(const mjModel* m, mjData* d, const mjtNum pnt[3], const mjtNum*
 
   mj_freeStack(d);
 }
-

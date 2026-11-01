@@ -16,7 +16,9 @@
 
 #include "src/engine/engine_ray.h"
 
+#include <cmath>
 #include <cstring>
+#include <cstdio>
 #include <string>
 
 #include <gmock/gmock.h>
@@ -509,6 +511,63 @@ TEST_F(RayTest, RayAxisAlignedMesh) {
       mj_ray(m.get(), d.get(), pnt, vec, nullptr, 1, -1, &geomid, nullptr);
   EXPECT_EQ(geomid, 0);
   EXPECT_THAT(dist, MjNear(0.975, 1e-6, 1e-5));
+}
+
+// Regression test for https://github.com/google-deepmind/mujoco/issues/3698:
+// a ray passing exactly through an edge shared by two mesh triangles could be
+// rejected by both adjacent triangles' planar-projection barycentric tests, so
+// mj_ray missed the surface and reported the far side of the mesh (or no hit).
+// Each vertical edge of a prism lies on the boundary of the two side faces
+// meeting there, exercising the shared-edge case.
+TEST_F(RayTest, RayMeshSharedEdge) {
+  // 12-sided prism, circumradius 0.04, half-height 0.3
+  constexpr int kSides = 12;
+  const mjtNum kRadius = 0.04;
+  const mjtNum kHalfHeight = 0.3;
+
+  // vertex coordinates, round-tripped through float32 exactly like the mesh
+  // compiler stores them, so the rays below pass exactly through mesh edges
+  float vx[kSides], vy[kSides];
+  std::string vertex_attr;
+  char buf[96];
+  for (int i = 0; i < kSides; i++) {
+    mjtNum a = 2 * mjPI * i / kSides;
+    vx[i] = (float)(kRadius * cos(a));
+    vy[i] = (float)(kRadius * sin(a));
+    snprintf(buf, sizeof(buf), "%.9g %.9g %.9g %.9g %.9g %.9g ", (double)vx[i],
+             (double)vy[i], -kHalfHeight, (double)vx[i], (double)vy[i],
+             kHalfHeight);
+    vertex_attr += buf;
+  }
+
+  const string xml = R"(<mujoco>
+  <asset>
+    <mesh name="prism" vertex=")" +
+                     vertex_attr + R"("/>
+  </asset>
+  <worldbody>
+    <geom type="mesh" mesh="prism"/>
+  </worldbody>
+</mujoco>
+)";
+
+  char error[1024];
+  MjModelPtr m = LoadModelFromString(xml.c_str(), error, sizeof(error));
+  ASSERT_THAT(m.get(), NotNull()) << error;
+  MjDataPtr d = MakeData(m);
+  mj_forward(m.get(), d.get());
+
+  // cast a ray from outside through each vertical edge; every ray passes
+  // exactly through an edge shared by the two side faces meeting at that edge
+  // and must hit the prism at the edge itself, not the far side
+  for (int i = 0; i < kSides; i++) {
+    mjtNum r = sqrt((mjtNum)vx[i] * vx[i] + (mjtNum)vy[i] * vy[i]);
+    const mjtNum pnt[3] = {25 * (mjtNum)vx[i], 25 * (mjtNum)vy[i], 0};
+    const mjtNum vec[3] = {-(mjtNum)vx[i] / r, -(mjtNum)vy[i] / r, 0};
+    mjtNum dist =
+        mj_ray(m.get(), d.get(), pnt, vec, nullptr, 1, -1, nullptr, nullptr);
+    EXPECT_NEAR(dist, 24 * r, 1e-7) << "edge " << i;
+  }
 }
 
 TEST_F(RayTest, RayHfield) {
