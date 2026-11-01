@@ -1124,6 +1124,100 @@ TEST_F(EngineUtilSolveTest, CholFactorNumericClampDecouples) {
   }
 }
 
+// NaN pivots must trigger rank-deficiency clamping and row decoupling rather
+// than bypassing `diag < mindiag` and poisoning the factor with NaN while
+// reporting full rank.
+TEST_F(EngineUtilSolveTest, CholFactorNaNPivotClamps) {
+  MjModelPtr model = LoadModelFromString("<mujoco/>");
+  MjDataPtr d = MakeData(model);
+  const mjtNum nan = std::numeric_limits<mjtNum>::quiet_NaN();
+
+  // rows {0, 1, 2} form a 3-row supernode; row 3 is an isolated leaf
+  constexpr int n = 4;
+  mjtNum H[n * n] = {
+      4, 1, 1, 0, 1, 4, 1, 0, 1, 1, 4, 0, 0, 0, 0, 4,
+  };
+  mjtNum sparseH[n * n];
+  int H_rownnz[n], H_rowadr[n], H_colind[n * n];
+  mju_dense2sparse(sparseH, H, n, n, H_rownnz, H_rowadr, H_colind, n * n);
+
+  int L_rownnz[n], L_rowadr[n], LT_rownnz[n], LT_rowadr[n];
+  int nnz = mju_cholFactorSymbolic(nullptr, L_rownnz, L_rowadr, nullptr,
+                                   LT_rownnz, LT_rowadr, nullptr, H_rownnz,
+                                   H_rowadr, H_colind, n, d.get());
+  int L_colind[n * n], LT_colind[n * n], LT_map[n * n];
+  mju_cholFactorSymbolic(L_colind, L_rownnz, L_rowadr, LT_colind, LT_rownnz,
+                         LT_rowadr, LT_map, H_rownnz, H_rowadr, H_colind, n,
+                         d.get());
+
+  // poison supernode pivot (1, 1) and leaf pivot (3, 3) with NaN
+  H[1 * n + 1] = nan;
+  H[3 * n + 3] = nan;
+  for (int r : {1, 3}) {
+    for (int k = H_rowadr[r]; k < H_rowadr[r] + H_rownnz[r]; k++) {
+      if (H_colind[k] == r) {
+        sparseH[k] = nan;
+      }
+    }
+  }
+
+  // dense mju_cholFactor
+  mjtNum L_dense[n * n];
+  mju_copy(L_dense, H, n * n);
+  EXPECT_EQ(mju_cholFactor(L_dense, n, mjMINVAL), n - 2);
+  for (int i = 0; i < n; i++) {
+    for (int j = 0; j <= i; j++) {
+      EXPECT_FALSE(mju_isBad(L_dense[i * n + j]))
+          << "dense (" << i << ", " << j << ")";
+    }
+  }
+  EXPECT_EQ(L_dense[1 * n + 1], mju_sqrt(mjMINVAL));
+  EXPECT_EQ(L_dense[3 * n + 3], mju_sqrt(mjMINVAL));
+
+  // sparse mju_cholFactorNumeric (hits both leaf fast path and supernode path)
+  mjtNum L_num[n * n], scratch[n];
+  EXPECT_EQ(
+      mju_cholFactorNumeric(L_num, n, mjMINVAL, L_rownnz, L_rowadr, L_colind,
+                            LT_rownnz, LT_rowadr, LT_colind, LT_map, sparseH,
+                            H_rownnz, H_rowadr, H_colind, scratch),
+      n - 2);
+  for (int i = 0; i < nnz; i++) {
+    EXPECT_FALSE(mju_isBad(L_num[i])) << "numeric entry " << i;
+  }
+  EXPECT_EQ(L_num[L_rowadr[1] + L_rownnz[1] - 1], mju_sqrt(mjMINVAL));
+  EXPECT_EQ(L_num[L_rowadr[1]], 0);
+  EXPECT_EQ(L_num[L_rowadr[3] + L_rownnz[3] - 1], mju_sqrt(mjMINVAL));
+
+  // sparse reference mju_cholFactorSparse
+  mjtNum L_ref[n * n];
+  int L_ref_rownnz[n], L_ref_colind[n * n];
+  for (int r = 0; r < n; r++) {
+    int lower_nnz = 0;
+    for (int k = 0; k < H_rownnz[r]; k++) {
+      int c = H_colind[H_rowadr[r] + k];
+      if (c <= r) {
+        L_ref[L_rowadr[r] + lower_nnz] = sparseH[H_rowadr[r] + k];
+        L_ref_colind[L_rowadr[r] + lower_nnz] = c;
+        lower_nnz++;
+      }
+    }
+    L_ref_rownnz[r] = lower_nnz;
+  }
+  EXPECT_EQ(mju_cholFactorSparse(L_ref, n, mjMINVAL, L_ref_rownnz, L_rowadr,
+                                 L_ref_colind, d.get()),
+            n - 2);
+  for (int r = 0; r < n; r++) {
+    for (int k = 0; k < L_ref_rownnz[r]; k++) {
+      EXPECT_FALSE(mju_isBad(L_ref[L_rowadr[r] + k]))
+          << "sparse (" << r << ", " << k << ")";
+    }
+  }
+
+  // banded mju_cholFactorBand returns 0 on NaN pivot
+  mjtNum B[n] = {2, nan, 2, 2};
+  EXPECT_EQ(mju_cholFactorBand(B, n, /*nband=*/1, /*ndense=*/0, 0, 0), 0);
+}
+
 // ----------------------------- dense LU --------------------------------------
 
 // mju_cholFactorSymbolicBlocked on a block pattern computes the same L arrays,
