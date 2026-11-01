@@ -112,6 +112,8 @@ bool IsNullPose(const T pos[3], const T quat[4] = nullptr) {
 int GetBodyIdFromWrap(const mjCWrap* wrap) {
   if (!wrap || !wrap->obj) return -1;
   switch (wrap->Type()) {
+    case mjWRAP_JOINT:
+      return static_cast<mjCJoint*>(wrap->obj)->GetParent()->id;
     case mjWRAP_SITE:
       return static_cast<mjCSite*>(wrap->obj)->Body()->id;
     case mjWRAP_CYLINDER:
@@ -1168,9 +1170,17 @@ void mjCModel::ComputeSparseSizes() {
     }
   }
 
-  // tendon-armature-based demotion
+  // tendon-armature-based demotion, including the armature of actuators on the tendon
   for (const auto* tendon : tendons_) {
-    if (tendon->armature > 0) {
+    bool armature = tendon->armature > 0;
+    for (const auto* actuator : actuators_) {
+      if (actuator->trntype == mjTRN_TENDON &&
+          actuator->trnid[0] == tendon->id &&
+          actuator->armature != 0) {
+        armature = true;
+      }
+    }
+    if (armature) {
       for (const auto* wrap : tendon->path) {
         int bodyId = GetBodyIdFromWrap(wrap);
         if (bodyId != -1) { body_simple_pre[bodyId] = 0; }
@@ -4291,13 +4301,23 @@ void mjCModel::CopyObjects(mjModel* m) {
 
 // finalize simple bodies/dofs including tendon information
 void mjCModel::FinalizeSimple(mjModel* m) {
-  // demote bodies affected by inertia-bearing tendon to non-simple
+  // demote bodies affected by inertia-bearing tendon to non-simple, the armature of actuators on
+  // the tendon included, as in ComputeSparseSizes
   for (int i = 0; i < ntendon; i++) {
-    if (m->tendon_armature[i] == 0) { continue; }
+    bool armature = m->tendon_armature[i] != 0;
+    for (int k = 0; k < nactuator; k++) {
+      if (m->actuator_trntype[k] == mjTRN_TENDON &&
+          m->actuator_trnid[2 * k] == i &&
+          m->actuator_armature[k] != 0) {
+        armature = true;
+      }
+    }
+    if (!armature) { continue; }
     int adr = m->tendon_adr[i];
     int num = m->tendon_num[i];
     for (int j = adr; j < adr + num; j++) {
       int objid = m->wrap_objid[j];
+      if (m->wrap_type[j] == mjWRAP_JOINT) { m->body_simple[m->jnt_bodyid[objid]] = 0; }
       if (m->wrap_type[j] == mjWRAP_SITE) { m->body_simple[m->site_bodyid[objid]] = 0; }
       if (m->wrap_type[j] == mjWRAP_CYLINDER || m->wrap_type[j] == mjWRAP_SPHERE) {
         m->body_simple[m->geom_bodyid[objid]] = 0;

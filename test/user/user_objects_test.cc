@@ -21,6 +21,7 @@
 #include <cstring>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <gmock/gmock.h>
@@ -1484,6 +1485,68 @@ TEST_F(MjCJointTest, BodySimpleFalse) {
   EXPECT_THAT(d_ns->xpos[3 * b + 0], MjNear(d->xpos[3 * b + 0], 1e-10, 1e-6));
   EXPECT_THAT(d_ns->xpos[3 * b + 1], MjNear(d->xpos[3 * b + 1], 1e-10, 1e-6));
   EXPECT_THAT(d_ns->xpos[3 * b + 2], MjNear(d->xpos[3 * b + 2], 1e-10, 1e-6));
+}
+
+// the armature of a fixed tendon, or of an actuator on a tendon, couples the
+// dofs of a body which is then not simple
+TEST_F(MjCJointTest, TendonArmatureCouplingDemotesSimpleBody) {
+  constexpr char xml_fixed[] = R"(
+  <mujoco>
+    <worldbody>
+      <body>
+        <joint name="j1" type="slide" axis="1 0 0"/>
+        <joint name="j2" type="slide" axis="0 1 0"/>
+        <geom size=".1"/>
+      </body>
+    </worldbody>
+    <tendon>
+      <fixed name="t" armature="1.5">
+        <joint joint="j1" coef="1"/>
+        <joint joint="j2" coef="1"/>
+      </fixed>
+    </tendon>
+  </mujoco>
+  )";
+
+  constexpr char xml_actuator[] = R"(
+  <mujoco>
+    <worldbody>
+      <body>
+        <joint name="j1" type="slide" axis="1 0 0"/>
+        <joint name="j2" type="slide" axis="0 1 0"/>
+        <geom size=".1"/>
+      </body>
+    </worldbody>
+    <tendon>
+      <fixed name="t">
+        <joint joint="j1" coef="1"/>
+        <joint joint="j2" coef="1"/>
+      </fixed>
+    </tendon>
+    <actuator>
+      <general tendon="t" gear="2" armature="0.5"/>
+    </actuator>
+  </mujoco>
+  )";
+
+  // off-diagonal entry: tendon armature, actuator armature times gear squared
+  for (auto [xml, coupling] :
+       {std::pair{xml_fixed, 1.5}, {xml_actuator, 2.0}}) {
+    char error[1024];
+    MjModelPtr m = LoadModelFromString(xml, error, sizeof(error));
+    ASSERT_THAT(m.get(), NotNull()) << error;
+    EXPECT_EQ(m->body_simple[1], 0);
+    EXPECT_EQ(m->dof_simplenum[0], 0);
+    EXPECT_EQ(m->dof_simplenum[1], 0);
+    EXPECT_EQ(m->M_rownnz[1], 2);
+
+    MjDataPtr d = MakeData(m);
+    mj_forward(m.get(), d.get());
+    mjtNum M[4];
+    mj_fullM(m.get(), d.get(), M);
+    EXPECT_THAT(M[1], MjNear(coupling, 1e-12, 1e-6));
+    EXPECT_THAT(M[2], MjNear(coupling, 1e-12, 1e-6));
+  }
 }
 
 // ------------- test height fields --------------------------------------------
