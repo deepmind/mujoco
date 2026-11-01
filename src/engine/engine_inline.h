@@ -356,6 +356,50 @@ void mji_subQuat(mjtNum* restrict res, const mjtNum qa[4], const mjtNum qb[4]) {
 }
 
 
+// convert quaternion to 3D rotation matrix
+static inline
+void mji_quat2Mat(mjtNum* restrict res, const mjtNum quat[4]) {
+  assert(res != quat);
+  // null quat: identity
+  if (quat[0] == 1 && quat[1] == 0 && quat[2] == 0 && quat[3] == 0) {
+    res[0] = 1;
+    res[1] = 0;
+    res[2] = 0;
+    res[3] = 0;
+    res[4] = 1;
+    res[5] = 0;
+    res[6] = 0;
+    res[7] = 0;
+    res[8] = 1;
+  }
+
+  // regular processing
+  else {
+    mjtNum q00 = quat[0]*quat[0];
+    mjtNum q01 = quat[0]*quat[1];
+    mjtNum q02 = quat[0]*quat[2];
+    mjtNum q03 = quat[0]*quat[3];
+    mjtNum q11 = quat[1]*quat[1];
+    mjtNum q12 = quat[1]*quat[2];
+    mjtNum q13 = quat[1]*quat[3];
+    mjtNum q22 = quat[2]*quat[2];
+    mjtNum q23 = quat[2]*quat[3];
+    mjtNum q33 = quat[3]*quat[3];
+
+    res[0] = q00 + q11 - q22 - q33;
+    res[4] = q00 - q11 + q22 - q33;
+    res[8] = q00 - q11 - q22 + q33;
+
+    res[1] = 2*(q12 - q03);
+    res[2] = 2*(q13 + q02);
+    res[3] = 2*(q12 + q03);
+    res[5] = 2*(q23 - q01);
+    res[6] = 2*(q13 - q02);
+    res[7] = 2*(q23 + q01);
+  }
+}
+
+
 // convert 3D rotation matrix to quaternion
 static inline
 void mji_mat2Quat(mjtNum* restrict quat, const mjtNum mat[9]) {

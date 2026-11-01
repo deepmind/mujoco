@@ -1477,12 +1477,15 @@ void mj_printFormattedData(const mjModel* m, const mjData* d, const char* filena
   printArray2d("XQUAT", m->nbody, 4, d->xquat, fp, float_format);
   printArray2d("XMAT", m->nbody, 9, d->xmat, fp, float_format);
   printArray2d("XIPOS", m->nbody, 3, d->xipos, fp, float_format);
+  printArray2d("XIQUAT", m->nbody, 4, d->xiquat, fp, float_format);
   printArray2d("XIMAT", m->nbody, 9, d->ximat, fp, float_format);
   printArray2d("XANCHOR", m->njnt, 3, d->xanchor, fp, float_format);
   printArray2d("XAXIS", m->njnt, 3, d->xaxis, fp, float_format);
   printArray2d("GEOM_XPOS", m->ngeom, 3, d->geom_xpos, fp, float_format);
+  printArray2d("GEOM_XQUAT", m->ngeom, 4, d->geom_xquat, fp, float_format);
   printArray2d("GEOM_XMAT", m->ngeom, 9, d->geom_xmat, fp, float_format);
   printArray2d("SITE_XPOS", m->nsite, 3, d->site_xpos, fp, float_format);
+  printArray2d("SITE_XQUAT", m->nsite, 4, d->site_xquat, fp, float_format);
   printArray2d("SITE_XMAT", m->nsite, 9, d->site_xmat, fp, float_format);
   printArray2d("CAM_XPOS", m->ncam, 3, d->cam_xpos, fp, float_format);
   printArray2d("CAM_XMAT", m->ncam, 9, d->cam_xmat, fp, float_format);

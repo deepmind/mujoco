@@ -335,6 +335,7 @@ cc_library(
         ":engine_core",
         ":engine_core_util",
         ":engine_crossplatform",
+        ":engine_inline",
         ":engine_memory",
         ":engine_plugin",
         ":engine_sleep",

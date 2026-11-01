@@ -1232,13 +1232,14 @@ static void addSiteGeoms(const mjModel* m, mjData* d, const mjvOption* vopt,
     // construct geom
     const mjtNum* pos = d->site_xpos+3*i;
     const mjtNum* mat = d->site_xmat+9*i;
-    mjtNum meshpos[3], meshmat[9], meshrot[9];
+    mjtNum meshpos[3], meshmat[9];
     if (m->site_type[i] == mjGEOM_MESH && m->site_dataid[i] >= 0) {
       int meshid = m->site_dataid[i];
+      mjtNum xquat[4];
       mju_mulMatVec3(meshpos, mat, m->mesh_pos+3*meshid);
       mju_addTo3(meshpos, pos);
-      mju_quat2Mat(meshrot, m->mesh_quat+4*meshid);
-      mju_mulMatMat3(meshmat, mat, meshrot);
+      mju_mulQuat(xquat, d->site_xquat+4*i, m->mesh_quat+4*meshid);
+      mju_quat2Mat(meshmat, xquat);
       pos = meshpos;
       mat = meshmat;
     }
@@ -2004,8 +2005,6 @@ static void addTactileSensorGeoms(const mjModel* m, mjData* d, const mjvOption* 
       int geom_id = m->sensor_refid[id];
       mjtNum* geom_pos = d->geom_xpos + 3*geom_id;
       mjtNum* geom_mat = d->geom_xmat + 9*geom_id;
-      mjtNum geom_quat[4];
-      mju_mat2Quat(geom_quat, geom_mat);
 
       // get sensor data
       mjtNum* sensordata = d->sensordata + m->sensor_adr[id];
@@ -2486,13 +2485,14 @@ static void addActuatorGeoms(const mjModel* m, mjData* d, const mjvOption* vopt,
 
         const mjtNum* pos = d->site_xpos+3*j;
         const mjtNum* mat = d->site_xmat+9*j;
-        mjtNum meshpos[3], meshmat[9], meshrot[9];
+        mjtNum meshpos[3], meshmat[9];
         if (m->site_type[j] == mjGEOM_MESH && m->site_dataid[j] >= 0) {
           int meshid = m->site_dataid[j];
+          mjtNum xquat[4];
           mju_mulMatVec3(meshpos, mat, m->mesh_pos+3*meshid);
           mju_addTo3(meshpos, pos);
-          mju_quat2Mat(meshrot, m->mesh_quat+4*meshid);
-          mju_mulMatMat3(meshmat, mat, meshrot);
+          mju_mulQuat(xquat, d->site_xquat+4*j, m->mesh_quat+4*meshid);
+          mju_quat2Mat(meshmat, xquat);
           pos = meshpos;
           mat = meshmat;
         }

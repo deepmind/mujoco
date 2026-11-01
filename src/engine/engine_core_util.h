@@ -142,6 +142,11 @@ MJAPI void mj_local2Global(mjData* d, mjtNum xpos[3], mjtNum xmat[9],
                            const mjtNum pos[3], const mjtNum quat[4],
                            int body, mjtByte sameframe);
 
+// map from body local to global Cartesian position, quaternion and matrix
+void mj_local2GlobalQuat(mjData* d, mjtNum xpos[3], mjtNum xquat[4], mjtNum xmat[9],
+                         const mjtNum pos[3], const mjtNum quat[4],
+                         int body, mjtByte sameframe);
+
 
 //-------------------------- miscellaneous ---------------------------------------------------------
 

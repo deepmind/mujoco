@@ -1069,12 +1069,15 @@
     X   ( mjtNum,    xquat,             nbody,       4           ) \
     X   ( mjtNum,    xmat,              nbody,       9           ) \
     X   ( mjtNum,    xipos,             nbody,       3           ) \
+    X   ( mjtNum,    xiquat,            nbody,       4           ) \
     X   ( mjtNum,    ximat,             nbody,       9           ) \
     X   ( mjtNum,    xanchor,           njnt,        3           ) \
     X   ( mjtNum,    xaxis,             njnt,        3           ) \
     X   ( mjtNum,    geom_xpos,         ngeom,       3           ) \
+    X   ( mjtNum,    geom_xquat,        ngeom,       4           ) \
     X   ( mjtNum,    geom_xmat,         ngeom,       9           ) \
     X   ( mjtNum,    site_xpos,         nsite,       3           ) \
+    X   ( mjtNum,    site_xquat,        nsite,       4           ) \
     X   ( mjtNum,    site_xmat,         nsite,       9           ) \
     X   ( mjtNum,    cam_xpos,          ncam,        3           ) \
     X   ( mjtNum,    cam_xmat,          ncam,        9           ) \

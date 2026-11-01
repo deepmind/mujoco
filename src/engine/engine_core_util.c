@@ -1292,10 +1292,10 @@ void mj_objectAcceleration(const mjModel* m, const mjData* d,
 }
 
 
-// map from body local to global Cartesian coordinates
-void mj_local2Global(mjData* d, mjtNum xpos[3], mjtNum xmat[9],
-                     const mjtNum pos[3], const mjtNum quat[4],
-                     int body, mjtByte sameframe) {
+// map from body local to global Cartesian position, quaternion and matrix
+void mj_local2GlobalQuat(mjData* d, mjtNum* restrict xpos, mjtNum* restrict xquat,
+                         mjtNum* restrict xmat, const mjtNum pos[3], const mjtNum quat[4],
+                         int body, mjtByte sameframe) {
   mjtSameFrame sf = sameframe;
 
   // position
@@ -1317,23 +1317,34 @@ void mj_local2Global(mjData* d, mjtNum xpos[3], mjtNum xmat[9],
   }
 
   // orientation
-  if (xmat && quat) {
+  if ((xquat || xmat) && quat) {
     mjtNum tmp[4];
+    mjtNum* q = xquat ? xquat : tmp;
     switch (sf) {
     case mjSAMEFRAME_NONE:
-      mji_mulQuat(tmp, d->xquat+4*body, quat);
-      mju_quat2Mat(xmat, tmp);
+      mji_mulQuat(q, d->xquat+4*body, quat);
+      if (xmat) mji_quat2Mat(xmat, q);
       break;
     case mjSAMEFRAME_BODY:
     case mjSAMEFRAME_BODYROT:
-      mji_copy9(xmat, d->xmat+9*body);
+      if (xquat) mji_copy4(xquat, d->xquat+4*body);
+      if (xmat) mji_copy9(xmat, d->xmat+9*body);
       break;
     case mjSAMEFRAME_INERTIA:
     case mjSAMEFRAME_INERTIAROT:
-      mji_copy9(xmat, d->ximat+9*body);
+      if (xquat) mji_copy4(xquat, d->xiquat+4*body);
+      if (xmat) mji_copy9(xmat, d->ximat+9*body);
       break;
     }
   }
+}
+
+
+// map from body local to global Cartesian coordinates
+void mj_local2Global(mjData* d, mjtNum xpos[3], mjtNum xmat[9],
+                     const mjtNum pos[3], const mjtNum quat[4],
+                     int body, mjtByte sameframe) {
+  mj_local2GlobalQuat(d, xpos, NULL, xmat, pos, quat, body, sameframe);
 }
 
 

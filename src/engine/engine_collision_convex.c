@@ -838,18 +838,18 @@ void mjc_initCCDObjSite(mjCCDObj* obj, const mjModel* m, const mjData* d, int s,
   obj->rotate[0] = 1;
   if (s >= 0 && s < m->nsite) {
     int dataid = m->site_dataid[s];
-    mju_copy(obj->size, m->site_size+3*s, 3);
+    mji_copy3(obj->size, m->site_size+3*s);
     obj->size[3] = 0;
-    mju_copy(obj->pos, d->site_xpos+3*s, 3);
-    mju_copy(obj->mat, d->site_xmat+9*s, 9);
     obj->geom_type = m->site_type[s];
     if (obj->geom_type == mjGEOM_MESH && dataid >= 0) {
-      mjtNum meshmat[9], xmat[9];
-      mju_quat2Mat(meshmat, m->mesh_quat+4*dataid);
-      mju_mulMatMat3(xmat, d->site_xmat+9*s, meshmat);
-      mju_mulMatVec3(obj->pos, d->site_xmat+9*s, m->mesh_pos+3*dataid);
-      mju_addTo3(obj->pos, d->site_xpos+3*s);
-      mju_copy9(obj->mat, xmat);
+      mjtNum xquat[4];
+      mji_mulQuat(xquat, d->site_xquat+4*s, m->mesh_quat+4*dataid);
+      mji_quat2Mat(obj->mat, xquat);
+      mji_mulMatVec3(obj->pos, d->site_xmat+9*s, m->mesh_pos+3*dataid);
+      mji_addTo3(obj->pos, d->site_xpos+3*s);
+    } else {
+      mji_copy3(obj->pos, d->site_xpos+3*s);
+      mji_copy9(obj->mat, d->site_xmat+9*s);
     }
     mjc_initCCDObjSupport(obj, m, dataid);
   }

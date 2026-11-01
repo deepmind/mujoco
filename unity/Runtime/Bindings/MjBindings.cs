@@ -5833,12 +5833,15 @@ public unsafe struct mjData_ {
   public double* xquat;
   public double* xmat;
   public double* xipos;
+  public double* xiquat;
   public double* ximat;
   public double* xanchor;
   public double* xaxis;
   public double* geom_xpos;
+  public double* geom_xquat;
   public double* geom_xmat;
   public double* site_xpos;
+  public double* site_xquat;
   public double* site_xmat;
   public double* cam_xpos;
   public double* cam_xmat;

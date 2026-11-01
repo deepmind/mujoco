@@ -339,6 +339,32 @@ class MuJoCoBindingsTest(parameterized.TestCase):
     self.model.geom('mybox').quat = [12, 9, 6, 3]
     np.testing.assert_array_equal(self.model.geom_quat[box_id], [12, 9, 6, 3])
 
+  def test_named_indexing_data_xquats(self):
+    body_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, 'mybox')
+    geom_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_GEOM, 'mybox')
+    site_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_SITE, 'mysite')
+    self.data.qvel[:] = 0.5
+    mujoco.mj_step(self.model, self.data)
+
+    np.testing.assert_array_equal(
+        self.data.body('mybox').xiquat, self.data.xiquat[body_id]
+    )
+    np.testing.assert_array_equal(
+        self.data.geom('mybox').xquat, self.data.geom_xquat[geom_id]
+    )
+    np.testing.assert_array_equal(
+        self.data.site('mysite').xquat, self.data.site_xquat[site_id]
+    )
+
+    mat = np.zeros(9, dtype=self.data.xmat.dtype)
+    atol = 1e-6 if self.data.xmat.dtype == np.float32 else 1e-14
+    mujoco.mju_quat2Mat(mat, self.data.xiquat[body_id])
+    np.testing.assert_allclose(mat, self.data.ximat[body_id], atol=atol)
+    mujoco.mju_quat2Mat(mat, self.data.geom_xquat[geom_id])
+    np.testing.assert_allclose(mat, self.data.geom_xmat[geom_id], atol=atol)
+    mujoco.mju_quat2Mat(mat, self.data.site_xquat[site_id])
+    np.testing.assert_allclose(mat, self.data.site_xmat[site_id], atol=atol)
+
   def test_named_indexing_ragged_qpos(self):
     balljoint_id = mujoco.mj_name2id(
         self.model, mujoco.mjtObj.mjOBJ_JOINT, 'myball'

@@ -28,6 +28,7 @@
 #include "engine/engine_core_smooth.h"
 #include "engine/engine_core_util.h"
 #include "engine/engine_crossplatform.h"
+#include "engine/engine_inline.h"
 #include "engine/engine_memory.h"
 #include "engine/engine_plugin.h"
 #include "engine/engine_ray.h"
@@ -253,27 +254,24 @@ static void get_xpos_xmat(const mjData* d, mjtObj type, int id, int sensor_id,
 }
 
 
-// get global quaternion of an object in mjData
-static void get_xquat(const mjModel* m, const mjData* d, mjtObj type, int id, int sensor_id,
-                      mjtNum *quat) {
+// get global quaternion of an object in mjData (computes into cam_quat for cameras)
+static const mjtNum* get_xquat(const mjModel* m, const mjData* d, mjtObj type, int id,
+                               int sensor_id, mjtNum cam_quat[4]) {
   switch (type) {
   case mjOBJ_XBODY:
-    mju_copy4(quat, d->xquat+4*id);
-    break;
+    return d->xquat + 4*id;
   case mjOBJ_BODY:
-    mju_mulQuat(quat, d->xquat+4*id, m->body_iquat+4*id);
-    break;
+    return d->xiquat + 4*id;
   case mjOBJ_GEOM:
-    mju_mulQuat(quat, d->xquat+4*m->geom_bodyid[id], m->geom_quat+4*id);
-    break;
+    return d->geom_xquat + 4*id;
   case mjOBJ_SITE:
-    mju_mulQuat(quat, d->xquat+4*m->site_bodyid[id], m->site_quat+4*id);
-    break;
+    return d->site_xquat + 4*id;
   case mjOBJ_CAMERA:
-    mju_mulQuat(quat, d->xquat+4*m->cam_bodyid[id], m->cam_quat+4*id);
-    break;
+    mji_mulQuat(cam_quat, d->xquat+4*m->cam_bodyid[id], m->cam_quat+4*id);
+    return cam_quat;
   default:
     mjERROR("invalid object type in sensor %d", sensor_id);
+    return NULL;
   }
 }
 
@@ -906,20 +904,20 @@ static void mj_computeSensorPos(const mjModel* m, mjData* d, int i, mjtNum* sens
   case mjSENS_FRAMEQUAT:                              // orientation quaternion
   {
     // get global object quaternion
-    mjtNum objquat[4];
-    get_xquat(m, d, objtype, objid, i, objquat);
+    mjtNum cam_obj[4];
+    const mjtNum* objquat = get_xquat(m, d, objtype, objid, i, cam_obj);
 
     // reference frame unspecified: copy object quaternion
     if (refid == -1) {
-      mju_copy4(sensordata, objquat);
+      mji_copy4(sensordata, objquat);
     } else {
       // reference frame specified, get global reference quaternion
-      mjtNum refquat[4];
-      get_xquat(m, d, reftype, refid, i, refquat);
+      mjtNum cam_ref[4], negref[4];
+      const mjtNum* refquat = get_xquat(m, d, reftype, refid, i, cam_ref);
 
       // relative quaternion
-      mju_negQuat(refquat, refquat);
-      mju_mulQuat(sensordata, refquat, objquat);
+      mji_negQuat(negref, refquat);
+      mji_mulQuat(sensordata, negref, objquat);
     }
   }
   break;

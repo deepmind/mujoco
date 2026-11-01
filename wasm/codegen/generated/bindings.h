@@ -7173,6 +7173,9 @@ struct MjData {
   emscripten::val xipos() const {
     return emscripten::val(emscripten::typed_memory_view(model->nbody * 3, ptr_->xipos));
   }
+  emscripten::val xiquat() const {
+    return emscripten::val(emscripten::typed_memory_view(model->nbody * 4, ptr_->xiquat));
+  }
   emscripten::val ximat() const {
     return emscripten::val(emscripten::typed_memory_view(model->nbody * 9, ptr_->ximat));
   }
@@ -7185,11 +7188,17 @@ struct MjData {
   emscripten::val geom_xpos() const {
     return emscripten::val(emscripten::typed_memory_view(model->ngeom * 3, ptr_->geom_xpos));
   }
+  emscripten::val geom_xquat() const {
+    return emscripten::val(emscripten::typed_memory_view(model->ngeom * 4, ptr_->geom_xquat));
+  }
   emscripten::val geom_xmat() const {
     return emscripten::val(emscripten::typed_memory_view(model->ngeom * 9, ptr_->geom_xmat));
   }
   emscripten::val site_xpos() const {
     return emscripten::val(emscripten::typed_memory_view(model->nsite * 3, ptr_->site_xpos));
+  }
+  emscripten::val site_xquat() const {
+    return emscripten::val(emscripten::typed_memory_view(model->nsite * 4, ptr_->site_xquat));
   }
   emscripten::val site_xmat() const {
     return emscripten::val(emscripten::typed_memory_view(model->nsite * 9, ptr_->site_xmat));

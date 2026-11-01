@@ -370,6 +370,7 @@
   X( mjtNum, , xquat,          nbody, 4  ) \
   X( mjtNum, , xmat,           nbody, 9  ) \
   X( mjtNum, , xipos,          nbody, 3  ) \
+  X( mjtNum, , xiquat,         nbody, 4  ) \
   X( mjtNum, , ximat,          nbody, 9  ) \
   X( mjtNum, , subtree_com,    nbody, 3  ) \
   X( mjtNum, , cinert,         nbody, 10 ) \
@@ -385,9 +386,10 @@
   X( mjtNum, cam_, xpos, ncam, 3 ) \
   X( mjtNum, cam_, xmat, ncam, 9 )
 
-#define MJDATA_GEOM                  \
-  X( mjtNum, geom_, xpos, ngeom, 3 ) \
-  X( mjtNum, geom_, xmat, ngeom, 9 )
+#define MJDATA_GEOM                   \
+  X( mjtNum, geom_, xpos,  ngeom, 3 ) \
+  X( mjtNum, geom_, xquat, ngeom, 4 ) \
+  X( mjtNum, geom_, xmat,  ngeom, 9 )
 
 #define MJDATA_JOINT                                \
   X( mjtNum, , qpos,            nq,   1           ) \
@@ -416,9 +418,10 @@
 #define MJDATA_SENSOR                       \
   X( mjtNum, sensor, data, nsensordata, 1 )
 
-#define MJDATA_SITE                  \
-  X( mjtNum, site_, xpos, nsite, 3 ) \
-  X( mjtNum, site_, xmat, nsite, 9 )
+#define MJDATA_SITE                   \
+  X( mjtNum, site_, xpos,  nsite, 3 ) \
+  X( mjtNum, site_, xquat, nsite, 4 ) \
+  X( mjtNum, site_, xmat,  nsite, 9 )
 
 #define MJDATA_TENDON                            \
   X( int, ten_,    wrapadr , ntendon,  1       ) \

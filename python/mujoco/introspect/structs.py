@@ -6089,6 +6089,14 @@ STRUCTS: Mapping[str, StructDecl] = dict([
                  array_extent=('nbody', 3),
              ),
              StructFieldDecl(
+                 name='xiquat',
+                 type=PointerType(
+                     inner_type=ValueType(name='mjtNum'),
+                 ),
+                 doc='Cartesian orientation of body inertia',
+                 array_extent=('nbody', 4),
+             ),
+             StructFieldDecl(
                  name='ximat',
                  type=PointerType(
                      inner_type=ValueType(name='mjtNum'),
@@ -6121,6 +6129,14 @@ STRUCTS: Mapping[str, StructDecl] = dict([
                  array_extent=('ngeom', 3),
              ),
              StructFieldDecl(
+                 name='geom_xquat',
+                 type=PointerType(
+                     inner_type=ValueType(name='mjtNum'),
+                 ),
+                 doc='Cartesian geom orientation',
+                 array_extent=('ngeom', 4),
+             ),
+             StructFieldDecl(
                  name='geom_xmat',
                  type=PointerType(
                      inner_type=ValueType(name='mjtNum'),
@@ -6135,6 +6151,14 @@ STRUCTS: Mapping[str, StructDecl] = dict([
                  ),
                  doc='Cartesian site position',
                  array_extent=('nsite', 3),
+             ),
+             StructFieldDecl(
+                 name='site_xquat',
+                 type=PointerType(
+                     inner_type=ValueType(name='mjtNum'),
+                 ),
+                 doc='Cartesian site orientation',
+                 array_extent=('nsite', 4),
              ),
              StructFieldDecl(
                  name='site_xmat',

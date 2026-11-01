@@ -187,6 +187,8 @@ Engine
   from ``geom_surfacevel`` when ``mjModel.flg_surfacevel`` is set, and external contact generators can write it
   directly (setting ``flg_surfacevel = 1`` if no geom specifies ``surfacevel``). Contact-point visualization now draws
   a single relative tangential velocity arrow per active frictional contact.
+- Added ``xiquat``, ``geom_xquat``, and ``site_xquat`` to :ref:`mjData`, storing the Cartesian quaternion orientations
+  of body inertias, geoms, and sites alongside ``ximat``, ``geom_xmat``, and ``site_xmat``.
 
 Filament Rendering
 ^^^^^^^^^^^^^^^^^^

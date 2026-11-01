@@ -4741,6 +4741,7 @@ EMSCRIPTEN_BINDINGS(mujoco_bindings) {
     .property("flg_subtreevel", &MjData::flg_subtreevel, &MjData::set_flg_subtreevel)
     .property("geom_xmat", &MjData::geom_xmat)
     .property("geom_xpos", &MjData::geom_xpos)
+    .property("geom_xquat", &MjData::geom_xquat)
     .property("history", &MjData::history)
     .property("iacc", &MjData::iacc)
     .property("iacc_smooth", &MjData::iacc_smooth)
@@ -4837,6 +4838,7 @@ EMSCRIPTEN_BINDINGS(mujoco_bindings) {
     .property("signature", &MjData::signature, &MjData::set_signature)
     .property("site_xmat", &MjData::site_xmat)
     .property("site_xpos", &MjData::site_xpos)
+    .property("site_xquat", &MjData::site_xquat)
     .property("solver", &MjData::solver, reference())
     .property("solver_fwdinv", &MjData::solver_fwdinv)
     .property("solver_niter", &MjData::solver_niter)
@@ -4866,6 +4868,7 @@ EMSCRIPTEN_BINDINGS(mujoco_bindings) {
     .property("xfrc_applied", &MjData::xfrc_applied)
     .property("ximat", &MjData::ximat)
     .property("xipos", &MjData::xipos)
+    .property("xiquat", &MjData::xiquat)
     .property("xmat", &MjData::xmat)
     .property("xpos", &MjData::xpos)
     .property("xquat", &MjData::xquat);

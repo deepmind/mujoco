@@ -2186,5 +2186,80 @@ TEST_F(CoreSmoothTest, FactorMClampsSingularPivotAndWarns) {
   }
 }
 
+TEST_F(CoreSmoothTest, KinematicsQuatsMatchMats) {
+  static constexpr char xml[] = R"(
+  <mujoco>
+    <option>
+      <flag sleep="enable"/>
+    </option>
+    <worldbody>
+      <geom name="w_geom" type="box" size=".1 .1 .1" pos="1 2 3"
+        euler="15 -25 35"/>
+      <site name="w_site" pos="-1 0.5 2" euler="10 20 30"/>
+      <body name="static_b" pos="0.5 -0.5 0" euler="30 10 -20">
+        <geom name="static_g" size=".1" euler="5 15 25"/>
+        <site name="static_s" pos="0.1 0 0" euler="-15 25 10"/>
+      </body>
+      <body name="b_none" pos="0 0 2" euler="12 -18 24">
+        <freejoint/>
+        <inertial pos="0.05 -0.03 0.02" euler="22 -14 31" mass="1.2"
+          diaginertia="0.02 0.03 0.04"/>
+        <geom name="g_none" type="box" size=".1 .2 .15" pos="0.1 -0.2 0.3"
+          euler="33 -19 41"/>
+        <geom name="g_body" type="sphere" size=".1"/>
+        <geom name="g_bodyrot" type="sphere" size=".1" pos="0.2 0.1 -0.1"/>
+        <geom name="g_inertia" type="box" size=".05 .05 .05"
+          pos="0.05 -0.03 0.02" euler="22 -14 31"/>
+        <geom name="g_inertiarot" type="box" size=".05 .05 .05"
+          pos="0.3 0.2 0.1" euler="22 -14 31"/>
+        <site name="s_none" pos="-0.1 0.2 -0.3" euler="-27 13 49"/>
+        <site name="s_body"/>
+        <site name="s_bodyrot" pos="0.15 -0.05 0.2"/>
+        <site name="s_inertia" pos="0.05 -0.03 0.02" euler="22 -14 31"/>
+        <site name="s_inertiarot" pos="-0.2 0.1 0.05" euler="22 -14 31"/>
+        <body name="b_child" pos="0.2 0.1 -0.3" euler="-11 27 -16">
+          <joint type="hinge" axis="1 1 0"/>
+          <geom name="g_child" type="capsule" size=".04 .1" euler="40 -20 10"/>
+          <site name="s_child" pos="0 0 -0.1" euler="18 36 -24"/>
+        </body>
+      </body>
+    </worldbody>
+  </mujoco>
+  )";
+
+  char error[1024];
+  MjModelPtr model = LoadModelFromString(xml, error, sizeof(error));
+  ASSERT_THAT(model.get(), NotNull()) << error;
+  MjDataPtr data = MakeData(model);
+
+  data->qvel[0] = 0.4;
+  data->qvel[3] = 1.1;
+  data->qvel[5] = -0.8;
+  data->qvel[6] = 1.5;
+  for (int step = 0; step < 25; ++step) {
+    mj_step(model.get(), data.get());
+  }
+
+  mjtNum mat[9];
+  for (int i = 0; i < model->nbody; ++i) {
+    mju_quat2Mat(mat, data->xiquat + 4 * i);
+    for (int k = 0; k < 9; ++k) {
+      EXPECT_MJTNUM_EQ(mat[k], data->ximat[9 * i + k]) << "body " << i;
+    }
+  }
+  for (int g = 0; g < model->ngeom; ++g) {
+    mju_quat2Mat(mat, data->geom_xquat + 4 * g);
+    for (int k = 0; k < 9; ++k) {
+      EXPECT_MJTNUM_EQ(mat[k], data->geom_xmat[9 * g + k]) << "geom " << g;
+    }
+  }
+  for (int s = 0; s < model->nsite; ++s) {
+    mju_quat2Mat(mat, data->site_xquat + 4 * s);
+    for (int k = 0; k < 9; ++k) {
+      EXPECT_MJTNUM_EQ(mat[k], data->site_xmat[9 * s + k]) << "site " << s;
+    }
+  }
+}
+
 }  // namespace
 }  // namespace mujoco

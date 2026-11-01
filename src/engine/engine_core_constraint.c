@@ -23,6 +23,7 @@
 #include <mujoco/mjsan.h>  // IWYU pragma: keep
 #include <mujoco/mjxmacro.h>
 #include "engine/engine_init.h"
+#include "engine/engine_inline.h"
 #include "engine/engine_core_util.h"
 #include "engine/engine_core_smooth.h"
 #include "engine/engine_memory.h"
@@ -586,20 +587,18 @@ void mj_instantiateEquality(const mjModel* m, mjData* d) {
       if (m->eq_objtype[i] == mjOBJ_BODY) {
         // compute orientation error: neg(q1) * q0 * relpose (axis components only)
         mjtNum* relpose = data+6;
-        mju_mulQuat(quat, d->xquat+4*id[0], relpose);   // quat = q0*relpose
-        mju_negQuat(quat1, d->xquat+4*id[1]);           // quat1 = neg(q1)
+        mji_mulQuat(quat, d->xquat+4*id[0], relpose);   // quat = q0*relpose
+        mji_negQuat(quat1, d->xquat+4*id[1]);           // quat1 = neg(q1)
       }
 
       // orientation, site semantic
       else {
-        mjtNum quat_site1[4];
-        mju_mulQuat(quat, d->xquat+4*body_id[0], m->site_quat+4*id[0]);
-        mju_mulQuat(quat_site1, d->xquat+4*body_id[1], m->site_quat+4*id[1]);
-        mju_negQuat(quat1, quat_site1);
+        mji_copy4(quat, d->site_xquat+4*id[0]);
+        mji_negQuat(quat1, d->site_xquat+4*id[1]);
       }
 
-      mju_mulQuat(quat2, quat1, quat);
-      mju_scl3(cpos+3, quat2+1, torquescale);         // scale axis components by torquescale
+      mji_mulQuat(quat2, quat1, quat);
+      mji_scl3(cpos+3, quat2+1, torquescale);         // scale axis components by torquescale
 
       // correct rotation Jacobian: 0.5 * neg(q1) * (jac0-jac1) * q0 * relpose
       for (int j=0; j < NV; j++) {
@@ -609,8 +608,8 @@ void mj_instantiateEquality(const mjModel* m, mjData* d) {
         axis[2] = jac[0][5*NV+j];
 
         // apply formula
-        mju_mulQuatAxis(quat2, quat1, axis);    // quat2 = neg(q1)*(jac0-jac1)
-        mju_mulQuat(quat3, quat2, quat);        // quat3 = neg(q1)*(jac0-jac1)*q0*relpose
+        mji_mulQuatAxis(quat2, quat1, axis);    // quat2 = neg(q1)*(jac0-jac1)
+        mji_mulQuat(quat3, quat2, quat);        // quat3 = neg(q1)*(jac0-jac1)*q0*relpose
 
         // correct Jacobian
         jac[0][3*NV+j] = 0.5*quat3[1];

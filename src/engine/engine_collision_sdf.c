@@ -969,9 +969,9 @@ int mjc_HFieldSDF(const mjModel* m, mjData* d, mjPreContact* con, int g1, int g2
 // collision between a mesh and a signed distance field
 int mjc_MeshSDF(const mjModel* m, mjData* d, mjPreContact* con, int g1, int g2, mjtNum margin) {
   const mjtNum* pos1 = d->geom_xpos + 3*g1;
-  const mjtNum* mat1 = d->geom_xmat + 9*g1;
+  const mjtNum* quat1 = d->geom_xquat + 4*g1;
   const mjtNum* pos2 = d->geom_xpos + 3*g2;
-  const mjtNum* mat2 = d->geom_xmat + 9*g2;
+  const mjtNum* sdf_quat = d->geom_xquat + 4*g2;
 
   mjtNum offset[3], rotation[9];
   mjtNum points[3*mjMAXCONPAIR], dist2[mjMAXCONPAIR], candidate[3*mjMAXCONPAIR];
@@ -991,9 +991,6 @@ int mjc_MeshSDF(const mjModel* m, mjData* d, mjPreContact* con, int g1, int g2, 
   sdf.geomtype = &geomtype;
 
   // compute transformation from g1 to g2
-  mjtNum sdf_quat[4], quat1[4];
-  mju_mat2Quat(quat1, mat1);
-  mju_mat2Quat(sdf_quat, mat2);
   mapPose(pos1, quat1, pos2, sdf_quat, offset, rotation);
 
   // set up context for inline BVH processing
@@ -1048,9 +1045,9 @@ int mjc_MeshSDF(const mjModel* m, mjData* d, mjPreContact* con, int g1, int g2, 
 // collision between two SDFs
 int mjc_SDF(const mjModel* m, mjData* d, mjPreContact* con, int g1, int g2, mjtNum margin) {
   const mjtNum* pos1  = d->geom_xpos + 3*g1;
-  const mjtNum* mat1  = d->geom_xmat + 9*g1;
+  const mjtNum* quat1 = d->geom_xquat + 4*g1;
   const mjtNum* pos2  = d->geom_xpos + 3*g2;
-  const mjtNum* mat2  = d->geom_xmat + 9*g2;
+  const mjtNum* quat2 = d->geom_xquat + 4*g2;
   const mjtNum* size1 = m->geom_aabb + 6*g1;
   const mjtNum* size2 = m->geom_aabb + 6*g2;
 
@@ -1066,11 +1063,8 @@ int mjc_SDF(const mjModel* m, mjData* d, mjPreContact* con, int g1, int g2, mjtN
   }
 
   // compute transformations from/to g1 to/from g2
-  mjtNum quat1[4], quat2[4];
   mjtNum offset21[3], rotation21[9], rotation12[9];
   mjtNum offset12[3], offset2[3], rotation2[9];
-  mju_mat2Quat(quat1, mat1);
-  mju_mat2Quat(quat2, mat2);
   mapPose(pos1, quat1, pos1, quat1, offset2, rotation2);
   mapPose(pos2, quat2, pos1, quat1, offset21, rotation21);
   mapPose(pos1, quat1, pos2, quat2, offset12, rotation12);
@@ -1280,10 +1274,8 @@ int mjc_FlexSDF(const mjModel* m, const mjData* d, mjPreContact* con, int* elem,
   sdf.geomtype = &geomtype;
 
   // get SDF pose (once for entire flex)
-  mjtNum sdf_quat[4];
   const mjtNum* sdf_pos = d->geom_xpos + 3*g;
-  const mjtNum* sdf_mat = d->geom_xmat + 9*g;
-  mju_mat2Quat(sdf_quat, sdf_mat);
+  const mjtNum* sdf_quat = d->geom_xquat + 4*g;
 
   // compute world-to-SDF transform (once for entire flex)
   mjtNum rotation[9], offset[3];
