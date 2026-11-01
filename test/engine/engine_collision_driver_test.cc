@@ -25,6 +25,12 @@
 #include <vector>
 
 #include <gmock/gmock.h>
+#include <algorithm>
+#include <cstdio>
+#include <random>
+#include <string>
+#include <vector>
+
 #include <gtest/gtest.h>
 #include <mujoco/mjmodel.h>
 #include <mujoco/mujoco.h>
@@ -1341,6 +1347,243 @@ TEST_F(MjCollisionTest, ParallelCapsuleCapsuleOverhang) {
                      0.07);
     EXPECT_MJTNUM_EQ(fromto[2], -0.15);
     EXPECT_MJTNUM_EQ(fromto[5], -0.15);
+  }
+}
+
+// ---------------------------------------------------------------------------
+// Static-body broadphase fast path (issue #3730).
+//
+// makeAAMM() bounds a world-welded (body_weldid == 0, non-mocap) body from its
+// constant inertial-frame BVH root instead of looping over the body's geoms on
+// every step. That bound is a conservative superset of the per-geom bound, so
+// the set of contacts must remain identical to the equivalent world-body
+// layout. These tests pin that invariant across geometry types, rotations,
+// margins, and mocap bodies (which must NOT be treated as static).
+// ---------------------------------------------------------------------------
+
+TEST_F(MjCollisionTest, StaticChildBodyCollidesWithDynamic) {
+  constexpr char xml[] = R"(
+  <mujoco>
+    <option gravity="0 0 0"/>
+    <worldbody>
+      <body pos="1 0 0">
+        <geom name="s0" type="box" size=".1 .1 .1"/>
+        <geom name="s1" type="box" size=".1 .1 .1" pos=".4 0 0"/>
+      </body>
+      <body name="mover">
+        <freejoint/>
+        <geom name="dyn" type="sphere" size=".12" pos="1 0 0"/>
+      </body>
+    </worldbody>
+  </mujoco>
+  )";
+  char error[1024];
+  MjModelPtr m = LoadModelFromString(xml, error, sizeof(error));
+  ASSERT_THAT(m.get(), NotNull()) << error;
+  MjDataPtr d = MakeData(m);
+  mj_forward(m.get(), d.get());
+
+  // dyn (sphere at world x=1) overlaps s0 (box at world x=1); s1 (x=1.4) is
+  // out.
+  EXPECT_THAT(colliding_pairs(m.get(), d.get()),
+              ElementsAre(GeomPair("dyn", "s0")));
+}
+
+TEST_F(MjCollisionTest, StaticChildBodyMarginNotMissed) {
+  // A near-contact within the combined margin of a static-body geom must still
+  // be reported: the fast path inflates the body bound by body_margin.
+  constexpr char xml[] = R"(
+  <mujoco>
+    <option gravity="0 0 0"/>
+    <worldbody>
+      <body pos="1 0 0">
+        <geom name="s0" type="box" size=".1 .1 .1" margin=".1"/>
+      </body>
+      <body name="mover">
+        <freejoint/>
+        <geom name="dyn" type="box" size=".1 .1 .1" pos="1.25 0 0" margin=".1"/>
+      </body>
+    </worldbody>
+  </mujoco>
+  )";
+  char error[1024];
+  MjModelPtr m = LoadModelFromString(xml, error, sizeof(error));
+  ASSERT_THAT(m.get(), NotNull()) << error;
+  MjDataPtr d = MakeData(m);
+  mj_forward(m.get(), d.get());
+
+  // faces are 0.05 apart, within the 0.2 combined margin: inactive contact.
+  EXPECT_GT(d->ncon, 0);
+  for (int i = 0; i < d->ncon; i++) {
+    std::string g1 = mj_id2name(m.get(), mjOBJ_GEOM, d->contact[i].geom[0]);
+    std::string g2 = mj_id2name(m.get(), mjOBJ_GEOM, d->contact[i].geom[1]);
+    EXPECT_EQ(GeomPair(std::min(g1, g2), std::max(g1, g2)),
+              GeomPair("dyn", "s0"));
+    EXPECT_GT(d->contact[i].dist, 0);
+    EXPECT_LT(d->contact[i].dist, 0.2);
+  }
+}
+
+TEST_F(MjCollisionTest, MocapBodyNotTreatedAsStatic) {
+  // A mocap body has body_weldid != 0 (its own weld root), so the static fast
+  // path must not apply to it: when moved, it must collide at its new pose.
+  constexpr char xml[] = R"(
+  <mujoco>
+    <option gravity="0 0 0"/>
+    <worldbody>
+      <body name="mc" mocap="true" pos="0 0 0">
+        <geom name="mg" type="box" size=".1 .1 .1"/>
+      </body>
+      <body name="mover">
+        <freejoint/>
+        <geom name="dyn" type="sphere" size=".12" pos=".5 0 0"/>
+      </body>
+    </worldbody>
+  </mujoco>
+  )";
+  char error[1024];
+  MjModelPtr m = LoadModelFromString(xml, error, sizeof(error));
+  ASSERT_THAT(m.get(), NotNull()) << error;
+  MjDataPtr d = MakeData(m);
+
+  // mocap at origin: no contact with dyn at x=0.5.
+  mj_forward(m.get(), d.get());
+  EXPECT_THAT(colliding_pairs(m.get(), d.get()), IsEmpty());
+
+  // move mocap onto the dynamic geom: contact must appear.
+  int mcid = mj_name2id(m.get(), mjOBJ_BODY, "mc");
+  int mocapid = m->body_mocapid[mcid];
+  d->mocap_pos[3 * mocapid + 0] = 0.5;
+  mj_forward(m.get(), d.get());
+  EXPECT_THAT(colliding_pairs(m.get(), d.get()),
+              ElementsAre(GeomPair("dyn", "mg")));
+}
+
+// Geometry for the bodies-vs-world parity oracle below.
+struct PGeom {
+  std::string name;
+  int type;
+  mjtNum size[3];
+  mjtNum pos[3];
+  mjtNum quat[4];
+};
+struct PBody {
+  mjtNum pos[3];
+  mjtNum quat[4];
+  std::vector<PGeom> geoms;
+};
+
+static const char* const kParityGeomType[] = {"box", "sphere", "capsule"};
+
+// Emits a scene with the given static bodies either as static child bodies of
+// the world (world=false) or flattened into the world body at the same absolute
+// geom poses (world=true). Geom names are identical across both layouts.
+static std::string BuildParityXml(const std::vector<PBody>& bodies,
+                                  bool world) {
+  std::string s =
+      "<mujoco><option gravity='0 0 0'/><worldbody>"
+      "<body name='mover'><freejoint/>"
+      "<geom name='dyn' type='box' size='.15 .15 .15'/></body>";
+  char b[512];
+  for (const PBody& bd : bodies) {
+    if (!world) {
+      std::snprintf(b, sizeof(b),
+                    "<body pos='%.9g %.9g %.9g' quat='%.9g %.9g %.9g %.9g'>",
+                    (double)bd.pos[0], (double)bd.pos[1], (double)bd.pos[2],
+                    (double)bd.quat[0], (double)bd.quat[1], (double)bd.quat[2],
+                    (double)bd.quat[3]);
+      s += b;
+    }
+    for (const PGeom& g : bd.geoms) {
+      mjtNum wp[3], wq[4];
+      if (world) {
+        mju_rotVecQuat(wp, g.pos, bd.quat);
+        wp[0] += bd.pos[0];
+        wp[1] += bd.pos[1];
+        wp[2] += bd.pos[2];
+        mju_mulQuat(wq, bd.quat, g.quat);
+      } else {
+        mju_copy3(wp, g.pos);
+        mju_copy4(wq, g.quat);
+      }
+      std::snprintf(b, sizeof(b),
+                    "<geom name='%s' type='%s' size='%.9g %.9g %.9g' pos='%.9g "
+                    "%.9g %.9g' quat='%.9g %.9g %.9g %.9g'/>",
+                    g.name.c_str(), kParityGeomType[g.type], (double)g.size[0],
+                    (double)g.size[1], (double)g.size[2], (double)wp[0],
+                    (double)wp[1], (double)wp[2], (double)wq[0], (double)wq[1],
+                    (double)wq[2], (double)wq[3]);
+      s += b;
+    }
+    if (!world) s += "</body>";
+  }
+  s += "</worldbody></mujoco>";
+  return s;
+}
+
+TEST_F(MjCollisionTest, StaticChildBodyMatchesWorldLayout) {
+  std::mt19937 rng(12345);
+  std::uniform_real_distribution<double> U(-1, 1), P(0, 1);
+  std::vector<PBody> bodies;
+  for (int i = 0; i < 8; i++) {
+    PBody bd;
+    bd.pos[0] = U(rng);
+    bd.pos[1] = U(rng);
+    bd.pos[2] = U(rng);
+    mjtNum axis[3] = {(mjtNum)U(rng), (mjtNum)U(rng), (mjtNum)U(rng)};
+    if (mju_norm3(axis) < 1e-6) axis[0] = 1;
+    mju_axisAngle2Quat(bd.quat, axis, P(rng) * 3.14159);
+    int ng = 1 + (int)(rng() % 3);
+    for (int j = 0; j < ng; j++) {
+      PGeom g;
+      g.name = "g" + std::to_string(i) + "_" + std::to_string(j);
+      g.type = (int)(rng() % 3);
+      for (int k = 0; k < 3; k++) g.size[k] = 0.05 + 0.1 * P(rng);
+      for (int k = 0; k < 3; k++) g.pos[k] = 0.3 * U(rng);
+      mjtNum gax[3] = {(mjtNum)U(rng), (mjtNum)U(rng), (mjtNum)U(rng)};
+      if (mju_norm3(gax) < 1e-6) gax[0] = 1;
+      mju_axisAngle2Quat(g.quat, gax, P(rng) * 3.14159);
+      bd.geoms.push_back(g);
+    }
+    bodies.push_back(bd);
+  }
+
+  char e1[1024], e2[1024];
+  MjModelPtr mb =
+      LoadModelFromString(BuildParityXml(bodies, false), e1, sizeof(e1));
+  MjModelPtr mw =
+      LoadModelFromString(BuildParityXml(bodies, true), e2, sizeof(e2));
+  ASSERT_THAT(mb.get(), NotNull()) << e1;
+  ASSERT_THAT(mw.get(), NotNull()) << e2;
+  MjDataPtr db = MakeData(mb);
+  MjDataPtr dw = MakeData(mw);
+
+  int bid = mj_name2id(mb.get(), mjOBJ_BODY, "mover");
+  int qb = mb->jnt_qposadr[mb->body_jntadr[bid]];
+  int qw = mw->jnt_qposadr[mw->body_jntadr[mj_name2id(mw.get(), mjOBJ_BODY,
+                                                      "mover")]];
+
+  std::mt19937 rng2(777);
+  std::uniform_real_distribution<double> S(-1.2, 1.2);
+  for (int step = 0; step < 80; step++) {
+    mjtNum pos[3] = {(mjtNum)S(rng2), (mjtNum)S(rng2), (mjtNum)S(rng2)};
+    mjtNum ax[3] = {(mjtNum)U(rng2), (mjtNum)U(rng2), (mjtNum)U(rng2)};
+    if (mju_norm3(ax) < 1e-6) ax[0] = 1;
+    mjtNum q[4];
+    mju_axisAngle2Quat(q, ax, P(rng2) * 3.14159);
+    for (int k = 0; k < 3; k++) {
+      db->qpos[qb + k] = pos[k];
+      dw->qpos[qw + k] = pos[k];
+    }
+    for (int k = 0; k < 4; k++) {
+      db->qpos[qb + 3 + k] = q[k];
+      dw->qpos[qw + 3 + k] = q[k];
+    }
+    mj_forward(mb.get(), db.get());
+    mj_forward(mw.get(), dw.get());
+    EXPECT_EQ(colliding_pairs(mb.get(), db.get()),
+              colliding_pairs(mw.get(), dw.get()))
+        << "static-child and world layouts diverged at step " << step;
   }
 }
 

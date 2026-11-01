@@ -1384,8 +1384,47 @@ static void makeAAMM(const mjModel* m, mjData* d,
   mjtNum aamm[6];
   mjtNum override_margin = mjENABLED(mjENBL_OVERRIDE) ? 0.5 * m->opt.o_margin : 0;
 
+  // fast path: static (world-welded, non-mocap) body with a bounding-volume
+  // hierarchy. Its geoms are rigidly fixed to the world, so the inertial-frame
+  // BVH root (m->bvh_aabb, built once in mj_setConst and bounding every geom of
+  // the body) is constant for all time; we project that single box onto the SAP
+  // frame instead of visiting every geom each step. This removes the per-geom
+  // broadphase cost that regressed in 3.8.0 and 3.17.0 for geoms grouped under
+  // static child bodies (issue #3730). The bound is a conservative superset of
+  // the per-geom bound below (it drops the per-geom bounding-sphere tightening
+  // and the swept term, which is zero for a body that cannot move), so no
+  // candidate pair is ever missed. body_weldid == 0 holds only for bodies welded
+  // to the world (mocap bodies get their own weld root, so they are excluded).
+  // Planes are not represented in the BVH, so plane-bearing bodies fall through
+  // to the exact per-geom path.
+  if (bf > 0 && bf < m->nbody && m->body_weldid[bf] == 0 &&
+      m->body_bvhadr[bf] >= 0 && !hasPlane(m, bf)) {
+    const mjtNum* root = m->bvh_aabb + 6*m->body_bvhadr[bf];  // (center, size) in inertial frame
+    const mjtNum* ipos = d->xipos + 3*bf;
+    const mjtNum* imat = d->ximat + 9*bf;
+    mjtNum margin = override_margin ? override_margin : m->body_margin[bf];
+
+    // world-space position of the root AABB center
+    mjtNum cen[3];
+    mji_mulMatVec3(cen, imat, root);
+    mju_addTo3(cen, ipos);
+
+    for (int j=0; j < 3; j++) {
+      const mjtNum* frame_j = frame + 3*j;
+      mjtNum proj = mju_dot3(cen, frame_j);
+
+      // half-extent of the inertial-frame box projected onto frame_j: the box
+      // axes in world are the columns of ximat, scaled by the root half-sizes
+      mjtNum half = mju_abs(root[3]*(imat[0]*frame_j[0] + imat[3]*frame_j[1] + imat[6]*frame_j[2]))
+                  + mju_abs(root[4]*(imat[1]*frame_j[0] + imat[4]*frame_j[1] + imat[7]*frame_j[2]))
+                  + mju_abs(root[5]*(imat[2]*frame_j[0] + imat[5]*frame_j[1] + imat[8]*frame_j[2]));
+      aamm[j]   = proj - half - margin;
+      aamm[j+3] = proj + half + margin;
+    }
+  }
+
   // body
-  if (bf < m->nbody) {
+  else if (bf < m->nbody) {
     int body = bf;
     int body_geomnum = m->body_geomnum[body];
 
