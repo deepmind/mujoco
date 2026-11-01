@@ -17,6 +17,7 @@ import warp as wp
 
 from mujoco.mjx.third_party.mujoco_warp._src import types
 from mujoco.mjx.third_party.mujoco_warp._src.types import DeterminismType
+from mujoco.mjx.third_party.mujoco_warp._src.types import DisableBit
 from mujoco.mjx.third_party.mujoco_warp._src.types import EqType
 from mujoco.mjx.third_party.mujoco_warp._src.types import ObjType
 from mujoco.mjx.third_party.mujoco_warp._src.types import SleepPolicy
@@ -436,6 +437,7 @@ def _wake_tendon_kernel(
   # Model:
   ntree: int,
   ntendon: int,
+  opt_disableflags: int,
   body_treeid: wp.array[int],
   jnt_bodyid: wp.array[int],
   geom_bodyid: wp.array[int],
@@ -445,6 +447,7 @@ def _wake_tendon_kernel(
   tendon_limited: wp.array[int],
   tendon_range: wp.array2d[wp.vec2],
   tendon_margin: wp.array2d[float],
+  tendon_frictionloss: wp.array2d[float],
   wrap_type: wp.array[int],
   wrap_objid: wp.array[int],
   # Data in:
@@ -481,9 +484,16 @@ def _wake_tendon_kernel(
         if val < wakeval:
           wakeval = val
 
-  # Pass 2: If at least one tree is awake and the limit is active, wake up all sleeping trees
+  # Pass 2: If at least one tree is awake and a limit or frictionloss constraint is active, wake all sleeping trees
   if any_awake == 1:
-    if _tendon_limit_active(tendon_limited, tendon_range, tendon_margin, ten_length_in, worldid, tenid):
+    has_limit = not (opt_disableflags & DisableBit.LIMIT) and _tendon_limit_active(
+      tendon_limited, tendon_range, tendon_margin, ten_length_in, worldid, tenid
+    )
+    has_friction = (
+      not (opt_disableflags & DisableBit.FRICTIONLOSS)
+      and tendon_frictionloss[worldid % tendon_frictionloss.shape[0], tenid] > 0.0
+    )
+    if has_limit or has_friction:
       for i in range(num):
         idx = adr + i
         t_type = wrap_type[idx]
@@ -780,7 +790,7 @@ def wake_collision(m: types.Model, d: types.Data):
 @event_scope
 def wake_tendon(m: types.Model, d: types.Data):
   """Wakes sleeping trees with constrained tendons."""
-  if m.ntendon == 0:
+  if m.ntendon == 0 or (m.opt.disableflags & DisableBit.CONSTRAINT):
     return
 
   wp.launch(
@@ -789,6 +799,7 @@ def wake_tendon(m: types.Model, d: types.Data):
     inputs=[
       m.ntree,
       m.ntendon,
+      m.opt.disableflags,
       m.body_treeid,
       m.jnt_bodyid,
       m.geom_bodyid,
@@ -798,6 +809,7 @@ def wake_tendon(m: types.Model, d: types.Data):
       m.tendon_limited,
       m.tendon_range,
       m.tendon_margin,
+      m.tendon_frictionloss,
       m.wrap_type,
       m.wrap_objid,
       d.ten_length,
