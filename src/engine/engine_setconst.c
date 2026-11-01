@@ -1822,6 +1822,8 @@ int mj_setLengthRange(mjModel* m, mjData* d, int index,
   if (index < 0 || index >= m->nactuator) {
     mjERROR("invalid actuator index");
   }
+
+  // first output row (remaining rows of multi-output actuators keep compiled values)
   int out = m->actuator_outadr[index];
 
   // skip depending on mode and type
@@ -1841,7 +1843,7 @@ int mj_setLengthRange(mjModel* m, mjData* d, int index,
   }
 
   // get transmission id
-  int threadid = m->actuator_trnid[index];
+  int threadid = m->actuator_trnid[2*index];
 
   // use joint and tendon limits if available
   if (opt->uselimit) {
@@ -1906,7 +1908,7 @@ int mj_setLengthRange(mjModel* m, mjData* d, int index,
     }
 
     // assign
-    m->actuator_lengthrange[2*index+side] = (side == 0 ? lmin[side] : lmax[side]);
+    m->actuator_lengthrange[2*out+side] = (side == 0 ? lmin[side] : lmax[side]);
   }
 
   // check range

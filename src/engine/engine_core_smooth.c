@@ -1223,7 +1223,7 @@ void mj_transmission(const mjModel* m, mjData* d) {
       {
         // get data
         int idslider = m->actuator_trnid[2*i+1];
-        mjtNum rod = m->actuator_cranklength[out];
+        mjtNum rod = m->actuator_cranklength[i];
         mjtNum axis[3] = {d->site_xmat[9 * idslider + 2],
                           d->site_xmat[9 * idslider + 5],
                           d->site_xmat[9 * idslider + 8]};

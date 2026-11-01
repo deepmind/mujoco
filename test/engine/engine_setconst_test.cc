@@ -1538,5 +1538,105 @@ TEST_F(SetConstTest, CamLightPose0PreservesData) {
   EXPECT_MJTNUM_EQ(d->light_xpos[0], -0.3);
 }
 
+TEST_F(SetConstTest, SetLengthRangeMapsTransmissionIds) {
+  static constexpr char xml[] = R"(
+  <mujoco>
+    <compiler angle="radian"/>
+    <worldbody>
+      <body>
+        <joint name="j0" type="hinge" range="-1 1" limited="true"/>
+        <geom size="0.1"/>
+        <body>
+          <joint name="j1" type="hinge" range="-2 2" limited="true"/>
+          <geom size="0.1"/>
+        </body>
+      </body>
+    </worldbody>
+    <tendon>
+      <fixed name="t0" range="0.1 0.5" limited="true">
+        <joint joint="j0" coef="1"/>
+      </fixed>
+      <fixed name="t1" range="0.2 0.8" limited="true">
+        <joint joint="j1" coef="1"/>
+      </fixed>
+    </tendon>
+    <actuator>
+      <motor name="a_j0" joint="j0"/>
+      <motor name="a_j1" joint="j1"/>
+      <motor name="a_t0" tendon="t0"/>
+      <motor name="a_t1" tendon="t1"/>
+    </actuator>
+  </mujoco>
+  )";
+  char error[1024];
+  MjModelPtr m = LoadModelFromString(xml, error, sizeof(error));
+  ASSERT_THAT(m.get(), NotNull()) << error;
+  MjDataPtr d = MakeData(m);
+
+  mjLROpt opt;
+  mj_defaultLROpt(&opt);
+  opt.mode = mjLRMODE_ALL;
+  opt.uselimit = 1;
+  opt.useexisting = 0;
+
+  for (int i = 0; i < m->nactuator; i++) {
+    EXPECT_EQ(mj_setLengthRange(m.get(), d.get(), i, &opt, nullptr, 0), 1);
+  }
+
+  EXPECT_MJTNUM_EQ(m->actuator_lengthrange[0], -1);
+  EXPECT_MJTNUM_EQ(m->actuator_lengthrange[1], 1);
+  EXPECT_MJTNUM_EQ(m->actuator_lengthrange[2], -2);
+  EXPECT_MJTNUM_EQ(m->actuator_lengthrange[3], 2);
+  EXPECT_MJTNUM_EQ(m->actuator_lengthrange[4], 0.1);
+  EXPECT_MJTNUM_EQ(m->actuator_lengthrange[5], 0.5);
+  EXPECT_MJTNUM_EQ(m->actuator_lengthrange[6], 0.2);
+  EXPECT_MJTNUM_EQ(m->actuator_lengthrange[7], 0.8);
+}
+
+TEST_F(SetConstTest, SetLengthRangeMultiOutputActuator) {
+  static constexpr char xml[] = R"(
+  <mujoco>
+    <worldbody>
+      <body>
+        <joint name="jnt1" type="slide" axis="1 0 0" range="-1 1"/>
+        <geom size="0.1"/>
+        <site name="s1"/>
+        <body>
+          <joint name="jnt2" type="slide" axis="0 1 0" range="-1 1"/>
+          <geom size="0.1"/>
+          <site name="s2"/>
+        </body>
+      </body>
+    </worldbody>
+    <actuator>
+      <orientation name="orient" site="s1" refsite="s2"/>
+      <motor name="motor2" joint="jnt2"/>
+    </actuator>
+  </mujoco>
+  )";
+  char error[1024];
+  MjModelPtr m = LoadModelFromString(xml, error, sizeof(error));
+  ASSERT_THAT(m.get(), NotNull()) << error;
+  MjDataPtr d = MakeData(m);
+
+  // orient has outadr=0, outnum=3; motor2 has index=1, outadr=3
+  ASSERT_EQ(m->actuator_outadr[1], 3);
+  const std::vector<mjtNum> orient_lr(m->actuator_lengthrange,
+                                      m->actuator_lengthrange + 6);
+
+  mjLROpt opt;
+  mj_defaultLROpt(&opt);
+  opt.mode = mjLRMODE_ALL;
+  opt.uselimit = 0;
+
+  EXPECT_EQ(mj_setLengthRange(m.get(), d.get(), 1, &opt, error, sizeof(error)),
+            1)
+      << error;
+  for (int i = 0; i < 6; i++) {
+    EXPECT_MJTNUM_EQ(m->actuator_lengthrange[i], orient_lr[i]);
+  }
+  EXPECT_LT(m->actuator_lengthrange[2 * 3], m->actuator_lengthrange[2 * 3 + 1]);
+}
+
 }  // namespace
 }  // namespace mujoco

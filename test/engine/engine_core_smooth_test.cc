@@ -2303,5 +2303,43 @@ TEST_F(CoreSmoothTest, KinematicsQuatsMatchMats) {
   }
 }
 
+TEST_F(CoreSmoothTest, SliderCrankAfterOrientationActuatorUsesOwnCranklength) {
+  static constexpr char xml[] = R"(
+  <mujoco>
+    <worldbody>
+      <site name="ref"/>
+      <site name="slider"/>
+      <body>
+        <freejoint/>
+        <geom size="0.1"/>
+        <site name="ee"/>
+      </body>
+      <body>
+        <joint name="j" type="slide" axis="0 0 1"/>
+        <geom size="0.1"/>
+        <site name="crank"/>
+      </body>
+    </worldbody>
+    <actuator>
+      <orientation name="orient" site="ee" refsite="ref" kp="1" dampratio="1"/>
+      <general name="sc" cranksite="crank" slidersite="slider" cranklength="0.5"/>
+    </actuator>
+  </mujoco>
+  )";
+  char error[1024];
+  MjModelPtr model = LoadModelFromString(xml, error, sizeof(error));
+  ASSERT_THAT(model.get(), NotNull()) << error;
+  int sc = mj_name2id(model.get(), mjOBJ_ACTUATOR, "sc");
+  ASSERT_EQ(sc, 1);
+  ASSERT_EQ(model->actuator_outadr[sc], 3);
+  EXPECT_MJTNUM_EQ(model->actuator_cranklength[sc], 0.5);
+
+  MjDataPtr data = MakeData(model);
+  mj_forward(model.get(), data.get());
+
+  // With crank and slider coincident (vec = 0, av = 0), slider-crank length is
+  // -rod = -0.5.
+  EXPECT_MJTNUM_EQ(data->actuator_length[model->actuator_outadr[sc]], -0.5);
+}
 }  // namespace
 }  // namespace mujoco
