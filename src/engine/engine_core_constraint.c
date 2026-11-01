@@ -3395,10 +3395,16 @@ void mj_constraintUpdate_impl(int ne, int nf, int nefc,
           s += 0.5*Dm*NmT*NmT;
         }
 
+        // unit tangent vector
+        mjtNum Uhat[5];
+        for (int j=1; j < dim; j++) {
+          Uhat[j-1] = U[j] / T;
+        }
+
         // force: - ds/djar = dU/djar * ds/dU  (dU/djar = diag(mu, friction))
         force[i] = -Dm*NmT*mu;
         for (int j=1; j < dim; j++) {
-          force[i+j] = -force[i]/T*U[j]*friction[j-1];
+          force[i+j] = -force[i]*Uhat[j-1]*friction[j-1];
         }
 
         // set state
@@ -3409,23 +3415,22 @@ void mj_constraintUpdate_impl(int ne, int nf, int nefc,
           // get Hessian pointer
           mjtNum* H = contact[id[i]].H;
 
-          // set first row: (1, -mu/T * U)
-          mjtNum scl = -mu/T;
+          // set first row: (1, -mu * Uhat)
           H[0] = 1;
           for (int j=1; j < dim; j++) {
-            H[j] = scl*U[j];
+            H[j] = -mu*Uhat[j-1];
           }
 
-          // set upper block: mu*N/T^3 * U*U'
-          scl = mu*N/(T*T*T);
+          // set upper block: (mu*N/T) * Uhat*Uhat'
+          mjtNum scl = mu*(N/T);
           for (int k=1; k < dim; k++) {
             for (int j=k; j < dim; j++) {
-              H[k*dim+j] = scl*U[j]*U[k];
+              H[k*dim+j] = scl*Uhat[j-1]*Uhat[k-1];
             }
           }
 
           // add to diagonal: (mu^2 - mu*N/T) * I
-          scl = mu*mu - mu*N/T;
+          scl = mu*mu - scl;
           for (int j=1; j < dim; j++) {
             H[j*(dim+1)] += scl;
           }

@@ -1966,11 +1966,17 @@ static void PrimalEval(mjPrimalContext* ctx, mjPrimalPnt* p) {
 
         // otherwise middle zone
         else {
-          // cross-product norm squared ||W ^ V||^2 via Lagrange identity to avoid cancellation
+          // unit tangent What = W / T
+          mjtNum What[5];
+          for (int j=0; j < dim-1; j++) {
+            What[j] = W[j] / T;
+          }
+
+          // cross-product norm squared ||What ^ V||^2 via Lagrange identity to avoid cancellation
           mjtNum det = 0;
           for (int j=0; j < dim-1; j++) {
             for (int k=j+1; k < dim-1; k++) {
-              mjtNum djk = W[j]*V[k] - W[k]*V[j];
+              mjtNum djk = What[j]*V[k] - What[k]*V[j];
               det += djk*djk;
             }
           }
@@ -1978,9 +1984,8 @@ static void PrimalEval(mjPrimalContext* ctx, mjPrimalPnt* p) {
           // derivatives
           mjtNum N1 = V0;
           mjtNum T1 = WV / T;
-          mjtNum T2 = det / (T*Tsqr);
           deriv[0] += Dm*(N-mu*T)*(N1-mu*T1);
-          deriv[1] += Dm*((N1-mu*T1)*(N1-mu*T1) + (N-mu*T)*(-mu*T2));
+          deriv[1] += Dm*((N1-mu*T1)*(N1-mu*T1) + (N/T - mu)*(-mu*det));
         }
       }
 

@@ -921,5 +921,48 @@ TEST_F(SolverTest, NewtonFallsBackToCGOnArenaExhaustion) {
   EXPECT_EQ(dense_tight->warning[mjWARN_BADQACC].number, 0);
 }
 
+// Elliptic cone Hessian and PrimalEval remain finite when the initial iterate
+// has a tangential residual T > 0 small enough that T^3 underflows to zero.
+TEST_F(SolverTest, EllipticConeSmallTangentNoNaN) {
+  static constexpr char xml[] = R"(
+  <mujoco>
+    <option cone="elliptic"/>
+    <worldbody>
+      <geom type="plane" size="1 1 .1"/>
+      <body pos="0 0 .099">
+        <freejoint/>
+        <geom size=".1" condim="6" friction="1 .01 .001" solref="-0 -1"/>
+      </body>
+    </worldbody>
+  </mujoco>
+  )";
+
+  char error[1024];
+  MjModelPtr model = LoadModelFromString(xml, error, sizeof(error));
+  ASSERT_THAT(model.get(), NotNull()) << error;
+
+  // zero contact stiffness at rest so efc_aref == 0: a tiny x warmstart gives
+  // N == 0 and T^2 normal but T^3 == 0, i.e. the middle zone of the cone at
+  // alpha = 0 (CG reaches it only via PrimalEval, Newton also via the Hessian)
+  const mjtNum tiny_ax = MjEps(1e-130, 1e-18);
+  for (mjtSolver solver : {mjSOL_NEWTON, mjSOL_CG}) {
+    for (mjtJacobian jacobian : {mjJAC_DENSE, mjJAC_SPARSE}) {
+      model->opt.solver = solver;
+      model->opt.jacobian = jacobian;
+      MjDataPtr data = MakeData(model);
+      data->qacc_warmstart[0] = tiny_ax;
+
+      mj_step(model.get(), data.get());
+      EXPECT_EQ(data->warning[mjWARN_BADQACC].number, 0)
+          << "solver " << solver << ", jacobian " << jacobian;
+      for (int j = 0; j < model->nv; j++) {
+        EXPECT_FALSE(mju_isBad(data->qacc[j]))
+            << "dof " << j << ", solver " << solver << ", jacobian "
+            << jacobian;
+      }
+    }
+  }
+}
+
 }  // namespace
 }  // namespace mujoco
