@@ -2458,5 +2458,139 @@ TEST_F(SensorTest, FlexContactSensors) {
       << "Floor touch sensor did not detect any force";
 }
 
+// sleeping sensor with delay keeps draining its history buffer
+TEST_F(SensorTest, SleepingDelayedSensorDrainsHistory) {
+  constexpr char xml[] = R"(
+  <mujoco>
+    <option timestep="0.01" gravity="0 0 0">
+      <flag sleep="enable"/>
+    </option>
+    <worldbody>
+      <body>
+        <joint name="slide" type="slide"/>
+        <geom size="0.1"/>
+      </body>
+    </worldbody>
+    <sensor>
+      <jointpos joint="slide" delay="0.12" nsample="25"/>
+    </sensor>
+  </mujoco>
+  )";
+  char error[1024];
+  MjModelPtr model = LoadModelFromString(xml, error, sizeof(error));
+  ASSERT_THAT(model.get(), NotNull()) << error;
+  MjDataPtr data = MakeData(model);
+
+  // hold position at 10
+  for (int step = 0; step < 10; ++step) {
+    data->qpos[0] = 10.0;
+    mj_step(model.get(), data.get());
+  }
+
+  // move to 0 at rest, step until the tree falls asleep
+  data->qpos[0] = 0.0;
+  data->qvel[0] = 0.0;
+  for (int step = 0; step < 15; ++step) {
+    mj_step(model.get(), data.get());
+  }
+  ASSERT_EQ(data->tree_awake[0], 0);
+
+  // advance while asleep: delayed reading must drain to 0, not stay at 10
+  for (int step = 0; step < 15; ++step) {
+    mj_step(model.get(), data.get());
+  }
+  EXPECT_NEAR(data->sensordata[0], 0.0, MjTol(1e-10, 1e-5));
+}
+
+// sleeping sensor with interval keeps sampling
+TEST_F(SensorTest, SleepingIntervalSensorSamples) {
+  constexpr char xml[] = R"(
+  <mujoco>
+    <option timestep="0.01" gravity="0 0 0">
+      <flag sleep="enable"/>
+    </option>
+    <worldbody>
+      <body>
+        <joint name="slide" type="slide"/>
+        <geom size="0.1"/>
+      </body>
+    </worldbody>
+    <sensor>
+      <jointpos joint="slide" interval="0.3 0" nsample="5"/>
+    </sensor>
+  </mujoco>
+  )";
+  char error[1024];
+  MjModelPtr model = LoadModelFromString(xml, error, sizeof(error));
+  ASSERT_THAT(model.get(), NotNull()) << error;
+  MjDataPtr data = MakeData(model);
+
+  // hold position at 10, sampled at t=0
+  for (int step = 0; step < 10; ++step) {
+    data->qpos[0] = 10.0;
+    mj_step(model.get(), data.get());
+  }
+
+  // move to 0 at rest, step until the tree falls asleep
+  data->qpos[0] = 0.0;
+  data->qvel[0] = 0.0;
+  for (int step = 0; step < 15; ++step) {
+    mj_step(model.get(), data.get());
+  }
+  ASSERT_EQ(data->tree_awake[0], 0);
+
+  // advance past the t=0.3 sample while asleep: reading must update to 0
+  for (int step = 0; step < 15; ++step) {
+    mj_step(model.get(), data.get());
+  }
+  EXPECT_EQ(data->tree_awake[0], 0);
+  EXPECT_NEAR(data->sensordata[0], 0.0, MjTol(1e-10, 1e-5));
+}
+
+// potential energy includes joint and tendon springs of sleeping trees
+TEST_F(SensorTest, EnergyPosIncludesSleepingSprings) {
+  static constexpr char xml[] = R"(
+  <mujoco>
+    <option gravity="0 0 -10">
+      <flag sleep="enable" energy="enable"/>
+    </option>
+    <worldbody>
+      <body name="b1">
+        <joint name="j1" type="slide" axis="0 0 1" stiffness="5" springref="1"/>
+        <geom size="0.1" mass="1"/>
+      </body>
+      <body name="b2" pos="2 0 0">
+        <joint name="j2" type="slide" axis="1 0 0"/>
+        <geom size="0.1" mass="1"/>
+      </body>
+    </worldbody>
+    <tendon>
+      <fixed stiffness="5" springlength="1">
+        <joint joint="j1" coef="1"/>
+      </fixed>
+    </tendon>
+  </mujoco>
+  )";
+  char error[1024];
+  MjModelPtr m = LoadModelFromString(xml, error, sizeof(error));
+  ASSERT_THAT(m.get(), NotNull()) << error;
+  MjDataPtr d = MakeData(m);
+
+  // at qpos=0 b1 is in equilibrium: gravity (-10) balanced by joint spring (+5)
+  // and tendon spring (+5), storing 0.5*5*1^2 + 0.5*5*1^2 = 5
+  d->qvel[1] = 1.0;  // keep b2 awake
+  mj_forward(m.get(), d.get());
+  ASSERT_EQ(d->body_awake[1], mjS_AWAKE);
+  EXPECT_NEAR(d->energy[0], 5.0, MjTol(1e-7, 1e-4));
+
+  // step until b1 falls asleep, energy must be unchanged
+  for (int i = 0; i < 20; i++) {
+    mj_step(m.get(), d.get());
+  }
+  ASSERT_EQ(d->body_awake[1], mjS_ASLEEP);
+  ASSERT_EQ(d->body_awake[2], mjS_AWAKE);
+  EXPECT_NEAR(d->energy[0], 5.0, MjTol(1e-7, 1e-4));
+}
+
 }  // namespace
 }  // namespace mujoco

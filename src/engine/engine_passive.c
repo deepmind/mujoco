@@ -19,6 +19,7 @@
 #include <mujoco/mjdata.h>
 #include <mujoco/mjmacro.h>
 #include <mujoco/mjmodel.h>
+#include <mujoco/mjtype.h>
 #include "engine/engine_callback.h"
 #include "engine/engine_core_constraint.h"
 #include "engine/engine_core_util.h"
@@ -824,7 +825,8 @@ static void mj_springdamper(const mjModel* m, mjData* d) {
 
   // flex elasticity
   for (int f=0; f < m->nflex; f++) {
-    if (m->flex_rigid[f]) {
+    // skip rigid, sleeping or static flex
+    if (m->flex_rigid[f] || (sleep_filter && mj_sleepState(m, d, mjOBJ_FLEX, f) != mjS_AWAKE)) {
       continue;
     }
 
@@ -856,6 +858,11 @@ static void mj_springdamper(const mjModel* m, mjData* d) {
 
     // disabled or rigid: nothing to do
     if (m->flex_rigid[f] || (stiffness == 0 && damping == 0)) {
+      continue;
+    }
+
+    // skip sleeping or static flex
+    if (sleep_filter && mj_sleepState(m, d, mjOBJ_FLEX, f) != mjS_AWAKE) {
       continue;
     }
 

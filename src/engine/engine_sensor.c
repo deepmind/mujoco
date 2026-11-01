@@ -21,6 +21,7 @@
 #include <mujoco/mjmodel.h>
 #include <mujoco/mjplugin.h>
 #include <mujoco/mjsan.h>  // IWYU pragma: keep
+#include <mujoco/mjtype.h>
 #include "engine/engine_callback.h"
 #include "engine/engine_collision_convex.h"
 #include "engine/engine_collision_sdf.h"
@@ -1594,8 +1595,9 @@ void mj_sensorPos(const mjModel* m, mjData* d) {
   for (int i=0; i < nsensor; i++) {
     mjtSensor type = (mjtSensor) m->sensor_type[i];
 
-    // skip sleeping sensor
-    if (sleep_filter && mj_sleepState(m, d, mjOBJ_SENSOR, i) == mjS_ASLEEP) {
+    // skip sleeping sensor without history
+    if (sleep_filter && mj_sleepState(m, d, mjOBJ_SENSOR, i) == mjS_ASLEEP &&
+        m->sensor_history[2*i] == 0) {
       continue;
     }
 
@@ -1647,8 +1649,9 @@ void mj_sensorVel(const mjModel* m, mjData* d) {
       continue;
     }
 
-    // skip sleeping sensor
-    if (sleep_filter && mj_sleepState(m, d, mjOBJ_SENSOR, i) == mjS_ASLEEP) {
+    // skip sleeping sensor without history
+    if (sleep_filter && mj_sleepState(m, d, mjOBJ_SENSOR, i) == mjS_ASLEEP &&
+        m->sensor_history[2*i] == 0) {
       continue;
     }
 
@@ -1696,8 +1699,9 @@ void mj_sensorAcc(const mjModel* m, mjData* d) {
 
   // process sensors matching stage
   for (int i=0; i < m->nsensor; i++) {
-    // skip sleeping sensor
-    if (sleep_filter && mj_sleepState(m, d, mjOBJ_SENSOR, i) == mjS_ASLEEP) {
+    // skip sleeping sensor without history
+    if (sleep_filter && mj_sleepState(m, d, mjOBJ_SENSOR, i) == mjS_ASLEEP &&
+        m->sensor_history[2*i] == 0) {
       continue;
     }
 
@@ -1751,14 +1755,10 @@ void mj_energyPos(const mjModel* m, mjData* d) {
     }
   }
 
-  int sleep_filter = mjENABLED(mjENBL_SLEEP) && d->nbody_awake < m->nbody;
-
   // add joint-level springs
   if (!mjDISABLED(mjDSBL_SPRING)) {
     int nbody = m->nbody;
     for (int b=1; b < nbody; b++) {
-      if (sleep_filter && d->body_awake[b] != mjS_AWAKE) continue;
-
       int jnt_start = m->body_jntadr[b];
       int jnt_end = jnt_start + m->body_jntnum[b];
       for (int j=jnt_start; j < jnt_end; j++) {
@@ -1805,11 +1805,6 @@ void mj_energyPos(const mjModel* m, mjData* d) {
   // add tendon-level springs
   if (!mjDISABLED(mjDSBL_SPRING)) {
     for (int i=0; i < m->ntendon; i++) {
-      // skip sleeping or static tendon
-      if (sleep_filter && mj_sleepState(m, d, mjOBJ_TENDON, i) != mjS_AWAKE) {
-        continue;
-      }
-
       stiffness = m->tendon_stiffness[i];
       const mjtNum* poly = m->tendon_stiffnesspoly + mjNPOLY*i;
       mjtNum length = d->ten_length[i];
