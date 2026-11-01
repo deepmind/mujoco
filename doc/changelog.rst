@@ -200,6 +200,11 @@ Compiler
 
      **Migration:** Remove redundant ``<include>`` elements referencing the same file.
 
+   - :ref:`Height fields<asset-hfield>` with :ref:`nrow<asset-hfield-nrow>` or :ref:`ncol<asset-hfield-ncol>` less than
+     2 are now rejected at compile time.
+
+     **Migration:** Ensure height fields have ``nrow >= 2`` and ``ncol >= 2``.
+
 - :ref:`default/tendon<default-tendon>` in MJCF now accepts :ref:`armature<tendon-fixed-armature>`,
   :ref:`actuatorfrclimited<tendon-spatial-actuatorfrclimited>`, and
   :ref:`actuatorfrcrange<tendon-spatial-actuatorfrcrange>` (previously emitted when saving XML, which then failed
@@ -248,6 +253,8 @@ Bug fixes
     ``gridsize`` differs from the inherited default), compares material :ref:`layer<material-layer>` textures, camera
     :ref:`sensorsize<body-camera-sensorsize>`, and light :ref:`texture<body-light-texture>` against default classes, and
     writes all attributes on plugin-backed meshes and :at:`reftype`/:at:`refname` on plugin sensors.
+- :ref:`mj_ray` now scales SDF hit distances by ``1 / ||vec||`` for non-unit ray vectors, and ``mju_rayTriangle``
+  rejects triangle intersections behind the ray origin.
 
 Documentation
 ^^^^^^^^^^^^^

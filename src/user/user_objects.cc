@@ -5623,8 +5623,8 @@ void mjCHField::LoadCustom(mjResource* resource) {
   ncol      = pint[1];
 
   // check dimensions
-  if (nrow < 1 || ncol < 1) {
-    throw mjCError(this, "non-positive hfield dimensions in file '%s'", resource->name);
+  if (nrow < 2 || ncol < 2) {
+    throw mjCError(this, "hfield dimensions must be at least 2 in file '%s'", resource->name);
   }
 
   // check buffer size
@@ -5647,6 +5647,9 @@ void mjCHField::LoadPNG(mjResource* resource) {
 
   ncol = image.Width();
   nrow = image.Height();
+  if (nrow < 2 || ncol < 2) {
+    throw mjCError(this, "hfield dimensions must be at least 2 in file '%s'", resource->name);
+  }
 
   // copy image data over with rows reversed
   data.reserve(nrow * ncol);
@@ -5662,6 +5665,7 @@ void mjCHField::Compile(const mjVFS* vfs) {
 
   // copy userdata into data
   if (!userdata_.empty()) {
+    if (nrow < 2 || ncol < 2) { throw mjCError(this, "hfield dimensions must be at least 2"); }
     if (nrow * ncol != userdata_.size()) {
       throw mjCError(this, "elevation data length must match nrow*ncol");
     }
@@ -5748,6 +5752,7 @@ void mjCHField::Compile(const mjVFS* vfs) {
 
   // make sure hfield was specified (from file or manually)
   if (nrow < 1 || ncol < 1 || data.empty()) { throw mjCError(this, "hfield not specified"); }
+  if (nrow < 2 || ncol < 2) { throw mjCError(this, "hfield dimensions must be at least 2"); }
 
   // set elevation data to [0-1] range
   float emin = 1E+10, emax = -1E+10;

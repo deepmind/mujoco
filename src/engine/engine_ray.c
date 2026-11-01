@@ -187,6 +187,9 @@ mjtNum mju_rayTriangle(mjtNum v[][3], const mjtNum lpnt[3], const mjtNum lvec[3]
 
   // compute distance
   mjtNum x = -mju_dot3(dif[2], nrm) / denom;
+  if (x < 0) {
+    return -1;
+  }
 
   // compute normal if given
   if (normal) {
@@ -599,10 +602,10 @@ mjtNum mj_rayHfield(const mjModel* m, const mjData* d, int geomid,
   mjtNum x = ray_box(base_pos, xmat, base_size, pnt, vec,
                      NULL, normal ? normal_base : NULL);
 
-  // check top box: done if no intersection
+  // check top box: done if no intersection or degenerate dimensions
   mjtNum all[6];
   mjtNum top_intersect = ray_box(top_pos, xmat, top_size, pnt, vec, all, NULL);
-  if (top_intersect < 0) {
+  if (top_intersect < 0 || nrow < 2 || ncol < 2) {
     if (normal && x >= 0) mju_copy3(normal, normal_base);
     return x;
   }
@@ -918,7 +921,13 @@ static mjtNum mj_raySdf(const mjModel* m, const mjData* d, int g,
   ray_map(d->geom_xpos + 3*g, d->geom_xmat + 9*g, pnt, vec, lpnt, lvec);
 
   // unit direction
-  mju_normalize3(lvec);
+  mjtNum norm = mju_normalize3(lvec);
+  if (norm < mjMINVAL) {
+    if (sdf_ptr) {
+      sdf_ptr->reset(m, NULL, (void*)(d->plugin_data[instance]), instance);
+    }
+    return -1;
+  }
 
   // ray marching, see e.g. https://en.wikipedia.org/wiki/Ray_marching
   for (int i=0; i < 40; i++) {
@@ -932,7 +941,7 @@ static mjtNum mj_raySdf(const mjModel* m, const mjData* d, int g,
         mju_normalize3(normal);
         mju_mulMatVec3(normal, d->geom_xmat + 9*g, normal);
       }
-      return distance_total;
+      return distance_total / norm;
     }
     if (distance > 1e6) {
       // no intersection
@@ -1005,8 +1014,9 @@ mjtNum mj_rayFlex(const mjModel* m, const mjData* d, int flex_layer,
                   const mjtNum vec[3], int vertid[1], mjtNum normal[3]) {
   int dim = m->flex_dim[flexid];
 
-  // clear normal if given
+  // clear normal and vertid if given
   if (normal) mju_zero3(normal);
+  if (vertid) *vertid = -1;
 
   // compute bounding box
   mjtNum box[3][2] = {{0, 0}, {0, 0}, {0, 0}};
@@ -1063,7 +1073,7 @@ mjtNum mj_rayFlex(const mjModel* m, const mjData* d, int flex_layer,
   mjtNum normal_local[3];
 
   // check edges if rendered, or if skin
-  if (flg_edge || (dim > 1 && flg_skin)) {
+  if ((flg_edge || (dim > 1 && flg_skin)) && m->flex_edgenum[flexid] > 0) {
     int edge_end = m->flex_edgeadr[flexid]+m->flex_edgenum[flexid];
     for (int e=m->flex_edgeadr[flexid]; e < edge_end; e++) {
       // get vertices for this edge
@@ -1190,6 +1200,9 @@ mjtNum mj_rayFlex(const mjModel* m, const mjData* d, int flex_layer,
 // intersect ray with skin, return nearest vertex id
 mjtNum mju_raySkin(int nface, int nvert, const int* face, const float* vert,
                    const mjtNum pnt[3], const mjtNum vec[3], int vertid[1]) {
+  // clear vertid if given
+  if (vertid) *vertid = -1;
+
   // compute bounding box
   mjtNum box[3][2] = {{0, 0}, {0, 0}, {0, 0}};
   for (int i=0; i < nvert; i++) {
@@ -1383,7 +1396,8 @@ void mju_multiRayPrepare(const mjModel* m, const mjData* d, const mjtNum pnt[3],
       }
 
       // add to geom_eliminate if distance of bounding sphere is above cutoff
-      if (mju_dist3(d->geom_xpos+3*g, pnt) > cutoff+m->geom_rbound[g]) {
+      if (m->geom_rbound[g] > 0 &&
+          mju_dist3(d->geom_xpos+3*g, pnt) > cutoff+m->geom_rbound[g]) {
         geom_eliminate[g] = 1;
         continue;
       }
@@ -1422,7 +1436,10 @@ void mju_multiRayPrepare(const mjModel* m, const mjData* d, const mjtNum pnt[3],
       // add distance-dependent angular margin to account for edge/face curvature
       // margin = atan(max_half_size / dist) bounds the angular deviation of face centers
       mjtNum max_half = mju_max(aabb[3], mju_max(aabb[4], aabb[5]));
-      mjtNum dist = mju_dist3(pnt, xpos);
+      mjtNum center[3];
+      mju_mulMatVec3(center, xmat, aabb);
+      mju_addTo3(center, xpos);
+      mjtNum dist = mju_dist3(pnt, center);
       if (dist > mjMINVAL) {
         mjtNum margin = mju_atan2(max_half, dist);
         AABB[0] -= margin;
@@ -1478,7 +1495,8 @@ static mjtNum mju_singleRay(const mjModel* m, mjData* d, const mjtNum pnt[3], co
       mjtNum center[3];
       mjtNum* size = pos + 3;
       mjtNum ssz = size[0]*size[0] + size[1]*size[1] + size[2]*size[2];
-      mju_add3(center, pos, d->xipos+3*b);
+      mju_mulMatVec3(center, d->ximat+9*b, pos);
+      mju_addTo3(center, d->xipos+3*b);
       if (ray_sphere(center, NULL, ssz, pnt, vec, NULL) < 0) {
         continue;
       }
@@ -1556,8 +1574,10 @@ void mj_multiRay(const mjModel* m, mjData* d, const mjtNum pnt[3], const mjtNum*
 
   // loop over rays
   for (int i=0; i < nray; i++) {
-    if (mju_dot3(vec+3*i, vec+3*i) < mjMINVAL) {
+    if (mju_norm3(vec+3*i) < mjMINVAL) {
       dist[i] = -1;
+      if (geomid) geomid[i] = -1;
+      if (normal) mju_zero3(normal+3*i);
     } else {
       int* p_geomid = geomid ? geomid + i : NULL;
       dist[i] = mju_singleRay(m, d, pnt, vec+3*i, geom_eliminate, geom_ba, p_geomid,

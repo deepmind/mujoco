@@ -684,5 +684,345 @@ TEST_F(RayTest, RayNormal) {
   }
 }
 
+TEST_F(RayTest, MultiRayCutoffInfinitePlane) {
+  static constexpr char kXml[] = R"(
+  <mujoco>
+    <worldbody>
+      <geom name="ground" type="plane" size="0 0 1"/>
+    </worldbody>
+  </mujoco>
+  )";
+  char error[1024];
+  MjModelPtr m = LoadModelFromString(kXml, error, sizeof(error));
+  ASSERT_THAT(m.get(), NotNull()) << error;
+  MjDataPtr d = MakeData(m);
+  ASSERT_THAT(d, NotNull());
+  mj_forward(m.get(), d.get());
+
+  // Plane at z=0 is at distance 1 <= cutoff=5 even though dist(xpos, pnt) > 5.
+  mjtNum pnt[3] = {10.0, 0.0, 1.0};
+  mjtNum vec[3] = {0.0, 0.0, -1.0};
+  mjtNum cutoff = 5.0;
+
+  int geomid_single = -1, geomid_multi = -1;
+  mjtNum dist_single = mj_ray(m.get(), d.get(), pnt, vec, nullptr, 1, -1,
+                              &geomid_single, nullptr);
+  mjtNum dist_multi = -1;
+  mj_multiRay(m.get(), d.get(), pnt, vec, nullptr, 1, -1, &geomid_multi,
+              &dist_multi, nullptr, 1, cutoff);
+
+  EXPECT_EQ(geomid_single, 0);
+  EXPECT_MJTNUM_EQ(dist_single, 1.0);
+  EXPECT_EQ(geomid_multi, geomid_single);
+  EXPECT_MJTNUM_EQ(dist_multi, dist_single);
+}
+
+TEST_F(RayTest, SingleRayRotatedBodyBvh) {
+  static constexpr char kRotatedBodyModel[] = R"(
+  <mujoco>
+    <compiler angle="degree"/>
+    <worldbody>
+      <body pos="0 0 0" euler="0 90 0">
+        <inertial pos="0 0 0" mass="1" diaginertia="1 1 1"/>
+        <geom type="sphere" pos="1 0 0" size=".1"/>
+      </body>
+    </worldbody>
+  </mujoco>
+  )";
+  char error[1024];
+  MjModelPtr m = LoadModelFromString(kRotatedBodyModel, error, sizeof(error));
+  ASSERT_THAT(m.get(), NotNull()) << error;
+  ASSERT_EQ(m->nbvh, 1);
+  MjDataPtr d = MakeData(m);
+  ASSERT_THAT(d.get(), NotNull());
+  mj_forward(m.get(), d.get());
+
+  // Rotated by 90 deg around Y: local (1, 0, 0) maps to world (0, 0, -1).
+  mjtNum pnt[] = {0, 0, -3};
+  mjtNum vec[] = {0, 0, 1};
+  mjtNum dist = -1;
+  int rgeomid = -1;
+
+  mj_multiRay(m.get(), d.get(), pnt, vec, nullptr, 1, -1, &rgeomid, &dist,
+              nullptr, 1, mjMAXVAL);
+
+  EXPECT_EQ(rgeomid, 0);
+  EXPECT_NEAR(dist, 1.9, MjTol(1e-12, 1e-5));
+}
+
+TEST_F(RayTest, MultiRayOffsetAABBFromGeomOrigin) {
+  static constexpr char kXml[] = R"(
+  <mujoco>
+    <asset>
+      <mesh name="boxmesh"
+        vertex="-1 -1 -1  1 -1 -1  1  1 -1 -1  1 -1
+                -1 -1  1  1 -1  1  1  1  1 -1  1  1"/>
+    </asset>
+    <worldbody>
+      <body>
+        <geom type="mesh" mesh="boxmesh"/>
+      </body>
+    </worldbody>
+  </mujoco>
+  )";
+  char error[1024];
+  MjModelPtr m = LoadModelFromString(kXml, error, sizeof(error));
+  ASSERT_THAT(m.get(), NotNull()) << error;
+  MjDataPtr d = MakeData(m);
+  ASSERT_THAT(d, NotNull());
+  mj_forward(m.get(), d.get());
+
+  // Shift mesh and local AABB by +2 along x so pnt = geom_xpos = (0,0,0) is
+  // outside the AABB [1, 3] x [-1, 1] x [-1, 1].
+  for (int i = 0; i < m->nmeshvert; ++i) {
+    m->mesh_vert[3 * i + 0] += 2.0f;
+  }
+  m->geom_aabb[0] = 2.0;
+  m->geom_aabb[1] = 0.0;
+  m->geom_aabb[2] = 0.0;
+  m->geom_aabb[3] = 1.0;
+  m->geom_aabb[4] = 1.0;
+  m->geom_aabb[5] = 1.0;
+  m->geom_rbound[0] = 4.0;
+  for (int i = 0; i < m->nbvh; ++i) {
+    m->bvh_aabb[6 * i + 0] = 2.0;
+    m->bvh_aabb[6 * i + 3] = 1.0;
+    m->bvh_aabb[6 * i + 4] = 1.0;
+    m->bvh_aabb[6 * i + 5] = 1.0;
+  }
+
+  mjtNum pnt[3] = {0.0, 0.0, 0.0};
+  mjtNum vec[3] = {1.0, 0.0, 0.9};
+  mjtNum geom_ba[4];
+  int flags[1] = {0};
+  mju_multiRayPrepare(m.get(), d.get(), pnt, nullptr, nullptr, 1, -1, mjMAXVAL,
+                      geom_ba, flags);
+
+  mjtNum theta_ray = mju_atan2(1.0, 0.9);
+  EXPECT_LE(geom_ba[1], theta_ray);
+  EXPECT_GE(geom_ba[3], theta_ray);
+
+  int geomid_single = -1, geomid_multi = -1;
+  mjtNum dist_single = mj_ray(m.get(), d.get(), pnt, vec, nullptr, 1, -1,
+                              &geomid_single, nullptr);
+  mjtNum dist_multi = -1;
+  mj_multiRay(m.get(), d.get(), pnt, vec, nullptr, 1, -1, &geomid_multi,
+              &dist_multi, nullptr, 1, mjMAXVAL);
+  EXPECT_EQ(geomid_multi, geomid_single);
+  EXPECT_MJTNUM_EQ(dist_multi, dist_single);
+}
+
+TEST_F(RayTest, RaySdfNonUnitVector) {
+  static constexpr char kModel[] = R"(
+  <mujoco>
+    <extension>
+      <plugin plugin="mujoco.sdf.torus">
+        <instance name="torus">
+          <config key="radius1" value="1"/>
+          <config key="radius2" value="0.3"/>
+        </instance>
+      </plugin>
+    </extension>
+    <asset>
+      <mesh name="torus">
+        <plugin instance="torus"/>
+      </mesh>
+    </asset>
+    <worldbody>
+      <geom type="sdf" mesh="torus">
+        <plugin instance="torus"/>
+      </geom>
+    </worldbody>
+  </mujoco>
+  )";
+  char error[1024];
+  MjModelPtr model = LoadModelFromString(kModel, error, sizeof(error));
+  ASSERT_THAT(model.get(), NotNull()) << error;
+  MjDataPtr data = MakeData(model);
+  mj_forward(model.get(), data.get());
+
+  mjtNum pnt[3] = {0, 1, 2};
+  mjtNum vec_unit[3] = {0, 0, -1};
+  mjtNum vec_double[3] = {0, 0, -2};
+
+  int geomid1 = -1, geomid2 = -1;
+  mjtNum dist_unit = mj_ray(model.get(), data.get(), pnt, vec_unit, nullptr, 1,
+                            -1, &geomid1, nullptr);
+  mjtNum dist_double = mj_ray(model.get(), data.get(), pnt, vec_double, nullptr,
+                              1, -1, &geomid2, nullptr);
+
+  ASSERT_GE(dist_unit, 0);
+  ASSERT_GE(dist_double, 0);
+  EXPECT_EQ(geomid1, 0);
+  EXPECT_EQ(geomid2, 0);
+  EXPECT_NEAR(dist_double, dist_unit / 2.0, MjTol(1e-5, 1e-4));
+}
+
+TEST_F(RayTest, MultiRayShortRayOutputsInitialized) {
+  static constexpr char kPlaneXml[] = R"(
+  <mujoco>
+    <worldbody>
+      <geom type="plane" size="1 1 1" contype="0" conaffinity="0"/>
+    </worldbody>
+  </mujoco>
+  )";
+  char error[1024];
+  MjModelPtr m = LoadModelFromString(kPlaneXml, error, sizeof(error));
+  ASSERT_THAT(m.get(), NotNull()) << error;
+  MjDataPtr d = MakeData(m);
+  ASSERT_THAT(d.get(), NotNull());
+  mj_forward(m.get(), d.get());
+
+  mjtNum pnt[] = {0, 0, 0.9};
+  // Ray 0 has norm 0 (< mjMINVAL); Ray 1 has norm 1e-10 (>= mjMINVAL, but
+  // norm^2 = 1e-20 < mjMINVAL) and should match mj_ray on a plane geom.
+  mjtNum vec[6] = {0, 0, 0, 0, 0, -1e-10};
+  int geomid[2] = {999, 999};
+  mjtNum dist[2] = {123.0, 123.0};
+  mjtNum normal[6] = {1.0, 2.0, 3.0, 4.0, 5.0, 6.0};
+
+  mj_multiRay(m.get(), d.get(), pnt, vec, nullptr, 1, -1, geomid, dist, normal,
+              2, mjMAXVAL);
+
+  EXPECT_EQ(dist[0], -1);
+  EXPECT_EQ(geomid[0], -1);
+  EXPECT_EQ(normal[0], 0);
+  EXPECT_EQ(normal[1], 0);
+  EXPECT_EQ(normal[2], 0);
+
+  int single_geomid = -1;
+  mjtNum single_dist = mj_ray(m.get(), d.get(), pnt, vec + 3, nullptr, 1, -1,
+                              &single_geomid, nullptr);
+  EXPECT_EQ(single_geomid, 0);
+  EXPECT_EQ(geomid[1], single_geomid);
+  ASSERT_GT(single_dist, 0);
+  EXPECT_NEAR(dist[1] / single_dist, 1, MjTol(1e-12, 1e-5));
+}
+
+TEST_F(RayTest, RayTriangleBehindOriginReturnsMinusOne) {
+  mjtNum v[3][3] = {
+      {1, 0, -5},
+      {0, 1, -5},
+      {-1, -1, -5},
+  };
+  const mjtNum lpnt[3] = {0, 0, 0};
+  const mjtNum lvec[3] = {0, 0, 1};
+  const mjtNum b0[3] = {1, 0, 0};
+  const mjtNum b1[3] = {0, 1, 0};
+  mjtNum normal[3] = {9, 9, 9};
+
+  mjtNum dist = mju_rayTriangle(v, lpnt, lvec, b0, b1, normal);
+  EXPECT_EQ(dist, -1);
+  EXPECT_THAT(normal, ElementsAre(0, 0, 0));
+}
+
+TEST_F(RayTest, RayFlexAndSkinInitializeVertidAndCheckEdgelessVertices) {
+  static constexpr char kFlexXml[] = R"(
+  <mujoco>
+    <worldbody>
+      <body name="b" pos="0 0 1">
+        <geom size="0.05"/>
+      </body>
+    </worldbody>
+    <deformable>
+      <flex name="f" dim="1" radius="0.1" body="b b" vertex="0 0 0  1 0 0"
+            element="0 1"/>
+    </deformable>
+  </mujoco>
+  )";
+  char error[1024];
+  MjModelPtr model = LoadModelFromString(kFlexXml, error, sizeof(error));
+  ASSERT_THAT(model.get(), NotNull()) << error;
+  MjDataPtr data = MakeData(model);
+  mj_forward(model.get(), data.get());
+
+  // mj_rayFlex on a miss must initialize *vertid to -1.
+  const mjtNum miss_pnt[3] = {0, 0, 5};
+  const mjtNum miss_vec[3] = {0, 0, 1};
+  int vertid = 42;
+  mjtNum dist = mj_rayFlex(model.get(), data.get(), /*flex_layer=*/0,
+                           /*flg_vert=*/1, /*flg_edge=*/1, /*flg_face=*/1,
+                           /*flg_skin=*/1, /*flexid=*/0, miss_pnt, miss_vec,
+                           &vertid, nullptr);
+  EXPECT_EQ(dist, -1);
+  EXPECT_EQ(vertid, -1);
+
+  // mju_raySkin on a miss must initialize *vertid to -1.
+  const int face[3] = {0, 1, 2};
+  const float skin_vert[9] = {0, 0, 0, 1, 0, 0, 0, 1, 0};
+  int skin_vertid = 42;
+  mjtNum skin_dist =
+      mju_raySkin(1, 3, face, skin_vert, miss_pnt, miss_vec, &skin_vertid);
+  EXPECT_EQ(skin_dist, -1);
+  EXPECT_EQ(skin_vertid, -1);
+
+  // When flex_edgenum == 0, mj_rayFlex with flg_vert=1 and flg_edge=1 must
+  // still test vertices.
+  model->flex_edgenum[0] = 0;
+  const mjtNum hit_pnt[3] = {0, 0, 0};
+  const mjtNum hit_vec[3] = {0, 0, 1};
+  vertid = -1;
+  dist = mj_rayFlex(model.get(), data.get(), /*flex_layer=*/0,
+                    /*flg_vert=*/1, /*flg_edge=*/1, /*flg_face=*/0,
+                    /*flg_skin=*/0, /*flexid=*/0, hit_pnt, hit_vec, &vertid,
+                    nullptr);
+  EXPECT_NEAR(dist, 0.9, MjTol(1e-12, 1e-6));
+  EXPECT_EQ(vertid, 0);
+}
+
+TEST_F(RayTest, RayHfieldDegenerateDimensions) {
+  static constexpr char kInvalidXml[] = R"(
+  <mujoco>
+    <asset>
+      <hfield name="hf" nrow="1" ncol="2" size="1 1 1 1" elevation="0 0"/>
+    </asset>
+    <worldbody>
+      <geom type="hfield" hfield="hf"/>
+    </worldbody>
+  </mujoco>
+  )";
+  char error[1024];
+  MjModelPtr invalid_model =
+      LoadModelFromString(kInvalidXml, error, sizeof(error));
+  EXPECT_EQ(invalid_model, nullptr);
+  EXPECT_THAT(error, ::testing::HasSubstr("at least 2"));
+
+  // Runtime guard in mj_rayHfield when nrow < 2 or ncol < 2.
+  static constexpr char kValidXml[] = R"(
+  <mujoco>
+    <asset>
+      <hfield name="hf" nrow="2" ncol="2" size="1 1 1 1" elevation="0 1 0 1"/>
+    </asset>
+    <worldbody>
+      <geom type="hfield" hfield="hf"/>
+    </worldbody>
+  </mujoco>
+  )";
+  MjModelPtr valid_model = LoadModelFromString(kValidXml, error, sizeof(error));
+  ASSERT_THAT(valid_model, NotNull()) << error;
+  valid_model->hfield_nrow[0] = 1;
+  valid_model->hfield_ncol[0] = 2;
+  MjDataPtr valid_data = MakeData(valid_model);
+  mj_forward(valid_model.get(), valid_data.get());
+
+  // Horizontal ray hitting the +x side of the top box (would read past row 0
+  // and return 1.0 without the guard).
+  mjtNum side_pnt[3] = {2, 0, 0.5};
+  mjtNum side_vec[3] = {-1, 0, 0};
+  mjtNum normal[3] = {-1, -1, -1};
+  mjtNum side_dist = mj_ray(valid_model.get(), valid_data.get(), side_pnt,
+                            side_vec, nullptr, 1, -1, nullptr, normal);
+  EXPECT_EQ(side_dist, -1);
+  EXPECT_THAT(normal, ElementsAre(0, 0, 0));
+
+  // Vertical ray still returns base-box hit and base normal.
+  mjtNum pnt[3] = {0, 0, 2};
+  mjtNum vec[3] = {0, 0, -1};
+  mjtNum dist = mj_ray(valid_model.get(), valid_data.get(), pnt, vec, nullptr,
+                       1, -1, nullptr, normal);
+  EXPECT_MJTNUM_EQ(dist, 2.0);
+  EXPECT_THAT(normal, ElementsAre(0, 0, 1));
+}
+
 }  // namespace
 }  // namespace mujoco
