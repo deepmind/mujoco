@@ -964,5 +964,39 @@ TEST_F(SolverTest, EllipticConeSmallTangentNoNaN) {
   }
 }
 
+TEST_F(SolverTest, UnconstrainedMetricIslandBeyondMaxStat) {
+  std::string xml = R"(
+  <mujoco>
+    <option integrator="discrete" solver="CG"/>
+    <default><geom size=".1" contype="0" conaffinity="0"/></default>
+    <worldbody>)";
+  for (int i = 0; i < mjNISLAND; i++) {
+    xml += "<body><joint type='slide' frictionloss='1'/><geom/></body>";
+  }
+  xml += R"(
+      <body><joint name="ja" type="slide"/><geom/></body>
+      <body><joint name="jb" type="slide"/><geom/></body>
+    </worldbody>
+    <tendon>
+      <fixed damping="1"><joint joint="ja" coef="1"/><joint joint="jb" coef="1"/></fixed>
+    </tendon>
+  </mujoco>)";
+
+  char error[1024];
+  MjModelPtr model = LoadModelFromString(xml.c_str(), error, sizeof(error));
+  ASSERT_THAT(model.get(), NotNull()) << error;
+  MjDataPtr data = MakeData(model);
+
+  // Island 0 sets solver_nnz[0] = 1 (nJ). Because solver_nnz immediately
+  // follows solver_niter[mjNISLAND] in mjData, an out-of-range write to
+  // solver_niter[mjNISLAND] for island 20 (nefc == 0) would land on and
+  // clobber solver_nnz[0].
+  mj_forward(model.get(), data.get());
+
+  ASSERT_EQ(data->nisland, mjNISLAND + 1);
+  ASSERT_EQ(data->island_nefc[mjNISLAND], 0);
+  EXPECT_EQ(data->solver_nnz[0], 1);
+}
+
 }  // namespace
 }  // namespace mujoco

@@ -1999,5 +1999,86 @@ TEST_F(CoreConstraintTest, EllipticConeHessianSmallTangent) {
               MjNear(Dm * (mu * mu + 0.5) * f1 * f1, 1e-12, 1e-5));
 }
 
+TEST_F(CoreConstraintTest, TendonEqualitySetsEfcadr) {
+  static constexpr char xml[] = R"(
+  <mujoco>
+    <worldbody>
+      <body name="b1" pos="0 0 1">
+        <joint name="j1" type="slide" axis="1 0 0"/>
+        <geom size=".1"/>
+      </body>
+      <body name="b2" pos="1 0 1">
+        <joint name="j2" type="slide" axis="1 0 0"/>
+        <geom size=".1"/>
+      </body>
+    </worldbody>
+    <tendon>
+      <fixed name="t1"><joint joint="j1" coef="1"/></fixed>
+      <fixed name="t2"><joint joint="j2" coef="1"/></fixed>
+    </tendon>
+    <equality>
+      <connect body1="b1" anchor="0 0 0"/>
+      <tendon tendon1="t1" tendon2="t2"/>
+    </equality>
+  </mujoco>
+  )";
+  std::array<char, 1024> error;
+  MjModelPtr m = LoadModelFromString(xml, error.data(), error.size());
+  ASSERT_THAT(m.get(), NotNull()) << error.data();
+  MjDataPtr d = MakeData(m);
+  mj_forward(m.get(), d.get());
+
+  // connect adds 3 efc rows (0..2); tendon equality (eq index 1) starts at
+  // efcadr 3
+  EXPECT_EQ(d->tendon_efcadr[0], 3);
+  EXPECT_EQ(d->tendon_efcadr[1], 3);
+}
+
+TEST_F(CoreConstraintTest, ZeroJacobianTendonDoesNotSetEfcadr) {
+  static constexpr char xml[] = R"(
+  <mujoco>
+    <worldbody>
+      <site name="s1" pos="0 0 0"/>
+      <site name="s2" pos="1 0 0"/>
+      <body pos="0 0 1">
+        <joint type="slide" axis="0 0 1"/>
+        <geom size=".1"/>
+      </body>
+    </worldbody>
+    <tendon>
+      <spatial name="t_eq">
+        <site site="s1"/>
+        <site site="s2"/>
+      </spatial>
+      <spatial name="t_fric" frictionloss="1">
+        <site site="s1"/>
+        <site site="s2"/>
+      </spatial>
+      <spatial name="t_lim" limited="true" range="0 0.5">
+        <site site="s1"/>
+        <site site="s2"/>
+      </spatial>
+    </tendon>
+    <equality>
+      <tendon tendon1="t_eq"/>
+    </equality>
+  </mujoco>
+  )";
+  std::array<char, 1024> error;
+  MjModelPtr m = LoadModelFromString(xml, error.data(), error.size());
+  ASSERT_THAT(m.get(), NotNull()) << error.data();
+
+  for (int jacobian : {mjJAC_DENSE, mjJAC_SPARSE}) {
+    m->opt.jacobian = jacobian;
+    MjDataPtr d = MakeData(m);
+    mj_forward(m.get(), d.get());
+
+    EXPECT_EQ(d->nefc, 0);
+    EXPECT_EQ(d->tendon_efcadr[0], -1);
+    EXPECT_EQ(d->tendon_efcadr[1], -1);
+    EXPECT_EQ(d->tendon_efcadr[2], -1);
+  }
+}
+
 }  // namespace
 }  // namespace mujoco

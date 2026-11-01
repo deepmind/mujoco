@@ -651,11 +651,6 @@ void mj_instantiateEquality(const mjModel* m, mjData* d) {
           pos[j][0] = d->ten_length[id[j]];
           ref[j] = m->tendon_length0[id[j]];
 
-          // set tendon_efcadr
-          if (d->tendon_efcadr[id[j]] == -1) {
-            d->tendon_efcadr[id[j]] = i;
-          }
-
           // copy Jacobian: sparse or dense
           if (issparse) {
             if (j == 0) {
@@ -953,10 +948,21 @@ void mj_instantiateEquality(const mjModel* m, mjData* d) {
 
     // add constraint
     if (size) {
+      int efcadr = d->nefc;
       mj_addConstraint(m, d, jac[0], cpos, 0, 0,
                        size, mjCNSTR_EQUALITY, i,
                        issparse ? NV : 0,
                        issparse ? chain : NULL);
+
+      // set tendon_efcadr
+      if (m->eq_type[i] == mjEQ_TENDON && d->nefc > efcadr) {
+        if (d->tendon_efcadr[id[0]] == -1) {
+          d->tendon_efcadr[id[0]] = efcadr;
+        }
+        if (id[1] >= 0 && d->tendon_efcadr[id[1]] == -1) {
+          d->tendon_efcadr[id[1]] = efcadr;
+        }
+      }
     }
   }
 
@@ -1251,7 +1257,7 @@ static int mj_instantiateFriction(const mjModel* m, mjData* d, int count_only, i
                            1, mjCNSTR_FRICTION_TENDON, i, 0, NULL);
         }
         // set tendon_efcadr
-        if (d->tendon_efcadr[i] == -1) {
+        if (d->nefc > efcadr && d->tendon_efcadr[i] == -1) {
           d->tendon_efcadr[i] = efcadr;
         }
       }
@@ -1426,7 +1432,7 @@ static int mj_instantiateLimit(const mjModel* m, mjData* d, int count_only, int*
                              1, mjCNSTR_LIMIT_TENDON, i, 0, NULL);
           }
           // set tendon_efcadr
-          if (d->tendon_efcadr[i] == -1) {
+          if (d->nefc > efcadr && d->tendon_efcadr[i] == -1) {
             d->tendon_efcadr[i] = efcadr;
           }
         }

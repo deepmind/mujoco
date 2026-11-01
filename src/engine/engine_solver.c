@@ -2969,7 +2969,9 @@ static void mj_solPrimal(const mjModel* m, mjData* d, int island, int maxiter, i
   if (island >= 0 && ctx.nefc == 0) {
     mju_copy(ctx.qacc, ctx.qacc_smooth, ctx.nv);
     mju_zero(ctx.qfrc_constraint, ctx.nv);
-    d->solver_niter[island] = 0;
+    if (island < mjNISLAND) {
+      d->solver_niter[island] = 0;
+    }
     mj_freeStack(d);
     return;
   }
