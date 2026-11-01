@@ -1325,13 +1325,13 @@ static int mj_collideTree(const mjModel* m, mjData* d, int bf1, int bf2,
         }
       }
     } else {
-      // compute surface areas of bounding boxes
-      mjtNum x1 = bvh1[6*node1+3]-bvh1[6*node1+0];
-      mjtNum y1 = bvh1[6*node1+4]-bvh1[6*node1+1];
-      mjtNum z1 = bvh1[6*node1+5]-bvh1[6*node1+2];
-      mjtNum x2 = bvh2[6*node2+3]-bvh2[6*node2+0];
-      mjtNum y2 = bvh2[6*node2+4]-bvh2[6*node2+1];
-      mjtNum z2 = bvh2[6*node2+5]-bvh2[6*node2+2];
+      // compute surface areas of bounding boxes (center, size): use half-sizes
+      mjtNum x1 = bvh1[6*node1+3];
+      mjtNum y1 = bvh1[6*node1+4];
+      mjtNum z1 = bvh1[6*node1+5];
+      mjtNum x2 = bvh2[6*node2+3];
+      mjtNum y2 = bvh2[6*node2+4];
+      mjtNum z2 = bvh2[6*node2+5];
       mjtNum surface1 = x1*y1 + y1*z1 + z1*x1;
       mjtNum surface2 = x2*y2 + y2*z2 + z2*x2;
 
