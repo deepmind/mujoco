@@ -9818,5 +9818,82 @@ TEST_F(MujocoTest, KeyframePlasticExpandAttachScale) {
   mj_deleteSpec(spec);
 }
 
+TEST_F(MujocoTest, FindChildDoesNotReturnSelf) {
+  static constexpr char xml[] = R"(
+  <mujoco>
+    <worldbody>
+      <body name="parent">
+        <body name="leaf">
+          <geom name="leaf" size="0.1"/>
+        </body>
+      </body>
+    </worldbody>
+  </mujoco>
+  )";
+
+  std::array<char, 1024> err;
+  mjSpec* spec = mj_parseXMLString(xml, nullptr, err.data(), err.size());
+  ASSERT_THAT(spec, NotNull()) << err.data();
+
+  mjsBody* parent = mjs_findBody(spec, "parent");
+  ASSERT_THAT(parent, NotNull());
+  mjsBody* leaf = mjs_findChild(parent, "leaf");
+  ASSERT_THAT(leaf, NotNull());
+
+  EXPECT_THAT(mjs_findChild(leaf, "leaf"), IsNull());
+  EXPECT_THAT(mjs_findChild(parent, "parent"), IsNull());
+
+  mj_deleteSpec(spec);
+}
+
+TEST_F(MujocoTest, SetToMuscleNullArrayPointers) {
+  mjSpec* spec = mj_makeSpec();
+  ASSERT_THAT(spec, NotNull());
+  mjsActuator* act = mjs_addActuator(spec, nullptr);
+  ASSERT_THAT(act, NotNull());
+
+  mjs_setToMuscle(act, /*timeconst=*/nullptr, /*tausmooth=*/0,
+                  /*range=*/nullptr, /*force=*/-1, /*scale=*/-1, /*lmin=*/-1,
+                  /*lmax=*/-1, /*vmax=*/-1, /*fpmax=*/-1, /*fvmax=*/-1);
+  EXPECT_EQ(act->dyntype, mjDYN_MUSCLE);
+  EXPECT_EQ(act->gaintype, mjGAIN_MUSCLE);
+  EXPECT_EQ(act->biastype, mjBIAS_MUSCLE);
+  EXPECT_DOUBLE_EQ(act->dynprm[0], 0.01);
+  EXPECT_DOUBLE_EQ(act->dynprm[1], 0.04);
+  EXPECT_DOUBLE_EQ(act->gainprm[0], 0.75);
+  EXPECT_DOUBLE_EQ(act->gainprm[1], 1.05);
+
+  mj_deleteSpec(spec);
+}
+
+TEST_F(MujocoTest, EncodeMjbContentType) {
+  static constexpr char xml[] = R"(
+  <mujoco>
+    <worldbody>
+      <body>
+        <geom size="0.1"/>
+      </body>
+    </worldbody>
+  </mujoco>
+  )";
+  std::array<char, 1000> err;
+  mjSpec* spec = mj_parseXMLString(xml, nullptr, err.data(), err.size());
+  ASSERT_THAT(spec, NotNull()) << err.data();
+  mjModel* m = mj_compile(spec, nullptr);
+  ASSERT_THAT(m, NotNull()) << mjs_getError(spec);
+
+  const std::string out_path =
+      (std::filesystem::path(testing::TempDir()) / "encoded_mjb_no_ext")
+          .string();
+  mjtSize written = mj_encode(spec, m, out_path.c_str(), "model/vnd.mujoco.mjb",
+                              nullptr, err.data(), err.size());
+  EXPECT_GT(written, 0) << err.data();
+  EXPECT_EQ(written, mj_sizeModel(m));
+
+  std::filesystem::remove(out_path);
+  mj_deleteModel(m);
+  mj_deleteSpec(spec);
+}
+
 }  // namespace
 }  // namespace mujoco

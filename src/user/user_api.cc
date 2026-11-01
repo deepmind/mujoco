@@ -242,7 +242,9 @@ mjtSize mj_encode(const mjSpec*  s,
     return encode_xml(s, m, filename, error, error_sz);
   }
 
-  if (ext == ".mjb") { return encode_mjb(m, filename, error, error_sz); }
+  if (ext == ".mjb" || (content_type && std::strcmp(content_type, "model/vnd.mujoco.mjb") == 0)) {
+    return encode_mjb(m, filename, error, error_sz);
+  }
 
   if (ext == ".txt" || (content_type && std::strcmp(content_type, "text/plain") == 0)) {
     return encode_txt(m, filename, error, error_sz);
@@ -1913,10 +1915,14 @@ const char* mjs_setToMuscle(mjsActuator* actuator,
   if (tausmooth < 0) { return "muscle tausmooth cannot be negative"; }
 
   actuator->dynprm[2] = tausmooth;
-  if (timeconst[0] >= 0) actuator->dynprm[0] = timeconst[0];
-  if (timeconst[1] >= 0) actuator->dynprm[1] = timeconst[1];
-  if (range[0] >= 0) actuator->gainprm[0] = range[0];
-  if (range[1] >= 0) actuator->gainprm[1] = range[1];
+  if (timeconst) {
+    if (timeconst[0] >= 0) actuator->dynprm[0] = timeconst[0];
+    if (timeconst[1] >= 0) actuator->dynprm[1] = timeconst[1];
+  }
+  if (range) {
+    if (range[0] >= 0) actuator->gainprm[0] = range[0];
+    if (range[1] >= 0) actuator->gainprm[1] = range[1];
+  }
   if (force >= 0) actuator->gainprm[2] = force;
   if (scale >= 0) actuator->gainprm[3] = scale;
   if (lmin >= 0) actuator->gainprm[4] = lmin;

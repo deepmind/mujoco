@@ -205,10 +205,22 @@ Compiler
 
      **Migration:** Ensure height fields have ``nrow >= 2`` and ``ncol >= 2``.
 
+   - :ref:`Fixed tendons<tendon-fixed>` referencing ``ball``/``free`` or duplicate joints or with negative
+     :ref:`armature<tendon-fixed-armature>`, :ref:`spatial tendon<tendon-spatial>`
+     :ref:`pulleys<spatial-pulley>` with non-positive :ref:`divisor<spatial-pulley-divisor>`, and
+     :ref:`camprojection<sensor-camprojection>` or camera-attached :ref:`rangefinder<sensor-rangefinder>` sensors
+     referencing an invalid camera or a camera with non-positive :ref:`resolution<body-camera-resolution>` are now
+     rejected at compile time.
+
+     **Migration:** Ensure fixed tendons wrap distinct ``slide`` or ``hinge`` joints with non-negative armature,
+     pulley divisors are positive, and cameras referenced by ``camprojection`` or ``rangefinder`` sensors have
+     positive resolution.
+
 - :ref:`default/tendon<default-tendon>` in MJCF now accepts :ref:`armature<tendon-fixed-armature>`,
   :ref:`actuatorfrclimited<tendon-spatial-actuatorfrclimited>`, and
   :ref:`actuatorfrcrange<tendon-spatial-actuatorfrcrange>` (previously emitted when saving XML, which then failed
   schema validation on reload).
+- :ref:`mj_encode` now supports binary MJB output for :ref:`mjSpec` via the ``model/vnd.mujoco.mjb`` content type.
 
 Filament Rendering
 ^^^^^^^^^^^^^^^^^^
@@ -257,6 +269,10 @@ Bug fixes
   rejects triangle intersections behind the ray origin.
 - :ref:`mj_resetData`, :ref:`mj_copyData`, and :ref:`mj_recompile` now preserve the destination :ref:`mjData` thread
   pool instead of dropping and leaking it.
+- :ref:`mjs_delete` (``MjSpec.delete`` in Python) now removes deleted default classes from the class lookup map
+  instead of leaving dangling pointers; :ref:`mj_copyBack` (``MjSpec.copy_back`` in Python) preserves material
+  ``metallic``, ``roughness``, and ``texuniform`` attributes; :ref:`mjs_findChild` no longer matches a non-world body
+  against itself; and :ref:`mjs_setToMuscle` accepts ``NULL`` ``timeconst`` and ``range`` pointers.
 
 Documentation
 ^^^^^^^^^^^^^

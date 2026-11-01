@@ -854,6 +854,7 @@ mjCModel& mjCModel::operator-=(const mjCDef& subtree) {
   std::sort(default_ids_to_remove.begin(), default_ids_to_remove.end(), std::greater<int>());
 
   for (int id : default_ids_to_remove) {
+    def_map.erase(defaults_[id]->name);
     defaults_[id]->id = -1;
     defaults_[id]->Release();
     defaults_.erase(defaults_.begin() + id);
@@ -8137,11 +8138,14 @@ void mjCModel::BackValues(const mjModel* m, bool tospec, bool write) {
   for (int i = 0; i < nmat; i++) {
     mjCMaterial* pm = materials_[i];
 
+    copy(&pm->spec.texuniform, &pm->texuniform, m->mat_texuniform + i);
     copy(pm->spec.texrepeat, pm->texrepeat, m->mat_texrepeat + 2 * i, 2);
     copy(&pm->spec.emission, &pm->emission, m->mat_emission + i);
     copy(&pm->spec.specular, &pm->specular, m->mat_specular + i);
     copy(&pm->spec.shininess, &pm->shininess, m->mat_shininess + i);
     copy(&pm->spec.reflectance, &pm->reflectance, m->mat_reflectance + i);
+    copy(&pm->spec.metallic, &pm->metallic, m->mat_metallic + i);
+    copy(&pm->spec.roughness, &pm->roughness, m->mat_roughness + i);
     copy(pm->spec.rgba, pm->rgba, m->mat_rgba + 4 * i, 4);
   }
 

@@ -5465,5 +5465,55 @@ TEST_F(MaterialTest, TextureFromSpec) {
   mj_deleteModel(m);
   mj_deleteSpec(spec);
 }
+
+TEST_F(UserModelTest, DeleteDefaultErasesFromDefMap) {
+  mjSpec* spec = mj_makeSpec();
+  mjsDefault* def = mjs_addDefault(spec, "test_class", nullptr);
+  mjsBody* world = mjs_findBody(spec, "world");
+  mjsBody* body = mjs_addBody(world, nullptr);
+  mjsGeom* geom = mjs_addGeom(body, def);
+  geom->type = mjGEOM_SPHERE;
+  geom->size[0] = 0.1;
+
+  EXPECT_THAT(mjs_getDefault(geom->element), NotNull());
+  ASSERT_EQ(mjs_delete(spec, def->element), 0) << mjs_getError(spec);
+  EXPECT_THAT(mjs_getDefault(geom->element), IsNull());
+
+  mj_deleteSpec(spec);
+}
+
+TEST_F(UserModelTest, CopyBackMaterialPbrAndTexuniform) {
+  static constexpr char xml[] = R"(
+  <mujoco>
+    <asset>
+      <material name="mat" texuniform="false" metallic="0.1" roughness="0.2"/>
+    </asset>
+    <worldbody>
+      <geom size="1" material="mat"/>
+    </worldbody>
+  </mujoco>
+  )";
+  std::array<char, 1024> error;
+  mjSpec* spec = mj_parseXMLString(xml, nullptr, error.data(), error.size());
+  ASSERT_THAT(spec, NotNull()) << error.data();
+  mjModel* m = mj_compile(spec, nullptr);
+  ASSERT_THAT(m, NotNull()) << mjs_getError(spec);
+  ASSERT_EQ(m->nmat, 1);
+
+  m->mat_texuniform[0] = 1;
+  m->mat_metallic[0] = 0.75f;
+  m->mat_roughness[0] = 0.85f;
+
+  EXPECT_EQ(mj_copyBack(spec, m), 1) << mjs_getError(spec);
+  mjsMaterial* mat =
+      mjs_asMaterial(mjs_findElement(spec, mjOBJ_MATERIAL, "mat"));
+  ASSERT_THAT(mat, NotNull());
+  EXPECT_EQ(mat->texuniform, 1);
+  EXPECT_FLOAT_EQ(mat->metallic, 0.75f);
+  EXPECT_FLOAT_EQ(mat->roughness, 0.85f);
+
+  mj_deleteModel(m);
+  mj_deleteSpec(spec);
+}
 }  // namespace
 }  // namespace mujoco

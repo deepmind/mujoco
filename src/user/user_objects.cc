@@ -2511,10 +2511,17 @@ mjCJoint* mjCBody::AddFreeJoint() {
 }
 
 
+// find default class by name without inserting missing keys
+static mjCDef* FindClassDef(const mjCModel* model, const std::string& classname) {
+  auto it = model->def_map.find(classname);
+  return it != model->def_map.end() ? it->second : nullptr;
+}
+
+
 // create new joint and add it to body
 mjCJoint* mjCBody::AddJoint(mjCDef* _def) {
   // create joint
-  mjCJoint* obj = new mjCJoint(model, _def ? _def : model->def_map[classname]);
+  mjCJoint* obj = new mjCJoint(model, _def ? _def : FindClassDef(model, classname));
 
   // set body pointer, add
   obj->body = this;
@@ -2534,7 +2541,7 @@ mjCJoint* mjCBody::AddJoint(mjCDef* _def) {
 // create new geom and add it to body
 mjCGeom* mjCBody::AddGeom(mjCDef* _def) {
   // create geom
-  mjCGeom* obj = new mjCGeom(model, _def ? _def : model->def_map[classname]);
+  mjCGeom* obj = new mjCGeom(model, _def ? _def : FindClassDef(model, classname));
 
   //  set body pointer, add
   obj->body = this;
@@ -2554,7 +2561,7 @@ mjCGeom* mjCBody::AddGeom(mjCDef* _def) {
 // create new site and add it to body
 mjCSite* mjCBody::AddSite(mjCDef* _def) {
   // create site
-  mjCSite* obj = new mjCSite(model, _def ? _def : model->def_map[classname]);
+  mjCSite* obj = new mjCSite(model, _def ? _def : FindClassDef(model, classname));
 
   // set body pointer, add
   obj->body = this;
@@ -2574,7 +2581,7 @@ mjCSite* mjCBody::AddSite(mjCDef* _def) {
 // create new camera and add it to body
 mjCCamera* mjCBody::AddCamera(mjCDef* _def) {
   // create camera
-  mjCCamera* obj = new mjCCamera(model, _def ? _def : model->def_map[classname]);
+  mjCCamera* obj = new mjCCamera(model, _def ? _def : FindClassDef(model, classname));
 
   // set body pointer, add
   obj->body = this;
@@ -2594,7 +2601,7 @@ mjCCamera* mjCBody::AddCamera(mjCDef* _def) {
 // create new light and add it to body
 mjCLight* mjCBody::AddLight(mjCDef* _def) {
   // create light
-  mjCLight* obj = new mjCLight(model, _def ? _def : model->def_map[classname]);
+  mjCLight* obj = new mjCLight(model, _def ? _def : FindClassDef(model, classname));
 
   // set body pointer, add
   obj->body = this;
@@ -2726,8 +2733,10 @@ static T* findobject(const std::string& name, const std::vector<T*>& list) {
 mjCBase* mjCBody::FindObject(mjtObj type, const std::string& _name, bool recursive) const {
   mjCBase* res = 0;
 
-  // check self: just in case
-  if (name == _name) { return const_cast<mjCBody*>(this); }
+  // check self: only for world body when searching for a body
+  if (!parent && (type == mjOBJ_BODY || type == mjOBJ_XBODY) && name == _name) {
+    return const_cast<mjCBody*>(this);
+  }
 
   // search elements of this body
   if (type == mjOBJ_BODY || type == mjOBJ_XBODY) {
@@ -7730,6 +7739,13 @@ void mjCTendon::Compile(void) {
   ResolveReferences(model);
   ApplyGauge();
 
+  if (armature < 0) {
+    throw mjCError(this,
+                   "tendon '%s' (id = %d): tendon armature cannot be negative",
+                   name.c_str(),
+                   id);
+  }
+
   // check path
   for (int i = 0; i < sz; i++) {
     // fixed
@@ -7742,17 +7758,27 @@ void mjCTendon::Compile(void) {
                        id,
                        i);
       }
+
+      // make sure joint is slide or hinge
+      mjtJoint jnt_type = static_cast<mjCJoint*>(path[i]->obj)->spec.type;
+      if (jnt_type != mjJNT_SLIDE && jnt_type != mjJNT_HINGE) {
+        throw mjCError(path[i],
+                       "joint '%s' in tendon %d, wrap %d must be slide or hinge",
+                       path[i]->name.c_str(),
+                       id,
+                       path[i]->id);
+      }
+
+      // joint cannot be repeated in a fixed tendon
+      for (int j = 0; j < i; j++) {
+        if (path[j]->obj == path[i]->obj) {
+          throw mjCError(this, "tendon '%s' (id = %d): joint %d is repeated", name.c_str(), id, i);
+        }
+      }
     }
 
     // spatial path
     else {
-      if (armature < 0) {
-        throw mjCError(this,
-                       "tendon '%s' (id = %d): tendon armature cannot be negative",
-                       name.c_str(),
-                       id);
-      }
-
       switch (path[i]->Type()) {
         case mjWRAP_PULLEY:
           // pulley should not follow other pulley
@@ -7984,10 +8010,10 @@ void mjCWrap::ResolveReferences(const mjCModel* m) {
       break;
 
     case mjWRAP_PULLEY:  // pulley
-      // make sure divisor is non-negative
-      if (prm < 0) {
+      // make sure divisor is positive
+      if (prm <= 0) {
         throw mjCError(this,
-                       "pulley has negative divisor in tendon %d, wrap %d",
+                       "pulley divisor must be positive in tendon %d, wrap %d",
                        0,
                        tendon->id,
                        id);
@@ -9345,8 +9371,11 @@ void mjCSensor::Compile(void) {
 
       // check for camera resolution for camera projection sensor
       if (type == mjSENS_CAMPROJECTION) {
+        if (reftype != mjOBJ_CAMERA || !ref) {
+          throw mjCError(this, "camera projection sensor requires camera reference");
+        }
         mjCCamera* camref = (mjCCamera*)ref;
-        if (!camref->resolution[0] || !camref->resolution[1]) {
+        if (camref->resolution[0] <= 0 || camref->resolution[1] <= 0) {
           throw mjCError(this, "camera projection sensor requires camera resolution");
         }
       }
@@ -9356,6 +9385,12 @@ void mjCSensor::Compile(void) {
       // must be attached to site or camera
       if (objtype != mjOBJ_SITE && objtype != mjOBJ_CAMERA) {
         throw mjCError(this, "sensor must be attached to site or camera");
+      }
+      if (objtype == mjOBJ_CAMERA) {
+        mjCCamera* cam = (mjCCamera*)obj;
+        if (cam->resolution[0] <= 0 || cam->resolution[1] <= 0) {
+          throw mjCError(this, "rangefinder camera sensor requires positive camera resolution");
+        }
       }
 
       // check for dataspec correctness

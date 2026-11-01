@@ -2503,6 +2503,144 @@ TEST_F(TendonTest, SiteBetweenPulleyNotAllowed) {
   EXPECT_THAT(error.data(), HasSubstr("line 9"));
 }
 
+TEST_F(TendonTest, PulleyZeroDivisorRejected) {
+  static constexpr char xml[] = R"(
+  <mujoco>
+    <worldbody>
+      <site name="1" pos="0 0 0"/>
+      <site name="2" pos="0 0 1"/>
+      <site name="3" pos="1 0 0"/>
+      <site name="4" pos="1 0 1"/>
+    </worldbody>
+    <tendon>
+      <spatial>
+        <site site="1"/>
+        <site site="2"/>
+        <pulley divisor="0"/>
+        <site site="3"/>
+        <site site="4"/>
+      </spatial>
+    </tendon>
+  </mujoco>
+  )";
+  std::array<char, 1024> error;
+  MjModelPtr model = LoadModelFromString(xml, error.data(), error.size());
+  EXPECT_THAT(model.get(), IsNull());
+  EXPECT_THAT(error.data(), HasSubstr("pulley divisor must be positive"));
+}
+
+TEST_F(TendonTest,
+       FixedTendonRejectsNegativeArmatureNonScalarAndDuplicateJoints) {
+  static constexpr char xml_neg_armature[] = R"(
+  <mujoco>
+    <worldbody>
+      <body>
+        <joint name="j1" type="hinge"/>
+        <geom size="0.1"/>
+      </body>
+    </worldbody>
+    <tendon>
+      <fixed name="t" armature="-1">
+        <joint joint="j1" coef="1"/>
+      </fixed>
+    </tendon>
+  </mujoco>
+  )";
+  std::array<char, 1024> error;
+  MjModelPtr m1 =
+      LoadModelFromString(xml_neg_armature, error.data(), error.size());
+  EXPECT_THAT(m1.get(), IsNull());
+  EXPECT_THAT(error.data(), HasSubstr("tendon armature cannot be negative"));
+
+  static constexpr char xml_ball_joint[] = R"(
+  <mujoco>
+    <worldbody>
+      <body>
+        <joint name="jball" type="ball"/>
+        <geom size="0.1"/>
+      </body>
+    </worldbody>
+    <tendon>
+      <fixed name="t">
+        <joint joint="jball" coef="1"/>
+      </fixed>
+    </tendon>
+  </mujoco>
+  )";
+  MjModelPtr m2 =
+      LoadModelFromString(xml_ball_joint, error.data(), error.size());
+  EXPECT_THAT(m2.get(), IsNull());
+  EXPECT_THAT(error.data(), HasSubstr("must be slide or hinge"));
+
+  static constexpr char xml_dup_joint[] = R"(
+  <mujoco>
+    <worldbody>
+      <body>
+        <joint name="j1" type="hinge"/>
+        <geom size="0.1"/>
+      </body>
+    </worldbody>
+    <tendon>
+      <fixed name="t">
+        <joint joint="j1" coef="1"/>
+        <joint joint="j1" coef="2"/>
+      </fixed>
+    </tendon>
+  </mujoco>
+  )";
+  MjModelPtr m3 =
+      LoadModelFromString(xml_dup_joint, error.data(), error.size());
+  EXPECT_THAT(m3.get(), IsNull());
+  EXPECT_THAT(error.data(), HasSubstr("is repeated"));
+
+  // Attached child with prefix: ball joint must not fall back to unprefixed
+  // hinge joint with the same base name during ResolveReferences.
+  static constexpr char xml_parent[] = R"(
+  <mujoco>
+    <worldbody>
+      <body name="parent_b">
+        <joint name="j1" type="hinge"/>
+        <geom size="0.1"/>
+      </body>
+      <frame name="mount"/>
+    </worldbody>
+  </mujoco>
+  )";
+  static constexpr char xml_child[] = R"(
+  <mujoco>
+    <worldbody>
+      <body>
+        <joint name="j1" type="ball"/>
+        <geom size="0.1"/>
+      </body>
+    </worldbody>
+    <tendon>
+      <fixed name="t">
+        <joint joint="j1" coef="1"/>
+      </fixed>
+    </tendon>
+  </mujoco>
+  )";
+  mjSpec* parent =
+      mj_parseXMLString(xml_parent, nullptr, error.data(), error.size());
+  ASSERT_THAT(parent, NotNull()) << error.data();
+  mjSpec* child =
+      mj_parseXMLString(xml_child, nullptr, error.data(), error.size());
+  ASSERT_THAT(child, NotNull()) << error.data();
+  mjsFrame* mount = mjs_findFrame(parent, "mount");
+  ASSERT_THAT(mount, NotNull());
+  ASSERT_THAT(mjs_attach(mount->element, child->element, "p_", ""), NotNull());
+  mjModel* m4 = mj_compile(parent, nullptr);
+  EXPECT_THAT(m4, IsNull());
+  EXPECT_THAT(mjs_getError(parent), HasSubstr("joint 'p_j1'"));
+  EXPECT_THAT(mjs_getError(parent), HasSubstr("must be slide or hinge"));
+  if (m4) {
+    mj_deleteModel(m4);
+  }
+  mj_deleteSpec(child);
+  mj_deleteSpec(parent);
+}
+
 TEST_F(TendonTest, ActuatorForceRangeNotAllowed) {
   std::string xml = R"(
   <mujoco>
@@ -3455,6 +3593,102 @@ TEST_F(ActuatorTransmissionTest, ArmatureRejectsSiteTransmission) {
   MjModelPtr m = LoadModelFromString(xml, error.data(), error.size());
   ASSERT_THAT(m.get(), IsNull());
   EXPECT_THAT(error.data(), HasSubstr("armature requires joint or tendon"));
+}
+
+TEST_F(MujocoTest, CamprojectionAndRangefinderCameraValidation) {
+  std::array<char, 1024> error;
+
+  static constexpr char xml_neg_proj[] = R"(
+  <mujoco>
+    <worldbody>
+      <camera name="cam" resolution="-64 -48"/>
+      <site name="s"/>
+    </worldbody>
+    <sensor>
+      <camprojection site="s" camera="cam"/>
+    </sensor>
+  </mujoco>
+  )";
+  MjModelPtr m_neg_proj =
+      LoadModelFromString(xml_neg_proj, error.data(), error.size());
+  EXPECT_THAT(m_neg_proj.get(), IsNull());
+  EXPECT_THAT(error.data(),
+              HasSubstr("camera projection sensor requires camera resolution"));
+
+  static constexpr char xml_neg_rf[] = R"(
+  <mujoco>
+    <worldbody>
+      <camera name="cam" resolution="-4 -4"/>
+    </worldbody>
+    <sensor>
+      <rangefinder camera="cam"/>
+    </sensor>
+  </mujoco>
+  )";
+  MjModelPtr m_neg_rf =
+      LoadModelFromString(xml_neg_rf, error.data(), error.size());
+  EXPECT_THAT(m_neg_rf.get(), IsNull());
+  EXPECT_THAT(
+      error.data(),
+      HasSubstr(
+          "rangefinder camera sensor requires positive camera resolution"));
+
+  static constexpr char xml_base[] = R"(
+  <mujoco>
+    <worldbody>
+      <body name="b">
+        <site name="s"/>
+      </body>
+    </worldbody>
+  </mujoco>
+  )";
+  mjSpec* spec =
+      mj_parseXMLString(xml_base, nullptr, error.data(), error.size());
+  ASSERT_THAT(spec, NotNull()) << error.data();
+  mjsSensor* sen = mjs_addSensor(spec);
+  sen->type = mjSENS_CAMPROJECTION;
+  sen->objtype = mjOBJ_SITE;
+  mjs_setString(sen->objname, "s");
+  sen->reftype = mjOBJ_BODY;
+  mjs_setString(sen->refname, "b");
+  mjModel* m_bad_ref = mj_compile(spec, nullptr);
+  EXPECT_THAT(m_bad_ref, IsNull());
+  EXPECT_THAT(mjs_getError(spec), HasSubstr("camera reference"));
+  if (m_bad_ref) {
+    mj_deleteModel(m_bad_ref);
+  }
+  mj_deleteSpec(spec);
+}
+
+TEST_F(MujocoTest, AddBodyChildrenWithDeletedChildclassDoesNotInsertNullDef) {
+  mjSpec* spec = mj_makeSpec();
+  ASSERT_THAT(spec, NotNull());
+  mjsDefault* main_def = mjs_getSpecDefault(spec);
+  mjsDefault* custom_def = mjs_addDefault(spec, "deleted_cls", nullptr);
+  ASSERT_THAT(custom_def, NotNull());
+
+  mjsBody* world = mjs_findBody(spec, "world");
+  mjsBody* body = mjs_addBody(world, custom_def);
+  ASSERT_THAT(body, NotNull());
+  EXPECT_EQ(mjs_getDefault(body->element), custom_def);
+
+  ASSERT_EQ(mjs_delete(spec, custom_def->element), 0) << mjs_getError(spec);
+  EXPECT_THAT(mjs_getDefault(body->element), IsNull());
+
+  mjsJoint* jnt = mjs_addJoint(body, nullptr);
+  mjsGeom* geom = mjs_addGeom(body, nullptr);
+  mjsSite* site = mjs_addSite(body, nullptr);
+  mjsCamera* cam = mjs_addCamera(body, nullptr);
+  mjsLight* light = mjs_addLight(body, nullptr);
+
+  EXPECT_THAT(mjs_getDefault(body->element), IsNull());
+  EXPECT_EQ(mjs_getDefault(jnt->element), main_def);
+  EXPECT_EQ(mjs_getDefault(geom->element), main_def);
+  EXPECT_EQ(mjs_getDefault(site->element), main_def);
+  EXPECT_EQ(mjs_getDefault(cam->element), main_def);
+  EXPECT_EQ(mjs_getDefault(light->element), main_def);
+
+  mj_deleteSpec(spec);
 }
 
 }  // namespace
