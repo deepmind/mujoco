@@ -70,7 +70,16 @@ int mj_maxContact(const mjModel* m, int g1, int g2, int has_margin) {
   int type2 = m->geom_type[g2];
 
   if (type1 == mjGEOM_SDF || type2 == mjGEOM_SDF) {
-    return m->opt.sdf_initpoints;
+    if (type1 == mjGEOM_PLANE || type2 == mjGEOM_PLANE) {
+      return 4;
+    }
+    if (type1 == mjGEOM_MESH || type2 == mjGEOM_MESH) {
+      return mjMAXCONPAIR;
+    }
+    if (type1 == mjGEOM_HFIELD || type2 == mjGEOM_HFIELD) {
+      return 0;
+    }
+    return mjMIN(mjMAXCONPAIR, mjMAX(0, m->opt.sdf_initpoints));
   }
 
   if (type1 == mjGEOM_HFIELD || type2 == mjGEOM_HFIELD) {
@@ -1143,7 +1152,9 @@ static int mj_collideTree(const mjModel* m, mjData* d, int bf1, int bf2,
   if (isbody1 && !isbody2 && m->body_dofnum[m->body_weldid[bf1]] == 0) {
     for (int i=geomadr1; i < geomadr1+m->body_geomnum[bf1]; i++) {
       if (m->geom_type[i] == mjGEOM_PLANE) {
-        if (!mjc_ipcOwnsFlexGeom(m, f2, i)) {
+        if (!filterBitmask(m->geom_contype[i], m->geom_conaffinity[i],
+                           m->flex_contype[f2], m->flex_conaffinity[f2]) &&
+            !mjc_ipcOwnsFlexGeom(m, f2, i)) {
           npair = pushGeomFlex(d, i, f2, geomGroup(group, i, geomadr1), npair);
         }
       }
@@ -1154,7 +1165,9 @@ static int mj_collideTree(const mjModel* m, mjData* d, int bf1, int bf2,
   if (isbody1 && !isbody2) {
     for (int i=geomadr1; i < geomadr1+m->body_geomnum[bf1]; i++) {
       if (m->geom_type[i] == mjGEOM_SDF) {
-        if (m->flex_dim[f2] == 2) {
+        if (m->flex_dim[f2] == 2 &&
+            !filterBitmask(m->geom_contype[i], m->geom_conaffinity[i],
+                           m->flex_contype[f2], m->flex_conaffinity[f2])) {
           npair = pushGeomFlex(d, i, f2, geomGroup(group, i, geomadr1), npair);
         }
       }
@@ -1249,7 +1262,8 @@ static int mj_collideTree(const mjModel* m, mjData* d, int bf1, int bf2,
       }
 
       // if no intersection at intermediate levels, stop
-      mjtNum margin = mj_assignMargin(m, m->body_margin[bf1] + m->flex_margin[f2]);
+      mjtNum margin = mj_assignMargin(m, m->body_margin[bf1] + m->flex_margin[f2]) +
+                      m->flex_gap[f2];
       if (!mj_collideOBB(bvh1 + 6*node1, bvh2 + 6*node2,
                          d->xipos + 3*bf1, d->ximat + 9*bf1,
                          NULL, NULL,
@@ -1290,7 +1304,8 @@ static int mj_collideTree(const mjModel* m, mjData* d, int bf1, int bf2,
       }
 
       // if no intersection at intermediate levels, stop
-      mjtNum margin = mj_assignMargin(m, m->flex_margin[f1] + m->flex_margin[f2]);
+      mjtNum margin = mj_assignMargin(m, m->flex_margin[f1] + m->flex_margin[f2]) +
+                      (bf1 != bf2 ? m->flex_gap[f1] + m->flex_gap[f2] : 0);
       if (filterBox(bvh1 + 6*node1, bvh2 + 6*node2, margin)) {
         continue;
       }

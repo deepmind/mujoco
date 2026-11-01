@@ -605,7 +605,7 @@ mjtNum mj_geomDistance(const mjModel* m, mjData* d, int geom1, int geom2, mjtNum
   int smallest = -1;
   for (int i=0; i < num; i++) {
     mjtNum dist_i = con[i].dist;
-    if (dist_i < dist) {
+    if (dist_i < dist || (dist_i == dist && smallest < 0)) {
       dist = dist_i;
       smallest = i;
     }

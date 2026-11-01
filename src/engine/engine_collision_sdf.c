@@ -269,6 +269,9 @@ static mjtNum geomDistance(const mjModel* m, const mjData* d, const mjpPlugin* p
     b[2] = a[2] / size[2];
     mjtNum k0 = mju_norm3(a);
     mjtNum k1 = mju_norm3(b);
+    if (k1 < mjMINVAL) {
+      return -mju_min(size[0], mju_min(size[1], size[2]));
+    }
     return k0 * (k0 - 1.0) / k1;
 
   case mjGEOM_CYLINDER:
@@ -314,7 +317,7 @@ static void geomGradient(mjtNum gradient[3], const mjModel* m, const mjData* d,
 
   case mjGEOM_SPHERE:
     mju_copy3(gradient, x);
-    c = mju_norm3(x);
+    c = mju_max(mju_norm3(x), 1. / mjMAXVAL);
     gradient[0] *= 1. / c;
     gradient[1] *= 1. / c;
     gradient[2] *= 1. / c;
@@ -334,9 +337,18 @@ static void geomGradient(mjtNum gradient[3], const mjModel* m, const mjData* d,
       b[1] = mju_max(a[1], 0);
       b[2] = mju_max(a[2], 0);
       c = mju_norm3(b);
-      gradient[0] = a[0] > 0 ? b[0] / c * x[0] / mju_abs(x[0]) : 0;
-      gradient[1] = a[1] > 0 ? b[1] / c * x[1] / mju_abs(x[1]) : 0;
-      gradient[2] = a[2] > 0 ? b[2] / c * x[2] / mju_abs(x[2]) : 0;
+      if (c == 0) {
+        for (int j=0; j < 3; j++) {
+          if (a[j] == 0) {
+            gradient[j] = x[j] < 0 ? -1 : 1;
+          }
+        }
+        mju_normalize3(gradient);
+      } else {
+        gradient[0] = a[0] > 0 ? b[0] / c * x[0] / mju_abs(x[0]) : 0;
+        gradient[1] = a[1] > 0 ? b[1] / c * x[1] / mju_abs(x[1]) : 0;
+        gradient[2] = a[2] > 0 ? b[2] / c * x[2] / mju_abs(x[2]) : 0;
+      }
     }
     break;
 
@@ -344,7 +356,7 @@ static void geomGradient(mjtNum gradient[3], const mjModel* m, const mjData* d,
     a[0] = x[0];
     a[1] = x[1];
     a[2] = x[2] - mju_clip(x[2], -size[1], size[1]);
-    c = mju_norm3(a);
+    c = mju_max(mju_norm3(a), 1. / mjMAXVAL);
     gradient[0] = a[0] / c;
     gradient[1] = a[1] / c;
     gradient[2] = a[2] / c;
@@ -359,6 +371,10 @@ static void geomGradient(mjtNum gradient[3], const mjModel* m, const mjData* d,
     b[2] = a[2] / size[2];
     mjtNum k0 = mju_norm3(a);
     mjtNum k1 = mju_norm3(b);
+    if (k0 < mjMINVAL || k1 < mjMINVAL) {
+      mju_zero3(gradient);
+      break;
+    }
     mjtNum invK0 = 1. / k0;
     mjtNum invK1 = 1. / k1;
     mjtNum gk0[3] = {b[0]*invK0, b[1]*invK0, b[2]*invK0};
@@ -370,7 +386,11 @@ static void geomGradient(mjtNum gradient[3], const mjModel* m, const mjData* d,
     gradient[0] = gk0[0]*df_dk0 - gk1[0]*df_dk1;
     gradient[1] = gk0[1]*df_dk0 - gk1[1]*df_dk1;
     gradient[2] = gk0[2]*df_dk0 - gk1[2]*df_dk1;
-    mju_normalize3(gradient);
+    if (mju_norm3(gradient) < mjMINVAL) {
+      mju_zero3(gradient);
+    } else {
+      mju_normalize3(gradient);
+    }
     break;
 
   case mjGEOM_CYLINDER:
@@ -566,7 +586,7 @@ static int addPreContact(mjtNum* points, mjPreContact* con, const mjtNum x[3],
 
   // validate normal - skip if gradient is degenerate (zero or near-zero)
   mjtNum norm_len = mju_normalize3(norm);
-  if (norm_len < mjMINVAL) {
+  if (!(norm_len >= mjMINVAL)) {
     return cnt;  // degenerate gradient, skip this contact
   }
 

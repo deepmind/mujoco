@@ -1231,5 +1231,26 @@ TEST_F(SupportTest, InsideSite) {
   mj_deleteData(data);
 }
 
+TEST_F(SupportTest, GeomDistanceWitnessAtExactDistmax) {
+  static constexpr char kXml[] = R"(
+  <mujoco>
+    <worldbody>
+      <geom name="g1" type="sphere" size="0.5" pos="-0.5 0 0"/>
+      <geom name="g2" type="sphere" size="0.5" pos="1.5 0 0"/>
+    </worldbody>
+  </mujoco>
+  )";
+  MjModelPtr model = LoadModelFromString(kXml);
+  ASSERT_THAT(model.get(), NotNull());
+  MjDataPtr data = MakeData(model);
+  mj_forward(model.get(), data.get());
+
+  mjtNum fromto[6] = {-1, -1, -1, -1, -1, -1};
+  mjtNum dist =
+      mj_geomDistance(model.get(), data.get(), 0, 1, /*distmax=*/1.0, fromto);
+  EXPECT_MJTNUM_EQ(dist, 1.0);
+  EXPECT_THAT(fromto, Pointwise(MjNear(1e-12, 1e-5), {0, 0, 0, 1, 0, 0}));
+}
+
 }  // namespace
 }  // namespace mujoco

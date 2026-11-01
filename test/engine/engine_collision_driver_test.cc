@@ -1344,5 +1344,145 @@ TEST_F(MjCollisionTest, ParallelCapsuleCapsuleOverhang) {
   }
 }
 
+TEST_F(MjCollisionTest, MaxContactSdfPairs) {
+  static constexpr char kXml[] = R"(
+  <mujoco>
+    <asset>
+      <mesh name="cube" vertex="-0.5 -0.5 -0.5  0.5 -0.5 -0.5  -0.5 0.5 -0.5  0.5 0.5 -0.5
+                                -0.5 -0.5  0.5  0.5 -0.5  0.5  -0.5 0.5  0.5  0.5 0.5  0.5"/>
+      <hfield name="hf" nrow="2" ncol="2" size="1 1 1 1" elevation="0 0 0 0"/>
+    </asset>
+    <worldbody>
+      <geom name="sdf" type="sdf" mesh="cube"/>
+      <geom name="plane" type="plane" size="1 1 0.1"/>
+      <geom name="mesh" type="mesh" mesh="cube"/>
+      <geom name="sphere" type="sphere" size="0.5"/>
+      <geom name="hfield" type="hfield" hfield="hf"/>
+    </worldbody>
+  </mujoco>
+  )";
+  char error[1024];
+  MjModelPtr m = LoadModelFromString(kXml, error, sizeof(error));
+  ASSERT_THAT(m.get(), NotNull()) << error;
+
+  int sdf = mj_name2id(m.get(), mjOBJ_GEOM, "sdf");
+  int plane = mj_name2id(m.get(), mjOBJ_GEOM, "plane");
+  int mesh = mj_name2id(m.get(), mjOBJ_GEOM, "mesh");
+  int sphere = mj_name2id(m.get(), mjOBJ_GEOM, "sphere");
+  int hfield = mj_name2id(m.get(), mjOBJ_GEOM, "hfield");
+
+  m->opt.sdf_initpoints = 2;
+  EXPECT_EQ(mj_maxContact(m.get(), plane, sdf, 0), 4);
+  EXPECT_EQ(mj_maxContact(m.get(), sdf, plane, 0), 4);
+  EXPECT_EQ(mj_maxContact(m.get(), mesh, sdf, 0), mjMAXCONPAIR);
+  EXPECT_EQ(mj_maxContact(m.get(), sdf, mesh, 0), mjMAXCONPAIR);
+  EXPECT_EQ(mj_maxContact(m.get(), hfield, sdf, 0), 0);
+  EXPECT_EQ(mj_maxContact(m.get(), sphere, sdf, 0), 2);
+
+  m->opt.sdf_initpoints = 2 * mjMAXCONPAIR;
+  EXPECT_EQ(mj_maxContact(m.get(), sphere, sdf, 0), mjMAXCONPAIR);
+
+  m->opt.sdf_initpoints = -5;
+  EXPECT_EQ(mj_maxContact(m.get(), sphere, sdf, 0), 0);
+}
+
+TEST_F(MjCollisionTest, FlexBVHPruningIncludesFlexGap) {
+  // flex : flex intermediate BVH pruning includes flex_gap.
+  static constexpr char kFlexFlexXml[] = R"(
+  <mujoco>
+    <worldbody>
+      <flexcomp name="vol1" type="grid" dim="3" count="4 4 4"
+                spacing="0.06 0.06 0.06" pos="0 0 0" radius="0.005" mass="1">
+        <contact selfcollide="none" gap="0.05"/>
+        <edge equality="true"/>
+      </flexcomp>
+      <flexcomp name="vol2" type="grid" dim="3" count="4 4 4"
+                spacing="0.06 0.06 0.06" pos="0 0 0.22" radius="0.005" mass="1">
+        <contact selfcollide="none" gap="0.05"/>
+        <edge equality="true"/>
+      </flexcomp>
+    </worldbody>
+  </mujoco>
+  )";
+  char error[1024];
+  MjModelPtr m = LoadModelFromString(kFlexFlexXml, error, sizeof(error));
+  ASSERT_THAT(m.get(), NotNull()) << error;
+
+  m->opt.disableflags |= mjDSBL_MIDPHASE;
+  MjDataPtr d_all = MakeData(m);
+  mj_forward(m.get(), d_all.get());
+  ASSERT_GT(d_all->ncon, 0);
+
+  m->opt.disableflags &= ~mjDSBL_MIDPHASE;
+  MjDataPtr d_bvh = MakeData(m);
+  mj_forward(m.get(), d_bvh.get());
+  EXPECT_EQ(d_bvh->ncon, d_all->ncon);
+
+  // body : flex intermediate BVH pruning includes flex_gap.
+  static constexpr char kBodyFlexXml[] = R"(
+  <mujoco>
+    <worldbody>
+      <body pos="0 0 -0.15">
+        <geom type="sphere" pos="-0.03 0 0.03" size="0.01"/>
+        <geom type="sphere" pos="0.03 0 -0.03" size="0.01"/>
+      </body>
+      <flexcomp name="vol" type="grid" dim="3" count="4 4 4"
+                spacing="0.06 0.06 0.06" pos="0 0 0" radius="0.005" mass="1">
+        <contact selfcollide="none" gap="0.05"/>
+        <edge equality="true"/>
+      </flexcomp>
+    </worldbody>
+  </mujoco>
+  )";
+  MjModelPtr mb = LoadModelFromString(kBodyFlexXml, error, sizeof(error));
+  ASSERT_THAT(mb.get(), NotNull()) << error;
+
+  mb->opt.disableflags |= mjDSBL_MIDPHASE;
+  MjDataPtr db_all = MakeData(mb);
+  mj_forward(mb.get(), db_all.get());
+  ASSERT_GT(db_all->ncon, 0);
+
+  mb->opt.disableflags &= ~mjDSBL_MIDPHASE;
+  MjDataPtr db_bvh = MakeData(mb);
+  mj_forward(mb.get(), db_bvh.get());
+  EXPECT_EQ(db_bvh->ncon, db_all->ncon);
+}
+
+TEST_F(MjCollisionTest, PlaneAndSdfFlexRespectGeomBitmaskInMidphase) {
+  static constexpr char kXml[] = R"(
+  <mujoco>
+    <asset>
+      <mesh name="cube" vertex="-0.5 -0.5 -0.5  0.5 -0.5 -0.5  -0.5 0.5 -0.5  0.5 0.5 -0.5
+                                -0.5 -0.5  0.5  0.5 -0.5  0.5  -0.5 0.5  0.5  0.5 0.5  0.5"/>
+    </asset>
+    <worldbody>
+      <geom name="far_sphere" type="sphere" size="0.01" pos="10 0 0"
+            contype="1" conaffinity="1"/>
+      <geom name="plane_filtered" type="plane" size="1 1 0.1" pos="0 0 0.05"
+            contype="0" conaffinity="0"/>
+      <geom name="sdf_filtered" type="sdf" mesh="cube" pos="0 0 -0.445"
+            contype="2" conaffinity="2"/>
+      <flexcomp name="cloth" type="grid" count="3 3 1" spacing=".05 .05 .05"
+                dim="2" pos="0 0 0.053" radius=".005">
+        <edge equality="true"/>
+        <contact selfcollide="none" contype="1" conaffinity="1"/>
+      </flexcomp>
+    </worldbody>
+  </mujoco>
+  )";
+  char error[1024];
+  MjModelPtr m = LoadModelFromString(kXml, error, sizeof(error));
+  ASSERT_THAT(m.get(), NotNull()) << error;
+
+  MjDataPtr d_bvh = MakeData(m);
+  mj_fwdPosition(m.get(), d_bvh.get());
+  EXPECT_EQ(d_bvh->ncon, 0);
+
+  m->opt.disableflags |= mjDSBL_MIDPHASE;
+  MjDataPtr d_all = MakeData(m);
+  mj_fwdPosition(m.get(), d_all.get());
+  EXPECT_EQ(d_all->ncon, 0);
+}
+
 }  // namespace
 }  // namespace mujoco

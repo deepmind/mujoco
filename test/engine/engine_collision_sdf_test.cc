@@ -275,5 +275,151 @@ TEST_F(SdfTest, SdfCollisionExcessContactsNoCrash) {
   EXPECT_EQ(ncon, mjMAXCONPAIR);
 }
 
+TEST_F(SdfTest, MeshSdfSmallInitPointsDoesNotOverflowArena) {
+  static constexpr char kMeshSdfXml[] = R"(
+  <mujoco>
+    <asset>
+      <mesh name="cube" vertex="-0.5 -0.5 -0.5  0.5 -0.5 -0.5  -0.5 0.5 -0.5  0.5 0.5 -0.5
+                                -0.5 -0.5  0.5  0.5 -0.5  0.5  -0.5 0.5  0.5  0.5 0.5  0.5"/>
+      <mesh name="small_cube" vertex="-0.1 -0.1 -0.1  0.1 -0.1 -0.1  -0.1 0.1 -0.1  0.1 0.1 -0.1
+                                      -0.1 -0.1  0.1  0.1 -0.1  0.1  -0.1 0.1  0.1  0.1 0.1  0.1"/>
+    </asset>
+    <worldbody>
+      <body pos="0 0 0.4">
+        <freejoint/>
+        <geom name="geom1" type="mesh" mesh="small_cube"/>
+      </body>
+      <body pos="0 0 0">
+        <geom name="geom2" type="sdf" mesh="cube"/>
+      </body>
+    </worldbody>
+  </mujoco>
+  )";
+  char error[1024];
+  MjModelPtr model = LoadModelFromString(kMeshSdfXml, error, sizeof(error));
+  ASSERT_THAT(model.get(), NotNull()) << error;
+  model->opt.sdf_initpoints = 1;
+  MjDataPtr data = MakeData(model);
+  ASSERT_THAT(data, NotNull());
+  mj_forward(model.get(), data.get());
+
+  // Multi-face mesh-SDF collision produces > sdf_initpoints contacts safely
+  // within mjMAXCONPAIR without overflowing conbuffer on d->arena.
+  EXPECT_GT(data->ncon, 1);
+  EXPECT_LE(data->ncon, mjMAXCONPAIR);
+}
+
+TEST_F(SdfTest, PlaneSdfSmallInitPointsDoesNotOverflowArena) {
+  static constexpr char kPlaneSdfXml[] = R"(
+  <mujoco>
+    <asset>
+      <mesh name="cube" vertex="-0.5 -0.5 -0.5  0.5 -0.5 -0.5  -0.5 0.5 -0.5  0.5 0.5 -0.5
+                                -0.5 -0.5  0.5  0.5 -0.5  0.5  -0.5 0.5  0.5  0.5 0.5  0.5"/>
+    </asset>
+    <worldbody>
+      <geom name="floor" type="plane" size="2 2 0.1"/>
+      <body pos="0 0 0.45">
+        <freejoint/>
+        <geom name="box_sdf" type="sdf" mesh="cube"/>
+      </body>
+    </worldbody>
+  </mujoco>
+  )";
+  char error[1024];
+  MjModelPtr model = LoadModelFromString(kPlaneSdfXml, error, sizeof(error));
+  ASSERT_THAT(model.get(), NotNull()) << error;
+  model->opt.sdf_initpoints = 1;
+  MjDataPtr data = MakeData(model);
+  ASSERT_THAT(data, NotNull());
+  mj_forward(model.get(), data.get());
+
+  // mjc_PlaneConvex emits 4 face-corner contacts even when sdf_initpoints == 1.
+  EXPECT_EQ(data->ncon, 4);
+}
+
+TEST_F(SdfTest, PrimitiveGradientAndDistanceSingularities) {
+  static constexpr char kPrimitivesXml[] = R"(
+  <mujoco>
+    <worldbody>
+      <geom name="sphere" type="sphere" size="1"/>
+      <geom name="capsule" type="capsule" size="0.2 1"/>
+      <geom name="box" type="box" size="1 2 3"/>
+      <geom name="ellipsoid" type="ellipsoid" size="1 2 3"/>
+    </worldbody>
+  </mujoco>
+  )";
+  char error[1024];
+  MjModelPtr model = LoadModelFromString(kPrimitivesXml, error, sizeof(error));
+  ASSERT_THAT(model.get(), NotNull()) << error;
+  MjDataPtr data = MakeData(model);
+  ASSERT_THAT(data, NotNull());
+
+  mjSDF sdf{};
+  const mjpPlugin* null_plugin = nullptr;
+  sdf.plugin = &null_plugin;
+  sdf.type = mjSDFTYPE_SINGLE;
+
+  mjtNum gradient[3];
+  const mjtNum origin[3] = {0, 0, 0};
+
+  // Sphere origin: gradient is zero.
+  int sphere_id = 0;
+  mjtGeom sphere_type = mjGEOM_SPHERE;
+  sdf.id = &sphere_id;
+  sdf.geomtype = &sphere_type;
+  gradient[0] = gradient[1] = gradient[2] = 9.0;
+  mjc_gradient(model.get(), data.get(), &sdf, gradient, origin);
+  EXPECT_MJTNUM_EQ(gradient[0], 0.0);
+  EXPECT_MJTNUM_EQ(gradient[1], 0.0);
+  EXPECT_MJTNUM_EQ(gradient[2], 0.0);
+
+  // Capsule axis: gradient is zero.
+  int capsule_id = 1;
+  mjtGeom capsule_type = mjGEOM_CAPSULE;
+  sdf.id = &capsule_id;
+  sdf.geomtype = &capsule_type;
+  const mjtNum axis_point[3] = {0, 0, 0.5};
+  gradient[0] = gradient[1] = gradient[2] = 9.0;
+  mjc_gradient(model.get(), data.get(), &sdf, gradient, axis_point);
+  EXPECT_MJTNUM_EQ(gradient[0], 0.0);
+  EXPECT_MJTNUM_EQ(gradient[1], 0.0);
+  EXPECT_MJTNUM_EQ(gradient[2], 0.0);
+
+  // Ellipsoid origin: distance is -min(size) and gradient is zero.
+  int ellipsoid_id = 3;
+  mjtGeom ellipsoid_type = mjGEOM_ELLIPSOID;
+  sdf.id = &ellipsoid_id;
+  sdf.geomtype = &ellipsoid_type;
+  EXPECT_MJTNUM_EQ(mjc_distance(model.get(), data.get(), &sdf, origin), -1.0);
+  gradient[0] = gradient[1] = gradient[2] = 9.0;
+  mjc_gradient(model.get(), data.get(), &sdf, gradient, origin);
+  EXPECT_MJTNUM_EQ(gradient[0], 0.0);
+  EXPECT_MJTNUM_EQ(gradient[1], 0.0);
+  EXPECT_MJTNUM_EQ(gradient[2], 0.0);
+
+  // Box faces and edges: unit outward normals.
+  int box_id = 2;
+  mjtGeom box_type = mjGEOM_BOX;
+  sdf.id = &box_id;
+  sdf.geomtype = &box_type;
+
+  const mjtNum faces[6][3] = {{1, 0, 0},  {-1, 0, 0}, {0, 2, 0},
+                              {0, -2, 0}, {0, 0, 3},  {0, 0, -3}};
+  const mjtNum expected[6][3] = {{1, 0, 0},  {-1, 0, 0}, {0, 1, 0},
+                                 {0, -1, 0}, {0, 0, 1},  {0, 0, -1}};
+  for (int f = 0; f < 6; ++f) {
+    mjc_gradient(model.get(), data.get(), &sdf, gradient, faces[f]);
+    EXPECT_MJTNUM_EQ(gradient[0], expected[f][0]);
+    EXPECT_MJTNUM_EQ(gradient[1], expected[f][1]);
+    EXPECT_MJTNUM_EQ(gradient[2], expected[f][2]);
+  }
+
+  const mjtNum edge[3] = {1, 2, 0};
+  mjc_gradient(model.get(), data.get(), &sdf, gradient, edge);
+  EXPECT_NEAR(mju_norm3(gradient), 1.0, MjTol(1e-12, 1e-6));
+  EXPECT_NEAR(gradient[0], gradient[1], MjTol(1e-12, 1e-6));
+  EXPECT_MJTNUM_EQ(gradient[2], 0.0);
+}
+
 }  // namespace
 }  // namespace mujoco
