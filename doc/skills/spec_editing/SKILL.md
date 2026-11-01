@@ -1,12 +1,14 @@
 ---
 name: mujoco-spec-editing
 description: >-
-  Procedural model authoring and editing with MjSpec (Python and C++), bodies,
-  geoms, joints, sites, cameras, sub-model attachment with prefix namespaces,
-  actuators (position servos, motors, velocity drives, trntype), collision bitmasks
-  (contype, conaffinity), friction (condim), default classes (MjsDefault),
-  procedural meshes, deletion, spec recompilation (spec.recompile).
-  Use for procedural scenes, adding bodies/geoms/actuators, attaching sub-models.
+  Procedural model authoring, editing, and tuning with MjSpec (Python and C++),
+  bodies, geoms, joints, sites, cameras, sub-model attachment with prefix
+  namespaces, actuators (position servos, motors, velocity drives, trntype),
+  baseline option/default overrides (implicitfast, elliptic cones, solref,
+  solimp, armature, damping), collision bitmasks (contype, conaffinity),
+  friction (condim), default classes (MjsDefault), procedural meshes, deletion,
+  spec recompilation (spec.recompile). Use for authoring or tuning MJCF/MjSpec
+  models, adding bodies/geoms/actuators, and attaching sub-models.
   Do NOT use for stepping simulations (mujoco-python) or rendering (mujoco-rendering).
 ---
 
@@ -19,7 +21,8 @@ description: >-
 > (`.. _meOverview:`) and [`../../overview.rst`](../../overview.rst) directly
 > when in a MuJoCo checkout; for large reference files like
 > [`../../modeling.rst`](../../modeling.rst) (`.. _ProceduralModeling:`,
-> `.. _Mechanisms:`), [`../../XMLreference.rst`](../../XMLreference.rst),
+> `.. _Mechanisms:`, `.. _CTuning:`),
+> [`../../XMLreference.rst`](../../XMLreference.rst),
 > [`../../python.rst`](../../python.rst) (`.. _PyModelEdit:`), and
 > [`../../APIreference/functions.rst`](../../APIreference/functions.rst), grep
 > the literal `.. _Label:` anchor. Outside a checkout, fetch
@@ -222,7 +225,7 @@ servo = spec.add_actuator(
     target='shoulder',
     trntype=mujoco.mjtTrn.mjTRN_JOINT,
 )
-servo.set_to_position(kp=200.0)
+servo.set_to_position(kp=200.0, dampratio=1.0)  # Pair with implicitfast (kv defaults to 0)
 servo.forcelimited = True
 servo.forcerange = [-50.0, 50.0]     # Peak torque in Nm
 servo.ctrllimited = True
@@ -265,6 +268,29 @@ body.add_geom(rubber, name='tire', type=mujoco.mjtGeom.mjGEOM_CYLINDER, size=[0.
 other_geom.classname = rubber
 ```
 
+### Baseline Tuning Overrides (`<option>` & Root `<default>`)
+
+Several internal defaults (`Euler`, `pyramidal` cones with `impratio=1`, soft
+`solref="0.02 1"`, zero joint `armature`/`damping`) are kept for backwards
+compatibility rather than new robotics models. Override them at the top of a
+project (full rationale and priority-ordered parameter guide in
+[modeling.rst](../../modeling.rst), `.. _CTuning:`, `.. _CTuningDefaults:`,
+`.. _CTuningGlobal:`, `.. _CTuningModel:`):
+
+```python
+spec.option.integrator = mujoco.mjtIntegrator.mjINT_IMPLICITFAST  # DISCRETE for flex elasticity
+spec.option.cone = mujoco.mjtCone.mjCONE_ELLIPTIC
+spec.option.impratio = 10.0
+
+spec.default.geom.solref = [0.005, 1.0]                 # Keep solref[0] >= 2 * timestep
+spec.default.joint.armature = 0.01                      # Reflected rotor inertia (I_rotor * N^2)
+spec.default.joint.damping = 0.1                        # Implicit in M + h*D at zero solver cost
+```
+
+Keep the default `solimp`: raising `solimp[0]` (e.g. to `0.95`) halves rest
+penetration and creep but costs solver iterations, so reach for it only after
+`solref` and elliptic cones.
+
 ## 7. Collisions & Friction Tuning
 
 ### Collision Filtering Bitmasks
@@ -273,8 +299,9 @@ Two geoms collide if and only if:
 `(g1.contype & g2.conaffinity) || (g2.contype & g1.conaffinity)`
 
 ```python
-# Visual-only geom: never collides
-body.add_geom(size=[0.1], contype=0, conaffinity=0, group=1)
+# Visual-only geom: never collides; set mass=0 if omitting <inertial> so it
+# does not add water-density (1000 kg/m^3) mass (inertiagrouprange defaults to "0 5")
+body.add_geom(size=[0.1], contype=0, conaffinity=0, group=1, mass=0)
 
 # Team A collides only with Team B
 geom_a = body.add_geom(size=[0.1], contype=1, conaffinity=2)
@@ -300,10 +327,10 @@ finger.add_geom(
 )
 ```
 
-For contact softness and solver impedance/reference tuning (`solref`,
-`solimp`, `solmix`) and why parent-child geoms omit collisions by default, read
-[modeling.rst](../../modeling.rst) (`.. _CSolver:`, `.. _CSolverImpedance:`,
-`.. _CSolverReference:`, `.. _CContact:`) and [overview.rst](../../overview.rst)
+For contact softness, solver impedance/reference tuning (`solref`, `solimp`,
+`priority`/mixing), and why parent-child geoms omit collisions by default, read
+[modeling.rst](../../modeling.rst) (`.. _CTuning:`, `.. _CTuningModel:`,
+`.. _CSolver:`, `.. _CContact:`) and [overview.rst](../../overview.rst)
 (`.. _SurprisingCollisions:`, `.. _Soft:`, `.. _Units:`).
 
 ## 8. Procedural Meshes, Materials & Sensors
@@ -316,6 +343,12 @@ faces = np.array([[0, 2, 1], [0, 1, 3], [0, 3, 2], [1, 2, 3]], dtype=np.int32)
 mesh = spec.add_mesh(name='tetra', uservert=vertices.flatten(), userface=faces.flatten())
 body.add_geom(type=mujoco.mjtGeom.mjGEOM_MESH, meshname='tetra')
 ```
+
+Concave collision meshes are replaced by their convex hulls (unless using SDF
+plugins); prefer primitives (`sphere`, `capsule`, `box`, `cylinder`) for both
+speed and cleaner normals, or pre-decompose non-convex assets offline with
+`CoACD` or `mjfit` (see [computation/index.rst](../../computation/index.rst),
+`.. _coChecking:` and `.. _coDecomposition:`).
 
 ### Procedural Sensors
 
@@ -393,7 +426,8 @@ existing models:
     `.. _PyUSDexport:`) and [OpenUSD Guide](../../OpenUSD/index.rst)
 -   [MJCF Modeling Guide](../../modeling.rst) (`.. _CDefault:`,
     `.. _COrientation:`, `.. _CSolver:`, `.. _CContact:`, `.. _CBodyOrdering:`,
-    `.. _CActuators:`, `.. _CDeformable:`) and
+    `.. _CActuators:`, `.. _CDeformable:`, `.. _CTuning:`,
+    `.. _CTuningDefaults:`, `.. _CTuningGlobal:`, `.. _CTuningModel:`) and
     [Modeling Pitfalls & Units](../../overview.rst) (`.. _Clarifications:`,
     `.. _Units:`, `.. _SurprisingCollisions:`, `.. _Soft:`)
 -   [MJCF XML Schema Reference](../../XMLreference.rst) (`.. _body-geom:`,

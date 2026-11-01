@@ -63,11 +63,14 @@ when your task touches these areas:
     (GIL release, MuJoCo Live vs `WebViewer`), and `Snapshot` vs `Event` channel
     semantics.
 -   **[studio/native_viewers.rst](../../studio/native_viewers.rst)**
-    (`.. _StudioLaunchers:`, `.. _StudioExecutionModes:`,
-    `.. _StudioBackends:`) — `launch_native` / `launch_web` / `launch_passive`,
-    blocking `.run(...)` vs non-blocking `.launch(...)`, and `ViewerConfig.gfx`
-    modes (`opengl`, `vulkan`, `opengl_headless`, `opengl_software`,
-    `vulkan_software`, `web`).
+    (`.. _StudioApp:`, `.. _StudioPythonNative:`, `.. _StudioLaunchers:`,
+    `.. _StudioExecutionModes:`, `.. _StudioBackends:`) — Prebuilt standalone
+    desktop application (`MuJoCoStudio.app` on macOS, `bin\mujoco_studio.exe` on
+    Windows, `bin/mujoco_studio` on Linux) vs Python `NativeViewer` (and when
+    shared custom components belong in C++ bound to Python), `launch_native` /
+    `launch_web` / `launch_passive`, blocking `.run(...)` vs non-blocking
+    `.launch(...)`, and `ViewerConfig.gfx` modes (`opengl`, `vulkan`,
+    `opengl_headless`, `opengl_software`, `vulkan_software`, `web`).
 -   **[studio/web_viewers.rst](../../studio/web_viewers.rst)**
     (`.. _StudioLive:`, `.. _StudioWebViewer:`,
     `.. _StudioBrowserSandboxing:`) — MuJoCo Live (`?model=github:...`),

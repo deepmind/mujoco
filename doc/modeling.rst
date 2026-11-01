@@ -1240,10 +1240,10 @@ history buffer, with no causality issues.
    extrapolation: using a value from before it was actually recorded. This scenario will not lead to a runtime error,
    so it is up to the user to avoid it.
 
-Setting ``delay < timestep * nsample`` is not problematic and can be useful for system identification and stochastic
-delays. In these use cases, one should choose a maximum possible ``delay_max`` and set ``nsample = ceil(delay_max /
-timestep)``. Then at run-time or sysID-time, the :ref:`mjModel` fields ``actuator_delay`` or ``sensor_delay`` can be
-safely modified, so long as ``delay_max`` is not exceeded.
+Setting ``delay < timestep * nsample`` is not problematic and can be useful for :ref:`system identification <PySysid>`
+and stochastic delays. In these use cases, one should choose a maximum possible ``delay_max`` and set
+``nsample = ceil(delay_max / timestep)``. Then at run-time or sysID-time, the :ref:`mjModel` fields ``actuator_delay``
+or ``sensor_delay`` can be safely modified, so long as ``delay_max`` is not exceeded.
 
 .. image:: images/modeling/delay_buffer_light.svg
    :width: 50%
@@ -1727,62 +1727,6 @@ Here we provide guidance on how to accomplish some common modeling tasks. There 
 that everything in this section can be inferred from the rest of the documentation. Nevertheless the inference process
 is not always obvious, so it may be useful to have it spelled out.
 
-.. _CPerformance:
-
-Performance tuning
-~~~~~~~~~~~~~~~~~~
-
-Below is a list of steps one can take in order to maximize simulation throughput. All of the recommendations
-involve parameter tweaking. It is recommended that these be carried out in interactive fashion while looking at the
-:ref:`simulate<saSimulate>` utility's built-in profiler. A detailed and sometimes more useful profile is also reported
-by the :ref:`testspeed<saTestspeed>` utility. When embarking on the more elaborate steps below, target the most
-expensive pipeline component reported by the profiler. Note that some of these are subtly different for MJX, see
-dedicated section :ref:`therein<MjxPerformance>`.
-
-1. :ref:`Timestep<option-timestep>`: Try to increase the simulation timestep. As explained at the end of the
-   :ref:`Numerical Integration<geIntegration>` section, the timestep is the single most important parameter in any
-   model. The default value is chosen for stability rather than efficiency, and can often be increased. At some point,
-   increasing it further will cause divergence, so the optimal timestep is the largest timestep at which divergence
-   never happens or is very rare. The actual value is model-dependent.
-2. :ref:`Integrator<option-integrator>`: Choose your integrator according to the recommendations at the end of the
-   :ref:`Numerical Integration<geIntegration>` section. The default recommended choice is the ``implicitfast``
-   integrator.
-3. :ref:`Constraint Jacobians<option-jacobian>`: Try switching the Jacobian setting between "dense" and "sparse". These
-   two options use separate code paths using dense or sparse algebra, but are otherwise computationally identical, so
-   the faster one is always preferred. The default "auto" heuristic does not always make the right choice.
-4. **Constraint solver:** If the profiler reports that a large chunk of time is spent in the solver, consider the
-   following:
-
-   - :ref:`solver<option-solver>`: The default Newton is often the fastest solver, as it requires the smallest
-     number of iterations to converge. For large models the CG solver might be faster, for models with more degrees of
-     freedom than constraints, the PGS solver will be fastest, though this situation is not common.
-   - :ref:`iterations<option-iterations>` and :ref:`tolerance<option-tolerance>`: Try reducing the number of iterations
-     or, equivalently, increasing the solver's termination tolerance. In particular for the Newton solver, which
-     typically achieves numerical convergence in 2-3 (expensive) iterations, the last iteration increases the precision
-     to a level that has no noticeable effect, and can be skipped.
-5. **Collisions:** If the profiler reports that collision detection takes up a large chunk of the computation
-   time, consider the following steps:
-
-   - Enable engine multithreading by creating a thread pool with :ref:`mju_threadpool`. Narrowphase
-     collision detection can run in parallel, which can significantly speed up scenes with many candidate
-     contact pairs.
-   - Reduce the number of checked collisions using the
-     :ref:`contype<body-geom-contype>` / :ref:`conaffinity<body-geom-conaffinity>` mechanism described in the
-     :ref:`Collision detection<Collision>` section.
-   - Modify collision geometries, replacing expensive collision tests (e.g. mesh-mesh) with cheaper primitive-primitive
-     collisions. As a rule of thumb, collisions which have custom pair functions in the collision table at the top of
-     `engine_collision_driver.c <https://github.com/google-deepmind/mujoco/blob/main/src/engine/engine_collision_driver.c>`__
-     are significantly cheaper than those that use the generic convex-convex collider ``mjc_Convex``. The most expensive
-     collisions are those involving SDF geometries.
-   - If replacing collision meshes with primitives is not feasible, decimate the meshes as much as possible. Open source
-     tools like trimesh, Blender, MeshLab and CoACD are very useful in this regard.
-6. :ref:`Friction cones<option-cone>`: Elliptic cones are more accurate and better at preventing slip with high
-   :ref:`impratio<option-impratio>`, but are more expensive. If accurate friction is not important, try switching
-   to pyramidal cones.
-7. For custom builds, MuJoCo can be compiled with 32-bit floating point precision (rather than the default 64-bit). For
-   large models where memory bandwidth is the bottleneck, this can improve performance. See :ref:`mjtNum` for more
-   information. Note that float32 rarely yields measurable speedups in typical models.
-
 .. _CSlippage:
 
 Preventing slip
@@ -1853,6 +1797,23 @@ better visualize and understand the contact configuration and resulting forces.
      residual slip. Exact zero slip is not guaranteed. NoSlip also adds computational cost, makes inverse dynamics
      ill-defined and can occasionally cause instabilities in complex multi-contact systems. See the
      :ref:`NoSlip solver<soNoSlip>` for details.
+
+.. _CTunneling:
+
+Preventing tunneling
+~~~~~~~~~~~~~~~~~~~~
+
+Collision detection only inspects geom poses at discrete timesteps, so thin or fast-moving geoms (plates, walls,
+projectiles, swinging links) can pass through each other within a single step. Rather than shrinking the
+:ref:`timestep <option-timestep>` or thickening geoms, enable the :ref:`speculative <option-flag-speculative>` flag,
+which adds contacts before impact at a collision cost that is often repaid by the larger timestep it allows. Height
+fields, SDFs and flexes are not supported. See :ref:`Speculative contacts <coSpeculative>` for details and
+`model/speculative/ <https://github.com/google-deepmind/mujoco/tree/main/model/speculative>`__ for examples.
+
+.. admonition:: New feature
+   :class: attention
+
+   Speculative contacts were added in October 2026; their behavior may still change.
 
 .. _CBacklash:
 
@@ -1931,6 +1892,276 @@ be a contributing factor.
 If you suspect that the compile-time approximation is insufficient for your model, you can enable the
 :ref:`diagexact<option-flag-diagexact>` flag to compute the exact diagonal at runtime. See :ref:`Diagonal approximation
 <soExactDiag>` for details on the underlying mechanics and performance implications.
+
+
+.. _CTuning:
+.. _CPerformance:
+
+Model tuning
+------------
+
+Physical fidelity and simulation speed are two sides of the same coin: almost every change that improves accuracy costs
+compute, while relaxing accuracy buys throughput at the expense of realism. Model tuning is the process of choosing the
+right point on this speed--fidelity trade-off for a given task, while taking advantage of the few changes that improve
+*both*.
+
+Before tuning parameters, load the model paused in :ref:`MuJoCo Studio <StudioApp>` (or :ref:`simulate <saSimulate>`)
+and rule out modeling bugs that masquerade as bad contacts: intersecting geoms at ``t = 0`` (toggle contact
+points/forces), visual/collision geom mismatches (toggle geom groups), concave collision meshes replaced by their
+:ref:`convex hulls <coChecking>` (toggle convex hulls; see :ref:`convex decomposition <coDecomposition>`), implausible
+CAD/URDF inertias (toggle equivalent inertia boxes), degree/radian mismatches (:ref:`compiler/angle <compiler-angle>`
+defaults to ``"degree"``), and position targets driving past joint limits or into surfaces. Stiffening contacts to mask
+these issues can cause chatter or divergence. Once the model is clean, tune interactively using the viewer's
+contact-force and profiler overlays, and measure headless throughput with :ref:`testspeed <saTestspeed>` so changes
+target the stage dominating step time.
+
+.. _CTuningDefaults:
+
+Tuning defaults
+~~~~~~~~~~~~~~~
+
+**Unfortunate defaults**:
+   Several of MuJoCo's internal defaults (e.g. ``integrator="Euler"``, ``cone="pyramidal"``, ``solref="0.02 1"``) date
+   back to early versions of the engine and are not what we recommend for new models
+   today. Changing a physics default is difficult because it silently alters simulation trajectories across every
+   existing model that omits the attribute. We may revise some of these defaults in a future release, but for now
+   backwards compatibility keeps them fixed.
+
+**Context-dependent defaults**:
+   Other defaults (e.g. ``damping="0"``, ``condim="3"``, ``contype=conaffinity="1"``) are sensible baselines, but
+   usually need to be overridden on real robots, so we note them in the table below.
+
+Overriding these defaults at the start of a project, typically once in :ref:`option <option>` and the top-level
+:ref:`default <CDefault>` class, avoids the most common modeling pitfalls:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 24 18 22 36
+
+   * - Setting
+     - Internal default
+     - Recommended initial value
+     - Why?
+   * - :ref:`integrator <option-integrator>`
+     - ``"Euler"``
+     - ``"implicitfast"`` (``"discrete"`` with flex elasticity; see note below)
+     - Cheap implicit integration of velocity-dependent forces.
+   * - :ref:`cone <option-cone>`, :ref:`impratio <option-impratio>`
+     - ``"pyramidal"``, ``"1"``
+     - ``"elliptic"``, ``"10"``
+     - Isotropic friction cones and stronger tangential resistance to slip.
+   * - :ref:`solref[0]<CSolver>`
+     - ``"0.02"``
+     - ``"0.004"`` --- ``"0.01"``
+     - Crisper rigid contacts and tighter equality constraints.
+   * - :ref:`solimp[0]<CSolver>`
+     - ``"0.9"``
+     - Keep, or ``"0.95"`` if needed
+     - Halves rest penetration and creep, at the cost of more solver iterations.
+   * - :ref:`contype <body-geom-contype>`, :ref:`conaffinity <body-geom-conaffinity>`
+     - ``"1"``, ``"1"``
+     - Separate visual / collision classes
+     - Keeps detailed visual meshes out of collision detection.
+   * - :ref:`condim <body-geom-condim>`
+     - ``"3"``
+     - ``"4"`` or ``"6"`` on grasp pads
+     - Adds torsional (and rolling) friction needed for stable pinch grasps.
+   * - :ref:`joint/armature <body-joint-armature>`, :ref:`damping <body-joint-damping>`
+     - ``"0"``, ``"0"``
+     - Nonzero rotor inertia & light damping
+     - Better mass-matrix conditioning and free implicit damping of chatter.
+   * - :ref:`actuator/position <actuator-position>`
+     - ``kv="0"``, unlimited force
+     - ``dampratio="1"`` (or ``kv``) + :at:`forcerange`
+     - Critically damped servo response and bounded contact impulses.
+
+The lists below walk through global and model-level knobs in rough order of importance when tuning.
+
+.. _CTuningGlobal:
+
+Global options
+~~~~~~~~~~~~~~
+
+**Timestep** (:ref:`timestep <option-timestep>`: ``"0.002"``):
+   See note under :ref:`Numerical Integration <geChoosingTimestepIntegrator>`. The primary speed--fidelity knob:
+   throughput scales linearly with :at:`timestep` up to the stability limit where simulation diverges. ``2 ms`` is
+   usually reasonable, or slightly high, for contact-rich manipulation (stiff grippers, high gains, or thin objects
+   often prefer ``0.5–2 ms``), whereas ``5–15 ms`` can work well for locomotion. When
+   :ref:`refsafe <option-flag-refsafe>` is enabled (for all integrators besides ``discrete``, which ignores
+   :at:`refsafe`), effective ``solref[0]`` is clamped to at least ``2 * timestep``, so raising :at:`timestep` past half
+   of ``solref[0]`` also softens contacts. If thin or fast-moving geoms start tunneling through each other at the larger
+   timestep, enable :ref:`speculative contacts <CTunneling>` rather than shrinking it.
+
+**Integrator** (:ref:`integrator <option-integrator>`: ``"Euler"``):
+   See note under :ref:`Numerical Integration <geChoosingTimestepIntegrator>`. Use ``implicitfast`` for most models: it
+   has nearly the same per-step cost as ``Euler`` (symmetric Cholesky factorization) while integrating actuator velocity
+   feedback (:at:`kv`, :at:`dampratio`), tendon damping, and fluid viscosity implicitly, and applying exact
+   :ref:`gyroscopic derivatives <geFreeBody>` to standalone free bodies (``Euler`` handles only joint :at:`damping`
+   implicitly). Use ``RK4`` (4x cost per step) for nearly energy-conserving or tumbling systems, and ``implicit``
+   (unsymmetric LU) for fast-spinning coupled multi-link chains where Coriolis derivatives matter. Models with flex
+   :ref:`elasticity <flex-elasticity>` or passive flex contact require ``discrete`` (they raise an error under
+   ``implicit`` and ``implicitfast``); see :ref:`Deformables <CTuningDeformable>`.
+
+   .. note::
+      We are currently trialling :at:`discrete` as a candidate to replace ``implicitfast`` as the recommended
+      integrator. ``discrete`` folds position stiffness (joint and tendon springs, flex elasticity, and actuator
+      :at:`kp`) jointly with the constraints into a single effective metric :math:`\widehat{M} = M + hD + h^2K`,
+      remaining stable at much larger timesteps when stiff servos or springs interact with contacts; see
+      :ref:`Integrators <geIntegrators>` for details and current limitations.
+
+**Solver, iterations, and tolerance** (:ref:`solver <option-solver>`: ``"Newton"``, :ref:`iterations <option-iterations>`: ``"100"``, :ref:`tolerance <option-tolerance>`: ``"1e-8"``):
+   See :ref:`Solver settings <CAlgorithms>`. ``Newton`` is the best choice for small-medium-sized models, converging
+   quadratically in ~2--3 iterations. With :ref:`warmstart <option-flag-warmstart>` and early termination enabled by
+   default, the ``100``-iteration cap is rarely reached: tightening :at:`tolerance` (e.g. ``1e-10``) improves constraint
+   accuracy cheaply, while capping :at:`iterations` to ``2–4`` (or loosening :at:`tolerance`) skips the final polishing
+   step when maximizing speed. Switch to ``CG`` when ``Newton`` slows down, typically on large deformable (:el:`flex`)
+   or particle scenes, or large models with many slipping elliptic contacts where sparse Hessian updates become
+   expensive. ``PGS`` is rarely warranted, with the exception of reduced-contact scenes (roughly ``ncon < nv``) like
+   legged locomotion.
+
+**Friction cones, impratio, and NoSlip** (:ref:`cone <option-cone>`: ``"pyramidal"``, :ref:`impratio <option-impratio>`: ``"1"``, :ref:`noslip_iterations <option-noslip_iterations>`: ``"0"``):
+   ``elliptic`` cones model isotropic Coulomb friction and decouple tangential from normal impedance at modest extra
+   cost over ``pyramidal`` cones. When grasp stability or foot slip on slopes matters (see
+   :ref:`Preventing slip <CSlippage>`), set ``cone="elliptic"`` and raise :at:`impratio` (``10`` for manipulation,
+   ``10–100`` for legged locomotion) to stiffen tangential resistance without raising the friction coefficient (avoid
+   large :at:`impratio` with ``pyramidal`` cones). For residual :ref:`slow slippage <CSlowSlippage>`,
+   ``noslip_iterations`` of ``1–3`` suppresses drift strongly, at roughly 2x step time, ill-defined inverse dynamics,
+   and occasional chatter in overconstrained grasps.
+
+**Jacobian sparsity** (:ref:`jacobian <option-jacobian>`: ``"auto"``):
+   ``dense`` and ``sparse`` compute identical physics. The ``auto`` threshold (``nv = 60``) is usually fine, though
+   medium-sized models are worth timing both ways. With ``sparse`` ``Newton``, declare moving bodies that contact many
+   objects (such as a tray) *before* those objects in :el:`worldbody` to avoid Cholesky fill-in; see
+   :ref:`Body ordering and fill-in <CBodyOrdering>`.
+
+**Situational flags and overrides**:
+   - :ref:`sleep <option-flag-sleep>` (``"disable"``): freezes settled kinematic trees below
+     :ref:`sleep_tolerance <option-sleep_tolerance>`, giving large speedups in scenes with resting clutter or piles.
+   - :ref:`diagexact <option-flag-diagexact>` (``"disable"``): computes the exact constraint-space inertia diagonal at
+     runtime rather than the compile-time ``qpos0`` approximation; useful when bodies operate far from ``qpos0`` or have
+     strongly anisotropic inertias (see :ref:`Constraint accuracy <CConstraintImpedance>`).
+   - :ref:`Contact override <COverride>` (:ref:`override <option-flag-override>`: ``"disable"``, :at:`o_solref`,
+     :at:`o_solimp`, :at:`o_margin`, :at:`o_friction`): globally replaces contact parameters at runtime, useful in
+     :ref:`Studio <StudioApp>` for sweeping contact softness interactively before editing defaults.
+
+.. _CTuningModel:
+
+Model parameters
+~~~~~~~~~~~~~~~~
+
+**Solver parameters** (:ref:`solref <CSolver>`: ``"0.02 1"``, :ref:`solimp <CSolver>`: ``"0.9 0.95 0.001 0.5 2"``):
+   - :at:`solref`: the ``20 ms`` default time constant (``solref[0] = 0.02``) is 10x the default ``2 ms`` timestep,
+     often too soft for rigid contacts and loop-closure :el:`equality` constraints (roughly speaking, a hard rubber
+     surface). Rigid contacts usually prefer lowering it to ``0.004–0.01`` and loop closures to ``0.004–0.005``, keeping
+     ``solref[0] >= 2 * timestep``. Note that in ``(timeconst, dampratio)`` format, raising ``dampratio`` at fixed
+     ``timeconst`` lowers stiffness (:math:`k \propto 1/(\tau^2 \zeta^2)`) rather than adding damping; to tune stiffness
+     and damping independently (e.g. for :ref:`restitution <CRestitution>` or :ref:`system identification <PySysid>`),
+     use the direct ``-stiffness -damping`` format.
+   - :at:`solimp`: rest penetration and static-friction creep both scale with ``1 - d_0`` (static friction sees zero
+     position residual and therefore uses only ``solimp[0]``; see :ref:`Friction <CSolverFriction>`), so raising
+     ``d_0`` from ``0.9`` to ``0.95`` halves both, but costs solver iterations, especially with ``CG`` and ``PGS``.
+     Lowering :at:`solref` and switching to ``elliptic`` cones are much stronger levers, so try those first. ``d_w``
+     (``solimp[1]``) only applies at penetrations approaching ``width`` (``solimp[2]``, default ``1 mm``); scale
+     ``width`` to the compliant layer or object size, and do not confuse :at:`solimp` with :at:`solref`
+     (``solimp="0.01 1 ..."`` sets ``d_0 = 0.01``, nearly disabling the constraint).
+
+**Collision detection and filtering** (:ref:`contype <body-geom-contype>`: ``"1"``, :ref:`conaffinity <body-geom-conaffinity>`: ``"1"``):
+   See :ref:`Collision detection <Collision>`. Every geom both renders and collides by default; put visual meshes in a
+   :ref:`default <CDefault>` class with ``contype="0" conaffinity="0"`` to keep them out of collision detection.
+   Replacing collision meshes with primitives (``sphere``, ``capsule``, ``box``, ``cylinder``) improves *both* speed
+   and contact normals: dedicated pair functions (see `engine_collision_driver.c
+   <https://github.com/google-deepmind/mujoco/blob/main/src/engine/engine_collision_driver.c>`__) are much cheaper
+   than generic convex ``mjc_Convex`` CCD and far cheaper than ``sdf`` collisions. Where meshes are unavoidable,
+   decimate or :ref:`convex-decompose <coDecomposition>` them, cap :ref:`maxhullvert <asset-mesh-maxhullvert>`, prune
+   pairs via :at:`contype`/:at:`conaffinity` or :ref:`exclude <contact-exclude>`, and attach a thread pool with
+   :ref:`mju_threadpool` when narrowphase dominates. For fast-moving or thin convex geoms, the
+   :ref:`speculative <option-flag-speculative>` flag (``"disable"``) adds contacts before impact to prevent tunneling,
+   at a scene-dependent collision cost (see :ref:`Preventing tunneling <CTunneling>`).
+
+**Contact dimension, friction, and mixing** (:ref:`Contact parameters <CContact>`):
+   - :ref:`condim <body-geom-condim>` (``"3"``): ``"3"`` models sliding friction only. Set ``"4"`` (torsional) or
+     ``"6"`` (torsional + rolling) on fingertips and grasp pads, keeping ``"3"`` elsewhere; note ``friction[1]`` and
+     ``friction[2]`` have units of *length* (contact-patch radii). For frictionless contacts use ``condim="1"`` rather
+     than near-zero ``friction`` (under ``pyramidal`` cones, facet regularization scales as :math:`\mu^2`, severely
+     ill-conditioning tiny-friction contacts; use ``cone="elliptic"`` if very low friction is needed).
+   - :ref:`priority <body-geom-priority>` (``"0"``) and mixing: equal-priority geoms average :at:`solref`/:at:`solimp`
+     and take the element-wise **maximum** :at:`friction` (so a low-friction object on a ``friction="1"`` floor gets
+     ``"1"``). Set ``priority="1"`` on the geom whose parameters should govern.
+   - :ref:`margin <body-geom-margin>` and :ref:`gap <body-geom-gap>` (``"0"``): leave ``margin="0"`` unless paired with
+     matching ``gap``, otherwise contact forces activate at a distance and objects hover by ``margin - gap``.
+
+**Joints: armature, damping, and frictionloss** (:ref:`armature <body-joint-armature>`: ``"0"``, :ref:`damping <body-joint-damping>`: ``"0"``, :ref:`frictionloss <body-joint-frictionloss>`: ``"0"``):
+   Geared actuators add reflected rotor inertia (:math:`I_{\text{rotor}} N^2`) that often exceeds the link inertia of
+   wrists, fingers, and ankles; adding realistic :at:`armature` improves realism, mass-matrix conditioning, and
+   timestep stability for free. Viscous joint :at:`damping` likewise enters :math:`M + hD` implicitly (even under
+   ``Euler``) and damps chatter at no solver cost, whereas dry :at:`frictionloss` adds an active constraint row per
+   joint; reserve it for joints where Coulomb stiction matters.
+
+**Actuator gains and force limits** (:ref:`position <actuator-position>`, :ref:`forcerange <actuator-general-forcerange>`):
+   See :ref:`Shortcuts <CActShortcuts>`. A :el:`position` actuator defaults to ``kv="0"`` and unlimited force. Pair
+   ``dampratio="1"`` (or :at:`kv`) with ``implicitfast`` and bound output via :at:`forcerange` or joint
+   :ref:`actuatorfrcrange <body-joint-actuatorfrcrange>` so large setpoint steps do not inject excessive contact
+   impulses. Keep :at:`ctrlrange` within joint :at:`range` so servos do not fight joint limits, except on grippers
+   where extending slightly past pad contact lets a closed command generate grip force on thin objects.
+
+**Masses and inertias** (:ref:`inertial <body-inertial>`, :ref:`mass <body-geom-mass>`, :ref:`density <body-geom-density>`: ``"1000"``):
+   When :el:`inertial` and geom :at:`mass` are omitted, MuJoCo infers mass and inertia from geom volume assuming water
+   :at:`density` (``1000 kg/m^3``), which can badly misestimate hollow shells or dense metal links. Mass or inertia
+   ratios ``> 1000:1`` across contacts or joints (a heavy robot grasping a gram-scale object, or URDF dummy links with
+   ``1e-6`` inertia) also degrade solver conditioning and accuracy; fix implausible CAD/URDF inertias at the source, or
+   clamp messy imports at compile time with :ref:`boundmass <compiler-boundmass>` and
+   :ref:`boundinertia <compiler-boundinertia>`.
+
+.. _CTuningDeformable:
+
+Deformables
+~~~~~~~~~~~
+
+**Parametrization** (:ref:`dof <body-flexcomp-dof>`: ``"full"``):
+   A deformable body approximates a continuum with infinitely many degrees of freedom, so its discretization is the
+   sharpest form of the speed--fidelity trade-off: the same shape can be represented with a few dozen dofs or with tens
+   of thousands, and cost grows quickly with their number. The default ``full`` gives every vertex three dofs, so cost
+   scales with mesh resolution. Interpolated ``trilinear`` and ``quadratic`` flexes instead move the mesh with a coarse
+   grid of nodes (refined with :ref:`cellcount <body-flexcomp-cellcount>`), decoupling cost from mesh resolution while
+   collisions still use the full mesh. Use ``trilinear`` unless the body is a true thin rod or plate, or undergoes
+   extremely large deformations with a lot of bending; ``quadratic`` captures bending without shear locking at higher
+   cost. Model thin rods as ``dim="1"`` flexes with an elasticity :at:`section` and thin plates as ``dim="2"`` shells,
+   which are far cheaper than 3D volumes. Flexes whose parent body has joints must :ref:`pin <flexcomp-pin>` at least
+   one vertex to it.
+
+**Integrator and solver** (:ref:`integrator <option-integrator>`: ``"discrete"``, :ref:`solver <option-solver>`: ``"CG"``):
+   Flex :ref:`elasticity <flex-elasticity>` is usually the stiffest force in a deformable model, and only ``discrete``
+   integrates it implicitly in position. Under ``implicit`` and ``implicitfast`` it raises a runtime error, while
+   ``Euler`` integrates it explicitly and needs sub-millisecond timesteps; with ``discrete``, ``1–4 ms`` is typical. Use
+   ``CG`` with :at:`tolerance` ``1e-5``--``1e-6`` and raise :at:`iterations` (``150–400``) in contact-rich scenes;
+   ``Newton`` also works when flex vertices are pinned to static or slide-jointed bodies. ``PGS`` and
+   :at:`noslip_iterations` are not supported with flex; see :ref:`Integrators <geIntegrators>` for current limitations.
+
+**Stiffness and damping** (:ref:`elasticity <flex-elasticity>`, :ref:`edge <flexcomp-edge-equality>`):
+   For quick but approximate simulations, edge equality constraints (``true``, or ``strain`` for interpolated flexes)
+   work under ``implicitfast`` or ``Euler``, but are typically softer than the material they stand for; they do not
+   inherit the :el:`equality` default, so set :at:`solref` on :el:`edge` explicitly. For accurate deformations, use
+   continuum :at:`young`/:at:`poisson` (plus :at:`thickness` and :at:`elastic2d` for shells) with Rayleigh
+   :ref:`damping <flex-elasticity-damping>` (units of time, ``0.002``--``0.05``) under ``discrete``; since 1D elasticity
+   is bending-only, rods combine it with edge equality for stretching. Avoid edge :at:`stiffness` and :at:`damping`,
+   which are explicit and rejected by ``discrete``.
+
+**Contact** (:ref:`selfcollide <flex-contact-selfcollide>`: ``"auto"``, :ref:`passive <flex-contact-passive>`: ``"false"``):
+   Set ``selfcollide="none"`` unless the flex folds onto itself. ``passive="true"`` replaces flex-flex, self and
+   static-geom contact rows with an implicit penalty force, cheaper and more stable in piled cloth, but frictionless,
+   so keep it off where grip or resting friction matters. The experimental :ref:`ipc <option-flag-ipc>` flag gives
+   intersection-free (but also frictionless) contact for thin 2D flexes, and requires ``CG``.
+
+.. _CTuningSysid:
+
+System identification
+~~~~~~~~~~~~~~~~~~~~~
+
+Interactive tuning establishes numerical stability, throughput, and qualitative behavior, whereas matching a *specific
+physical system* (sim-to-real) is best cast as optimization against hardware logs. Rather than hand-tuning joint
+:at:`armature`, :at:`damping`, :at:`frictionloss`, actuator gains (:at:`kp`, :at:`kv`), link inertias, or
+:ref:`delays <CDelay>`, the Python :ref:`mujoco.sysid <PySysid>` toolbox fits these parameters directly to recorded
+control and sensor trajectories via box-constrained nonlinear least squares over batched parallel rollouts.
 
 
 .. |image3| image:: images/modeling/tendonwraps.png

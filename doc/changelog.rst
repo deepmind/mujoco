@@ -225,6 +225,10 @@ Documentation
 - Added documentation for :ref:`MuJoCo Studio <Studio>`, covering :ref:`web <StudioWebViewers>` and
   :ref:`native <StudioNativeViewers>` viewers, :ref:`architecture <StudioArchitecture>`, and
   :ref:`Python <StudioPythonPlugins>` and :ref:`C++ <StudioCpp>` development.
+- Added a :ref:`Model tuning <CTuning>` guide to the Modeling chapter---covering the fidelity--speed trade-off,
+  :ref:`tuning defaults <CTuningDefaults>`, priority-ordered :ref:`global <CTuningGlobal>` and
+  :ref:`model-level <CTuningModel>` parameters, :ref:`deformables <CTuningDeformable>`, and
+  :ref:`system identification <CTuningSysid>`---along with module documentation for :ref:`mujoco.sysid <PySysid>`.
 
 Version 3.17.0 (October 22, 2026)
 ---------------------------------

@@ -60,7 +60,8 @@ check the canonical models and samples shipped with MuJoCo:
   comparison), `python/rollout.ipynb` (`mujoco.rollout`), `python/LQR.ipynb`
   (`mjd_transitionFD` & LQR), `python/least_squares.ipynb`
   (`mujoco.minimize.least_squares`), `python/mujoco/sysid/sysid.ipynb`
-  (`mujoco.sysid`), and `mjx/tutorial.ipynb` (`` `.. _MjxNotebook:` ``).
+  (`mujoco.sysid`, `` `.. _PySysid:` ``), and `mjx/tutorial.ipynb`
+  (`` `.. _MjxNotebook:` ``).
 - **RL, Control & Simulation Ecosystem**:
   - **MuJoCo Playground**
     (https://github.com/google-deepmind/mujoco_playground) — JAX/MJX
@@ -82,12 +83,12 @@ check the canonical models and samples shipped with MuJoCo:
 | Skill | Directory | Primary Scope | Key APIs & Capabilities |
 | :--- | :--- | :--- | :--- |
 | **`mujoco-python`** | [`python/`](python/SKILL.md) | Python simulation lifecycle & physics | `MjSpec` → `MjModel` → `MjData`, `mj_step`, `mj_forward`, named access, `bind()`, `mujoco.batch` (`Batch`), `mujoco.rollout`, `mujoco.minimize`, `mujoco.sysid`, sensors, `mju_*` math. |
-| **`mujoco-spec-editing`** | [`spec_editing/`](spec_editing/SKILL.md) | Procedural model authoring | Building bodies, geoms, joints, sub-spec attachments with prefixes, actuators (servos, motors), collision bitmasks (`contype`/`conaffinity`), default classes. |
+| **`mujoco-spec-editing`** | [`spec_editing/`](spec_editing/SKILL.md) | Procedural model authoring & tuning | Building bodies, geoms, joints, sub-spec attachments with prefixes, actuators (servos, motors), collision bitmasks (`contype`/`conaffinity`), default classes, baseline `<option>`/solver/contact tuning (`.. _CTuning:`). |
 | **`mujoco-rendering`** | [`rendering/`](rendering/SKILL.md) | Offscreen & PBR rendering | Headless RGB, metric depth maps, segmentation masks (`mujoco.Renderer`), Filament PBR (`mujoco.mjrf`, `mujoco.rendering.filament`), C++ `mjr`/`mjrf` pipelines. |
 | **`mujoco-accelerated`** | [`accelerated/`](accelerated/SKILL.md) | GPU & TPU batch simulation | High-throughput batch rollouts with MJX (`MJX-JAX`, `MJX-Warp`, `jax.vmap`, `jax.lax.scan`), differentiability, CUDA batching with MJWarp (`mujoco_warp`), contact/constraint sizing. |
 | **`mujoco-parity`** | [`parity/`](parity/SKILL.md) | Cross-engine physics parity | Comparing CPU (`float64`) vs MJWarp/MJX (`float32`): stage-by-stage `forward` isolation, stiff actuator & `qM` rounding bounds, contact matching, batched 1-step & `float32` baseline rollouts. |
 | **`mujoco-gui`** | [`gui/`](gui/SKILL.md) | Dear ImGui & ImPlot UI design | Immediate-mode UI patterns, layout, styling, ID stack rules (`##` vs `###`), list virtualization (`ImGuiListClipper`), automated testing hooks. |
-| **`mujoco-studio`** | [`studio/`](studio/SKILL.md) | Studio apps & interactive viewers | Decoupled Sim/Viewer threads, message channels (Snapshots vs Events), plugin architecture in Python and C++, hot reload, WebViewer WASM streaming. |
+| **`mujoco-studio`** | [`studio/`](studio/SKILL.md) | Studio apps & interactive viewers | Standalone desktop app (`.. _StudioApp:`) & Python viewers, decoupled Sim/Viewer threads, message channels (Snapshots vs Events), plugin architecture in Python and C++, hot reload, WebViewer WASM streaming. |
 
 ## How to Use These Skills
 

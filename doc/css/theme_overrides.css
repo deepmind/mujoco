@@ -221,6 +221,10 @@ ul.simple {
   margin-bottom: 0.5em;
 }
 
+dd > ul.simple {
+  margin-left: 0;
+}
+
 ul.simple li {
   list-style: disc;
 }

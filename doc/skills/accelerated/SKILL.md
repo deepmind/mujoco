@@ -228,8 +228,11 @@ tuning throughput:
     constraint islands.
 -   **Performance tuning, CUDA graphs & domain randomization**:
     [mjx.rst](../../mjx.rst) (`.. _MjxPerformance:`, `.. _MjxPerformanceJAX:`,
-    `.. _MjxPerformanceWarp:`) and [mjwarp/index.rst](../../mjwarp/index.rst)
-    (`.. _mjwPerf:`, `.. _mjwGC:`, `.. _mjwOverflow:`, `.. _mjwBatch:`).
+    `.. _MjxPerformanceWarp:`), [mjwarp/index.rst](../../mjwarp/index.rst)
+    (`.. _mjwPerf:`, `.. _mjwGC:`, `.. _mjwOverflow:`, `.. _mjwBatch:`), and
+    [modeling.rst](../../modeling.rst) (`.. _CTuning:`, `.. _CTuningGlobal:`,
+    `.. _CTuningModel:`) for general timestep, solver/iteration, friction-cone,
+    and primitive-vs-mesh collision trade-offs.
 
 ### High-Frequency Gotchas
 
@@ -262,7 +265,8 @@ tuning throughput:
     `.. _MJW_Usage:`, `.. _mjwPerf:`, `.. _mjwOverflow:`, `.. _mjwBatch:`,
     `.. _mjwDiff:`) and [MJWarp API Reference](../../mjwarp/api.rst)
 -   [Python Bindings (`mujoco.batch` & `mujoco.rollout`)](../../python.rst)
-    (`.. _PyNamed:`, `.. _PyBatch:`, `.. _PyRollout:`) and
+    (`.. _PyNamed:`, `.. _PyBatch:`, `.. _PyRollout:`),
+    [Model Tuning Guide](../../modeling.rst) (`.. _CTuning:`), and
     [MuJoCo Menagerie](../../models.rst) (`.. _Menagerie:`)
 
 ### Notebooks, Models & RL Ecosystem

@@ -1009,7 +1009,9 @@ from ``pypi.org``. It covers the core bindings and offscreen rendering (``mujoco
 Modules
 =======
 
-The ``mujoco`` package contains two sub-modules: ``mujoco.rollout`` and ``mujoco.minimize``
+The ``mujoco`` package includes several sub-modules: :ref:`mujoco.rollout <PyRollout>`, :ref:`mujoco.batch <PyBatch>`,
+:ref:`mujoco.minimize <PyMinimize>`, :ref:`mujoco.sysid <PySysid>`, :ref:`mujoco.studio <Studio>`, and
+:ref:`mujoco.usd <PyUSDexport>`.
 
 .. _PyRollout:
 
@@ -1190,6 +1192,22 @@ Quadratic Programs with :ref:`mju_boxQP`. It is documented in the associated not
 
 .. |lscolab| image:: https://colab.research.google.com/assets/colab-badge.png
              :target: https://colab.research.google.com/github/google-deepmind/mujoco/blob/main/python/least_squares.ipynb
+
+.. _PySysid:
+
+sysid
+-----
+
+The `mujoco.sysid <https://github.com/google-deepmind/mujoco/tree/main/python/mujoco/sysid>`__ toolbox (installed via
+``pip install mujoco[sysid]``) fits model parameters to recorded hardware trajectories using box-constrained nonlinear
+least squares over batched parallel :ref:`rollout <PyRollout>` evaluations. It supports arbitrary :ref:`MjSpec <mjSpec>`
+parameters---with built-in helpers for body mass, center of mass, physically consistent 10-D pseudo-inertias, and
+actuator P/D gains---as well as sensor/actuator delays and biases, and generates interactive HTML diagnostic reports.
+See the `sysid README <https://github.com/google-deepmind/mujoco/blob/main/python/mujoco/sysid/README.md>`__ for API
+details and the associated notebook: |sysid_colab|
+
+.. |sysid_colab| image:: https://colab.research.google.com/assets/colab-badge.png
+                 :target: https://colab.research.google.com/github/google-deepmind/mujoco/blob/main/python/mujoco/sysid/sysid.ipynb
 
 .. _PyUSDexport:
 

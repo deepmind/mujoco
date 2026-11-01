@@ -753,6 +753,8 @@ Discrete-time (``discrete``)
    chosen single-step method integrates those forces implicitly, single-step methods can be significantly more stable
    than RK4.
 
+.. _geChoosingTimestepIntegrator:
+
 .. admonition:: Choosing timestep and integrator
    :class: tip
 
@@ -1746,7 +1748,8 @@ Collision detection
 
 Collision detection operates on geoms, which are geometric entities rigidly attached to the underlying bodies. The
 output of collision detection is the list of active contacts, defined as having contact distance smaller than their
-margin parameter. They are stored in the global array ``mjData.contact`` which is then used to construct the constraint
+margin parameter or, when :ref:`speculative contacts <coSpeculative>` are enabled, predicted to occur within the next
+timestep. They are stored in the global array ``mjData.contact`` which is then used to construct the constraint
 Jacobian and compute the constraint force. Below we explain how geom pairs are selected for collision checking, how
 collision checking is done, and how the parameters of the resulting contact are determined.
 
@@ -1924,11 +1927,12 @@ height fields) are :ref:`Signed Distance Functions<exSDF>` (see documentation th
 `analytic SDFs <https://github.com/google-deepmind/mujoco/blob/main/plugin/sdf/README.md#gear>`__) can be efficient, but
 have other requirements and limitations.
 
-Open source mesh-decomposition tools like the `CoACD library <https://github.com/SarahWeiii/CoACD>`__ can be used
-outside MuJoCo to automate this process. Finally, all built-in collision functions can be replaced with custom
-callbacks. This can be used to incorporate a general-purpose "triangle soup" collision detector for example. However we
-do not recommend such an approach. Pre-processing the geometry and representing it as a union of convex geoms takes some
-work, but it pays off at runtime and yields both faster and more stable simulation.
+Open-source tools like `CoACD <https://github.com/SarahWeiii/CoACD>`__ (for general approximate mesh decomposition) and
+`mjfit <https://github.com/younghyopark/mjfit>`__ (for exact convex assemblies such as pegs and holes, threads, and
+gears) can be used outside MuJoCo to automate this process. Finally, all built-in collision functions can be replaced
+with custom callbacks. This can be used to incorporate a general-purpose "triangle soup" collision detector for example.
+However we do not recommend such an approach. Pre-processing the geometry and representing it as a union of convex geoms
+takes some work, but it pays off at runtime and yields both faster and more stable simulation.
 
 .. _coPairwise:
 

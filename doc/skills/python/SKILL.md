@@ -19,9 +19,12 @@ description: >-
 > [`../../programming/simulation.rst`](../../programming/simulation.rst)
 > (`.. _Simulation:`) and [`../../overview.rst`](../../overview.rst) directly
 > when in a MuJoCo checkout; for large reference files like
-> [`../../python.rst`](../../python.rst) (`.. _PyStructs:`, `.. _PyNamed:`),
+> [`../../python.rst`](../../python.rst) (`.. _PyStructs:`, `.. _PyNamed:`,
+> `.. _PyBatch:`, `.. _PySysid:`),
+> [`../../modeling.rst`](../../modeling.rst) (`.. _CTuning:`),
 > [`../../computation/index.rst`](../../computation/index.rst) (`.. _Pipeline:`,
-> `.. _geIntegrators:`), [`../../XMLreference.rst`](../../XMLreference.rst), and
+> `.. _geIntegrators:`, `.. _geChoosingTimestepIntegrator:`),
+> [`../../XMLreference.rst`](../../XMLreference.rst), and
 > [`../../APIreference/functions.rst`](../../APIreference/functions.rst), grep
 > the literal `.. _Label:` anchor. Outside a checkout, fetch
 > `https://mujoco.readthedocs.io/en/latest/<path>.html` (or `/en/stable/` for
@@ -272,8 +275,10 @@ if (key_id >= 0) {
 
 ### Integrators & Numerical Stability
 
-Configured via `model.opt.integrator` (full equations and trade-offs in
-[computation/index.rst](../../computation/index.rst), `.. _geIntegrators:`, and
+Configured via `model.opt.integrator` (full equations and timestep/integrator
+selection notes in [computation/index.rst](../../computation/index.rst),
+`.. _geIntegrators:` and `.. _geChoosingTimestepIntegrator:`,
+[modeling.rst](../../modeling.rst), `.. _CTuningGlobal:`, and
 [XMLreference.rst](../../XMLreference.rst), `.. _option-integrator:`):
 
 -   `mjINT_IMPLICITFAST` (**recommended**): Velocity-implicit (damping, `kv`,
@@ -285,9 +290,9 @@ Configured via `model.opt.integrator` (full equations and trade-offs in
     damping only.
 -   `mjINT_RK4`: 4th-order Runge-Kutta (4 evaluations/step) for smooth,
     energy-conserving systems.
--   `mjINT_DISCRETE` (experimental): Also implicit in *position* (stiff springs,
-    position servos, and their coupling with contacts; `implicit`/`implicitfast`
-    are velocity-implicit only).
+-   `mjINT_DISCRETE` (candidate replacement in trial): Also implicit in
+    *position* (stiff springs, position servos `kp`, and their coupling with
+    contacts; `implicit`/`implicitfast` are velocity-implicit only).
 
 ## 4. Contact & Force Sensing: Declarative Sensors
 
@@ -411,10 +416,17 @@ total_energy = potential_energy + kinetic_energy
 In passive, unforced, undamped systems, `total_energy` must remain constant.
 Growing energy indicates numerical integration instability (requiring smaller
 timesteps, or `implicitfast` if large damping or other velocity-dependent forces
-are the cause). For diagnosing divergence, non-SI unit mistakes (millimeter/gram
-meshes), soft contact tuning, island sleeping, speculative CCD, or fluid drag,
-read [overview.rst](../../overview.rst) (`.. _Clarifications:`,
-`.. _Divergence:`, `.. _Units:`, `.. _Soft:`),
+are the cause). Before stiffening contacts to mask instability, inspect the
+paused model at `t = 0` in Studio/`simulate` for initial penetrations,
+visual/collision geom mismatches, concave collision meshes replaced by convex
+hulls (`.. _coChecking:`), implausible CAD/URDF inertia boxes, and degree/radian
+mismatches (`compiler/angle` defaults to `"degree"`). For priority-ordered
+speed-fidelity tuning, diagnosing divergence, non-SI unit mistakes
+(millimeter/gram meshes), island sleeping, speculative CCD, or fluid drag, read
+[modeling.rst](../../modeling.rst) (`.. _CTuning:`, `.. _CTuningDefaults:`,
+`.. _CTuningGlobal:`, `.. _CTuningModel:`),
+[overview.rst](../../overview.rst) (`.. _Clarifications:`, `.. _Divergence:`,
+`.. _Units:`, `.. _Soft:`),
 [computation/index.rst](../../computation/index.rst) (`.. _Solver:`,
 `.. _Sleeping:`), [programming/simulation.rst](../../programming/simulation.rst)
 (`.. _siSleep:`), [computation/speculative.rst](../../computation/speculative.rst),
@@ -462,8 +474,12 @@ for _ in range(1000):
 -   **Nonlinear least-squares & System ID (`mujoco.minimize`, `mujoco.sysid`)**:
     Use `mujoco.minimize.least_squares` ([python.rst](../../python.rst),
     `.. _PyMinimize:`, and `python/least_squares.ipynb`) for box-constrained QP
-    optimization (`mju_boxQP`), and `mujoco.sysid`
-    (`python/mujoco/sysid/sysid.ipynb`) for parameter/system identification.
+    optimization (`mju_boxQP`), and `mujoco.sysid` (`pip install mujoco[sysid]`;
+    see [python.rst](../../python.rst), `.. _PySysid:`,
+    [modeling.rst](../../modeling.rst), `.. _CTuningSysid:`,
+    `python/mujoco/sysid/README.md`, and `python/mujoco/sysid/sysid.ipynb`) for
+    fitting inertias, friction/damping, actuator gains, and delays to hardware
+    logs over batched rollouts.
 
 ### Compute Backend Comparison
 
@@ -503,15 +519,19 @@ cross-engine physics comparison, refer to [`mujoco-parity`](../parity/SKILL.md).
 
 -   [Python Bindings Reference](../../python.rst) (`.. _PyNotebook:`,
     `.. _PyStructs:`, `.. _PyNamed:`, `.. _PyModelEdit:`, `.. _PyMJCF:`,
-    `.. _PyRollout:`, `.. _PyBatch:`, `.. _PyMinimize:`)
--   [Overview & Common Pitfalls](../../overview.rst) (`.. _Clarifications:`,
-    `.. _Divergence:`, `.. _Units:`, `.. _SurprisingCollisions:`, `.. _Soft:`)
+    `.. _PyRollout:`, `.. _PyBatch:`, `.. _PyMinimize:`, `.. _PySysid:`)
+-   [Model Tuning & Pitfalls](../../modeling.rst) (`.. _CTuning:`,
+    `.. _CTuningDefaults:`, `.. _CTuningGlobal:`, `.. _CTuningModel:`,
+    `.. _CTuningSysid:`) and [Overview](../../overview.rst)
+    (`.. _Clarifications:`, `.. _Divergence:`, `.. _Units:`,
+    `.. _SurprisingCollisions:`, `.. _Soft:`)
 -   [Simulation Loop, Batching & Sleeping](../../programming/simulation.rst)
     (`.. _siSimulation:`, `.. _siStateControl:`, `.. _siForward:`,
     `.. _siBatch:`, `.. _siDiagnostics:`, `.. _siSleep:`)
 -   [Computation, Solvers & Integrators](../../computation/index.rst)
-    (`.. _geIntegrators:`, `.. _geState:`, `.. _Solver:`, `.. _Sleeping:`,
-    `.. _Pipeline:`), [Speculative CCD](../../computation/speculative.rst), and
+    (`.. _geIntegrators:`, `.. _geChoosingTimestepIntegrator:`, `.. _geState:`,
+    `.. _Solver:`, `.. _Sleeping:`, `.. _Pipeline:`),
+    [Speculative CCD](../../computation/speculative.rst), and
     [Fluid Dynamics](../../computation/fluid.rst)
 -   [MuJoCo Menagerie Robot Gallery](../../models.rst) (`.. _Menagerie:`) and
     [MJCF Sensor & Option Reference](../../XMLreference.rst)
