@@ -282,11 +282,11 @@ void mjXURDF::Body(XMLElement* body_elem) {
   mjuu_setvec(pbody->quat, 1, 0, 0, 0);
 
   // process all visual and geometry elements in order
-  float       rgba[4] = {-1, 0, 0, 0};
-  std::string geom_name;
+  float rgba[4] = {-1, 0, 0, 0};
 
   elem = body_elem->FirstChildElement();
   while (elem) {
+    std::string geom_name;
     name = elem->Value();
 
     // visual element
@@ -300,9 +300,9 @@ void mjXURDF::Body(XMLElement* body_elem) {
 
         // otherwise use material table
         else {
-          ReadAttrTxt(temp, "name", name, true);
-          name     = GetPrefixedName(name);
-          int imat = FindName(name, urMat);
+          std::string mat_name;
+          ReadAttrTxt(temp, "name", mat_name, true);
+          int imat = FindName(mat_name, urMat);
           if (imat >= 0) { std::memcpy(rgba, urRGBA[imat].val, 4 * sizeof(float)); }
         }
       }
@@ -315,7 +315,7 @@ void mjXURDF::Body(XMLElement* body_elem) {
 
         // save name if it doesn't already exist.
         mjXUtil::ReadAttrTxt(elem, "name", geom_name);
-        name = GetPrefixedName(name);
+        geom_name = GetPrefixedName(geom_name);
         if (urGeomNames.find(geom_name) == urGeomNames.end()) {
           mjs_setName(pgeom->element, geom_name.c_str());
           urGeomNames.insert(geom_name);
@@ -487,12 +487,19 @@ void mjXURDF::Joint(XMLElement* joint_elem) {
 
   // limit element
   if ((elem = FindSubElem(joint_elem, "limit"))) {
-    bool haslower = ReadAttr(elem, "lower", 1, pjoint->range, text);
-    bool hasupper = ReadAttr(elem, "upper", 1, pjoint->range + 1, text);
+    if (jointtype == 1) {
+      pjoint->limited = mjLIMITED_FALSE;
+    } else {
+      bool haslower = ReadAttr(elem, "lower", 1, pjoint->range, text);
+      bool hasupper = ReadAttr(elem, "upper", 1, pjoint->range + 1, text);
 
-    // handle range mis-specification, otherwise the default mjLIMITED_AUTO will do the right thing
-    bool bad_range = (haslower != hasupper) || pjoint->range[0] > pjoint->range[1];
-    if (bad_range) { pjoint->limited = mjLIMITED_FALSE; }
+      // handle range mis-specification, otherwise mjLIMITED_AUTO does the right thing
+      bool bad_range = (haslower != hasupper) || pjoint->range[0] >= pjoint->range[1];
+      if (haslower && hasupper && pjoint->range[0] == pjoint->range[1]) {
+        mju_warning("joint '%s' has equal lower and upper limits, limit ignored", jntname.c_str());
+      }
+      if (bad_range) { pjoint->limited = mjLIMITED_FALSE; }
+    }
 
     // ReadAttr(elem, "velocity", 1, &pjoint->maxvel, text); // no maxvel in MuJoCo
     double effort = 0;
@@ -599,7 +606,8 @@ mjsGeom* mjXURDF::Geom(XMLElement* geom_elem, mjsBody* pbody, bool collision) {
 
       // find if it exists with the same scale
       for (mjsMesh* mesh : meshes[meshname]) {
-        if (mesh->scale[0] == meshscale[0] &&
+        if (*mesh->file == meshfile &&
+            mesh->scale[0] == meshscale[0] &&
             mesh->scale[1] == meshscale[1] &&
             mesh->scale[2] == meshscale[2]) {
           pmesh = mesh;
@@ -621,13 +629,18 @@ mjsGeom* mjXURDF::Geom(XMLElement* geom_elem, mjsBody* pbody, bool collision) {
 
     // set fields
     if (newmesh) {
+      // make the name unique, an indexed name can clash with another mesh
+      std::string uniquename = meshname;
+      for (int k = 1; mjs_findElement(spec, mjOBJ_MESH, uniquename.c_str()); k++) {
+        uniquename = meshname + "_" + std::to_string(k);
+      }
       mjs_setString(pmesh->file, meshfile.c_str());
-      mjs_setName(pmesh->element, meshname.c_str());
+      mjs_setName(pmesh->element, uniquename.c_str());
       pmesh->scale[0] = meshscale[0];
       pmesh->scale[1] = meshscale[1];
       pmesh->scale[2] = meshscale[2];
     }
-    mjs_setString(pgeom->meshname, meshname.c_str());
+    mjs_setString(pgeom->meshname, mjs_getString(mjs_getName(pmesh->element)));
   }
 
   else {
