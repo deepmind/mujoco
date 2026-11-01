@@ -19,6 +19,8 @@
 
 #include <mujoco/mjtype.h>
 #include "engine/engine_util_blas.h"
+#include "engine/engine_util_blas_avx.h"  // IWYU pragma: keep
+#include "engine/engine_util_spatial_avx.h"  // IWYU pragma: keep
 
 #ifdef __cplusplus
   #define restrict __restrict__
@@ -216,10 +218,14 @@ void mji_transpose3(mjtNum* restrict res, const mjtNum mat[9]) {
 // res = vec
 static inline
 void mji_copy4(mjtNum* restrict res, const mjtNum data[4]) {
+#ifdef mjUSEAVX
+  mju_copy4_avx(res, data);
+#else
   res[0] = data[0];
   res[1] = data[1];
   res[2] = data[2];
   res[3] = data[3];
+#endif
 }
 
 
@@ -227,6 +233,9 @@ void mji_copy4(mjtNum* restrict res, const mjtNum data[4]) {
 // (for use in this file only)
 static inline
 mjtNum mji__normalize4(mjtNum vec[4]) {
+#ifdef mjUSEAVX
+  return mju_normalize4_avx(vec);
+#else
   mjtNum norm = mju_sqrt((vec[0]*vec[0] + vec[1]*vec[1]) + (vec[2]*vec[2] + vec[3]*vec[3]));
 
   if (norm < mjMINVAL) {
@@ -243,6 +252,7 @@ mjtNum mji__normalize4(mjtNum vec[4]) {
   }
 
   return norm;
+#endif
 }
 
 
@@ -275,10 +285,14 @@ void mji_rotVecQuat(mjtNum* restrict res, const mjtNum vec[3], const mjtNum quat
 // negate quaternion
 static inline
 void mji_negQuat(mjtNum* restrict res, const mjtNum quat[4]) {
+#ifdef mjUSEAVX
+  mju_negQuat_avx(res, quat);
+#else
   res[0] = quat[0];
   res[1] = -quat[1];
   res[2] = -quat[2];
   res[3] = -quat[3];
+#endif
 }
 
 
@@ -286,10 +300,14 @@ void mji_negQuat(mjtNum* restrict res, const mjtNum quat[4]) {
 static inline
 void mji_mulQuat(mjtNum* restrict res, const mjtNum qa[4], const mjtNum qb[4]) {
   assert(res != qa && res != qb);
+#ifdef mjUSEAVX
+  mju_mulQuat_avx(res, qa, qb);
+#else
   res[0] = (qa[0]*qb[0] - qa[1]*qb[1]) + (-qa[2]*qb[2] - qa[3]*qb[3]);
   res[1] = (qa[0]*qb[1] + qa[1]*qb[0]) + ( qa[2]*qb[3] - qa[3]*qb[2]);
   res[2] = (qa[0]*qb[2] - qa[1]*qb[3]) + ( qa[2]*qb[0] + qa[3]*qb[1]);
   res[3] = (qa[0]*qb[3] + qa[1]*qb[2]) + (-qa[2]*qb[1] + qa[3]*qb[0]);
+#endif
 }
 
 
@@ -297,10 +315,14 @@ void mji_mulQuat(mjtNum* restrict res, const mjtNum qa[4], const mjtNum qb[4]) {
 static inline
 void mji_mulQuatAxis(mjtNum* restrict res, const mjtNum quat[4], const mjtNum axis[3]) {
   assert(res != quat && res != axis);
+#ifdef mjUSEAVX
+  mju_mulQuatAxis_avx(res, quat, axis);
+#else
   res[0] = -quat[1]*axis[0] - quat[2]*axis[1] - quat[3]*axis[2];
   res[1] =  quat[0]*axis[0] - quat[3]*axis[1] + quat[2]*axis[2];
   res[2] =  quat[3]*axis[0] + quat[0]*axis[1] - quat[1]*axis[2];
   res[3] = -quat[2]*axis[0] + quat[1]*axis[1] + quat[0]*axis[2];
+#endif
 }
 
 
@@ -360,6 +382,9 @@ void mji_subQuat(mjtNum* restrict res, const mjtNum qa[4], const mjtNum qb[4]) {
 static inline
 void mji_quat2Mat(mjtNum* restrict res, const mjtNum quat[4]) {
   assert(res != quat);
+#ifdef mjUSEAVX
+  mju_quat2Mat_avx(res, quat);
+#else
   // null quat: identity
   if (quat[0] == 1 && quat[1] == 0 && quat[2] == 0 && quat[3] == 0) {
     res[0] = 1;
@@ -397,6 +422,7 @@ void mji_quat2Mat(mjtNum* restrict res, const mjtNum quat[4]) {
     res[6] = 2*(q13 - q02);
     res[7] = 2*(q23 + q01);
   }
+#endif
 }
 
 

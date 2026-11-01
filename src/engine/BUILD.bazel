@@ -1301,7 +1301,10 @@ cc_library(
 
 cc_library(
     name = "engine_inline",
-    hdrs = ["engine_inline.h"],
+    hdrs = [
+        "engine_inline.h",
+        "engine_util_spatial_avx.h",
+    ],
     conlyopts = ["-std=c11"],
     copts = [
         "-I" + MJ_ROOT + "/src",
@@ -1310,6 +1313,10 @@ cc_library(
     cxxopts = [
         "-fvisibility-inlines-hidden",
         "-std=c++20",
+    ],
+    # Header-only: `defines` (not `local_defines`) propagates to dependents.
+    defines = [
+        "mjUSEPLATFORMSIMD",
     ],
     linkstatic = True,
     local_defines = [

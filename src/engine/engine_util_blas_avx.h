@@ -18,9 +18,12 @@
 #ifdef mjUSEPLATFORMSIMD
 #if defined(__AVX__) && !defined(mjUSESINGLE)
 
+#ifndef mjUSEAVX
 #define mjUSEAVX
+#endif
 
 #include <immintrin.h>
+#include <math.h>
 
 #include <mujoco/mjtype.h>
 
@@ -245,6 +248,34 @@ mjtNum mju_dot_avx(const mjtNum* vec1, const mjtNum* vec2, int n) {
   }
 
   return res;
+}
+
+
+// res = data (4-vector)
+static inline
+void mju_copy4_avx(mjtNum res[4], const mjtNum data[4]) {
+  _mm256_storeu_pd(res, _mm256_loadu_pd(data));
+}
+
+
+// normalize 4-vector, return length before normalization
+static inline
+mjtNum mju_normalize4_avx(mjtNum vec[4]) {
+  mjtNum v0 = vec[0];
+  mjtNum v1 = vec[1];
+  mjtNum v2 = vec[2];
+  mjtNum v3 = vec[3];
+  mjtNum sum = (v0*v0 + v1*v1) + (v2*v2 + v3*v3);
+  mjtNum norm = _mm_cvtsd_f64(_mm_sqrt_sd(_mm_setzero_pd(), _mm_set_sd(sum)));
+
+  if (norm < mjMINVAL) {
+    _mm256_storeu_pd(vec, _mm256_setr_pd(1.0, 0.0, 0.0, 0.0));
+  } else if (fabs(norm - 1.0) > mjMINVAL) {
+    __m256d v = _mm256_setr_pd(v0, v1, v2, v3);
+    _mm256_storeu_pd(vec, _mm256_mul_pd(v, _mm256_set1_pd(1.0 / norm)));
+  }
+
+  return norm;
 }
 
 #endif  // defined(__AVX__) && !defined(mjUSESINGLE)

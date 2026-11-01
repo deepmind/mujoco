@@ -697,6 +697,7 @@ cc_test(
     cxxopts = ["-std=c++20"],
     deps = [
         "//:libmujoco_hdrs",
+        "//src/engine:engine_inline",
         "//src/engine:engine_util_blas",
         "//src/engine:engine_util_spatial",
         "//test:fixture",

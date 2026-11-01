@@ -16,6 +16,7 @@
 
 #include <cmath>
 #include <cstdlib>
+#include <cstring>
 
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
@@ -23,6 +24,7 @@
 #include <mujoco/mjmodel.h>
 #include <mujoco/mjtype.h>
 #include <mujoco/mujoco.h>
+#include "src/engine/engine_inline.h"  // IWYU pragma: keep
 #include "src/engine/engine_util_blas.h"
 #include "src/engine/engine_util_spatial.h"
 #include "test/fixture.h"
@@ -289,6 +291,183 @@ TEST_F(DerivExpmapTest, MatchesFiniteDifference) {
     mjtNum vel[3] = {kVel[0], kVel[1], kVel[2]};
     mju_derivExpmap(vel, expmap, vel);
     EXPECT_THAT(vel, Pointwise(MjNear(0, 0), res)) << "angle " << angle;
+  }
+}
+
+using QuatSimdParityTest = MujocoTest;
+
+// Reference scalar implementations matching CL 2 evaluation order bit-for-bit.
+mjtNum ScalarNormalize4(mjtNum vec[4]) {
+  mjtNum norm = mju_sqrt((vec[0] * vec[0] + vec[1] * vec[1]) +
+                         (vec[2] * vec[2] + vec[3] * vec[3]));
+  if (norm < mjMINVAL) {
+    vec[0] = 1;
+    vec[1] = 0;
+    vec[2] = 0;
+    vec[3] = 0;
+  } else if (mju_abs(norm - 1) > mjMINVAL) {
+    mjtNum norm_inv = 1 / norm;
+    vec[0] *= norm_inv;
+    vec[1] *= norm_inv;
+    vec[2] *= norm_inv;
+    vec[3] *= norm_inv;
+  }
+  return norm;
+}
+
+void ScalarNegQuat(mjtNum res[4], const mjtNum quat[4]) {
+  res[0] = quat[0];
+  res[1] = -quat[1];
+  res[2] = -quat[2];
+  res[3] = -quat[3];
+}
+
+void ScalarMulQuat(mjtNum res[4], const mjtNum qa[4], const mjtNum qb[4]) {
+  mjtNum tmp[4] = {
+      (qa[0] * qb[0] - qa[1] * qb[1]) + (-qa[2] * qb[2] - qa[3] * qb[3]),
+      (qa[0] * qb[1] + qa[1] * qb[0]) + (qa[2] * qb[3] - qa[3] * qb[2]),
+      (qa[0] * qb[2] - qa[1] * qb[3]) + (qa[2] * qb[0] + qa[3] * qb[1]),
+      (qa[0] * qb[3] + qa[1] * qb[2]) + (-qa[2] * qb[1] + qa[3] * qb[0]),
+  };
+  std::memcpy(res, tmp, sizeof(tmp));
+}
+
+void ScalarMulQuatAxis(mjtNum res[4], const mjtNum quat[4],
+                       const mjtNum axis[3]) {
+  mjtNum tmp[4] = {
+      -quat[1] * axis[0] - quat[2] * axis[1] - quat[3] * axis[2],
+      quat[0] * axis[0] - quat[3] * axis[1] + quat[2] * axis[2],
+      quat[3] * axis[0] + quat[0] * axis[1] - quat[1] * axis[2],
+      -quat[2] * axis[0] + quat[1] * axis[1] + quat[0] * axis[2],
+  };
+  std::memcpy(res, tmp, sizeof(tmp));
+}
+
+void ScalarQuat2Mat(mjtNum res[9], const mjtNum quat[4]) {
+  if (quat[0] == 1 && quat[1] == 0 && quat[2] == 0 && quat[3] == 0) {
+    res[0] = 1;
+    res[1] = 0;
+    res[2] = 0;
+    res[3] = 0;
+    res[4] = 1;
+    res[5] = 0;
+    res[6] = 0;
+    res[7] = 0;
+    res[8] = 1;
+    return;
+  }
+  mjtNum q00 = quat[0] * quat[0];
+  mjtNum q01 = quat[0] * quat[1];
+  mjtNum q02 = quat[0] * quat[2];
+  mjtNum q03 = quat[0] * quat[3];
+  mjtNum q11 = quat[1] * quat[1];
+  mjtNum q12 = quat[1] * quat[2];
+  mjtNum q13 = quat[1] * quat[3];
+  mjtNum q22 = quat[2] * quat[2];
+  mjtNum q23 = quat[2] * quat[3];
+  mjtNum q33 = quat[3] * quat[3];
+
+  res[0] = (q00 - q22) + (q11 - q33);
+  res[4] = (q00 + q22) - (q11 + q33);
+  res[8] = (q00 - q22) - (q11 - q33);
+
+  res[1] = 2 * (q12 - q03);
+  res[2] = 2 * (q13 + q02);
+  res[3] = 2 * (q12 + q03);
+  res[5] = 2 * (q23 - q01);
+  res[6] = 2 * (q13 - q02);
+  res[7] = 2 * (q23 + q01);
+}
+
+#if defined(mjUSEPLATFORMSIMD) && defined(__AVX__) && !defined(mjUSESINGLE)
+  #ifndef mjUSEAVX
+    #error \
+        "mjUSEAVX must be defined when mjUSEPLATFORMSIMD and __AVX__ are active"
+  #endif
+#endif
+
+TEST_F(QuatSimdParityTest, BitExactWithScalarAndInPlace) {
+  const mjtNum kQuats[][4] = {
+      {1, 0, 0, 0},
+      {0, 0, 0, 0},
+      {-0.0, 0.0, -0.0, 0.0},
+      {1e-16, -2e-16, 3e-16, -1e-16},
+      {0, 1, 0, 0},
+      {0, 0, 0, 1},
+      {0.5, -0.5, 0.5, -0.5},
+      {0.7312, -0.4189, 0.2951, 0.4493},
+      {-0.3104, 0.8127, -0.1945, 0.4521},
+      {1.723, -2.419, 0.881, -0.337},
+  };
+
+  for (const auto& qa : kQuats) {
+    // copy4 & normalize4
+    mjtNum ref_n[4], mju_n[4], mji_n[4], cpy_u[4], cpy_i[4];
+    std::memcpy(ref_n, qa, sizeof(ref_n));
+    std::memcpy(mju_n, qa, sizeof(mju_n));
+    std::memcpy(mji_n, qa, sizeof(mji_n));
+    mju_copy4(cpy_u, qa);
+    mji_copy4(cpy_i, qa);
+    EXPECT_EQ(std::memcmp(cpy_u, qa, sizeof(cpy_u)), 0);
+    EXPECT_EQ(std::memcmp(cpy_i, qa, sizeof(cpy_i)), 0);
+
+    mjtNum nr = ScalarNormalize4(ref_n);
+    mjtNum nu = mju_normalize4(mju_n);
+    mjtNum ni = mji__normalize4(mji_n);
+    EXPECT_EQ(std::memcmp(&nu, &nr, sizeof(mjtNum)), 0);
+    EXPECT_EQ(std::memcmp(&ni, &nr, sizeof(mjtNum)), 0);
+    EXPECT_EQ(std::memcmp(mju_n, ref_n, sizeof(ref_n)), 0);
+    EXPECT_EQ(std::memcmp(mji_n, ref_n, sizeof(ref_n)), 0);
+
+    // negQuat (out-of-place and in-place)
+    mjtNum neg_r[4], neg_u[4], neg_i[4], neg_ip[4];
+    ScalarNegQuat(neg_r, qa);
+    mju_negQuat(neg_u, qa);
+    mji_negQuat(neg_i, qa);
+    std::memcpy(neg_ip, qa, sizeof(neg_ip));
+    mju_negQuat(neg_ip, neg_ip);
+    EXPECT_EQ(std::memcmp(neg_u, neg_r, sizeof(neg_r)), 0);
+    EXPECT_EQ(std::memcmp(neg_i, neg_r, sizeof(neg_r)), 0);
+    EXPECT_EQ(std::memcmp(neg_ip, neg_r, sizeof(neg_r)), 0);
+
+    // quat2Mat (out-of-place and in-place)
+    mjtNum mat_r[9], mat_u[9], mat_i[9], mat_ip[9] = {0};
+    ScalarQuat2Mat(mat_r, qa);
+    mju_quat2Mat(mat_u, qa);
+    mji_quat2Mat(mat_i, qa);
+    std::memcpy(mat_ip, qa, sizeof(qa));
+    mju_quat2Mat(mat_ip, mat_ip);
+    EXPECT_EQ(std::memcmp(mat_u, mat_r, sizeof(mat_r)), 0);
+    EXPECT_EQ(std::memcmp(mat_i, mat_r, sizeof(mat_r)), 0);
+    EXPECT_EQ(std::memcmp(mat_ip, mat_r, sizeof(mat_r)), 0);
+
+    for (const auto& qb : kQuats) {
+      // mulQuat (out-of-place and both in-place aliasings)
+      mjtNum mq_r[4], mq_u[4], mq_i[4], mq_ipa[4], mq_ipb[4];
+      ScalarMulQuat(mq_r, qa, qb);
+      mju_mulQuat(mq_u, qa, qb);
+      mji_mulQuat(mq_i, qa, qb);
+      std::memcpy(mq_ipa, qa, sizeof(mq_ipa));
+      mju_mulQuat(mq_ipa, mq_ipa, qb);
+      std::memcpy(mq_ipb, qb, sizeof(mq_ipb));
+      mju_mulQuat(mq_ipb, qa, mq_ipb);
+      EXPECT_EQ(std::memcmp(mq_u, mq_r, sizeof(mq_r)), 0);
+      EXPECT_EQ(std::memcmp(mq_i, mq_r, sizeof(mq_r)), 0);
+      EXPECT_EQ(std::memcmp(mq_ipa, mq_r, sizeof(mq_r)), 0);
+      EXPECT_EQ(std::memcmp(mq_ipb, mq_r, sizeof(mq_r)), 0);
+
+      // mulQuatAxis (out-of-place and in-place)
+      const mjtNum axis[3] = {qb[1], qb[2], qb[3]};
+      mjtNum ma_r[4], ma_u[4], ma_i[4], ma_ip[4];
+      ScalarMulQuatAxis(ma_r, qa, axis);
+      mju_mulQuatAxis(ma_u, qa, axis);
+      mji_mulQuatAxis(ma_i, qa, axis);
+      std::memcpy(ma_ip, qa, sizeof(ma_ip));
+      mju_mulQuatAxis(ma_ip, ma_ip, axis);
+      EXPECT_EQ(std::memcmp(ma_u, ma_r, sizeof(ma_r)), 0);
+      EXPECT_EQ(std::memcmp(ma_i, ma_r, sizeof(ma_r)), 0);
+      EXPECT_EQ(std::memcmp(ma_ip, ma_r, sizeof(ma_r)), 0);
+    }
   }
 }
 
