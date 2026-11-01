@@ -88,7 +88,7 @@ describe('MuJoCo WASM Benchmark Tests', () => {
 
   beforeAll(async () => {
     mujoco = await loadMujoco();
-  });
+  }, 60_000);
 
   it('should benchmark NumberArray and DoubleBuffer and compare results',
      () => {

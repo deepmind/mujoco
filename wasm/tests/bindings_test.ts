@@ -96,7 +96,7 @@ describe('MuJoCo WASM Bindings', () => {
 
   beforeAll(async () => {
     mujoco = await loadMujoco();
-  });
+  }, 60_000);
 
   function unlinkXMLFile(filename: string) {
     try {
