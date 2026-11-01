@@ -177,7 +177,7 @@ void Bolt::RegisterPlugin() {
       };
   plugin.sdf_aabb = +[](mjtNum aabb[6], const mjtNum* attributes) {
     aabb[0] = aabb[1] = aabb[2] = 0;
-    aabb[3] = aabb[4] = .6;
+    aabb[3] = aabb[4] = mju_max(0.6, attributes[0] * 1.2);
     aabb[5] = 1;
   };
   plugin.sdf_attribute =

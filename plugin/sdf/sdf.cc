@@ -101,17 +101,17 @@ void SdfVisualizer::Visualize(const mjModel* m, const mjData* d,
         }
         mjvGeom* thisgeom = scn->geoms + scn->ngeom;
         mjtNum* p1 = points + (tot + (k == 0 ? (n - 1) * j : j)) * 3;
-        mjtNum* p2 = points + (tot + j + 1) * 3;
         mju_mulMatVec3(from, rotation, p1);
         mju_addTo3(from, offset);
-        mju_mulMatVec3(to, rotation, p2);
-        mju_addTo3(to, offset);
         if (k == 0) {
           float rgba[4] = {static_cast<float>(j > 0), 0,
                            static_cast<float>(j == 0), 1};
           mjtNum size = 0.2 * m->stat.meansize;
           mjv_initGeom(thisgeom, mjGEOM_SPHERE, &size, from, geom_xmat, rgba);
         } else {
+          mjtNum* p2 = points + (tot + j + 1) * 3;
+          mju_mulMatVec3(to, rotation, p2);
+          mju_addTo3(to, offset);
           mjv_initGeom(thisgeom, mjGEOM_NONE, NULL, NULL, NULL, NULL);
           thisgeom->objtype = mjOBJ_UNKNOWN;
           thisgeom->objid = i;

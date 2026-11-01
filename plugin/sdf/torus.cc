@@ -62,7 +62,8 @@ mjtNum Torus::Distance(const mjtNum point[3]) const {
 void Torus::Gradient(mjtNum grad[3], const mjtNum p[3]) const {
   mjtNum len_xy = mju_sqrt(p[0] * p[0] + p[1] * p[1]);
   mjtNum q = len_xy - attribute[0];
-  mjtNum grad_q[2] = {p[0] / len_xy, p[1] / len_xy};
+  mjtNum grad_q[2] = {len_xy >= mjMINVAL ? p[0] / len_xy : 1,
+                      len_xy >= mjMINVAL ? p[1] / len_xy : 0};
   mjtNum len_qz = mju_sqrt(q * q + p[2] * p[2]);
   grad[0] = q * grad_q[0] / mjMAX(len_qz, mjMINVAL);
   grad[1] = q * grad_q[1] / mjMAX(len_qz, mjMINVAL);

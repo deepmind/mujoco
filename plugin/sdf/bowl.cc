@@ -29,7 +29,7 @@ static mjtNum distance(const mjtNum point[3], const mjtNum attributes[3]) {
   mjtNum height = attributes[0];
   mjtNum radius = attributes[1];
   mjtNum thick = attributes[2];
-  mjtNum width = mju_sqrt(radius * radius - height * height);
+  mjtNum width = mju_sqrt(mju_max(0.0, radius * radius - height * height));
   // see https://iquilezles.org/articles/distfunctions/
   mjtNum q[2] = {mju_norm(point, 2), point[2]};
   mjtNum qdiff[2] = {q[0] - width, q[1] - height};
@@ -44,6 +44,17 @@ static mjtNum distance(const mjtNum point[3], const mjtNum attributes[3]) {
 std::optional<Bowl> Bowl::Create(const mjModel* m, mjData* d, int instance) {
   if (CheckAttr("radius", m, instance) && CheckAttr("height", m, instance) &&
       CheckAttr("thickness", m, instance)) {
+    SdfDefault<BowlAttribute> defattribute;
+    mjtNum height = defattribute.GetDefault(
+        BowlAttribute::names[0],
+        mj_getPluginConfig(m, instance, BowlAttribute::names[0]));
+    mjtNum radius = defattribute.GetDefault(
+        BowlAttribute::names[1],
+        mj_getPluginConfig(m, instance, BowlAttribute::names[1]));
+    if (!(mju_abs(height) <= radius) || !(radius > 0)) {
+      mju_warning("Invalid height or radius in Bowl plugin");
+      return std::nullopt;
+    }
     return Bowl(m, d, instance);
   } else {
     mju_warning("Invalid parameter specification in Bowl plugin");
@@ -63,7 +74,7 @@ Bowl::Bowl(const mjModel* m, mjData* d, int instance) {
 
   mjtNum height = attribute[0];
   mjtNum radius = attribute[1];
-  width = mju_sqrt(radius * radius - height * height);
+  width = mju_sqrt(mju_max(0.0, radius * radius - height * height));
 }
 
 // add new element in the vector storing iteration counts

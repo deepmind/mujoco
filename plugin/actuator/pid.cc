@@ -108,7 +108,7 @@ std::unique_ptr<Pid> Pid::Create(const mjModel* m, int instance) {
   }
 
   std::vector<int> actuators;
-  for (int i = 0; i < m->nu; i++) {
+  for (int i = 0; i < m->nactuator; i++) {
     if (m->actuator_plugin[i] == instance) {
       actuators.push_back(i);
     }
@@ -143,11 +143,14 @@ mjtNum Pid::GetCtrl(const mjModel* m, const mjData* d, int actuator_idx,
                     const State& state, bool actearly) const {
   mjtNum ctrl = 0;
   if (m->actuator_dyntype[actuator_idx] == mjDYN_NONE) {
-    ctrl = d->ctrl[actuator_idx];
-    // clamp ctrl
-    if (m->actuator_ctrllimited[actuator_idx]) {
-      ctrl = mju_clip(ctrl, m->actuator_ctrlrange[2 * actuator_idx],
-                      m->actuator_ctrlrange[2 * actuator_idx + 1]);
+    if (m->actuator_ctrlnum[actuator_idx] > 0) {
+      int ctrladr = m->actuator_ctrladr[actuator_idx];
+      ctrl = d->ctrl[ctrladr];
+      // clamp ctrl
+      if (m->actuator_ctrllimited[ctrladr]) {
+        ctrl = mju_clip(ctrl, m->actuator_ctrlrange[2 * ctrladr],
+                        m->actuator_ctrlrange[2 * ctrladr + 1]);
+      }
     }
   } else {
     // Use of act instead of ctrl, to create integrated-velocity controllers or
@@ -170,9 +173,10 @@ mjtNum Pid::GetCtrl(const mjModel* m, const mjData* d, int actuator_idx,
 
 void Pid::ActDot(const mjModel* m, mjData* d, int instance) const {
   for (int actuator_idx : actuators_) {
+    int outadr = m->actuator_outadr[actuator_idx];
     State state = GetState(m, d, actuator_idx);
     mjtNum ctrl = GetCtrl(m, d, actuator_idx, state, /*actearly=*/false);
-    mjtNum error = ctrl - d->actuator_length[actuator_idx];
+    mjtNum error = ctrl - d->actuator_length[outadr];
 
     int state_idx = m->actuator_actadr[actuator_idx];
     if (config_.i_gain) {
@@ -193,17 +197,18 @@ void Pid::ActDot(const mjModel* m, mjData* d, int instance) const {
 void Pid::Compute(const mjModel* m, mjData* d, int instance) {
   for (int i = 0; i < actuators_.size(); i++) {
     int actuator_idx = actuators_[i];
+    int outadr = m->actuator_outadr[actuator_idx];
     State state = GetState(m, d, actuator_idx);
     mjtNum ctrl =
         GetCtrl(m, d, actuator_idx, state, m->actuator_actearly[actuator_idx]);
 
-    mjtNum error = ctrl - d->actuator_length[actuator_idx];
+    mjtNum error = ctrl - d->actuator_length[outadr];
 
     mjtNum ctrl_dot = m->actuator_dyntype[actuator_idx] == mjDYN_NONE
                           ? 0
                           : d->act_dot[m->actuator_actadr[actuator_idx] +
                                        m->actuator_actnum[actuator_idx] - 1];
-    mjtNum error_dot = ctrl_dot - d->actuator_velocity[actuator_idx];
+    mjtNum error_dot = ctrl_dot - d->actuator_velocity[outadr];
 
     mjtNum integral = 0;
     if (config_.i_gain) {
@@ -213,9 +218,9 @@ void Pid::Compute(const mjModel* m, mjData* d, int instance) {
       }
     }
 
-    d->actuator_force[actuator_idx] = config_.p_gain * error +
-                                      config_.d_gain * error_dot +
-                                      config_.i_gain * integral;
+    d->actuator_force[outadr] = config_.p_gain * error +
+                                config_.d_gain * error_dot +
+                                config_.i_gain * integral;
   }
 }
 
