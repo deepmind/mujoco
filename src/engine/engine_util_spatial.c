@@ -64,10 +64,10 @@ void mju_negQuat(mjtNum res[4], const mjtNum quat[4]) {
 // multiply quaternions
 void mju_mulQuat(mjtNum res[4], const mjtNum qa[4], const mjtNum qb[4]) {
   mjtNum tmp[4] = {
-    qa[0]*qb[0] - qa[1]*qb[1] - qa[2]*qb[2] - qa[3]*qb[3],
-    qa[0]*qb[1] + qa[1]*qb[0] + qa[2]*qb[3] - qa[3]*qb[2],
-    qa[0]*qb[2] - qa[1]*qb[3] + qa[2]*qb[0] + qa[3]*qb[1],
-    qa[0]*qb[3] + qa[1]*qb[2] - qa[2]*qb[1] + qa[3]*qb[0]
+    (qa[0]*qb[0] - qa[1]*qb[1]) + (-qa[2]*qb[2] - qa[3]*qb[3]),
+    (qa[0]*qb[1] + qa[1]*qb[0]) + ( qa[2]*qb[3] - qa[3]*qb[2]),
+    (qa[0]*qb[2] - qa[1]*qb[3]) + ( qa[2]*qb[0] + qa[3]*qb[1]),
+    (qa[0]*qb[3] + qa[1]*qb[2]) + (-qa[2]*qb[1] + qa[3]*qb[0])
   };
   res[0] = tmp[0];
   res[1] = tmp[1];
@@ -80,9 +80,9 @@ void mju_mulQuat(mjtNum res[4], const mjtNum qa[4], const mjtNum qb[4]) {
 void mju_mulQuatAxis(mjtNum res[4], const mjtNum quat[4], const mjtNum axis[3]) {
   mjtNum tmp[4] = {
     -quat[1]*axis[0] - quat[2]*axis[1] - quat[3]*axis[2],
-    quat[0]*axis[0] + quat[2]*axis[2] - quat[3]*axis[1],
-    quat[0]*axis[1] + quat[3]*axis[0] - quat[1]*axis[2],
-    quat[0]*axis[2] + quat[1]*axis[1] - quat[2]*axis[0]
+     quat[0]*axis[0] - quat[3]*axis[1] + quat[2]*axis[2],
+     quat[3]*axis[0] + quat[0]*axis[1] - quat[1]*axis[2],
+    -quat[2]*axis[0] + quat[1]*axis[1] + quat[0]*axis[2]
   };
   res[0] = tmp[0];
   res[1] = tmp[1];

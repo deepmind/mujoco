@@ -246,7 +246,7 @@ void mju_copy4(mjtNum res[4], const mjtNum data[4]) {
 
 // normalize vector, return length before normalization
 mjtNum mju_normalize4(mjtNum vec[4]) {
-  mjtNum norm = mju_sqrt(vec[0]*vec[0] + vec[1]*vec[1] + vec[2]*vec[2] + vec[3]*vec[3]);
+  mjtNum norm = mju_sqrt((vec[0]*vec[0] + vec[1]*vec[1]) + (vec[2]*vec[2] + vec[3]*vec[3]));
 
   if (norm < mjMINVAL) {
     vec[0] = 1;

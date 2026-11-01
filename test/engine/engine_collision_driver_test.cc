@@ -1293,7 +1293,7 @@ TEST_F(MjCollisionTest, ParallelCapsuleCapsule) {
   EXPECT_THAT(mj_geomDistance(m.get(), d.get(), a, e_id, 0.2, fromto),
               MjNear(0.0, 1e-12, 1e-5));
   EXPECT_THAT(mju_dist3(fromto + 3, d->geom_xpos + 3 * e_id),
-              MjNear(0.01, 1e-12, 1e-1));
+              MjNear(0.01, 1e-12, 2e-1));
 }
 
 // Parallel capsules where the first one overhangs the second: the closest

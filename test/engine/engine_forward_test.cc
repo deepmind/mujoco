@@ -6024,11 +6024,12 @@ TEST_F(ForwardTest, DiscreteImplicitRowNoslip) {
       <geom type="plane" size="2 2 .1" solref="0.002 1"/>
       <body pos="0 0 0.05">
         <freejoint/>
-        <geom type="box" size=".05 .05 .05" mass="1" solref="0.002 1" condim="6"/>
+        <geom size=".05" mass="1" solref="0.002 1" condim="6"
+          friction="1 0.05 0.05"/>
       </body>
     </worldbody>
     <keyframe>
-      <key name="slide" qvel="2 0 0 0 0 0"/>
+      <key name="slide" qvel="2 0 0 0 0 5"/>
     </keyframe>
   </mujoco>
   )";
@@ -6037,16 +6038,20 @@ TEST_F(ForwardTest, DiscreteImplicitRowNoslip) {
   ASSERT_THAT(model.get(), NotNull()) << error;
   MjDataPtr data = MakeData(model);
   mj_resetDataKeyframe(model.get(), data.get(), 0);
+  mjtNum max_qvel = 0;
   for (int i = 0; i < 200; i++) {
     mj_step(model.get(), data.get());
+    if (i >= 190) {
+      max_qvel = mju_max(max_qvel, mju_norm(data->qvel, 6));
+    }
   }
   int nwarning = 0;
   for (int w = 0; w < mjNWARNING; w++) {
     nwarning += data->warning[w].number;
   }
   EXPECT_EQ(nwarning, 0);
-  EXPECT_LT(mju_norm(data->qvel, 6), MjTol(5e-3, 2e-2));
-  EXPECT_NEAR(data->qpos[2], 0.05, MjTol(2e-3, 2e-3));
+  EXPECT_LT(max_qvel, MjTol(3e-9, 1e-6));
+  EXPECT_NEAR(data->qpos[2], 0.05, MjTol(5e-5, 5e-5));
 }
 
 // stiff ">" leg pressed onto the floor: joint stiffness far beyond the explicit

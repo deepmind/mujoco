@@ -227,7 +227,7 @@ void mji_copy4(mjtNum* restrict res, const mjtNum data[4]) {
 // (for use in this file only)
 static inline
 mjtNum mji__normalize4(mjtNum vec[4]) {
-  mjtNum norm = mju_sqrt(vec[0]*vec[0] + vec[1]*vec[1] + vec[2]*vec[2] + vec[3]*vec[3]);
+  mjtNum norm = mju_sqrt((vec[0]*vec[0] + vec[1]*vec[1]) + (vec[2]*vec[2] + vec[3]*vec[3]));
 
   if (norm < mjMINVAL) {
     vec[0] = 1;
@@ -286,10 +286,10 @@ void mji_negQuat(mjtNum* restrict res, const mjtNum quat[4]) {
 static inline
 void mji_mulQuat(mjtNum* restrict res, const mjtNum qa[4], const mjtNum qb[4]) {
   assert(res != qa && res != qb);
-  res[0] = qa[0]*qb[0] - qa[1]*qb[1] - qa[2]*qb[2] - qa[3]*qb[3];
-  res[1] = qa[0]*qb[1] + qa[1]*qb[0] + qa[2]*qb[3] - qa[3]*qb[2];
-  res[2] = qa[0]*qb[2] - qa[1]*qb[3] + qa[2]*qb[0] + qa[3]*qb[1];
-  res[3] = qa[0]*qb[3] + qa[1]*qb[2] - qa[2]*qb[1] + qa[3]*qb[0];
+  res[0] = (qa[0]*qb[0] - qa[1]*qb[1]) + (-qa[2]*qb[2] - qa[3]*qb[3]);
+  res[1] = (qa[0]*qb[1] + qa[1]*qb[0]) + ( qa[2]*qb[3] - qa[3]*qb[2]);
+  res[2] = (qa[0]*qb[2] - qa[1]*qb[3]) + ( qa[2]*qb[0] + qa[3]*qb[1]);
+  res[3] = (qa[0]*qb[3] + qa[1]*qb[2]) + (-qa[2]*qb[1] + qa[3]*qb[0]);
 }
 
 
@@ -298,9 +298,9 @@ static inline
 void mji_mulQuatAxis(mjtNum* restrict res, const mjtNum quat[4], const mjtNum axis[3]) {
   assert(res != quat && res != axis);
   res[0] = -quat[1]*axis[0] - quat[2]*axis[1] - quat[3]*axis[2];
-  res[1] =  quat[0]*axis[0] + quat[2]*axis[2] - quat[3]*axis[1];
-  res[2] =  quat[0]*axis[1] + quat[3]*axis[0] - quat[1]*axis[2];
-  res[3] =  quat[0]*axis[2] + quat[1]*axis[1] - quat[2]*axis[0];
+  res[1] =  quat[0]*axis[0] - quat[3]*axis[1] + quat[2]*axis[2];
+  res[2] =  quat[3]*axis[0] + quat[0]*axis[1] - quat[1]*axis[2];
+  res[3] = -quat[2]*axis[0] + quat[1]*axis[1] + quat[0]*axis[2];
 }
 
 
@@ -386,9 +386,9 @@ void mji_quat2Mat(mjtNum* restrict res, const mjtNum quat[4]) {
     mjtNum q23 = quat[2]*quat[3];
     mjtNum q33 = quat[3]*quat[3];
 
-    res[0] = q00 + q11 - q22 - q33;
-    res[4] = q00 - q11 + q22 - q33;
-    res[8] = q00 - q11 - q22 + q33;
+    res[0] = (q00 - q22) + (q11 - q33);
+    res[4] = (q00 + q22) - (q11 + q33);
+    res[8] = (q00 - q22) - (q11 - q33);
 
     res[1] = 2*(q12 - q03);
     res[2] = 2*(q13 + q02);
