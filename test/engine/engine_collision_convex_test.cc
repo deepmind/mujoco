@@ -558,23 +558,26 @@ TEST_F(MjcConvexTest, HorizontalCylinderBoxSupportLine) {
     ASSERT_EQ(data->ncon, 2);
     for (int i = 0; i < data->ncon; ++i) {
       const mjContact& contact = data->contact[i];
-      mjtNum offset = (contact.pos[0] - 0.006) * mju_cos(angle)
-                   + (contact.pos[1] + 0.004) * mju_sin(angle);
+      mjtNum offset = (contact.pos[0] - 0.006) * mju_cos(angle) +
+                      (contact.pos[1] + 0.004) * mju_sin(angle);
       EXPECT_NEAR(offset, 0, MjTol(1e-10, 1e-7));
       EXPECT_NEAR(mju_abs(contact.frame[2]), 1, MjTol(1e-12, 1e-6));
       EXPECT_NEAR(contact.dist, -0.0002, MjTol(1e-10, 1e-7));
     }
 
-    // Call both collider argument orders directly; the driver may reorder geoms.
+    // Call both collider argument orders directly; the driver may reorder
+    // geoms.
     for (int g1 : {0, 1}) {
       SCOPED_TRACE(g1);
       mjPreContact contacts[mjMAXCONPAIR];
-      ASSERT_EQ(mjc_Convex(model.get(), data.get(), contacts, g1, 1 - g1, 0), 2);
+      ASSERT_EQ(mjc_Convex(model.get(), data.get(), contacts, g1, 1 - g1, 0),
+                2);
       for (int i = 0; i < 2; ++i) {
-        mjtNum offset = (contacts[i].pos[0] - 0.006) * mju_cos(angle)
-                     + (contacts[i].pos[1] + 0.004) * mju_sin(angle);
+        mjtNum offset = (contacts[i].pos[0] - 0.006) * mju_cos(angle) +
+                        (contacts[i].pos[1] + 0.004) * mju_sin(angle);
         EXPECT_NEAR(offset, 0, MjTol(1e-10, 1e-7));
-        EXPECT_NEAR(contacts[i].normal[2], g1 == 0 ? 1 : -1, MjTol(1e-12, 1e-6));
+        EXPECT_NEAR(contacts[i].normal[2], g1 == 0 ? 1 : -1,
+                    MjTol(1e-12, 1e-6));
         EXPECT_NEAR(contacts[i].dist, -0.0002, MjTol(1e-10, 1e-7));
       }
     }
