@@ -266,6 +266,11 @@ bool mjCFlexcomp::Make(mjsBody* body, char* error, int error_sz, const mjVFS* vf
     }
   }
 
+  // check per-vertex texcoord size before any vertex compaction
+  if (!texcoord.empty() && elemtexcoord.empty() && (int)texcoord.size() != 2 * npnt) {
+    return comperr(error, "two texture coordinates per vertex expected", error_sz);
+  }
+
   // apply scaling for direct types
   if (direct && (scale[0] != 1 || scale[1] != 1 || scale[2] != 1)) {
     for (int i = 0; i < npnt; i++) {
@@ -294,7 +299,8 @@ bool mjCFlexcomp::Make(mjsBody* body, char* error, int error_sz, const mjVFS* vf
   }
 
   // construct pinned array
-  int nnode = 0;
+  int nnode          = 0;
+  int count_check[3] = {count[0], count[1], count[2]};
   if (doftype == mjFCOMPDOF_TRILINEAR || doftype == mjFCOMPDOF_QUADRATIC) {
     int order = doftype == mjFCOMPDOF_TRILINEAR ? 1 : 2;
     // cellcount applies to all types (see the nodal mesh below), else single cell
@@ -304,16 +310,20 @@ bool mjCFlexcomp::Make(mjsBody* body, char* error, int error_sz, const mjVFS* vf
       cy = cellcount[1];
       cz = cellcount[2];
     }
-    nnode = (cx * order + 1) * (cy * order + 1) * (cz * order + 1);
+    count_check[0] = cx * order + 1;
+    count_check[1] = cy * order + 1;
+    count_check[2] = cz * order + 1;
+    nnode          = count_check[0] * count_check[1] * count_check[2];
   }
-  pinned = vector<bool>(std::max(npnt, nnode), rigid);
+  int npin = nnode ? nnode : npnt;
+  pinned   = vector<bool>(std::max(npnt, nnode), rigid);
 
   // handle pins if user did not specify rigid
   if (!rigid) {
     // process pinid
     for (int i = 0; i < (int)pinid.size(); i++) {
       // check range
-      if (pinid[i] < 0 || pinid[i] >= npnt) {
+      if (pinid[i] < 0 || pinid[i] >= npin) {
         return comperr(error, "pinid out of range", error_sz);
       }
 
@@ -325,9 +335,9 @@ bool mjCFlexcomp::Make(mjsBody* body, char* error, int error_sz, const mjVFS* vf
     for (int i = 0; i < (int)pinrange.size(); i += 2) {
       // check range
       if (pinrange[i] < 0 ||
-          pinrange[i] >= npnt ||
+          pinrange[i] >= npin ||
           pinrange[i + 1] < 0 ||
-          pinrange[i + 1] >= npnt) {
+          pinrange[i + 1] >= npin) {
         return comperr(error, "pinrange out of range", error_sz);
       }
 
@@ -338,12 +348,6 @@ bool mjCFlexcomp::Make(mjsBody* body, char* error, int error_sz, const mjVFS* vf
     // process pingrid
     for (int i = 0; i < (int)pingrid.size(); i += dflex->dim) {
       // check range
-      int count_check[3] = {count[0], count[1], count[2]};
-      if (type != mjFCOMPTYPE_GRID &&
-          (doftype == mjFCOMPDOF_TRILINEAR || doftype == mjFCOMPDOF_QUADRATIC)) {
-        int dim        = (doftype == mjFCOMPDOF_TRILINEAR) ? 2 : 3;
-        count_check[0] = count_check[1] = count_check[2] = dim;
-      }
       for (int k = 0; k < dflex->dim; k++) {
         if (pingrid[i + k] < 0 || pingrid[i + k] >= count_check[k]) {
           return comperr(error, "pingrid out of range", error_sz);
@@ -362,7 +366,7 @@ bool mjCFlexcomp::Make(mjsBody* body, char* error, int error_sz, const mjVFS* vf
     for (int i = 0; i < (int)pingridrange.size(); i += 2 * dflex->dim) {
       // check range
       for (int k = 0; k < 2 * dflex->dim; k++) {
-        if (pingridrange[i + k] < 0 || pingridrange[i + k] >= count[k % dflex->dim]) {
+        if (pingridrange[i + k] < 0 || pingridrange[i + k] >= count_check[k % dflex->dim]) {
           return comperr(error, "pingridrange out of range", error_sz);
         }
       }
@@ -390,7 +394,7 @@ bool mjCFlexcomp::Make(mjsBody* body, char* error, int error_sz, const mjVFS* vf
 
     // check if all or none are pinned
     bool allpin = true, nopin = true;
-    for (int i = 0; i < npnt; i++) {
+    for (int i = 0; i < npin; i++) {
       if (pinned[i]) {
         nopin = false;
       } else {
@@ -434,20 +438,20 @@ bool mjCFlexcomp::Make(mjsBody* body, char* error, int error_sz, const mjVFS* vf
           point[3 * new_npnt + 1] = point[3 * i + 1];
           point[3 * new_npnt + 2] = point[3 * i + 2];
 
-          if (!texcoord.empty()) {
+          if (!texcoord.empty() && elemtexcoord.empty()) {
             texcoord[2 * new_npnt + 0] = texcoord[2 * i + 0];
             texcoord[2 * new_npnt + 1] = texcoord[2 * i + 1];
           }
 
-          pinned[new_npnt] = pinned[i];
+          if (!nnode) { pinned[new_npnt] = pinned[i]; }
           new_npnt++;
         }
       }
 
       // resize arrays
       point.resize(3 * new_npnt);
-      if (!texcoord.empty()) { texcoord.resize(2 * new_npnt); }
-      pinned.resize(std::max(new_npnt, nnode));
+      if (!texcoord.empty() && elemtexcoord.empty()) { texcoord.resize(2 * new_npnt); }
+      if (!nnode) { pinned.resize(new_npnt); }
       used.assign(new_npnt, true);
 
       // update count
@@ -498,7 +502,7 @@ bool mjCFlexcomp::Make(mjsBody* body, char* error, int error_sz, const mjVFS* vf
     if (!used[i]) { continue; }
 
     // pinned or trilinear or quadratic: parent body
-    if (pinned[i] || doftype == mjFCOMPDOF_TRILINEAR || doftype == mjFCOMPDOF_QUADRATIC) {
+    if (doftype == mjFCOMPDOF_TRILINEAR || doftype == mjFCOMPDOF_QUADRATIC || pinned[i]) {
       mjs_appendString(pf->vertbody, mjs_getName(body->element)->c_str());
 
       // add plugin
@@ -796,9 +800,22 @@ bool mjCFlexcomp::Make(mjsBody* body, char* error, int error_sz, const mjVFS* vf
 
 // get point id from grid coordinates
 int mjCFlexcomp::GridID(int ix, int iy) {
+  if (doftype == mjFCOMPDOF_TRILINEAR || doftype == mjFCOMPDOF_QUADRATIC) {
+    int order = doftype == mjFCOMPDOF_TRILINEAR ? 1 : 2;
+    int cy    = cellcount[0] >= 0 ? cellcount[1] : 1;
+    return ix * (cy * order + 1) + iy;
+  }
   return ix * count[1] + iy;
 }
 int mjCFlexcomp::GridID(int ix, int iy, int iz) {
+  if (doftype == mjFCOMPDOF_TRILINEAR || doftype == mjFCOMPDOF_QUADRATIC) {
+    int order = doftype == mjFCOMPDOF_TRILINEAR ? 1 : 2;
+    int cy    = cellcount[0] >= 0 ? cellcount[1] : 1;
+    int cz    = cellcount[0] >= 0 ? cellcount[2] : 1;
+    int ny    = cy * order + 1;
+    int nz    = cz * order + 1;
+    return ix * ny * nz + iy * nz + iz;
+  }
   return ix * count[1] * count[2] + iy * count[2] + iz;
 }
 
@@ -1039,22 +1056,29 @@ bool mjCFlexcomp::MakeMesh(
   point.assign(cmesh->Vert().begin(), cmesh->Vert().end());
   if (!mesh.empty()) { ToAssetFrame(point, cmesh->GetPosPtr(), cmesh->GetQuatPtr()); }
 
-  if (cmesh->HasTexcoord()) {
-    texcoord     = cmesh->Texcoord();
-    elemtexcoord = cmesh->FaceTexcoord();
-  }
+  if (cmesh->HasTexcoord()) { texcoord = cmesh->Texcoord(); }
 
   // copy faces or create 3D mesh
   if (def.spec.flex->dim == 2) {
     element = cmesh->Face();
+    if (cmesh->HasTexcoord()) { elemtexcoord = cmesh->FaceTexcoord(); }
   } else if (def.spec.flex->dim == 1) {
     // extract edge pairs from degenerate triangles (i1, i2, i2)
     const std::vector<int>& face = cmesh->Face();
+    const std::vector<int>& ftc  = cmesh->FaceTexcoord();
     element.clear();
     element.reserve(face.size() * 2 / 3);
+    if (cmesh->HasTexcoord() && !ftc.empty()) {
+      elemtexcoord.clear();
+      elemtexcoord.reserve(ftc.size() * 2 / 3);
+    }
     for (size_t i = 0; i < face.size(); i += 3) {
       element.push_back(face[i]);
       element.push_back(face[i + 1]);
+      if (cmesh->HasTexcoord() && i + 1 < ftc.size()) {
+        elemtexcoord.push_back(ftc[i]);
+        elemtexcoord.push_back(ftc[i + 1]);
+      }
     }
   } else {
     if (!has_origin) {
@@ -1064,7 +1088,12 @@ bool mjCFlexcomp::MakeMesh(
     point.insert(point.begin() + 1, origin[1]);
     point.insert(point.begin() + 2, origin[2]);
     const std::vector<int>& face = cmesh->Face();
-    for (int i = 0; i < face.size(); i += 3) {
+    const std::vector<int>& ftc  = cmesh->FaceTexcoord();
+    if (cmesh->HasTexcoord()) {
+      texcoord.insert(texcoord.begin(), {0.0f, 0.0f});
+      elemtexcoord.clear();
+    }
+    for (int i = 0; i < (int)face.size(); i += 3) {
       // only add tetrahedra with positive volume
       int    tet[3] = {face[i + 0] + 1, face[i + 1] + 1, face[i + 2] + 1};
       double edge1[3], edge2[3], edge3[3];
@@ -1080,6 +1109,12 @@ bool mjCFlexcomp::MakeMesh(
       element.push_back(tet[0]);
       element.push_back(tet[1]);
       element.push_back(tet[2]);
+      if (cmesh->HasTexcoord() && !ftc.empty()) {
+        elemtexcoord.push_back(0);
+        elemtexcoord.push_back(ftc[i + 0] + 1);
+        elemtexcoord.push_back(ftc[i + 1] + 1);
+        elemtexcoord.push_back(ftc[i + 2] + 1);
+      }
     }
   }
 
@@ -3087,8 +3122,19 @@ void mjCFlex::Compile(const mjVFS* vfs) {
   }
 
   // check texcoord
+  if (texcoord_.size() % 2) { throw mjCError(this, "texcoord size must be even"); }
   if (!texcoord_.empty() && texcoord_.size() != 2 * nvert && elemtexcoord_.empty()) {
     throw mjCError(this, "two texture coordinates per vertex expected");
+  }
+  if (!elemtexcoord_.empty()) {
+    if (texcoord_.empty()) { throw mjCError(this, "elemtexcoord requires texcoord"); }
+    if ((int)elemtexcoord_.size() != (dim + 1) * nelem) {
+      throw mjCError(this, "elemtexcoord size must be (dim+1)*nelem");
+    }
+    int ntexcoord = static_cast<int>(texcoord_.size() / 2);
+    for (int tc : elemtexcoord_) {
+      if (tc < 0 || tc >= ntexcoord) { throw mjCError(this, "elemtexcoord index out of range"); }
+    }
   }
 
   // no elemtexcoord: copy from faces
@@ -3261,6 +3307,11 @@ void mjCFlex::Compile(const mjVFS* vfs) {
         int tmp                  = elem_[e * (dim + 1) + 1];
         elem_[e * (dim + 1) + 1] = elem_[e * (dim + 1) + 2];
         elem_[e * (dim + 1) + 2] = tmp;
+        if (!elemtexcoord_.empty()) {
+          int ttmp                         = elemtexcoord_[e * (dim + 1) + 1];
+          elemtexcoord_[e * (dim + 1) + 1] = elemtexcoord_[e * (dim + 1) + 2];
+          elemtexcoord_[e * (dim + 1) + 2] = ttmp;
+        }
       }
     }
   }

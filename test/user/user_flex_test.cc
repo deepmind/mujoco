@@ -4652,5 +4652,296 @@ TEST_F(UserFlexTest, UnpinnedParentBodyWithJointsFails) {
   EXPECT_THAT(m_2d_ok.get(), NotNull()) << error.data();
 }
 
+TEST_F(UserFlexTest, InterpolatedFlexcompPinIndexing) {
+  std::array<char, 1024> error;
+
+  // Non-grid trilinear flexcomp with cellcount="2 2 2" has a 3x3x3 nodal grid
+  // (27 nodes), so grid="2 0 0" is valid and pins node 18.
+  static constexpr char xml_pingrid_cellcount[] = R"(
+  <mujoco>
+    <worldbody>
+      <flexcomp name="f" type="direct" dim="3" dof="trilinear" cellcount="2 2 2"
+                point="0 0 0  1 0 0  0 1 0  0 0 1"
+                element="0 1 2 3">
+        <contact selfcollide="none"/>
+        <pin grid="2 0 0"/>
+      </flexcomp>
+    </worldbody>
+  </mujoco>
+  )";
+  MjModelPtr m_cell =
+      LoadModelFromString(xml_pingrid_cellcount, error.data(), error.size());
+  ASSERT_THAT(m_cell.get(), NotNull()) << error.data();
+
+  // Single-cell trilinear flexcomp (2x2x2 = 8 nodes): grid="1 0 0" strides by
+  // nodal count (2) rather than raw count (10), pinning exactly 1 node (7 free
+  // node bodies + world = 8 bodies).
+  static constexpr char xml_pingrid_stride[] = R"(
+  <mujoco>
+    <worldbody>
+      <flexcomp name="f" type="direct" dim="3" dof="trilinear" count="10 10 10"
+                point="0 0 0  1 0 0  0 1 0  0 0 1"
+                element="0 1 2 3">
+        <contact selfcollide="none"/>
+        <pin grid="1 0 0"/>
+      </flexcomp>
+    </worldbody>
+  </mujoco>
+  )";
+  MjModelPtr m_stride =
+      LoadModelFromString(xml_pingrid_stride, error.data(), error.size());
+  ASSERT_THAT(m_stride.get(), NotNull()) << error.data();
+  EXPECT_EQ(m_stride->nbody, 8);
+  EXPECT_EQ(m_stride->flex_nodebodyid[4], 0);
+
+  // 4-vertex tetrahedron with trilinear DOF (8 nodes): pinning nodes 0..3
+  // leaves nodes 4..7 unpinned (4 bodies), not rigid; pinning node 7 (which is
+  // >= npnt=4 but < nnode=8) succeeds; pinid=8 (>= nnode=8) fails even when
+  // npnt > 8.
+  static constexpr char xml_partial_pin[] = R"(
+  <mujoco>
+    <worldbody>
+      <flexcomp name="tet" type="direct" dim="3" dof="trilinear"
+                point="0 0 0  1 0 0  0 1 0  0 0 1"
+                element="0 1 2 3">
+        <contact selfcollide="none"/>
+        <pin range="0 3" id="7"/>
+      </flexcomp>
+    </worldbody>
+  </mujoco>
+  )";
+  MjModelPtr m_partial =
+      LoadModelFromString(xml_partial_pin, error.data(), error.size());
+  ASSERT_THAT(m_partial.get(), NotNull()) << error.data();
+  EXPECT_EQ(m_partial->flex_rigid[0], 0);
+  EXPECT_EQ(m_partial->nbody, 1 + 3);
+
+  static constexpr char xml_oob_node_pin[] = R"(
+  <mujoco>
+    <worldbody>
+      <flexcomp name="grid" type="grid" count="3 3 3" spacing="0.1 0.1 0.1"
+                dim="3" dof="trilinear">
+        <contact selfcollide="none"/>
+        <pin id="8"/>
+      </flexcomp>
+    </worldbody>
+  </mujoco>
+  )";
+  MjModelPtr m_oob =
+      LoadModelFromString(xml_oob_node_pin, error.data(), error.size());
+  EXPECT_THAT(m_oob.get(), IsNull());
+  EXPECT_THAT(error.data(), HasSubstr("pinid out of range"));
+
+  // Quadratic box flexcomp with count="2 2 2" has a 3x3x3 nodal grid (27
+  // nodes). Pinning the ix=0 face via gridrange="0 0 0 0 2 2" pins 9 nodes and
+  // leaves 18 unpinned node bodies.
+  static constexpr char xml_gridrange[] = R"(
+  <mujoco>
+    <worldbody>
+      <flexcomp name="box" type="box" count="2 2 2" spacing="0.1 0.1 0.1"
+                dim="3" dof="quadratic">
+        <contact selfcollide="none"/>
+        <pin gridrange="0 0 0 0 2 2"/>
+      </flexcomp>
+    </worldbody>
+  </mujoco>
+  )";
+  MjModelPtr m_gridrange =
+      LoadModelFromString(xml_gridrange, error.data(), error.size());
+  ASSERT_THAT(m_gridrange.get(), NotNull()) << error.data();
+  EXPECT_EQ(m_gridrange->nbody, 1 + 18);
+
+  // Unused vertex compaction on an interpolated direct flexcomp must preserve
+  // nodal pin flags.
+  static constexpr char xml_unused_vert_pin[] = R"(
+  <mujoco>
+    <worldbody>
+      <flexcomp name="f" type="direct" dim="3" dof="trilinear"
+                point="9 9 9  0 0 0  1 0 0  0 1 0  0 0 1"
+                element="1 2 3 4">
+        <contact selfcollide="none"/>
+        <pin id="0"/>
+      </flexcomp>
+    </worldbody>
+  </mujoco>
+  )";
+  MjModelPtr m_unused_pin =
+      LoadModelFromString(xml_unused_vert_pin, error.data(), error.size());
+  ASSERT_THAT(m_unused_pin.get(), NotNull()) << error.data();
+  EXPECT_EQ(m_unused_pin->flex_nodebodyid[0], 0);
+  EXPECT_EQ(m_unused_pin->nbody, 1 + 7);
+}
+
+TEST_F(UserFlexTest, FlexElemTexcoordValidationTetFlipAndMesh3D) {
+  std::array<char, 1024> error;
+
+  // Odd texcoord size must be rejected.
+  {
+    mjSpec* spec = mj_makeSpec();
+    mjsBody* b0 = mjs_addBody(mjs_findBody(spec, "world"), nullptr);
+    mjs_setName(b0->element, "b0");
+    mjsBody* b1 = mjs_addBody(mjs_findBody(spec, "world"), nullptr);
+    mjs_setName(b1->element, "b1");
+    b1->pos[0] = 1;
+    mjsBody* b2 = mjs_addBody(mjs_findBody(spec, "world"), nullptr);
+    mjs_setName(b2->element, "b2");
+    b2->pos[1] = 1;
+    mjsFlex* f = mjs_addFlex(spec);
+    mjs_setName(f->element, "f");
+    f->dim = 2;
+    mjs_setStringVec(f->vertbody, "b0 b1 b2");
+    const int elem[3] = {0, 1, 2};
+    mjs_setInt(f->elem, elem, 3);
+    const float tc_odd[3] = {0, 0, 1};
+    mjs_setFloat(f->texcoord, tc_odd, 3);
+    const int etc[3] = {0, 0, 0};
+    mjs_setInt(f->elemtexcoord, etc, 3);
+    MjModelPtr m_odd(mj_compile(spec, nullptr));
+    EXPECT_THAT(m_odd.get(), IsNull());
+    EXPECT_THAT(mjs_getError(spec), HasSubstr("texcoord size must be even"));
+    mj_deleteSpec(spec);
+  }
+
+  // Wrong elemtexcoord size must be rejected.
+  static constexpr char xml_bad_size[] = R"(
+  <mujoco>
+    <worldbody>
+      <body name="b0" pos="0 0 0"/>
+      <body name="b1" pos="1 0 0"/>
+      <body name="b2" pos="0 1 0"/>
+    </worldbody>
+    <deformable>
+      <flex name="f" dim="2" body="b0 b1 b2" element="0 1 2"
+            texcoord="0 0  1 0  0 1" elemtexcoord="0 1"/>
+    </deformable>
+  </mujoco>
+  )";
+  MjModelPtr m_bad_size =
+      LoadModelFromString(xml_bad_size, error.data(), error.size());
+  EXPECT_THAT(m_bad_size.get(), IsNull());
+  EXPECT_THAT(error.data(), HasSubstr("elemtexcoord size"));
+
+  // Out-of-range elemtexcoord index must be rejected.
+  static constexpr char xml_bad_idx[] = R"(
+  <mujoco>
+    <worldbody>
+      <body name="b0" pos="0 0 0"/>
+      <body name="b1" pos="1 0 0"/>
+      <body name="b2" pos="0 1 0"/>
+    </worldbody>
+    <deformable>
+      <flex name="f" dim="2" body="b0 b1 b2" element="0 1 2"
+            texcoord="0 0  1 0  0 1" elemtexcoord="0 1 3"/>
+    </deformable>
+  </mujoco>
+  )";
+  MjModelPtr m_bad_idx =
+      LoadModelFromString(xml_bad_idx, error.data(), error.size());
+  EXPECT_THAT(m_bad_idx.get(), IsNull());
+  EXPECT_THAT(error.data(), HasSubstr("elemtexcoord index out of range"));
+
+  // 3D tetrahedron orientation flip must also swap elemtexcoord[1] and [2].
+  static constexpr char xml_tet_flip[] = R"(
+  <mujoco>
+    <worldbody>
+      <body name="b0" pos="0 0 0"/>
+      <body name="b1" pos="1 0 0"/>
+      <body name="b2" pos="0 1 0"/>
+      <body name="b3" pos="0 0 1"/>
+    </worldbody>
+    <deformable>
+      <flex name="tet" dim="3" body="b0 b1 b2 b3" element="0 1 2 3"
+            texcoord="0 0  0.1 0.2  0.3 0.4  0.5 0.6"/>
+    </deformable>
+  </mujoco>
+  )";
+  MjModelPtr m_tet =
+      LoadModelFromString(xml_tet_flip, error.data(), error.size());
+  ASSERT_THAT(m_tet.get(), NotNull()) << error.data();
+  ASSERT_EQ(m_tet->nflexelemdata, 4);
+  for (int k = 0; k < 4; ++k) {
+    EXPECT_EQ(m_tet->flex_elemtexcoord[k], m_tet->flex_elem[k]) << "k=" << k;
+  }
+
+  // 3D flexcomp consuming a textured surface mesh with origin must produce
+  // valid 4-index elemtexcoord per tetrahedron.
+  static constexpr char xml_mesh3d_uv[] = R"(
+  <mujoco>
+    <asset>
+      <mesh name="tet_uv"
+            vertex="0 0 0  1 0 0  0 1 0  0 0 1"
+            face="0 2 1  0 1 3  1 2 3  2 0 3"
+            texcoord="0.1 0.1  0.2 0.2  0.3 0.3  0.4 0.4"/>
+    </asset>
+    <worldbody>
+      <flexcomp name="soft" mesh="tet_uv" dim="3" origin="0.25 0.25 0.25"/>
+    </worldbody>
+  </mujoco>
+  )";
+  MjModelPtr m_mesh3d =
+      LoadModelFromString(xml_mesh3d_uv, error.data(), error.size());
+  ASSERT_THAT(m_mesh3d.get(), NotNull()) << error.data();
+  EXPECT_EQ(m_mesh3d->nflexvert, 5);
+  EXPECT_EQ(m_mesh3d->nflexelem, 4);
+  EXPECT_EQ(m_mesh3d->nflextexcoord, 5);
+  for (int i = 0; i < 4 * m_mesh3d->nflexelem; ++i) {
+    EXPECT_EQ(m_mesh3d->flex_elemtexcoord[i], m_mesh3d->flex_elem[i])
+        << "i=" << i;
+  }
+}
+
+TEST_F(UserFlexTest, FlexcompUnusedVertexPreservesFaceTexcoords) {
+  std::array<char, 1024> error;
+
+  // Vertex 0 is unreferenced by face="1 2 3"; face-indexed UVs must be
+  // preserved intact rather than compacted by vertex index.
+  static constexpr char xml_mesh[] = R"(
+  <mujoco>
+    <asset>
+      <mesh name="m" inertia="shell"
+            vertex="9 9 9  0 0 0  1 0 0  0 1 0"
+            face="1 2 3"
+            texcoord="0.0 0.0  0.1 0.2  0.3 0.4  0.5 0.6"/>
+    </asset>
+    <worldbody>
+      <flexcomp name="f" mesh="m" dim="2"/>
+    </worldbody>
+  </mujoco>
+  )";
+  MjModelPtr m = LoadModelFromString(xml_mesh, error.data(), error.size());
+  ASSERT_THAT(m.get(), NotNull()) << error.data();
+  ASSERT_EQ(m->nflexvert, 3);
+  ASSERT_EQ(m->nflexelem, 1);
+  ASSERT_EQ(m->nflexelemdata, 3);
+
+  const float expected_uv[3][2] = {{0.1f, 0.2f}, {0.3f, 0.4f}, {0.5f, 0.6f}};
+  for (int k = 0; k < 3; ++k) {
+    int tc_idx = m->flex_elemtexcoord[k];
+    ASSERT_GE(tc_idx, 0);
+    ASSERT_LT(tc_idx, m->nflextexcoord) << "k=" << k;
+    EXPECT_FLOAT_EQ(m->flex_texcoord[2 * tc_idx + 0], expected_uv[k][0])
+        << "k=" << k;
+    EXPECT_FLOAT_EQ(m->flex_texcoord[2 * tc_idx + 1], expected_uv[k][1])
+        << "k=" << k;
+  }
+
+  // Malformed per-vertex texcoord on a direct flexcomp with unused vertices is
+  // rejected cleanly without out-of-bounds reads.
+  static constexpr char xml_bad_tc[] = R"(
+  <mujoco>
+    <worldbody>
+      <flexcomp name="f" type="direct" dim="2"
+                point="9 9 9  0 0 0  1 0 0  0 1 0"
+                element="1 2 3"
+                texcoord="0 0  1 0"/>
+    </worldbody>
+  </mujoco>
+  )";
+  MjModelPtr m_bad_tc =
+      LoadModelFromString(xml_bad_tc, error.data(), error.size());
+  EXPECT_THAT(m_bad_tc.get(), IsNull());
+  EXPECT_THAT(error.data(), HasSubstr("two texture coordinates per vertex"));
+}
+
 }  // namespace
 }  // namespace mujoco
