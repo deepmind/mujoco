@@ -7898,8 +7898,15 @@ each. The rangefinder sensors report :at:`data` = :at-val:`"dist point normal"` 
 
 .. _sensor-rangefinder-user:
 
-:at:`name`, :at:`noise`, :at:`cutoff`, :at:`nsample`, :at:`interval`, :at:`delay`, :at:`user`
+:at:`name`, :at:`noise`, :at:`nsample`, :at:`interval`, :at:`delay`, :at:`user`
    See :ref:`CSensor`.
+
+:at:`cutoff`: :at-val:`real, "0"`
+   For rangefinder sensors, :at:`cutoff` acts as a maximum detection distance rather than clamping the output value.
+   When :at:`cutoff` is positive and the measured distance exceeds it, the sensor returns -1 (no detection), modeling
+   the behavior of real LIDAR and time-of-flight sensors that report no reading beyond their maximum range. When
+   :at:`cutoff` is 0 (the default), no distance limit is applied. For camera-attached rangefinders, this also provides
+   a performance optimization by skipping geoms whose bounding spheres are entirely beyond the cutoff distance.
 
 .. _sensor-rangefinder-site:
 

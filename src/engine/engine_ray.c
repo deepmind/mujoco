@@ -1383,7 +1383,8 @@ void mju_multiRayPrepare(const mjModel* m, const mjData* d, const mjtNum pnt[3],
       }
 
       // add to geom_eliminate if distance of bounding sphere is above cutoff
-      if (mju_dist3(d->geom_xpos+3*g, pnt) > cutoff+m->geom_rbound[g]) {
+      // (rbound == 0 denotes an unbounded geom, i.e. a plane, which is never culled)
+      if (m->geom_rbound[g] > 0 && mju_dist3(d->geom_xpos+3*g, pnt) > cutoff+m->geom_rbound[g]) {
         geom_eliminate[g] = 1;
         continue;
       }
@@ -1567,4 +1568,3 @@ void mj_multiRay(const mjModel* m, mjData* d, const mjtNum pnt[3], const mjtNum*
 
   mj_freeStack(d);
 }
-

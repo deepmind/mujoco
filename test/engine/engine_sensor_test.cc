@@ -1638,6 +1638,178 @@ TEST_F(SensorTest, RFCamera) {
   mj_deleteModel(model);
 }
 
+// ----------------------- rangefinder cutoff (maxdist) ------------------------
+
+TEST_F(SensorTest, RangefinderCutoffBeyond) {
+  // object at 5m, cutoff=2m: should return -1 (no detection)
+  constexpr char xml[] = R"(
+  <mujoco>
+    <worldbody>
+      <body pos="0 0 0">
+        <site name="rf" pos="0 0 0" zaxis="1 0 0"/>
+        <geom size="0.01"/>
+      </body>
+      <body pos="5 0 0">
+        <geom size="0.1"/>
+      </body>
+    </worldbody>
+    <sensor>
+      <rangefinder site="rf" cutoff="2"/>
+    </sensor>
+  </mujoco>
+  )";
+  char error[1024];
+  MjModelPtr model = LoadModelFromString(xml, error, sizeof(error));
+  ASSERT_THAT(model.get(), NotNull()) << error;
+  MjDataPtr data = MakeData(model);
+  mj_forward(model.get(), data.get());
+
+  // object beyond cutoff: sensor returns -1
+  EXPECT_MJTNUM_EQ(data->sensordata[0], -1);
+}
+
+TEST_F(SensorTest, RangefinderCutoffWithin) {
+  // object at 1.5m, cutoff=2m: should return actual distance
+  constexpr char xml[] = R"(
+  <mujoco>
+    <worldbody>
+      <body pos="0 0 0">
+        <site name="rf" pos="0 0 0" zaxis="1 0 0"/>
+        <geom size="0.01"/>
+      </body>
+      <body pos="1.5 0 0">
+        <geom type="sphere" size="0.1"/>
+      </body>
+    </worldbody>
+    <sensor>
+      <rangefinder site="rf" cutoff="2"/>
+    </sensor>
+  </mujoco>
+  )";
+  char error[1024];
+  MjModelPtr model = LoadModelFromString(xml, error, sizeof(error));
+  ASSERT_THAT(model.get(), NotNull()) << error;
+  MjDataPtr data = MakeData(model);
+  mj_forward(model.get(), data.get());
+
+  // object within cutoff: sensor returns positive distance
+  EXPECT_GT(data->sensordata[0], 0);
+  // distance should be approximately 1.5 - sphere_radius = 1.4
+  EXPECT_NEAR(data->sensordata[0], 1.4, MjTol(1e-5, 1e-3));
+}
+
+TEST_F(SensorTest, RangefinderCutoffNoHit) {
+  // no object in ray path, cutoff set: should return -1
+  constexpr char xml[] = R"(
+  <mujoco>
+    <worldbody>
+      <body pos="0 0 0">
+        <site name="rf" pos="0 0 0" zaxis="1 0 0"/>
+        <geom size="0.01"/>
+      </body>
+      <body pos="0 5 0">
+        <geom size="0.1"/>
+      </body>
+    </worldbody>
+    <sensor>
+      <rangefinder site="rf" cutoff="10"/>
+    </sensor>
+  </mujoco>
+  )";
+  char error[1024];
+  MjModelPtr model = LoadModelFromString(xml, error, sizeof(error));
+  ASSERT_THAT(model.get(), NotNull()) << error;
+  MjDataPtr data = MakeData(model);
+  mj_forward(model.get(), data.get());
+
+  // no hit: -1 regardless of cutoff
+  EXPECT_MJTNUM_EQ(data->sensordata[0], -1);
+}
+
+TEST_F(SensorTest, RangefinderCutoffNoCutoff) {
+  // object at 5m, no cutoff (cutoff=0): should return actual distance
+  constexpr char xml[] = R"(
+  <mujoco>
+    <worldbody>
+      <body pos="0 0 0">
+        <site name="rf" pos="0 0 0" zaxis="1 0 0"/>
+        <geom size="0.01"/>
+      </body>
+      <body pos="5 0 0">
+        <geom type="sphere" size="0.1"/>
+      </body>
+    </worldbody>
+    <sensor>
+      <rangefinder site="rf"/>
+    </sensor>
+  </mujoco>
+  )";
+  char error[1024];
+  MjModelPtr model = LoadModelFromString(xml, error, sizeof(error));
+  ASSERT_THAT(model.get(), NotNull()) << error;
+  MjDataPtr data = MakeData(model);
+  mj_forward(model.get(), data.get());
+
+  // no cutoff: sensor returns actual distance (~4.9)
+  EXPECT_GT(data->sensordata[0], 0);
+  EXPECT_NEAR(data->sensordata[0], 4.9, MjTol(1e-5, 1e-3));
+}
+
+TEST_F(SensorTest, RangefinderCameraCutoff) {
+  // camera rangefinder: plane at z=0, camera at z=2 looking down, cutoff=1.5
+  // all pixels hit the plane at distance ~2.0, which is > cutoff
+  constexpr char xml[] = R"(
+  <mujoco>
+    <worldbody>
+      <geom type="plane" size="10 10 .1"/>
+      <body pos="0 0 2">
+        <camera name="cam" xyaxes="1 0 0 0 1 0" resolution="3 3" fovy="90"/>
+      </body>
+    </worldbody>
+    <sensor>
+      <rangefinder camera="cam" cutoff="1.5"/>
+    </sensor>
+  </mujoco>
+  )";
+  char error[1024];
+  MjModelPtr model = LoadModelFromString(xml, error, sizeof(error));
+  ASSERT_THAT(model.get(), NotNull()) << error;
+  MjDataPtr data = MakeData(model);
+  mj_forward(model.get(), data.get());
+
+  // all 9 pixels: center pixel dist=2.0, corner pixels > 2.0, all > cutoff=1.5
+  int adr = model->sensor_adr[0];
+  for (int i = 0; i < 9; i++) {
+    EXPECT_MJTNUM_EQ(data->sensordata[adr + i], -1)
+        << "pixel " << i << " should be -1 (beyond cutoff)";
+  }
+}
+
+TEST_F(SensorTest, RangefinderCameraCutoffWithin) {
+  // camera rangefinder 1m above a plane whose origin is 5m away, cutoff=1.5
+  // the plane must not be culled: the hit at distance 1 is within the cutoff
+  constexpr char xml[] = R"(
+  <mujoco>
+    <worldbody>
+      <geom type="plane" size="10 10 .1"/>
+      <body pos="5 0 1">
+        <camera name="cam" xyaxes="1 0 0 0 1 0" resolution="1 1" fovy="10"/>
+      </body>
+    </worldbody>
+    <sensor>
+      <rangefinder camera="cam" cutoff="1.5"/>
+    </sensor>
+  </mujoco>
+  )";
+  char error[1024];
+  MjModelPtr model = LoadModelFromString(xml, error, sizeof(error));
+  ASSERT_THAT(model.get(), NotNull()) << error;
+  MjDataPtr data = MakeData(model);
+  mj_forward(model.get(), data.get());
+
+  EXPECT_NEAR(data->sensordata[0], 1, MjTol(1e-10, 1e-5));
+}
+
 // ------------------------------- sensor delays -------------------------------
 
 TEST_F(SensorTest, SensorDelay) {

@@ -360,6 +360,31 @@ TEST_F(RayTest, EdgeCases) {
   EXPECT_FLOAT_EQ(dist, 0.9);
 }
 
+TEST_F(RayTest, MultiRayCutoffPlane) {
+  constexpr char xml[] = R"(
+  <mujoco>
+    <worldbody>
+      <geom type="plane" size="10 10 .1"/>
+    </worldbody>
+  </mujoco>
+  )";
+  char error[1024];
+  MjModelPtr m = LoadModelFromString(xml, error, sizeof(error));
+  ASSERT_THAT(m.get(), NotNull()) << error;
+  MjDataPtr d = MakeData(m);
+  mj_forward(m.get(), d.get());
+
+  // plane origin is far from pnt, but the plane surface is within cutoff
+  mjtNum pnt[] = {5, 0, 1};
+  mjtNum vec[] = {0, 0, -1};
+  mjtNum dist;
+  int rgeomid;
+  mj_multiRay(m.get(), d.get(), pnt, vec, NULL, 1, -1, &rgeomid, &dist, nullptr,
+              1, 1.5);
+  EXPECT_FLOAT_EQ(dist, 1);
+  EXPECT_EQ(rgeomid, 0);
+}
+
 // ------------------------------- mj_rayMesh ---------------------------------
 
 // old ray mesh intersection

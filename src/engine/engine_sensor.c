@@ -201,9 +201,10 @@ static void apply_cutoff(const mjModel* m, int i, mjtNum* data) {
     return;
   }
 
-  // cutoff ignored for contact and fromto sensors (but used by fromto sensors in a different way)
+  // cutoff ignored for contact, fromto, and rangefinder sensors
+  // rangefinder uses cutoff as max detection distance (handled in mj_computeSensorPos)
   mjtSensor type = (mjtSensor)m->sensor_type[i];
-  if (type == mjSENS_CONTACT || type == mjSENS_GEOMFROMTO) {
+  if (type == mjSENS_CONTACT || type == mjSENS_GEOMFROMTO || type == mjSENS_RANGEFINDER) {
     return;
   }
 
@@ -736,8 +737,9 @@ static void mj_computeSensorPos(const mjModel* m, mjData* d, int i, mjtNum* sens
 
   case mjSENS_RANGEFINDER:                            // rangefinder
     {
-      // get dataspec
+      // get dataspec and cutoff (used as max detection distance)
       int dataspec = m->sensor_intprm[i*mjNSENS];
+      mjtNum cutoff = m->sensor_cutoff[i];
 
       if (objtype == mjOBJ_SITE) {
         // site-attached rangefinder: single ray
@@ -751,6 +753,11 @@ static void mj_computeSensorPos(const mjModel* m, mjData* d, int i, mjtNum* sens
         mjtNum* p_normal = (dataspec & (1 << mjRAYDATA_NORMAL)) ? normal : NULL;
         mjtNum dist = mj_ray(m, d, origin, rvec, NULL, 1,
                              m->site_bodyid[objid], &geomid, p_normal);
+
+        // apply max detection distance: out-of-range returns -1
+        if (cutoff > 0 && dist > cutoff) {
+          dist = -1;
+        }
 
         // for site sensor: pass NULL for cam_z so depth = dist
         fill_raydata(sensordata, dataspec, dist, origin, rvec, normal, NULL, NULL);
@@ -793,16 +800,21 @@ static void mj_computeSensorPos(const mjModel* m, mjData* d, int i, mjtNum* sens
             }
           }
 
-          // cast all rays with normals if needed
+          // cast all rays; use cutoff for distance culling if set
+          mjtNum ray_cutoff = (cutoff > 0) ? cutoff : mjMAXVAL;
           mj_multiRay(m, d, cam_xpos, vec, NULL, 1, bodyexclude,
-                      geomid, dist, normals, npixel, mjMAXVAL);
+                      geomid, dist, normals, npixel, ray_cutoff);
 
-          // fill in output for each pixel
+          // fill in output for each pixel, applying max detection distance
           for (int row = 0; row < height; row++) {
             for (int col = 0; col < width; col++) {
               int idx = row*width + col;
+              mjtNum pixel_dist = dist[idx];
+              if (cutoff > 0 && pixel_dist > cutoff) {
+                pixel_dist = -1;
+              }
               mjtNum* normal_ptr = normals ? normals + 3*idx : NULL;
-              sensordata = fill_raydata(sensordata, dataspec, dist[idx], cam_xpos,
+              sensordata = fill_raydata(sensordata, dataspec, pixel_dist, cam_xpos,
                                         vec + 3*idx, normal_ptr, cam_xpos, cam_z);
             }
           }
@@ -820,6 +832,11 @@ static void mj_computeSensorPos(const mjModel* m, mjData* d, int i, mjtNum* sens
               mjtNum normal[3];
               mjtNum dist = mj_ray(m, d, origin, direction, NULL, 1,
                                    bodyexclude, &geomid, normal);
+
+              // apply max detection distance
+              if (cutoff > 0 && dist > cutoff) {
+                dist = -1;
+              }
 
               sensordata = fill_raydata(sensordata, dataspec, dist, origin, direction,
                                  normal, cam_xpos, cam_z);
