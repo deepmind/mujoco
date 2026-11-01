@@ -171,6 +171,47 @@ TEST_F(MjCollisionTest, InGapContactsMultiGeomBody) {
   }
 }
 
+TEST_F(MjCollisionTest, MidphaseDescendsLargerTree) {
+  // The small body sits inside the large body's root box but touches neither
+  // leaf. Descending the larger tree first prunes immediately, so the small
+  // body's children are never tested. The inertial offset makes BVH center ==
+  // size, which zeroes the area if (center, size) is mistaken for (min, max).
+  static constexpr char xml[] = R"(
+  <mujoco>
+    <visual>
+      <global bvactive="true"/>
+    </visual>
+    <worldbody>
+      <body>
+        <freejoint/>
+        <inertial pos="-1.1 -.1 -.1" mass="1" diaginertia="1 1 1"/>
+        <geom type="box" size=".1 .1 .1" pos="-1 0 0"/>
+        <geom type="box" size=".1 .1 .1" pos="1 0 0"/>
+      </body>
+      <body>
+        <freejoint/>
+        <geom type="box" size=".02 .02 .02" pos="-.05 0 0"/>
+        <geom type="box" size=".02 .02 .02" pos=".05 0 0"/>
+      </body>
+    </worldbody>
+  </mujoco>
+  )";
+  char error[1024];
+  MjModelPtr m = LoadModelFromString(xml, error, sizeof(error));
+  ASSERT_THAT(m.get(), NotNull()) << error;
+  MjDataPtr d = MakeData(m);
+
+  mj_forward(m.get(), d.get());
+
+  // only the two root nodes are active
+  int bvhadr = m->body_bvhadr[2];
+  EXPECT_TRUE(d->bvh_active[m->body_bvhadr[1]]);
+  EXPECT_TRUE(d->bvh_active[bvhadr]);
+  for (int i = 1; i < m->body_bvhnum[2]; i++) {
+    EXPECT_FALSE(d->bvh_active[bvhadr + i]);
+  }
+}
+
 TEST_F(MjCollisionTest, FilterParent) {
   constexpr char xml[] = R"(
   <mujoco>
