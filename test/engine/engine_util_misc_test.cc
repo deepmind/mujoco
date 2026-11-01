@@ -2194,5 +2194,28 @@ TEST_F(UtilMiscTest, Round) {
   EXPECT_EQ(mju_round(-1e18), INT_MIN);
 }
 
+TEST_F(UtilMiscTest, EncodeDecodePyramidDim1) {
+  const mjtNum force[1] = {25.0};
+  const mjtNum mu[1] = {0.5};
+  mjtNum pyramid[2] = {-999.0, -999.0};
+  mjtNum decoded[1] = {0.0};
+
+  mju_encodePyramid(pyramid, force, mu, /*dim=*/1);
+  EXPECT_MJTNUM_EQ(pyramid[0], 25.0);
+
+  mju_decodePyramid(decoded, pyramid, mu, /*dim=*/1);
+  EXPECT_MJTNUM_EQ(decoded[0], 25.0);
+}
+
+TEST_F(UtilMiscTest, Type2StrAndStr2TypeRoundTrip) {
+  for (int i = 1; i < mjNOBJECT; ++i) {
+    const char* name = mju_type2Str(i);
+    ASSERT_THAT(name, NotNull()) << "Object type " << i << " has null string";
+    EXPECT_EQ(mju_str2Type(name), i) << "Round-trip failed for " << name;
+  }
+  EXPECT_STREQ(mju_type2Str(mjOBJ_FRAME), "frame");
+  EXPECT_EQ(mju_str2Type("frame"), mjOBJ_FRAME);
+}
+
 }  // namespace
 }  // namespace mujoco

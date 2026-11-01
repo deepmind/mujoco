@@ -183,6 +183,63 @@ TEST_F(BoxQPTest, UnboundedQP) {
   EXPECT_EQ(nfree, -1);
 }
 
+TEST_F(BoxQPTest, LineSearchFailureRejectsCandidateAndStops) {
+  static const int n = 2;
+  mjtNum H[n * n] = {100, 90, 90, 100};
+  mjtNum g[n] = {-190, 0};
+  mjtNum lower[n] = {-100, 0};
+  mjtNum upper[n] = {100, 100};
+  mjtNum res[n] = {0, 0};
+  int index[n];
+  mjtNum R[n * (n + 7)];
+  char log[1024] = {0};
+
+  // Clipped step=1 increases objective (+3100 > 0); backtrack=0.5 < minstep=0.6
+  // fails line search.
+  mju_boxQPoption(res, R, index, H, g, n, lower, upper, /*maxiter=*/5,
+                  /*mingrad=*/MjTol(1e-12, 1e-5), /*backtrack=*/0.5,
+                  /*minstep=*/0.6, /*armijo=*/0.1, log, sizeof(log));
+
+  EXPECT_MJTNUM_EQ(res[0], 0);
+  EXPECT_MJTNUM_EQ(res[1], 0);
+  EXPECT_THAT(std::string(log),
+              ::testing::HasSubstr("Maximum line-search iterations exceeded"));
+}
+
+TEST_F(BoxQPTest, LineSearchEvaluatesArmijoBeforeBacktrack) {
+  static constexpr int n = 2;
+  mjtNum H[n * n] = {100.0, -90.0, -90.0, 100.0};
+  mjtNum g[n] = {-10.0, -10.0};
+  mjtNum lower[n] = {-10.0, -10.0};
+  mjtNum upper[n] = {0.58, 10.0};
+  mjtNum res[n] = {0.0, 0.0};
+  mjtNum R[n * (n + 7)] = {0.0};
+  int index[n] = {-1, -1};
+
+  // At step=1.0, clipped candidate (0.58, 1.0) has Armijo ratio 0.059 < 0.1;
+  // backtracks to 0.5.
+  int nfree = mju_boxQPoption(res, R, index, H, g, n, lower, upper,
+                              /*maxiter=*/1, /*mingrad=*/MjTol(1e-12, 1e-5),
+                              /*backtrack=*/0.5, /*minstep=*/MjTol(1e-10, 1e-6),
+                              /*armijo=*/0.1, nullptr, 0);
+  EXPECT_EQ(nfree, 2);
+  EXPECT_MJTNUM_EQ(res[0], 0.5);
+  EXPECT_MJTNUM_EQ(res[1], 0.5);
+}
+
+TEST_F(BoxQPTest, UnboundedUpperTrianglePoisoned) {
+  static constexpr int n = 2;
+  mjtNum H[n * n] = {4.0, -999.0, 2.0, 5.0};
+  mjtNum g[n] = {-4.0, -2.0};
+  mjtNum res[n] = {0.0, 0.0};
+  mjtNum R[n * (n + 7)] = {77.0, 77.0, 77.0, 77.0};
+  int index[n] = {-1, -1};
+
+  int nfree = mju_boxQP(res, R, index, H, g, n, nullptr, nullptr);
+  EXPECT_EQ(nfree, n);
+  EXPECT_MJTNUM_EQ(R[1], 77.0);
+}
+
 // small bounded QP with asymmetric Hessian (upper triangle ignored)
 TEST_F(BoxQPTest, AsymmetricUpperIgnored) {
   // small arrays, allocate on stack
@@ -700,6 +757,16 @@ TEST_F(BandMatrixTest, Solve) {
       mju_free(B);
     }
   }
+}
+
+TEST_F(BandMatrixTest, CholFactorBandReturnsMinFactorizedDiag) {
+  mjtNum B[3] = {9.0, 0.0, 4.0};
+  mjtNum minDiag =
+      mju_cholFactorBand(B, /*ntotal=*/2, /*nband=*/1, /*ndense=*/1,
+                         /*diagadd=*/0, /*diagmul=*/0);
+  EXPECT_MJTNUM_EQ(B[mju_bandDiag(0, 2, 1, 1)], 3.0);
+  EXPECT_MJTNUM_EQ(B[mju_bandDiag(1, 2, 1, 1)], 2.0);
+  EXPECT_MJTNUM_EQ(minDiag, 2.0);
 }
 
 using EngineUtilSolveTest = MujocoTest;

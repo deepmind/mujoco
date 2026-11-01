@@ -471,5 +471,51 @@ TEST_F(QuatSimdParityTest, BitExactWithScalarAndInPlace) {
   }
 }
 
+TEST_F(MulQuatTest, PoseOperationsInPlace) {
+  const mjtNum pos1[3] = {10, 20, 30};
+  const mjtNum pos2[3] = {1, 0, 0};
+  const mjtNum s = mju_sqrt(0.5);
+  const mjtNum quat1[4] = {s, 0, 0, s};
+  const mjtNum quat2[4] = {s, 0, 0, s};
+
+  mjtNum expected_pos[3], expected_quat[4];
+  mju_mulPose(expected_pos, expected_quat, pos1, quat1, pos2, quat2);
+
+  // mju_mulPose in-place with first pose
+  mjtNum inplace_pos1[3] = {pos1[0], pos1[1], pos1[2]};
+  mjtNum inplace_quat1[4] = {quat1[0], quat1[1], quat1[2], quat1[3]};
+  mju_mulPose(inplace_pos1, inplace_quat1, inplace_pos1, inplace_quat1, pos2,
+              quat2);
+  EXPECT_THAT(inplace_pos1, Pointwise(MjNear(1e-12, 1e-5), expected_pos));
+  EXPECT_THAT(inplace_quat1, Pointwise(MjNear(1e-12, 1e-5), expected_quat));
+
+  // mju_mulPose in-place with second pose
+  mjtNum inplace_pos2[3] = {pos2[0], pos2[1], pos2[2]};
+  mjtNum inplace_quat2[4] = {quat2[0], quat2[1], quat2[2], quat2[3]};
+  mju_mulPose(inplace_pos2, inplace_quat2, pos1, quat1, inplace_pos2,
+              inplace_quat2);
+  EXPECT_THAT(inplace_pos2, Pointwise(MjNear(1e-12, 1e-5), expected_pos));
+  EXPECT_THAT(inplace_quat2, Pointwise(MjNear(1e-12, 1e-5), expected_quat));
+
+  // mju_negPose in-place
+  mjtNum expected_neg_pos[3], expected_neg_quat[4];
+  mju_negPose(expected_neg_pos, expected_neg_quat, pos1, quat1);
+  mjtNum inplace_neg_pos[3] = {pos1[0], pos1[1], pos1[2]};
+  mjtNum inplace_neg_quat[4] = {quat1[0], quat1[1], quat1[2], quat1[3]};
+  mju_negPose(inplace_neg_pos, inplace_neg_quat, inplace_neg_pos,
+              inplace_neg_quat);
+  EXPECT_THAT(inplace_neg_pos,
+              Pointwise(MjNear(1e-12, 1e-5), expected_neg_pos));
+  EXPECT_THAT(inplace_neg_quat,
+              Pointwise(MjNear(1e-12, 1e-5), expected_neg_quat));
+
+  // mju_trnVecPose in-place with pos and vec
+  mjtNum expected_trn[3];
+  mju_trnVecPose(expected_trn, pos1, quat1, pos2);
+  mjtNum inplace_trn_pos[3] = {pos1[0], pos1[1], pos1[2]};
+  mju_trnVecPose(inplace_trn_pos, inplace_trn_pos, quat1, pos2);
+  EXPECT_THAT(inplace_trn_pos, Pointwise(MjNear(1e-12, 1e-5), expected_trn));
+}
+
 }  // namespace
 }  // namespace mujoco

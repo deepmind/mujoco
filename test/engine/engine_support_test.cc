@@ -1055,6 +1055,61 @@ TEST_F(SupportTest, InitCtrlDelayNullTimes) {
   EXPECT_EQ(buf[7], 30.0);
 }
 
+TEST_F(SupportTest, InitCtrlAndSensorHistoryNullTimesAfterStepWrap) {
+  static constexpr char xml[] = R"(
+  <mujoco>
+    <option timestep="0.01"/>
+    <worldbody>
+      <body>
+        <joint name="slide" type="slide"/>
+        <geom size="1"/>
+      </body>
+    </worldbody>
+    <actuator>
+      <motor joint="slide" delay="0.02" nsample="3"/>
+    </actuator>
+    <sensor>
+      <jointpos joint="slide" delay="0.02" nsample="3"/>
+    </sensor>
+  </mujoco>
+  )";
+  char error[1024];
+  MjModelPtr model = LoadModelFromString(xml, error, sizeof(error));
+  ASSERT_THAT(model.get(), NotNull()) << error;
+  MjDataPtr data = MakeData(model);
+
+  // Step twice so the circular history cursor wraps from 2 to 0.
+  mj_step(model.get(), data.get());
+  mj_step(model.get(), data.get());
+
+  mjtNum ctrl_values[3] = {10.0, 20.0, 30.0};
+  mj_initCtrlHistory(model.get(), data.get(), 0, nullptr, ctrl_values);
+
+  mjtNum sensor_values[3] = {100.0, 200.0, 300.0};
+  mj_initSensorHistory(model.get(), data.get(), 0, nullptr, sensor_values, 0.0);
+
+  mjtNum res = 0;
+  const mjtNum* p0 = mj_readCtrl(model.get(), data.get(), 0, 0.01, &res, 0);
+  const mjtNum* p1 = mj_readCtrl(model.get(), data.get(), 0, 0.02, &res, 0);
+  const mjtNum* p2 = mj_readCtrl(model.get(), data.get(), 0, 0.03, &res, 0);
+  ASSERT_THAT(p0, NotNull());
+  ASSERT_THAT(p1, NotNull());
+  ASSERT_THAT(p2, NotNull());
+  EXPECT_MJTNUM_EQ(*p0, 10.0);
+  EXPECT_MJTNUM_EQ(*p1, 20.0);
+  EXPECT_MJTNUM_EQ(*p2, 30.0);
+
+  const mjtNum* s0 = mj_readSensor(model.get(), data.get(), 0, 0.01, &res, 0);
+  const mjtNum* s1 = mj_readSensor(model.get(), data.get(), 0, 0.02, &res, 0);
+  const mjtNum* s2 = mj_readSensor(model.get(), data.get(), 0, 0.03, &res, 0);
+  ASSERT_THAT(s0, NotNull());
+  ASSERT_THAT(s1, NotNull());
+  ASSERT_THAT(s2, NotNull());
+  EXPECT_MJTNUM_EQ(*s0, 100.0);
+  EXPECT_MJTNUM_EQ(*s1, 200.0);
+  EXPECT_MJTNUM_EQ(*s2, 300.0);
+}
+
 TEST_F(SupportTest, InitSensorDelay) {
   static constexpr char xml[] = R"(
   <mujoco>

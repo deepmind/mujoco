@@ -1551,5 +1551,63 @@ TEST_F(EngineUtilSparseTest, PermuteMat) {
   EXPECT_THAT(mixed_back, ElementsAre(1, 2, 0, 0, 0, 0, 3, 4, 0, 0, 5, 6));
 }
 
+TEST_F(EngineUtilSparseTest, MjuSqrMatTDSparseSymbolicEmptyRowAndGuards) {
+  MjModelPtr model = LoadModelFromString("<mujoco/>");
+  MjDataPtr data = MakeData(model);
+
+  // 2x3 matrix M with empty column 1: [[1, 0, 2], [0, 0, 3]]
+  int colind[] = {0, 2, 2};
+  int rownnz[] = {2, 1};
+  int rowadr[] = {0, 2};
+  int colindT[] = {0, 0, 1};
+  int rownnzT[] = {1, 0, 2};
+  int rowadrT[] = {0, 1, 1};
+
+  int rownnzH[] = {0, 0, 0};
+  int rowadrH[] = {0, 0, 0};
+  int diagindH[] = {0, 0, 0};
+
+  int nnz = mju_sqrMatTDSparseSymbolic(rownnzH, rowadrH, nullptr, diagindH, 2,
+                                       3, rownnz, rowadr, colind, rownnzT,
+                                       rowadrT, colindT, nullptr, data.get());
+  EXPECT_EQ(nnz, 4);
+  EXPECT_THAT(rownnzH, ElementsAre(2, 0, 2));
+  EXPECT_THAT(rowadrH, ElementsAre(0, 2, 2));
+
+  std::vector<int> colindH(nnz, -1);
+  mju_sqrMatTDSparseSymbolic(rownnzH, rowadrH, colindH.data(), diagindH, 2, 3,
+                             rownnz, rowadr, colind, rownnzT, rowadrT, colindT,
+                             nullptr, data.get());
+  EXPECT_EQ(diagindH[0], 0);
+  EXPECT_EQ(diagindH[1], -1);
+  EXPECT_EQ(diagindH[2], 3);
+
+  EXPECT_EQ(mju_sqrMatTDSparseSymbolic(rownnzH, rowadrH, nullptr, diagindH, 0,
+                                       3, rownnz, rowadr, colind, rownnzT,
+                                       rowadrT, colindT, nullptr, data.get()),
+            0);
+  EXPECT_THAT(rownnzH, ElementsAre(0, 0, 0));
+  EXPECT_THAT(rowadrH, ElementsAre(0, 0, 0));
+  EXPECT_THAT(diagindH, ElementsAre(-1, -1, -1));
+
+  // Fill mode with nr == 0, nc > 0 must preserve caller-provided res_rowadr
+  int shifted_rowadrH[] = {0, 2, 5};
+  rownnzH[0] = rownnzH[1] = rownnzH[2] = 7;
+  diagindH[0] = diagindH[1] = diagindH[2] = 7;
+  EXPECT_EQ(mju_sqrMatTDSparseSymbolic(rownnzH, shifted_rowadrH, colindH.data(),
+                                       diagindH, 0, 3, rownnz, rowadr, colind,
+                                       rownnzT, rowadrT, colindT, nullptr,
+                                       data.get()),
+            0);
+  EXPECT_THAT(rownnzH, ElementsAre(0, 0, 0));
+  EXPECT_THAT(shifted_rowadrH, ElementsAre(0, 2, 5));
+  EXPECT_THAT(diagindH, ElementsAre(-1, -1, -1));
+
+  EXPECT_EQ(mju_sqrMatTDSparseSymbolic(rownnzH, rowadrH, nullptr, diagindH, 2,
+                                       0, rownnz, rowadr, colind, rownnzT,
+                                       rowadrT, colindT, nullptr, data.get()),
+            0);
+}
+
 }  // namespace
 }  // namespace mujoco

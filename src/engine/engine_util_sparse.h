@@ -145,6 +145,7 @@ MJAPI int mju_sqrMatTDSparseCount(int* res_rownnz, int* res_rowadr, int nr,
 //   if res_colind is NULL: count mode, fill res_rownnz/res_rowadr, return nnz
 //   if res_colind is not NULL: fill mode, write sorted column indices
 //   if res_diagind is not NULL: also fill upper triangle and output diagonal indices
+//     (res_diagind[r] = -1 for empty rows)
 MJAPI int mju_sqrMatTDSparseSymbolic(
     int* res_rownnz, int* res_rowadr, int* res_colind, int* res_diagind, int nr, int nc,
     const int* rownnz, const int* rowadr, const int* colind,

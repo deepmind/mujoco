@@ -745,11 +745,25 @@ void mju_sqrMatTDUncompressedInit(int* res_rowadr, int nc) {
 //   if res_colind is NULL: count mode, fill res_rownnz/res_rowadr, return nnz
 //   if res_colind is not NULL: fill mode, write sorted column indices
 //   if res_diagind is not NULL: also fill upper triangle and output diagonal indices
+//     (res_diagind[r] = -1 for empty rows)
 int mju_sqrMatTDSparseSymbolic(
     int* restrict res_rownnz, int* restrict res_rowadr,
     int* restrict res_colind, int* restrict res_diagind, int nr, int nc,
     const int* rownnz, const int* rowadr, const int* colind,
     const int* rownnzT, const int* rowadrT, const int* colindT, const int* rowsuperT, mjData* d) {
+  if (nc <= 0 || nr <= 0) {
+    if (nc > 0) {
+      mju_zeroInt(res_rownnz, nc);
+      if (!res_colind) {
+        mju_zeroInt(res_rowadr, nc);
+      }
+      if (res_diagind) {
+        mju_fillInt(res_diagind, -1, nc);
+      }
+    }
+    return 0;
+  }
+
   mj_markStack(d);
 
   // reinterpret M^T as CSC
@@ -890,7 +904,7 @@ int mju_sqrMatTDSparseSymbolic(
 
     // save diagonal indices
     for (int r = 0; r < nc; r++) {
-      res_diagind[r] = res_rowadr[r] + lower_nnz[r] - 1;
+      res_diagind[r] = lower_nnz[r] ? (res_rowadr[r] + lower_nnz[r] - 1) : -1;
     }
 
     // fill upper triangle: for each (r, c) with c < r, write to (c, r)
@@ -950,6 +964,10 @@ void mju_sqrMatTDSparseNumeric(
     const mjtNum* mat, const int* rownnz, const int* rowadr, const int* colind,
     const mjtNum* matT, const int* rownnzT, const int* rowadrT, const int* colindT,
     const int* rowsuperT, const mjtNum* diag, mjData* d) {
+  if (nc <= 0) {
+    return;
+  }
+
   mj_markStack(d);
 
   // dense accumulator for off-diagonal columns c < r, zeroed lazily up to flat index buf_zeroed

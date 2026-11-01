@@ -191,5 +191,11 @@ TEST_F(EngineUtilBlasTest, Normalize4EdgeCases) {
   EXPECT_EQ(quat[3], 0);
 }
 
+TEST_F(EngineUtilBlasTest, MjuNormalizeZeroLength) {
+  mjtNum vec[1] = {42.0};
+  EXPECT_MJTNUM_EQ(mju_normalize(vec, 0), 0.0);
+  EXPECT_MJTNUM_EQ(vec[0], 42.0);
+}
+
 }  // namespace
 }  // namespace mujoco

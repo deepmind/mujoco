@@ -1505,23 +1505,38 @@ static int historyFindIndex(const mjtNum* times, int n, int cursor, mjtNum t) {
 // buffer layout: [user(1), cursor(1), times(n), values(n*dim)]
 void mju_historyInit(mjtNum* buf, int n, int dim, const mjtNum* times, const mjtNum* values,
                      mjtNum user) {
+  mjtNum* buf_times = buf + 2;
+  mjtNum* buf_values = buf + 2 + n;
+  int cursor = (times == buf_times) ? (int)buf[1] : n - 1;
+  if (cursor < 0 || cursor >= n) {
+    cursor = n - 1;
+  }
+
   // check strict monotonicity of times
-  for (int i = 0; i < n-1; i++) {
-    if (times[i+1] - times[i] < mjMINVAL) {
+  for (int i=0; i < n-1; i++) {
+    int idx0 = (times == buf_times) ? historyPhysicalIndex(cursor, n, i) : i;
+    int idx1 = (times == buf_times) ? historyPhysicalIndex(cursor, n, i+1) : i+1;
+    if (times[idx1] - times[idx0] < mjMINVAL) {
       mjERROR("times must be strictly increasing, got times[%d]=%g >= times[%d]=%g",
-              i, times[i], i+1, times[i+1]);
+              i, times[idx0], i+1, times[idx1]);
     }
   }
 
   // buf layout: [user(1), cursor(1), times(n), values(n*dim)]
-  buf[0] = user;           // user value
-  buf[1] = (mjtNum)(n-1);  // cursor points to newest (logical index n-1 = physical index n-1)
+  buf[0] = user;            // user value
+  buf[1] = (mjtNum)cursor;  // cursor points to newest (logical index n-1)
 
-  mjtNum* buf_times = buf + 2;
-  mjtNum* buf_values = buf + 2 + n;
-
-  if (times != buf_times) mju_copy(buf_times, times, n);
-  if (values) mju_copy(buf_values, values, n*dim);
+  if (times != buf_times) {
+    mju_copy(buf_times, times, n);
+    if (values) {
+      mju_copy(buf_values, values, n*dim);
+    }
+  } else if (values) {
+    for (int i=0; i < n; i++) {
+      int phys = historyPhysicalIndex(cursor, n, i);
+      mju_copy(buf_values + phys*dim, values + i*dim, dim);
+    }
+  }
 }
 
 
@@ -1670,6 +1685,12 @@ const mjtNum* mju_historyRead(const mjtNum* buf, int n, int dim, mjtNum* res, mj
 // the pyramid frame is: V0_i = N + mu_i*T_i
 //                       V1_i = N - mu_i*T_i
 void mju_encodePyramid(mjtNum* pyramid, const mjtNum* force, const mjtNum* mu, int dim) {
+  // special handling of frictionless contacts
+  if (dim == 1) {
+    pyramid[0] = force[0];
+    return;
+  }
+
   mjtNum a = force[0]/(dim-1), b;
 
   // arbitrary redundancy resolution:
@@ -2055,6 +2076,10 @@ int mju_str2Type(const char* str) {
 
   else if (!strcmp(str, "plugin")) {
     return mjOBJ_PLUGIN;
+  }
+
+  else if (!strcmp(str, "frame")) {
+    return mjOBJ_FRAME;
   }
 
   else {

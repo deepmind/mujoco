@@ -373,32 +373,44 @@ int mju_mat2Rot(mjtNum quat[4], const mjtNum mat[9]) {
 void mju_mulPose(mjtNum posres[3], mjtNum quatres[4],
                  const mjtNum pos1[3], const mjtNum quat1[4],
                  const mjtNum pos2[3], const mjtNum quat2[4]) {
-  // quatres = quat1*quat2
-  mji_mulQuat(quatres, quat1, quat2);
-  mju_normalize4(quatres);
+  mjtNum ptmp[3], qtmp[4];
 
-  // posres = quat1*pos2 + pos1
-  mji_rotVecQuat(posres, pos2, quat1);
-  mji_addTo3(posres, pos1);
+  // ptmp = quat1*pos2 + pos1
+  mji_rotVecQuat(ptmp, pos2, quat1);
+  mji_addTo3(ptmp, pos1);
+
+  // qtmp = quat1*quat2
+  mji_mulQuat(qtmp, quat1, quat2);
+  mju_normalize4(qtmp);
+
+  mji_copy3(posres, ptmp);
+  mji_copy4(quatres, qtmp);
 }
 
 
 // negate pose
 void mju_negPose(mjtNum posres[3], mjtNum quatres[4], const mjtNum pos[3], const mjtNum quat[4]) {
-  // qres = neg(quat)
-  mji_negQuat(quatres, quat);
+  mjtNum ptmp[3], qtmp[4];
 
-  // pres = -neg(quat)*pos
-  mji_rotVecQuat(posres, pos, quatres);
-  mju_scl3(posres, posres, -1);
+  // qtmp = neg(quat)
+  mji_negQuat(qtmp, quat);
+
+  // posres = -neg(quat)*pos
+  mji_rotVecQuat(ptmp, pos, qtmp);
+  mji_scl3(posres, ptmp, -1);
+
+  mji_copy4(quatres, qtmp);
 }
 
 
 // transform vector by pose
 void mju_trnVecPose(mjtNum res[3], const mjtNum pos[3], const mjtNum quat[4], const mjtNum vec[3]) {
+  mjtNum tmp[3];
+
   // res = quat*vec + pos
-  mji_rotVecQuat(res, vec, quat);
-  mji_addTo3(res, pos);
+  mji_rotVecQuat(tmp, vec, quat);
+  mji_addTo3(tmp, pos);
+  mji_copy3(res, tmp);
 }
 
 

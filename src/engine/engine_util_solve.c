@@ -1048,11 +1048,6 @@ mjtNum mju_cholFactorBand(mjtNum* restrict mat, int ntotal, int nband, int ndens
                      (width_jj == 1 ? mat[adr_jj-1]*mat[adr_jj-1] : 0);
     mjtNum Ljj = diagadd + diagmul*mat[adr_jj] + mat[adr_jj] - left_jj;
 
-    // update mindiag
-    if (Ljj < mindiag || mindiag < 0) {
-      mindiag = Ljj;
-    }
-
     // stop if rank-deficient
     if (!(Ljj >= mjMINVAL)) {
       return 0;
@@ -1061,6 +1056,11 @@ mjtNum mju_cholFactorBand(mjtNum* restrict mat, int ntotal, int nband, int ndens
     // compute Ljj, scale = 1/Ljj
     Ljj = mju_sqrt(Ljj);
     mjtNum scale = 1 / Ljj;
+
+    // update mindiag
+    if (Ljj < mindiag || mindiag < 0) {
+      mindiag = Ljj;
+    }
 
     // compute L(i,j) for i > j, sparse part
     int adr_ij = adr_jj + nband - 1;
@@ -1097,11 +1097,6 @@ mjtNum mju_cholFactorBand(mjtNum* restrict mat, int ntotal, int nband, int ndens
     mjtNum Ljj = diagadd + diagmul*mat[adr_jj] + mat[adr_jj] -
                  mju_dot(mat+adr_jj-j, mat+adr_jj-j, j);
 
-    // update mindiag
-    if (Ljj < mindiag || mindiag < 0) {
-      mindiag = Ljj;
-    }
-
     // stop if rank-deficient
     if (!(Ljj >= mjMINVAL)) {
       return 0;
@@ -1110,6 +1105,11 @@ mjtNum mju_cholFactorBand(mjtNum* restrict mat, int ntotal, int nband, int ndens
     // compute Ljj, scale = 1/Ljj
     Ljj = mju_sqrt(Ljj);
     mjtNum scale = 1 / Ljj;
+
+    // update mindiag
+    if (Ljj < mindiag || mindiag < 0) {
+      mindiag = Ljj;
+    }
 
     // compute L(i,j) for i > j
     int adr_ij = adr_jj + ntotal;
@@ -2189,8 +2189,12 @@ int mju_boxQPoption(mjtNum* res, mjtNum* R, int* index,               // outputs
 
   // no bounds: return Newton point
   if (!lower && !upper) {
-    // try to factorize
-    mju_copy(R, H, n*n);
+    // try to factorize (only lower triangle of H is read and written to R)
+    for (int i=0; i < n; i++) {
+      for (int j=0; j <= i; j++) {
+        R[i*n+j] = H[i*n+j];
+      }
+    }
     int rank = mju_cholFactor(R, n, mjMINVAL);
     if (rank == n) {
       mju_cholSolve(res, R, g, n);
@@ -2420,16 +2424,16 @@ int mju_boxQPoption(mjtNum* res, mjtNum* R, int* index,               // outputs
       }
       value = oldvalue - reduction;
 
-      // increment and break if step is too small
+      // repeat until relative improvement >= Armijo, or break if step is too small
       nstep++;
-      step = step*backtrack;
-      if (step < minstep) {
-        status = mjBOXQP_MAX_LS_ITER;
-        break;
-      }
-
-      // repeat until relative improvement >= Armijo
       improvement = -reduction / (step*sdotg);
+      if (improvement < armijo) {
+        step = step*backtrack;
+        if (step < minstep) {
+          status = mjBOXQP_MAX_LS_ITER;
+          break;
+        }
+      }
     } while (improvement < armijo);
 
 
@@ -2443,6 +2447,12 @@ int mju_boxQPoption(mjtNum* res, mjtNum* R, int* index,               // outputs
       if (written > 0) {
         logptr = minInt(logptr + written, logsz);
       }
+    }
+
+    // stop if line search failed without accepting rejected candidate
+    if (status == mjBOXQP_MAX_LS_ITER) {
+      value = oldvalue;
+      break;
     }
 
     // accept candidate
