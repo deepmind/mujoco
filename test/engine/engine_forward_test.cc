@@ -8292,5 +8292,53 @@ TEST_F(ForwardTest, CheckWarningCount) {
   }
 }
 
+// after an RK4 step, qacc is the effective acceleration of the step,
+// (qvel_next - qvel) / h, and the warm start is the last stage's acceleration
+TEST_F(ForwardTest, RungeKuttaQaccIsEffectiveAcceleration) {
+  static constexpr char xml[] = R"(
+  <mujoco>
+    <option integrator="RK4" timestep="0.1" gravity="0 0 0">
+      <flag contact="disable"/>
+    </option>
+    <worldbody>
+      <body>
+        <joint type="slide" axis="1 0 0" stiffness="4" damping="0.5"/>
+        <inertial pos="0 0 0" mass="1" diaginertia="1 1 1"/>
+      </body>
+    </worldbody>
+  </mujoco>
+  )";
+  char error[1024];
+  MjModelPtr model = LoadModelFromString(xml, error, sizeof(error));
+  ASSERT_THAT(model.get(), NotNull()) << error;
+  MjDataPtr data = MakeData(model);
+  mjModel* m = model.get();
+  mjData* d = data.get();
+  d->qpos[0] = 1.0;
+
+  // reference RK4 on the linear spring-damper: a(x, v) = -4 x - 0.5 v
+  auto acc = [](mjtNum x, mjtNum v) { return -4 * x - 0.5 * v; };
+  const mjtNum h = m->opt.timestep;
+
+  for (int i = 0; i < 3; i++) {
+    mj_forward(m, d);
+    mjtNum x0 = d->qpos[0], v0 = d->qvel[0];
+    mjtNum a0 = acc(x0, v0);
+    mjtNum a1 = acc(x0 + h / 2 * v0, v0 + h / 2 * a0);
+    mjtNum v1 = v0 + h / 2 * a0;
+    mjtNum a2 = acc(x0 + h / 2 * v1, v0 + h / 2 * a1);
+    mjtNum v2 = v0 + h / 2 * a1;
+    mjtNum a3 = acc(x0 + h * v2, v0 + h * a2);
+    mjtNum qacc_rk = (a0 + 2 * a1 + 2 * a2 + a3) / 6;
+
+    mj_RungeKutta(m, d, 4);
+    mjtNum qacc_eff = (d->qvel[0] - v0) / h;
+    EXPECT_NEAR(qacc_eff, qacc_rk, MjTol(1e-12, 1e-4));
+    EXPECT_NEAR(d->qacc[0], qacc_rk, MjTol(1e-12, 1e-4));
+    EXPECT_NEAR(d->qacc_warmstart[0], a3, MjTol(1e-12, 1e-4));
+    EXPECT_GT(mju_abs(qacc_rk - a3), 0.01);
+  }
+}
+
 }  // namespace
 }  // namespace mujoco

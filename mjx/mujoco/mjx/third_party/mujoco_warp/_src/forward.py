@@ -1652,6 +1652,12 @@ def rungekutta4(m: Model, d: Data):
   wp.copy(d.qpos, qpos_t0)
   wp.copy(d.qvel, qvel_t0)
 
+  # last stage's acceleration, the most recent solve: warm start for the next step
+  qacc_last = wp.clone(d.qacc)
+
+  # effective acceleration of the step (RK weighted combination), read by delayed sensors
+  wp.copy(d.qacc, qacc_rk)
+
   if m.na:
     wp.copy(d.act, act_t0)
     wp.copy(d.act_dot, act_dot_rk)
@@ -1666,6 +1672,7 @@ def rungekutta4(m: Model, d: Data):
     wp.copy(d.subtree_com, subtree_com_t0)
 
   _advance(m, d, qacc_rk, qvel_rk)
+  wp.copy(d.qacc_warmstart, qacc_last)
 
 
 @wp.kernel

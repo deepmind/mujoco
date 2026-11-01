@@ -2251,8 +2251,14 @@ void mj_RungeKutta(const mjModel* m, mjData* d, int N) {
     }
   }
 
+  // effective acceleration of the step (RK weighted combination), read by delayed sensors
+  mju_copy(d->qacc, dX+nv, nv);
+
   // advance state and time
   mj_advance(m, d, dX+2*nv, dX+nv, dX);
+
+  // warm start the next step from the last stage's acceleration, the most recent solve
+  mju_copy(d->qacc_warmstart, F[N-1], nv);
 
   mj_freeStack(d);
 }
