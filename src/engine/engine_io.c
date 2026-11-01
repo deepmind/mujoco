@@ -660,6 +660,7 @@ mjModel* mj_loadModelBuffer(const void* buffer, mjtSize buffer_sz) {
   if (ptrbuf + sizeof(mjOption) + sizeof(mjVisual) + sizeof(mjStatistic) +
       sizeof(mjtBool) * 3 > buffer_sz) {
     mju_warning("Truncated model file - ran out of data while reading structs");
+    mj_deleteModel(m);
     return NULL;
   }
   bufread((void*)&m->opt, sizeof(mjOption), buffer_sz, buffer, &ptrbuf);
@@ -1040,6 +1041,7 @@ int mj_initPlugin(const mjModel* m, mjData* d) {
   d->nplugin = m->nplugin;
   for (int i = 0; i < m->nplugin; ++i) {
     d->plugin[i] = m->plugin[i];
+    d->plugin_data[i] = 0;
     const mjpPlugin* plugin = mjp_getPluginAtSlot(m->plugin[i]);
     if (plugin->init && plugin->init(m, d, i) < 0) {
       // destroy previously initialized instances
@@ -1093,10 +1095,12 @@ void mj_makeRawData(mjData** dest, const mjModel* m) {
   intptr_t offset = 0;
   int allocate = *dest ? 0 : 1;
   mjData* d = NULL;
+  uintptr_t save_threadpool = 0;
 
   // allocate mjData
   if (!allocate) {
     d = *dest;
+    save_threadpool = d->threadpool;
     freeDataBuffers(d);
   } else {
     d = (mjData*) mju_malloc(sizeof(mjData));
@@ -1143,8 +1147,8 @@ void mj_makeRawData(mjData** dest, const mjModel* m) {
   // set pointers into buffer
   mj_setPtrData(m, d);
 
-  // clear threadpool
-  d->threadpool = 0;
+  // preserve or clear threadpool
+  d->threadpool = save_threadpool;
   d->threadlock = 0;
 
   // clear nplugin (overwritten by _initPlugin)
@@ -1201,10 +1205,12 @@ mjData* mj_copyDataVisual(mjData* dest, const mjModel* m, const mjData* src, int
   // save pointers, copy everything, restore pointers
   save_buffer = dest->buffer;
   save_arena = dest->arena;
+  uintptr_t save_threadpool = dest->threadpool;
   *dest = *src;
   dest->buffer = save_buffer;
   dest->arena = save_arena;
-  dest->threadpool = 0;
+  dest->threadpool = save_threadpool;
+  dest->threadlock = 0;
   mj_setPtrData(m, dest);
 
   // save plugin_data, since the X macro copying block below will override it
@@ -1375,7 +1381,8 @@ void mj_resetPlastic(const mjModel* m, mjData* d) {
 }
 
 
-// clear data, set defaults
+// clear data, set defaults; must not call mju_error (warn instead), as callers rely on
+// mj_resetData as an infallible recovery path to restore a valid mjData after a trapped error
 static void _resetData(const mjModel* m, mjData* d, unsigned char debug_value) {
   // warn if history buffers cannot be initialized
   mjtNum dt = m->opt.timestep;
@@ -1384,11 +1391,13 @@ static void _resetData(const mjModel* m, mjData* d, unsigned char debug_value) {
   }
 
   //------------------------------ save plugin state and data
-  mjtNum* plugin_state;
-  uintptr_t* plugindata;
+  mjtNum* plugin_state = NULL;
+  uintptr_t* plugindata = NULL;
   if (d->nplugin) {
-    plugin_state = mju_malloc(sizeof(mjtNum) * m->npluginstate);
-    memcpy(plugin_state, d->plugin_state, sizeof(mjtNum) * m->npluginstate);
+    if (m->npluginstate) {
+      plugin_state = mju_malloc(sizeof(mjtNum) * m->npluginstate);
+      memcpy(plugin_state, d->plugin_state, sizeof(mjtNum) * m->npluginstate);
+    }
     plugindata = mju_malloc(sizeof(uintptr_t) * m->nplugin);
     memcpy(plugindata, d->plugin_data, sizeof(uintptr_t) * m->nplugin);
   }
@@ -1396,10 +1405,9 @@ static void _resetData(const mjModel* m, mjData* d, unsigned char debug_value) {
   //------------------------------ clear header
 
   // clear stack pointer
-  if (!d->threadpool) {
-    d->pstack = 0;
-  }
+  d->pstack = 0;
   d->pbase = 0;
+  d->threadlock = 0;
 
   // clear arena pointers
   d->parena = 0;
@@ -1566,8 +1574,10 @@ static void _resetData(const mjModel* m, mjData* d, unsigned char debug_value) {
 
   // restore pluginstate and plugindata
   if (d->nplugin) {
-    memcpy(d->plugin_state, plugin_state, sizeof(mjtNum) * m->npluginstate);
-    mju_free(plugin_state);
+    if (m->npluginstate) {
+      memcpy(d->plugin_state, plugin_state, sizeof(mjtNum) * m->npluginstate);
+      mju_free(plugin_state);
+    }
     memcpy(d->plugin_data, plugindata, sizeof(uintptr_t) * m->nplugin);
     mju_free(plugindata);
 
@@ -1687,32 +1697,39 @@ static void mj_logTimingDiagnostics(const mjData* d) {
   int pos = 0;
   mjtNum components = 0;
 
+#define MJ_APPEND_TIMING(...) \
+  do { \
+    if (pos < (int)sizeof(buf) - 1) { \
+      int n = snprintf(buf + pos, sizeof(buf) - pos, __VA_ARGS__); \
+      if (n > 0) { \
+        pos = mjMIN((int)sizeof(buf) - 1, pos + n); \
+      } \
+    } \
+  } while (0)
+
   for (int i = mjTIMER_POSITION; i <= mjTIMER_ADVANCE; i++) {
     if (d->timer[i].number > 0) {
       mjtNum istep = d->timer[i].duration / d->timer[i].number;
       components += istep;
-      pos += snprintf(buf + pos, sizeof(buf) - pos,
-                      "%s  %-15s %8.1f  (%5.1f%%)",
-                      pos > 0 ? "\n" : "",
-                      mjTIMERSTRING[i], istep * 1000, 100 * istep / tstep);
+      MJ_APPEND_TIMING("%s  %-15s %8.1f  (%5.1f%%)",
+                       pos > 0 ? "\n" : "",
+                       mjTIMERSTRING[i], istep * 1000, 100 * istep / tstep);
 
       // position sub-breakdown
       if (i == mjTIMER_POSITION) {
         for (int p = mjTIMER_POS_KINEMATICS; p <= mjTIMER_POS_PROJECT; p++) {
           if (d->timer[p].number > 0) {
             mjtNum pstep = d->timer[p].duration / d->timer[p].number;
-            pos += snprintf(buf + pos, sizeof(buf) - pos,
-                            "\n    %-13s %8.1f  (%5.1f%%)",
-                            mjTIMERSTRING[p] + 4, pstep * 1000, 100 * pstep / tstep);
+            MJ_APPEND_TIMING("\n    %-13s %8.1f  (%5.1f%%)",
+                             mjTIMERSTRING[p] + 4, pstep * 1000, 100 * pstep / tstep);
 
             // collision sub-breakdown
             if (p == mjTIMER_POS_COLLISION) {
               for (int c = mjTIMER_COL_BROAD; c <= mjTIMER_COL_NARROW; c++) {
                 if (d->timer[c].number > 0) {
                   mjtNum cstep = d->timer[c].duration / d->timer[c].number;
-                  pos += snprintf(buf + pos, sizeof(buf) - pos,
-                                  "\n      %-11s %8.1f  (%5.1f%%)",
-                                  mjTIMERSTRING[c] + 4, cstep * 1000, 100 * cstep / tstep);
+                  MJ_APPEND_TIMING("\n      %-11s %8.1f  (%5.1f%%)",
+                                   mjTIMERSTRING[c] + 4, cstep * 1000, 100 * cstep / tstep);
                 }
               }
             }
@@ -1723,15 +1740,15 @@ static void mj_logTimingDiagnostics(const mjData* d) {
   }
 
   mjtNum other = tstep - components;
-  pos += snprintf(buf + pos, sizeof(buf) - pos,
-                  "%s  %-15s %8.1f  (%5.1f%%)",
-                  pos > 0 ? "\n" : "",
-                  "other", other * 1000, 100 * other / tstep);
+  MJ_APPEND_TIMING("%s  %-15s %8.1f  (%5.1f%%)",
+                   pos > 0 ? "\n" : "",
+                   "other", other * 1000, 100 * other / tstep);
 
-  pos += snprintf(buf + pos, sizeof(buf) - pos,
-                  "%s  %-15s %8.1f",
-                  pos > 0 ? "\n" : "",
-                  "total", tstep * 1000);
+  MJ_APPEND_TIMING("%s  %-15s %8.1f",
+                   pos > 0 ? "\n" : "",
+                   "total", tstep * 1000);
+
+#undef MJ_APPEND_TIMING
 
   mjLogMessage msg = {.level = mjLOG_INFO, .topic = mjTOPIC_TIME_STP, .body = buf};
   snprintf(msg.subject, sizeof(msg.subject),

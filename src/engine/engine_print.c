@@ -448,7 +448,8 @@ static bool validateFloatFormat(const char* float_format) {
   const char flag_characters[] = "-+ #0";
   int flag_character_counts[sizeof(flag_characters)] = { 0 };
   const char* c;
-  while (c = strchr(flag_characters, float_format[cur_idx]), c != NULL) {
+  while (float_format[cur_idx] != '\0' &&
+         (c = strchr(flag_characters, float_format[cur_idx])) != NULL) {
     int flag_idx = (c - flag_characters)/sizeof(char);
     flag_character_counts[flag_idx]++;
     if (flag_character_counts[flag_idx] > 1) {
@@ -459,14 +460,16 @@ static bool validateFloatFormat(const char* float_format) {
   }
 
   // width. disallow *, which requires additional argument
-  while (strchr("0123456789", float_format[cur_idx]) != NULL) {
+  while (float_format[cur_idx] != '\0' &&
+         strchr("0123456789", float_format[cur_idx]) != NULL) {
     cur_idx++;
   }
 
   // precision. disallow *, which requires additional argument
   if (float_format[cur_idx] == '.') {
     cur_idx++;
-    while (strchr("0123456789", float_format[cur_idx]) != NULL) {
+    while (float_format[cur_idx] != '\0' &&
+           strchr("0123456789", float_format[cur_idx]) != NULL) {
       cur_idx++;
     }
   }
@@ -477,7 +480,8 @@ static bool validateFloatFormat(const char* float_format) {
   }
 
   // specifier must be a valid float format
-  if (strchr("fgGeE", float_format[cur_idx]) == NULL) {
+  if (float_format[cur_idx] == '\0' ||
+      strchr("fgGeE", float_format[cur_idx]) == NULL) {
     mju_warning("Format string specifier must be one of \"fgGeE\".");
     return false;
   }
@@ -527,7 +531,7 @@ void mj_printFormattedModel(const mjModel* m, const char* filename, const char* 
 
   // compute total body mass
   mjtNum totalmass = 0;
-  for (int i=0; i < m->nbody; i++) {
+  for (int i=1; i < m->nbody; i++) {
     totalmass += m->body_mass[i];
   }
 
@@ -1153,7 +1157,7 @@ void mj_printFormattedModel(const mjModel* m, const char* filename, const char* 
         if (m->jnt_plasticadr[j] >= 0) {
           int adr = m->jnt_plasticadr[j];
           int qposadr = m->jnt_qposadr[j];
-          int jnt_nq = m->jnt_type[j] == mjJNT_BALL ? 4 : 1;
+          int jnt_nq = m->jnt_type[j] == mjJNT_FREE ? 7 : (m->jnt_type[j] == mjJNT_BALL ? 4 : 1);
           for (int d=0; d < jnt_nq; d++) {
             if (m->qpos_spring[qposadr + d] != m->key_plastic[i*m->nplastic + adr + d]) {
               k = 7;

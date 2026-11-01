@@ -255,6 +255,8 @@ Bug fixes
     writes all attributes on plugin-backed meshes and :at:`reftype`/:at:`refname` on plugin sensors.
 - :ref:`mj_ray` now scales SDF hit distances by ``1 / ||vec||`` for non-unit ray vectors, and ``mju_rayTriangle``
   rejects triangle intersections behind the ray origin.
+- :ref:`mj_resetData`, :ref:`mj_copyData`, and :ref:`mj_recompile` now preserve the destination :ref:`mjData` thread
+  pool instead of dropping and leaking it.
 
 Documentation
 ^^^^^^^^^^^^^

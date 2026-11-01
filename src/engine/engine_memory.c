@@ -105,7 +105,8 @@ static size_t stack_usage_redzone(const mjStackInfo* stack_info) {
 
 // allocate memory from the mjData arena
 void* mj_arenaAllocByte(mjData* d, size_t bytes, size_t alignment) {
-  size_t misalignment = fastmod(d->parena, alignment);
+  uintptr_t addr = (uintptr_t)d->arena + d->parena;
+  size_t misalignment = fastmod(addr, alignment);
   size_t padding = misalignment ? alignment - misalignment : 0;
 
   // check size

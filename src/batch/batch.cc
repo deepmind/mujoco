@@ -897,7 +897,10 @@ struct mjBatch_ {
       RunSim(t, i, j);
       errors[i].clear();
     } else {
-      // the simulation's state was not saved; its mjData is reset for the next call
+      // the simulation's state was not saved; its mjData is reset for the next call.
+      // mj_resetData is assumed infallible (warns rather than calling mju_error): trapping a
+      // longjmp mid-reset would leak plugin state, overwrite tls_error, and leave a half-reset
+      // mjData (open stack frames, poisoned arena) for the next simulation sharing Data(t, i)
       tls_jmp = outer_jmp;
       if (op == Op::SetConst) Restore(models[t]);
 

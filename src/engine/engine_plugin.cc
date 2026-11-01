@@ -209,7 +209,7 @@ bool GlobalTable<mjpPlugin>::ObjectEqual(const mjpPlugin& plugin1, const mjpPlug
     if (plugin1.attributes[i] && !plugin2.attributes[i]) {
       return false;
     }
-    if (plugin1.attributes[i] && !plugin2.attributes[i]) {
+    if (!plugin1.attributes[i] && plugin2.attributes[i]) {
       return false;
     }
     if (plugin1.attributes[i] && plugin2.attributes[i] &&
@@ -648,13 +648,14 @@ void mjp_defaultDecoder(mjpDecoder* decoder) {
 
 // find a decoder that can process a given resource and content_type
 const mjpDecoder* mjp_findDecoder(const mjResource* resource, const char* content_type) {
-  auto extension = getext(resource->name);
-  if (strklen(content_type) == -1 && extension.empty()) {
+  auto extension = getext(resource->name ? resource->name : "");
+  bool has_content_type = content_type && strklen(content_type) > 0;
+  if (!has_content_type && extension.empty()) {
     mju_warning("Must provide extension or content_type to mjp_findDecoder.");
     return nullptr;
   }
 
-  if (strklen(content_type) > 0) {
+  if (has_content_type) {
     auto* decoder = GlobalTable<mjpDecoder>::GetSingleton().GetByKey(content_type, nullptr);
     if (decoder && decoder->can_decode(resource)) {
       return decoder;

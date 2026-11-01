@@ -20,7 +20,9 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <filesystem>  // NOLINT
 #include <fstream>
 #include <memory>
@@ -848,6 +850,79 @@ TEST_F(MujocoTest, LoadAllPluginLibrariesErrorReleasesLock) {
   EXPECT_TRUE(*done) << "plugin table lock was not released";
 }
 #endif
+
+TEST_F(EnginePluginTest, ResetDataStatelessPluginNullMemcpy) {
+  static constexpr char stateless_xml[] = R"(
+  <mujoco>
+    <extension>
+      <plugin plugin="mujoco.sdf.torus">
+        <instance name="torus">
+          <config key="radius1" value="0.35"/>
+          <config key="radius2" value="0.15"/>
+        </instance>
+      </plugin>
+    </extension>
+    <asset>
+      <mesh name="torus">
+        <plugin instance="torus"/>
+      </mesh>
+    </asset>
+    <worldbody>
+      <geom type="sdf" mesh="torus">
+        <plugin instance="torus"/>
+      </geom>
+    </worldbody>
+  </mujoco>
+  )";
+  char error[1024] = {0};
+  MjModelPtr m = LoadModelFromString(stateless_xml, error, sizeof(error));
+  ASSERT_THAT(m.get(), NotNull()) << error;
+  ASSERT_GT(m->nplugin, 0);
+  ASSERT_EQ(m->npluginstate, 0);
+
+  MjDataPtr d = MakeData(m);
+  ASSERT_THAT(d.get(), NotNull());
+
+  static bool zero_alloc_requested = false;
+  zero_alloc_requested = false;
+  auto prev_malloc = mju_user_malloc;
+  auto prev_free = mju_user_free;
+  mju_user_malloc = [](size_t size) -> void* {
+    if (size == 0) {
+      zero_alloc_requested = true;
+      return nullptr;
+    }
+    return malloc(size);
+  };
+  mju_user_free = [](void* ptr) {
+    if (ptr) free(ptr);
+  };
+
+  mj_resetData(m.get(), d.get());
+
+  mju_user_malloc = prev_malloc;
+  mju_user_free = prev_free;
+
+  EXPECT_FALSE(zero_alloc_requested)
+      << "_resetData attempted zero-byte allocation for stateless plugin";
+}
+
+TEST_F(EnginePluginTest, RegisterPluginDifferentAttributes) {
+  mjpPlugin plugin = *mjp_getPlugin("mujoco.test.actuator", nullptr);
+  const char* attributes[] = {nullptr, "multiplier"};
+  plugin.attributes = attributes;
+
+  std::string err = MjuErrorMessageFrom(mjp_registerPlugin)(&plugin);
+  EXPECT_THAT(err, HasSubstr("already registered"));
+}
+
+TEST_F(MujocoTest, FindDecoderNullContentTypeCrash) {
+  char filename[] = "model.xml";
+  mjResource resource = {};
+  resource.name = filename;
+  const mjpDecoder* decoder = mjp_findDecoder(&resource, nullptr);
+  EXPECT_THAT(decoder, testing::IsNull());
+}
 
 }  // namespace
 }  // namespace mujoco
