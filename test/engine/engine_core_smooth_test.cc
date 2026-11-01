@@ -796,6 +796,48 @@ TEST_F(CoreSmoothTest, RnePostJointForcesAreInternal) {
   }
 }
 
+// mj_rnePostConstraint advances past the actual rows instantiated by
+// mjEQ_FLEXSTRAIN so subsequent equality constraint forces remain aligned.
+TEST_F(CoreSmoothTest, RnePostConstraintFlexstrainRowAdvance) {
+  static constexpr char xml[] = R"(
+  <mujoco>
+    <worldbody>
+      <flexcomp name="f" type="box" count="4 4 4" cellcount="2 1 1"
+                spacing=".02 .02 .02" dim="3" dof="trilinear" radius=".001">
+        <contact selfcollide="none"/>
+      </flexcomp>
+      <body name="b1" pos="0 0 1">
+        <joint name="j1" type="slide" axis="0 0 1"/>
+        <geom size="0.05" mass="1.5"/>
+      </body>
+    </worldbody>
+    <equality>
+      <flexstrain flex="f" cell="0 0 0"/>
+      <connect body1="b1" anchor="0 0 1"/>
+    </equality>
+  </mujoco>
+  )";
+  char error[1024];
+  MjModelPtr model = LoadModelFromString(xml, error, sizeof(error));
+  ASSERT_THAT(model.get(), NotNull()) << error;
+  MjDataPtr data = MakeData(model);
+
+  mj_forward(model.get(), data.get());
+  mj_rnePostConstraint(model.get(), data.get());
+
+  int b1 = mj_name2id(model.get(), mjOBJ_BODY, "b1");
+  int j1 = mj_name2id(model.get(), mjOBJ_JOINT, "j1");
+  ASSERT_GT(b1, 0);
+  ASSERT_GE(j1, 0);
+  int dof = model->jnt_dofadr[j1];
+
+  // b1 is suspended by the connect equality constraint after flexstrain rows;
+  // cfrc_ext vertical force on b1 must match the joint constraint force.
+  EXPECT_GT(data->qfrc_constraint[dof], 10.0);
+  EXPECT_NEAR(data->cfrc_ext[6 * b1 + 5], data->qfrc_constraint[dof],
+              MjTol(1e-10, 1e-4));
+}
+
 // --------------------------- site actuators ----------------------------------
 
 // Test Cartesian position control using site transmission with refsite

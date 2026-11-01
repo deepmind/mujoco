@@ -2461,22 +2461,12 @@ void mj_rnePostConstraint(const mjModel* m, mjData* d) {
       }
       break;
 
-    case mjEQ_FLEXSTRAIN: {
-      // increment: trilinear uses 2 center (I1,J-1) + 3*ngauss shear, quadratic uses 6*ngauss
-      k = m->eq_obj1id[id];
-      int interp_k = m->flex_interp[k];
-      int order = interp_k < 0 ? -interp_k : interp_k;
-      int nodenum = m->flex_nodenum[k];
-      if (order && nodenum) {
-        int nquad = order + 1;
-        int ngauss = nquad * nquad * nquad;
-        int ncells = m->flex_cellnum[3*k+0]
-                   * m->flex_cellnum[3*k+1]
-                   * m->flex_cellnum[3*k+2];
-        i += ncells * ((order == 1) ? (2 + 3 * ngauss) : (6 * ngauss));
+    case mjEQ_FLEXSTRAIN:
+      // advance past all rows instantiated for this strain constraint
+      while (i < ne && d->efc_id[i] == id) {
+        i++;
       }
       break;
-    }
 
     default:
       mjERROR("unknown constraint type type %d", m->eq_type[id]);    // SHOULD NOT OCCUR
