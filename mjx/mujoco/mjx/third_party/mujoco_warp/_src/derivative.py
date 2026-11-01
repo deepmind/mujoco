@@ -42,6 +42,7 @@ from mujoco.mjx.third_party.mujoco_warp._src.types import GainType
 from mujoco.mjx.third_party.mujoco_warp._src.types import IntegratorType
 from mujoco.mjx.third_party.mujoco_warp._src.types import JointType
 from mujoco.mjx.third_party.mujoco_warp._src.types import Model
+from mujoco.mjx.third_party.mujoco_warp._src.types import TrnType
 from mujoco.mjx.third_party.mujoco_warp._src.types import vec6
 from mujoco.mjx.third_party.mujoco_warp._src.types import vec10
 from mujoco.mjx.third_party.mujoco_warp._src.warp_util import cache_kernel
@@ -50,16 +51,50 @@ from mujoco.mjx.third_party.mujoco_warp._src.warp_util import event_scope
 wp.set_module_options({"enable_backward": False, "default_grid_stride": False})
 
 
+@wp.func
+def _tendon_actfrc_clamped(
+  # Model:
+  tendon_actfrclimited: wp.array[bool],
+  tendon_actfrcrange: wp.array2d[wp.vec2],
+  actuator_trntype: wp.array[int],
+  actuator_trnid: wp.array[wp.vec2i],
+  # Data in:
+  actuator_force_in: wp.array2d[float],
+  # In:
+  worldid: int,
+  actid: int,
+) -> bool:
+  if actuator_trntype[actid] == TrnType.TENDON:
+    tenid = actuator_trnid[actid][0]
+    if tendon_actfrclimited[tenid]:
+      ten_force = float(0.0)
+      for j in range(actuator_force_in.shape[1]):
+        if actuator_trntype[j] == TrnType.TENDON and actuator_trnid[j][0] == tenid:
+          ten_force += actuator_force_in[worldid, j]
+      actfrcrange = tendon_actfrcrange[worldid % tendon_actfrcrange.shape[0], tenid]
+      tol = 1.0e-5
+      if (
+        ten_force <= actfrcrange[0] + tol * wp.abs(actfrcrange[0])
+        or ten_force >= actfrcrange[1] - tol * wp.abs(actfrcrange[1])
+      ):
+        return True
+  return False
+
+
 @wp.kernel
 def _qderiv_actuator_passive_vel(
   # Model:
   opt_timestep: wp.array[float],
+  tendon_actfrclimited: wp.array[bool],
+  tendon_actfrcrange: wp.array2d[wp.vec2],
+  actuator_trntype: wp.array[int],
   actuator_dyntype: wp.array[int],
   actuator_gaintype: wp.array[int],
   actuator_biastype: wp.array[int],
   actuator_ctrlspec: wp.array[int],
   actuator_actadr: wp.array[int],
   actuator_actnum: wp.array[int],
+  actuator_trnid: wp.array[wp.vec2i],
   actuator_dynprm: wp.array2d[vec10],
   actuator_gainprm: wp.array2d[vec10],
   actuator_biasprm: wp.array2d[vec10],
@@ -165,6 +200,19 @@ def _qderiv_actuator_passive_vel(
     if force <= forcerange[0] or force >= forcerange[1]:
       vel_out[worldid, actid] = 0.0
       return
+
+  # skip if tendon total actuator force is clamped by actfrcrange
+  if _tendon_actfrc_clamped(
+    tendon_actfrclimited,
+    tendon_actfrcrange,
+    actuator_trntype,
+    actuator_trnid,
+    actuator_force_in,
+    worldid,
+    actid,
+  ):
+    vel_out[worldid, actid] = 0.0
+    return
 
   vel = float(bias)
   if actuator_dyntype[actid] != DynType.NONE:
@@ -1289,12 +1337,16 @@ def deriv_smooth_vel(m: Model, d: Data, out: wp.array2d[float]):
         dim=(d.nworld, m.nactuator),
         inputs=[
           m.opt.timestep,
+          m.tendon_actfrclimited,
+          m.tendon_actfrcrange,
+          m.actuator_trntype,
           m.actuator_dyntype,
           m.actuator_gaintype,
           m.actuator_biastype,
           m.actuator_ctrlspec,
           m.actuator_actadr,
           m.actuator_actnum,
+          m.actuator_trnid,
           m.actuator_dynprm,
           m.actuator_gainprm,
           m.actuator_biasprm,
@@ -1712,6 +1764,9 @@ def _eff_actuator_actuation(nv: int, deterministic: bool = False):
     # Model:
     opt_timestep: wp.array[float],
     opt_disableflags: int,
+    tendon_actfrclimited: wp.array[bool],
+    tendon_actfrcrange: wp.array2d[wp.vec2],
+    actuator_trntype: wp.array[int],
     actuator_dyntype: wp.array[int],
     actuator_gaintype: wp.array[int],
     actuator_biastype: wp.array[int],
@@ -1719,6 +1774,7 @@ def _eff_actuator_actuation(nv: int, deterministic: bool = False):
     actuator_ctrlspec: wp.array[int],
     actuator_actadr: wp.array[int],
     actuator_actnum: wp.array[int],
+    actuator_trnid: wp.array[wp.vec2i],
     actuator_dynprm: wp.array2d[vec10],
     actuator_gainprm: wp.array2d[vec10],
     actuator_biasprm: wp.array2d[vec10],
@@ -1751,13 +1807,6 @@ def _eff_actuator_actuation(nv: int, deterministic: bool = False):
 
     if opt_disableflags & DisableBit.ACTUATION:
       return
-
-    if actuator_forcelimited[actid]:
-      force = actuator_force_in[worldid, actid]
-      forcerange = actuator_forcerange[worldid % actuator_forcerange.shape[0], actid]
-      if force <= forcerange[0] or force >= forcerange[1]:
-        efm_as_out[worldid, actid] = 0.0
-        return
 
     gainprm = actuator_gainprm[worldid % actuator_gainprm.shape[0], actid]
     biasprm = actuator_biasprm[worldid % actuator_biasprm.shape[0], actid]
@@ -1871,6 +1920,28 @@ def _eff_actuator_actuation(nv: int, deterministic: bool = False):
 
     gp = wp.max(0.0, -bias_len)
     gv = wp.max(0.0, -bias_vel)
+    if gp == 0.0 and gv == 0.0:
+      efm_as_out[worldid, actid] = 0.0
+      return
+
+    if actuator_forcelimited[actid]:
+      force = actuator_force_in[worldid, actid]
+      forcerange = actuator_forcerange[worldid % actuator_forcerange.shape[0], actid]
+      if force <= forcerange[0] or force >= forcerange[1]:
+        efm_as_out[worldid, actid] = 0.0
+        return
+
+    if _tendon_actfrc_clamped(
+      tendon_actfrclimited,
+      tendon_actfrcrange,
+      actuator_trntype,
+      actuator_trnid,
+      actuator_force_in,
+      worldid,
+      actid,
+    ):
+      efm_as_out[worldid, actid] = 0.0
+      return
 
     as_val = h * h * gp + h * gv
     ak_val = h * gp
@@ -3729,6 +3800,9 @@ def eff_actuation(m: Model, d: Data):
     inputs=[
       m.opt.timestep,
       m.opt.disableflags,
+      m.tendon_actfrclimited,
+      m.tendon_actfrcrange,
+      m.actuator_trntype,
       m.actuator_dyntype,
       m.actuator_gaintype,
       m.actuator_biastype,
@@ -3736,6 +3810,7 @@ def eff_actuation(m: Model, d: Data):
       m.actuator_ctrlspec,
       m.actuator_actadr,
       m.actuator_actnum,
+      m.actuator_trnid,
       m.actuator_dynprm,
       m.actuator_gainprm,
       m.actuator_biasprm,

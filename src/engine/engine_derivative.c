@@ -2571,6 +2571,32 @@ int mjd_actuatorDerivSkip(const mjModel* m, const mjData* d, int i, int sleep_fi
     }
   }
 
+  // skip if tendon total actuator force is clamped by actfrcrange
+  if (m->actuator_trntype[i] == mjTRN_TENDON) {
+    int tendon_id = m->actuator_trnid[2*i];
+    if (m->tendon_actfrclimited[tendon_id]) {
+      const mjtNum* range = m->tendon_actfrcrange + 2*tendon_id;
+      mjtNum tendon_force = 0;
+      for (int j=0; j < m->nactuator; j++) {
+        if (m->actuator_trntype[j] == mjTRN_TENDON &&
+            m->actuator_trnid[2*j] == tendon_id) {
+          tendon_force += d->actuator_force[m->actuator_outadr[j]];
+        }
+      }
+
+      // relative tolerance for rounding in proportional force scaling (mj_fwdActuation)
+#ifdef mjUSESINGLE
+      const mjtNum tol = 1e-5f;
+#else
+      const mjtNum tol = 1e-10;
+#endif
+      if (tendon_force <= range[0] + tol*mju_abs(range[0]) ||
+          tendon_force >= range[1] - tol*mju_abs(range[1])) {
+        return 1;
+      }
+    }
+  }
+
   return 0;
 }
 

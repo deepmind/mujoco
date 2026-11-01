@@ -4430,5 +4430,72 @@ TEST_F(DerivativeTest, EffPrecIsSymmetric) {
   }
 }
 
+// Validate that mjd_actuator_vel (d->qDeriv) and mj_effActuation (d->nefmA)
+// skip tendon actuators whose total tendon force saturates tendon_actfrcrange,
+// including when proportional scaling across multiple actuators rounds.
+TEST_F(DerivativeTest, TendonActfrcrangeSaturation) {
+  static constexpr char kXml[] = R"(
+  <mujoco>
+    <option timestep="0.01" integrator="discrete"/>
+    <worldbody>
+      <body>
+        <joint name="slide" type="slide" axis="0 0 1"/>
+        <geom type="sphere" size="0.05" mass="1"/>
+        <site name="s1"/>
+      </body>
+      <site name="s0" pos="0 0 0.3"/>
+    </worldbody>
+    <tendon>
+      <spatial name="ten" actuatorfrclimited="true" actuatorfrcrange="-19 0">
+        <site site="s0"/>
+        <site site="s1"/>
+      </spatial>
+    </tendon>
+    <actuator>
+      <general tendon="ten" biastype="affine" gainprm="3" biasprm="0 -3 -3"/>
+      <general tendon="ten" biastype="affine" gainprm="5" biasprm="0 -5 -5"/>
+      <general tendon="ten" biastype="affine" gainprm="7" biasprm="0 -7 -7"/>
+      <general tendon="ten" biastype="affine" gainprm="11" biasprm="0 -11 -11"/>
+      <general tendon="ten" biastype="affine" gainprm="13" biasprm="0 -13 -13"/>
+      <general tendon="ten" biastype="affine" gainprm="17" biasprm="0 -17 -17"/>
+    </actuator>
+  </mujoco>
+  )";
+
+  char error[1024];
+  MjModelPtr m = LoadModelFromString(kXml, error, sizeof(error));
+  ASSERT_THAT(m.get(), testing::NotNull()) << error;
+  MjDataPtr d = MakeData(m);
+
+  auto eval_with_ctrl = [&](mjtNum ctrl) {
+    for (int i = 0; i < m->nu; ++i) {
+      d->ctrl[i] = ctrl;
+    }
+    mj_forward(m.get(), d.get());
+    mju_zero(d->qDeriv, m->nD);
+    mjd_actuator_vel(m.get(), d.get());
+    mjtNum sum_force = 0;
+    for (int i = 0; i < m->nu; ++i) {
+      sum_force += d->actuator_force[i];
+    }
+    return sum_force;
+  };
+
+  // 1. Unsaturated (-11.2 N in (-19, 0)): both qDeriv and nefmA are populated
+  EXPECT_NEAR(eval_with_ctrl(0.1), -11.2, MjTol(1e-10, 1e-4));
+  EXPECT_LT(d->qDeriv[0], -1.0);
+  EXPECT_EQ(d->nefmA, m->nu);
+
+  // 2. Saturated at lower bound (-19 N): qDeriv and nefmA are both skipped
+  EXPECT_NEAR(eval_with_ctrl(-1.4), -19.0, MjTol(1e-10, 1e-4));
+  EXPECT_EQ(d->qDeriv[0], 0.0);
+  EXPECT_EQ(d->nefmA, 0);
+
+  // 3. Saturated at upper bound (0 N): qDeriv and nefmA are both skipped
+  EXPECT_EQ(eval_with_ctrl(1.0), 0.0);
+  EXPECT_EQ(d->qDeriv[0], 0.0);
+  EXPECT_EQ(d->nefmA, 0);
+}
+
 }  // namespace
 }  // namespace mujoco
