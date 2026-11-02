@@ -23,7 +23,11 @@
 #include "engine/engine_util_spatial_avx.h"  // IWYU pragma: keep
 
 #ifdef __cplusplus
-  #define restrict __restrict__
+  #if defined(_MSC_VER)
+    #define restrict __restrict
+  #else
+    #define restrict __restrict__
+  #endif
   extern "C" {
 #endif
 

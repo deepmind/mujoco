@@ -43,9 +43,9 @@ void mju_mulQuat_avx(mjtNum res[4], const mjtNum qa[4], const mjtNum qb[4]) {
   __m256d va2 = _mm256_set1_pd(qa[2]);
   __m256d va3 = _mm256_set1_pd(qa[3]);
 
-  __m256d vb1 = _mm256_permute_pd(vb, 0b0101);
+  __m256d vb1 = _mm256_permute_pd(vb, 0x05);
   __m256d vb2 = _mm256_permute2f128_pd(vb, vb, 0x01);
-  __m256d vb3 = _mm256_permute_pd(vb2, 0b0101);
+  __m256d vb3 = _mm256_permute_pd(vb2, 0x05);
 
   __m256d va2s = _mm256_xor_pd(va2, _mm256_setr_pd(-0.0, 0.0, 0.0, -0.0));
   __m256d va3s = _mm256_xor_pd(va3, _mm256_setr_pd(-0.0, -0.0, 0.0, 0.0));
@@ -65,10 +65,10 @@ void mju_mulQuatAxis_avx(mjtNum res[4], const mjtNum quat[4], const mjtNum axis[
   __m256d vx2 = _mm256_set1_pd(axis[2]);
 
   __m256d vq_swap = _mm256_permute2f128_pd(vq, vq, 0x01);
-  __m256d c0 = _mm256_xor_pd(_mm256_permute_pd(vq, 0b0101),
+  __m256d c0 = _mm256_xor_pd(_mm256_permute_pd(vq, 0x05),
                              _mm256_setr_pd(-0.0, 0.0, 0.0, -0.0));
   __m256d c1 = _mm256_xor_pd(vq_swap, _mm256_setr_pd(-0.0, -0.0, 0.0, 0.0));
-  __m256d c2 = _mm256_xor_pd(_mm256_permute_pd(vq_swap, 0b0101),
+  __m256d c2 = _mm256_xor_pd(_mm256_permute_pd(vq_swap, 0x05),
                              _mm256_setr_pd(-0.0, 0.0, -0.0, 0.0));
 
   __m256d s01 = _mm256_add_pd(_mm256_mul_pd(c0, vx0), _mm256_mul_pd(c1, vx1));
@@ -108,24 +108,24 @@ void mju_quat2Mat_avx(mjtNum res[9], const mjtNum quat[4]) {
 
   // res[1..3]: 2*(q12 - q03), 2*(q13 + q02), 2*(q12 + q03)
   __m256d v_2323 = _mm256_insertf128_pd(_mm256_castpd128_pd256(vq_hi), vq_hi, 1);
-  __m256d u0 = _mm256_permute_pd(v_2323, 0b0100);
-  __m256d w0 = _mm256_permute_pd(v_2323, 0b1011);
+  __m256d u0 = _mm256_permute_pd(v_2323, 0x04);
+  __m256d w0 = _mm256_permute_pd(v_2323, 0x0B);
   __m256d s0 = _mm256_setr_pd(0.0, -0.0, 0.0, 0.0);
   __m256d h0 = _mm256_add_pd(_mm256_mul_pd(vq1, u0),
                              _mm256_mul_pd(_mm256_xor_pd(vq0, s0), w0));
   __m256d off0 = _mm256_add_pd(h0, h0);
 
   // res[5..7]: 2*(q23 - q01), 2*(q13 - q02), 2*(q23 + q01)
-  __m128d v_12 = _mm_shuffle_pd(vq_lo, vq_hi, 0b01);
+  __m128d v_12 = _mm_shuffle_pd(vq_lo, vq_hi, 0x01);
   __m256d u1 = _mm256_insertf128_pd(_mm256_castpd128_pd256(v_12), v_12, 1);
-  __m256d w1 = _mm256_permute_pd(u1, 0b0101);
+  __m256d w1 = _mm256_permute_pd(u1, 0x05);
   __m256d s1 = _mm256_setr_pd(0.0, -0.0, -0.0, 0.0);
   __m256d h1 = _mm256_add_pd(_mm256_mul_pd(vq3, u1),
                              _mm256_mul_pd(_mm256_xor_pd(vq0, s1), w1));
   __m256d off1 = _mm256_add_pd(h1, h1);
 
-  _mm256_storeu_pd(res + 0, _mm256_blend_pd(off0, _mm256_castpd128_pd256(diag0), 0b0001));
-  _mm256_storeu_pd(res + 4, _mm256_blend_pd(off1, _mm256_castpd128_pd256(diag4), 0b0001));
+  _mm256_storeu_pd(res + 0, _mm256_blend_pd(off0, _mm256_castpd128_pd256(diag0), 0x01));
+  _mm256_storeu_pd(res + 4, _mm256_blend_pd(off1, _mm256_castpd128_pd256(diag4), 0x01));
   _mm_store_sd(res + 8, diag8);
 }
 
