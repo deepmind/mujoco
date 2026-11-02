@@ -15,6 +15,8 @@
 #ifndef MUJOCO_SRC_RENDER_FILAMENT_CORE_LIGHT_H_
 #define MUJOCO_SRC_RENDER_FILAMENT_CORE_LIGHT_H_
 
+#include <functional>
+
 #include <filament/Engine.h>
 #include <filament/Scene.h>
 #include <math/vec3.h>
@@ -36,7 +38,8 @@ class Light : public mjrfLight {
   Light& operator=(const Light&) = delete;
 
   // Adds this light to the filament Scene.
-  void AddToScene(filament::Scene* scene);
+  void AddToScene(filament::Scene* scene,
+                  std::function<void(Light*)> on_destroy);
 
   // Removes this light from the filament Scene.
   void RemoveFromScene(filament::Scene* scene);
@@ -87,6 +90,7 @@ class Light : public mjrfLight {
   filament::Engine* engine_ = nullptr;
   filament::IndirectLight* ibl_ = nullptr;
   filament::Scene* assigned_scene_ = nullptr;
+  std::function<void(Light*)> remove_from_scene_fn_;
   utils::Entity entity_;
   mjrfLightParams params_;
   bool enabled_ = true;

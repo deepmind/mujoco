@@ -19,6 +19,7 @@
 #include <functional>
 #include <numbers>
 #include <span>
+#include <utility>
 
 #include <filament/Engine.h>
 #include <filament/Material.h>
@@ -68,7 +69,13 @@ Renderable::Renderable(filament::Engine* engine,
   curr_state_.receive_shadow = params_.receive_shadow;
 }
 
-Renderable::~Renderable() noexcept { ClearParts(); }
+Renderable::~Renderable() noexcept {
+  if (remove_from_scene_fn_) {
+    auto on_destroy = std::move(remove_from_scene_fn_);
+    on_destroy(this);
+  }
+  ClearParts();
+}
 
 void Renderable::ClearParts() {
   filament::Engine* engine = GetEngine();
@@ -233,7 +240,8 @@ void Renderable::AppendMesh(const Mesh* mesh) {
   InitPartEntity(part);
 }
 
-void Renderable::AddToScene(filament::Scene* scene) {
+void Renderable::AddToScene(filament::Scene* scene,
+                            std::function<void(Renderable*)> on_destroy) {
   if (assigned_scene_) {
     if (assigned_scene_ != scene) {
       mju_error("Cannot add renderable to multiple scenes.");
@@ -245,6 +253,7 @@ void Renderable::AddToScene(filament::Scene* scene) {
     scene->addEntity(part.entity);
   }
   assigned_scene_ = scene;
+  remove_from_scene_fn_ = std::move(on_destroy);
 }
 
 void Renderable::RemoveFromScene(filament::Scene* scene) {
@@ -256,6 +265,7 @@ void Renderable::RemoveFromScene(filament::Scene* scene) {
     scene->remove(part.entity);
   }
   assigned_scene_ = nullptr;
+  remove_from_scene_fn_ = nullptr;
 }
 
 void Renderable::UpdateMaterial(const mjrfMaterial& material) {

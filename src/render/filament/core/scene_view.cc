@@ -232,7 +232,7 @@ SceneView::~SceneView() {
 
 void SceneView::AddToScene(Light* light) {
   if (lights_.insert(light).second) {
-    light->AddToScene(scene_);
+    light->AddToScene(scene_, [this](Light* light) { RemoveFromScene(light); });
   }
 }
 
@@ -244,7 +244,8 @@ void SceneView::RemoveFromScene(Light* light) {
 
 void SceneView::AddToScene(Renderable* renderable) {
   if (renderables_.insert(renderable).second) {
-    renderable->AddToScene(scene_);
+    renderable->AddToScene(
+        scene_, [this](Renderable* renderable) { RemoveFromScene(renderable); });
   }
 }
 

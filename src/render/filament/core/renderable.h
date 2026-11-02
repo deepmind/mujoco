@@ -119,7 +119,8 @@ class Renderable : public mjrfRenderable {
   void SetReceiveShadows(bool receive_shadow);
 
   // Adds this renderable to the filament Scene.
-  void AddToScene(filament::Scene* scene);
+  void AddToScene(filament::Scene* scene,
+                  std::function<void(Renderable*)> on_destroy);
 
   // Removes this renderable from the filament Scene.
   void RemoveFromScene(filament::Scene* scene);
@@ -206,6 +207,7 @@ class Renderable : public mjrfRenderable {
   std::deque<DrawState> draw_queue_;
   DrawState curr_state_;
   filament::Scene* assigned_scene_ = nullptr;
+  std::function<void(Renderable*)> remove_from_scene_fn_;
   std::vector<Part> parts_;
   filament::math::mat4f transform_;
   GetTransformFn get_transform_fn_;

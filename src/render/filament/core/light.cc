@@ -14,6 +14,7 @@
 
 #include "render/filament/core/light.h"
 
+#include <functional>
 #include <numbers>
 #include <utility>
 
@@ -115,6 +116,10 @@ Light::Light(filament::Engine* engine, const mjrfLightParams& params)
 }
 
 Light::~Light() noexcept {
+  if (remove_from_scene_fn_) {
+    auto on_destroy = std::move(remove_from_scene_fn_);
+    on_destroy(this);
+  }
   if (ibl_) {
     engine_->destroy(ibl_);
   } else {
@@ -126,7 +131,8 @@ Light::~Light() noexcept {
   }
 }
 
-void Light::AddToScene(filament::Scene* scene) {
+void Light::AddToScene(filament::Scene* scene,
+                       std::function<void(Light*)> on_destroy) {
   if (assigned_scene_) {
     if (assigned_scene_ != scene) {
       mju_error("Cannot add light to multiple scenes.");
@@ -140,6 +146,7 @@ void Light::AddToScene(filament::Scene* scene) {
     scene->addEntity(entity_);
   }
   assigned_scene_ = scene;
+  remove_from_scene_fn_ = std::move(on_destroy);
 }
 
 void Light::RemoveFromScene(filament::Scene* scene) {
@@ -152,6 +159,7 @@ void Light::RemoveFromScene(filament::Scene* scene) {
     scene->remove(entity_);
   }
   assigned_scene_ = nullptr;
+  remove_from_scene_fn_ = nullptr;
 }
 
 void Light::SetTransform(filament::math::float3 position,
