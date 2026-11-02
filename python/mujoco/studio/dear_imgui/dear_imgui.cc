@@ -114,6 +114,41 @@ PYBIND11_MODULE(dear_imgui, m) {
 
   py::class_<ImFont>(m, "Font");
 
+  // Low-level drawing for custom widgets, e.g.
+  //   dl = GetWindowDrawList(); dl.AddCircleFilled(center, 8.0, GetColorU32(col))
+  // Colors are packed ImU32 values (see GetColorU32, which applies the style
+  // alpha). Angles are radians, clockwise from +x since y points down.
+  py::class_<ImDrawList>(m, "DrawList")
+      .def("AddLine", &ImDrawList::AddLine, py::arg("p1"), py::arg("p2"), py::arg("col"), py::arg("thickness") = 1.0f)
+      .def("AddRect", [](ImDrawList& self, const ImVec2& p_min, const ImVec2& p_max, ImU32 col, float rounding, float thickness, ImDrawFlags flags) {
+        self.AddRect(p_min, p_max, col, rounding, thickness, flags);
+      }, py::arg("p_min"), py::arg("p_max"), py::arg("col"), py::arg("rounding") = 0.0f, py::arg("thickness") = 1.0f, py::arg("flags") = 0)
+      .def("AddRectFilled", &ImDrawList::AddRectFilled, py::arg("p_min"), py::arg("p_max"), py::arg("col"), py::arg("rounding") = 0.0f, py::arg("flags") = 0)
+      .def("AddTriangle", &ImDrawList::AddTriangle, py::arg("p1"), py::arg("p2"), py::arg("p3"), py::arg("col"), py::arg("thickness") = 1.0f)
+      .def("AddTriangleFilled", &ImDrawList::AddTriangleFilled, py::arg("p1"), py::arg("p2"), py::arg("p3"), py::arg("col"))
+      .def("AddCircle", &ImDrawList::AddCircle, py::arg("center"), py::arg("radius"), py::arg("col"), py::arg("num_segments") = 0, py::arg("thickness") = 1.0f)
+      .def("AddCircleFilled", &ImDrawList::AddCircleFilled, py::arg("center"), py::arg("radius"), py::arg("col"), py::arg("num_segments") = 0)
+      .def("AddText", [](ImDrawList& self, const ImVec2& pos, ImU32 col, const char* text) {
+        self.AddText(pos, col, text);
+      }, py::arg("pos"), py::arg("col"), py::arg("text"))
+      .def("AddPolyline", [](ImDrawList& self, const std::vector<ImVec2>& points, ImU32 col, float thickness, ImDrawFlags flags) {
+        self.AddPolyline(points.data(), static_cast<int>(points.size()), col, thickness, flags);
+      }, py::arg("points"), py::arg("col"), py::arg("thickness") = 1.0f, py::arg("flags") = 0)
+      .def("AddConvexPolyFilled", [](ImDrawList& self, const std::vector<ImVec2>& points, ImU32 col) {
+        self.AddConvexPolyFilled(points.data(), static_cast<int>(points.size()), col);
+      }, py::arg("points"), py::arg("col"))
+      .def("PathClear", &ImDrawList::PathClear)
+      .def("PathLineTo", &ImDrawList::PathLineTo, py::arg("pos"))
+      .def("PathArcTo", &ImDrawList::PathArcTo, py::arg("center"), py::arg("radius"), py::arg("a_min"), py::arg("a_max"), py::arg("num_segments") = 0)
+      .def("PathStroke", [](ImDrawList& self, ImU32 col, float thickness, ImDrawFlags flags) {
+        self.PathStroke(col, thickness, flags);
+      }, py::arg("col"), py::arg("thickness") = 1.0f, py::arg("flags") = 0)
+      .def("PathFillConvex", &ImDrawList::PathFillConvex, py::arg("col"));
+
+  m.def("GetWindowDrawList", &ImGui::GetWindowDrawList, py::return_value_policy::reference);
+  m.def("GetBackgroundDrawList", []() { return ImGui::GetBackgroundDrawList(); }, py::return_value_policy::reference);
+  m.def("GetForegroundDrawList", []() { return ImGui::GetForegroundDrawList(); }, py::return_value_policy::reference);
+
   // Enumerations.
 
   py::enum_<ImGuiWindowFlags_>(m, "WindowFlags")
@@ -487,6 +522,20 @@ PYBIND11_MODULE(dear_imgui, m) {
       .value("MouseButtonRight", ImGuiButtonFlags_MouseButtonRight)
       .value("MouseButtonMiddle", ImGuiButtonFlags_MouseButtonMiddle)
       .value("MouseButtonMask", ImGuiButtonFlags_MouseButtonMask_);
+
+  py::enum_<ImDrawFlags_>(m, "DrawFlags")
+      .value("None", ImDrawFlags_None)
+      .value("Closed", ImDrawFlags_Closed)
+      .value("RoundCornersTopLeft", ImDrawFlags_RoundCornersTopLeft)
+      .value("RoundCornersTopRight", ImDrawFlags_RoundCornersTopRight)
+      .value("RoundCornersBottomLeft", ImDrawFlags_RoundCornersBottomLeft)
+      .value("RoundCornersBottomRight", ImDrawFlags_RoundCornersBottomRight)
+      .value("RoundCornersNone", ImDrawFlags_RoundCornersNone)
+      .value("RoundCornersTop", ImDrawFlags_RoundCornersTop)
+      .value("RoundCornersBottom", ImDrawFlags_RoundCornersBottom)
+      .value("RoundCornersLeft", ImDrawFlags_RoundCornersLeft)
+      .value("RoundCornersRight", ImDrawFlags_RoundCornersRight)
+      .value("RoundCornersAll", ImDrawFlags_RoundCornersAll);
 
   py::enum_<ImGuiColorEditFlags_>(m, "ColorEditFlags")
       .value("None", ImGuiColorEditFlags_None)
