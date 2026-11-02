@@ -202,6 +202,34 @@ TEST_F(UserUtilTest, StringToVectorRange) {
   EXPECT_EQ(errno, ERANGE);
 }
 
+TEST_F(UserUtilTest, StringToVectorSubnormalAndUnderflow) {
+  auto vf = StringToVector<float>("1e-40 -1e-45 0 1e-50 2.5");
+  ASSERT_EQ(vf.size(), 5);
+  EXPECT_GT(vf[0], 0.0f);
+  EXPECT_LT(vf[1], 0.0f);
+  EXPECT_EQ(vf[2], 0.0f);
+  EXPECT_EQ(vf[3], 0.0f);
+  EXPECT_EQ(vf[4], 2.5f);
+  EXPECT_EQ(errno, 0);
+
+  auto vd = StringToVector<double>("1e-315 -1e-320 1e-400 3.0");
+  ASSERT_EQ(vd.size(), 4);
+  EXPECT_GT(vd[0], 0.0);
+  EXPECT_LT(vd[1], 0.0);
+  EXPECT_EQ(vd[2], 0.0);
+  EXPECT_EQ(vd[3], 3.0);
+  EXPECT_EQ(errno, 0);
+
+  auto vnan = StringToVector<float>("nan 1e-40");
+  ASSERT_EQ(vnan.size(), 2);
+  EXPECT_THAT(vnan[0], IsNan());
+  EXPECT_GT(vnan[1], 0.0f);
+  EXPECT_EQ(errno, EDOM);
+
+  auto vovf = StringToVector<float>("1.0 1e40");
+  EXPECT_EQ(errno, ERANGE);
+}
+
 TEST_F(UserUtilTest, VectorToString) {
   std::vector<double> v = {1.2, 3.2, 5.3, 6};
   EXPECT_EQ(VectorToString(v), "1.2 3.2 5.3 6");

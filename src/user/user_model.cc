@@ -823,6 +823,18 @@ mjCModel& mjCModel::operator-=(const mjCFrame& frame) {
 
 // add default tree to this model
 mjCModel& mjCModel::operator+=(mjCDef& subtree) {
+  // when attaching with empty prefix and suffix, keep parent 'main' and attach child sub-classes
+  if (!defaults_.empty() && subtree.name == "main") {
+    for (mjCDef* def : subtree.child) {
+      def->parent  = nullptr;
+      *this       += *def;
+    }
+    subtree.child.clear();
+    delete &subtree;
+    return *this;
+  }
+
+  subtree.id = (int)defaults_.size();
   defaults_.push_back(&subtree);
   def_map[subtree.name] = &subtree;
   subtree.model         = this;

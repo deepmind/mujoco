@@ -722,7 +722,7 @@ class mjCBody : public mjCBody_, private mjsBody {
 
   void Compile(void);          // compiler
   void ApplyGauge();           // scale the compiled copy by the gauge
-  void InertiaFromGeom(void);  // get inertial info from geoms
+  bool InertiaFromGeom(void);  // get inertial info from geoms
 
   // true if compilation infers the inertial of this body from its geoms
   bool InfersInertial() const;

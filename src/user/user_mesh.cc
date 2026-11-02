@@ -497,10 +497,13 @@ void mjCMesh::CacheMesh(mjCCache* cache, const mjResource* resource) {
   mjCMesh* mesh = new mjCMesh();
 
   // mesh properties
-  mesh->maxhullvert_ = maxhullvert_;
-  mesh->inertia      = inertia;
-  mesh->smoothnormal = smoothnormal;
+  mesh->maxhullvert_    = maxhullvert_;
+  mesh->inertia         = inertia;
+  mesh->smoothnormal    = smoothnormal;
+  mesh->octree_maxdepth = octree_maxdepth;
   std::copy(scale, scale + 3, mesh->scale);
+  std::copy(refpos, refpos + 3, mesh->refpos);
+  std::copy(refquat, refquat + 4, mesh->refquat);
 
   // mesh processed data
   mesh->processed_    = processed_;
@@ -1082,8 +1085,26 @@ bool mjCMesh::LoadCachedMesh(mjCCache* cache, const mjResource* resource) {
     // check if normal generation is different
     if (smoothnormal != mesh->smoothnormal) { return false; }
 
+    // check if octree_maxdepth is different
+    if (octree_maxdepth != mesh->octree_maxdepth) { return false; }
+
     // check if scale is different
     if (scale[0] != mesh->scale[0] || scale[1] != mesh->scale[1] || scale[2] != mesh->scale[2]) {
+      return false;
+    }
+
+    // check if refpos is different
+    if (refpos[0] != mesh->refpos[0] ||
+        refpos[1] != mesh->refpos[1] ||
+        refpos[2] != mesh->refpos[2]) {
+      return false;
+    }
+
+    // check if refquat is different
+    if (refquat[0] != mesh->refquat[0] ||
+        refquat[1] != mesh->refquat[1] ||
+        refquat[2] != mesh->refquat[2] ||
+        refquat[3] != mesh->refquat[3]) {
       return false;
     }
 

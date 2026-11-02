@@ -2625,10 +2625,10 @@ mjCFrame* mjCBody::ToFrame(bool mergeinertial) {
   // merge the inertial into the parent; this can fail, do it before anything is modified
   if (mergeinertial && parent->name != "world") {
     // an inertial is either given in the spec, or inferred from geoms when compiling
-    bool given         = !InfersInertial() && mjuu_defined(spec.ipos[0]) && spec.mass >= mjMINVAL;
     bool inferred      = InfersInertial() && !geoms.empty();
-    bool parent_given  = !parent->InfersInertial() && mjuu_defined(parent->spec.ipos[0]);
+    bool given         = !inferred && mjuu_defined(spec.ipos[0]) && spec.mass >= mjMINVAL;
     bool parent_infers = parent->InfersInertial() && !parent->geoms.empty();
+    bool parent_given  = !parent_infers && mjuu_defined(parent->spec.ipos[0]);
     bool scaled        = ScaledInertial() || parent->ScaledInertial();
 
     // a body which does not infer its inertial gives no mass to its geoms, e.g. with a massless
@@ -2908,7 +2908,7 @@ mjsElement* mjCBody::NextChild(const mjsElement* child, mjtObj type, bool recurs
 
 
 // compute geom inertial frame: ipos, iquat, mass, inertia
-void mjCBody::InertiaFromGeom(void) {
+bool mjCBody::InertiaFromGeom(void) {
   int    sz;
   double com[3]  = {0, 0, 0};
   double toti[6] = {0, 0, 0, 0, 0, 0};
@@ -2972,6 +2972,7 @@ void mjCBody::InertiaFromGeom(void) {
     const char* errq = mjuu_fullInertia(iquat, inertia, fullinertia);
     if (errq) { throw mjCError(this, "error '%s' in alternative for principal axes", errq); }
   }
+  return sz > 0;
 }
 
 
@@ -3138,11 +3139,9 @@ void mjCBody::MergeInertial(const mjCBody* child) {
   double coms[2][3], inerts[2][6];
   mjuu_zerovec(coms[0], 3);
   mjuu_zerovec(inerts[0], 6);
-  if (InfersInertial()) {
-    if (!geoms.empty()) {
-      masses[0] = mass;
-      CompiledInertial(coms[0], inerts[0]);
-    }
+  if (InfersInertial() && !geoms.empty()) {
+    masses[0] = mass;
+    CompiledInertial(coms[0], inerts[0]);
   } else if (mjuu_defined(spec.ipos[0]) && scaled) {
     masses[0] = mass;
     CompiledInertial(coms[0], inerts[0]);
@@ -3152,7 +3151,7 @@ void mjCBody::MergeInertial(const mjCBody* child) {
   }
 
   // inertial of the child, in the coordinates of this body
-  if (child->InfersInertial() || scaled) {
+  if ((child->InfersInertial() && !child->geoms.empty()) || scaled) {
     masses[1] = child->mass;
     child->CompiledInertial(coms[1], inerts[1]);
   } else {
@@ -3417,13 +3416,14 @@ void mjCBody::Compile(void) {
 
   // set inertial frame from geoms if necessary; how the body got its inertia is kept, for saving
   // the compiled values also once the spec is edited
-  inertia_inferred_ =
+  bool infer_inertia =
       id > 0 && (compiler->inertiafromgeom == mjINERTIAFROMGEOM_TRUE ||
                  (!mjuu_defined(ipos[0]) && compiler->inertiafromgeom == mjINERTIAFROMGEOM_AUTO));
+  bool from_geom     = infer_inertia && InertiaFromGeom();
+  inertia_inferred_  = from_geom || (infer_inertia && !mjuu_defined(ipos[0]));
   inertia_given_     = !inertia_inferred_ && mjuu_defined(ipos[0]);
   inertia_groups_[0] = compiler->inertiagrouprange[0];
   inertia_groups_[1] = compiler->inertiagrouprange[1];
-  if (inertia_inferred_) { InertiaFromGeom(); }
 
   // ipos undefined: copy body frame into inertial
   if (!mjuu_defined(ipos[0])) {

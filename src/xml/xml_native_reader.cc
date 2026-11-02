@@ -14,6 +14,7 @@
 
 #include "xml/xml_native_reader.h"
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdio>
@@ -1679,7 +1680,6 @@ void mjXReader::Extension(XMLElement* section) {
 void mjXReader::Custom(XMLElement* section) {
   string      str, name;
   XMLElement* elem;
-  double      data[500];
 
   // iterate over child elements
   elem = FirstChildElement(section);
@@ -1701,20 +1701,30 @@ void mjXReader::Custom(XMLElement* section) {
       if (mjs_setName(numeric->element, elname.c_str())) {
         throw mjXError(elem, "%s", mjs_getError(spec));
       }
-      if (ReadAttrInt(elem, "size", &numeric->size)) {
-        int sz = numeric->size < 500 ? numeric->size : 500;
-        for (int i = 0; i < sz; i++) { data[i] = 0; }
-      } else {
-        numeric->size = 501;
+      static constexpr int kMaxNumericSize = 10000000;
+      bool                 has_size        = ReadAttrInt(elem, "size", &numeric->size);
+      if (has_size && numeric->size < 1) {
+        throw mjXError(elem, "custom field size must be positive");
       }
-      int len = ReadAttr(elem, "data", numeric->size, data, str, false, false);
-      if (numeric->size == 501) { numeric->size = len; }
-      if (numeric->size < 1 || numeric->size > 500) {
-        throw mjXError(elem, "custom field size must be between 1 and 500");
+      if (has_size && numeric->size > kMaxNumericSize) {
+        throw mjXError(elem, "custom field size exceeds maximum");
+      }
+      auto maybe_data = ReadAttrVec<double>(elem, "data");
+      int  len        = maybe_data.has_value() ? static_cast<int>(maybe_data->size()) : 0;
+      if (!has_size) {
+        if (len < 1) { throw mjXError(elem, "custom field size must be positive"); }
+        if (len > kMaxNumericSize) { throw mjXError(elem, "custom field size exceeds maximum"); }
+        numeric->size = len;
+      } else if (len > numeric->size) {
+        throw mjXError(elem, "attribute 'data' has too much data");
       }
 
-      // copy data
-      mjs_setDouble(numeric->data, data, numeric->size);
+      // copy data, zero-padded to numeric->size
+      std::vector<double> data(numeric->size, 0.0);
+      if (maybe_data.has_value()) {
+        std::copy(maybe_data->begin(), maybe_data->end(), data.begin());
+      }
+      mjs_setDouble(numeric->data, data.data(), numeric->size);
     }
 
     // text

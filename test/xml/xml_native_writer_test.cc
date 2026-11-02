@@ -4253,5 +4253,225 @@ TEST_F(XMLWriterTest, PluginSensorPreservesReftypeRefname) {
   mj_deleteSpec(spec);
 }
 
+TEST_F(XMLWriterTest, AttachEmptyAffixWithChildDefaultsRoundTrips) {
+  mock_warning_handler.ExpectWarnings();
+
+  static constexpr char parent_xml[] = R"(
+  <mujoco>
+    <default>
+      <geom friction="0.8 0.005 0.0001"/>
+    </default>
+    <worldbody>
+      <geom name="parent_geom" size="0.2"/>
+      <frame name="mount"/>
+    </worldbody>
+  </mujoco>
+  )";
+  static constexpr char child_xml[] = R"(
+  <mujoco>
+    <default>
+      <geom friction="0.3 0.005 0.0001"/>
+      <default class="sub">
+        <geom density="500"/>
+      </default>
+    </default>
+    <worldbody>
+      <body name="child_body">
+        <geom name="main_geom" size="0.1"/>
+        <geom name="sub_geom" class="sub" size="0.15"/>
+      </body>
+    </worldbody>
+  </mujoco>
+  )";
+
+  std::array<char, 1024> error;
+  mjSpec* parent =
+      mj_parseXMLString(parent_xml, nullptr, error.data(), error.size());
+  mjSpec* child =
+      mj_parseXMLString(child_xml, nullptr, error.data(), error.size());
+  ASSERT_THAT(parent, NotNull()) << error.data();
+  ASSERT_THAT(child, NotNull()) << error.data();
+
+  mjsFrame* mount = mjs_findFrame(parent, "mount");
+  mjsBody* body = mjs_findBody(child, "child_body");
+  ASSERT_THAT(mjs_attach(mount->element, body->element, "", ""), NotNull())
+      << mjs_getError(parent);
+
+  mjModel* model = mj_compile(parent, nullptr);
+  ASSERT_THAT(model, NotNull()) << mjs_getError(parent);
+
+  for (int savecompiled : {0, 1}) {
+    parent->compiler.savecompiled = savecompiled;
+    std::string saved = SaveToString(parent);
+    MjModelPtr reloaded =
+        LoadModelFromString(saved.c_str(), error.data(), error.size());
+    ASSERT_THAT(reloaded.get(), NotNull()) << error.data() << "\n" << saved;
+    EXPECT_MJTNUM_EQ(reloaded->geom_friction[0], 0.8);
+    EXPECT_MJTNUM_EQ(reloaded->geom_friction[3], 0.3);
+    EXPECT_MJTNUM_EQ(reloaded->geom_friction[6], 0.3);
+    EXPECT_NEAR(reloaded->body_mass[1], model->body_mass[1],
+                MjTol(1e-12, 1e-5));
+  }
+
+  mj_deleteModel(model);
+  mj_deleteSpec(child);
+  mj_deleteSpec(parent);
+}
+
+TEST_F(XMLWriterTest, InertiaFromGeomTruePreservesGeomlessInertial) {
+  static constexpr char xml[] = R"(
+  <mujoco>
+    <compiler inertiafromgeom="true"/>
+    <worldbody>
+      <body name="geomless">
+        <joint type="free"/>
+        <inertial pos="0 0 0" mass="2" diaginertia="0.1 0.2 0.3"/>
+      </body>
+      <flexcomp name="fc" type="grid" count="2 2 1" spacing="0.1 0.1 0.1"
+                mass="1" radius="0.01"/>
+    </worldbody>
+  </mujoco>
+  )";
+  std::array<char, 1024> error;
+  MjModelPtr model = LoadModelFromString(xml, error.data(), error.size());
+  ASSERT_THAT(model.get(), NotNull()) << error.data();
+
+  std::string saved = SaveAndReadXml(model.get());
+  MjModelPtr reloaded =
+      LoadModelFromString(saved.c_str(), error.data(), error.size());
+  ASSERT_THAT(reloaded.get(), NotNull()) << error.data() << "\n" << saved;
+  for (int i = 0; i < model->nbody; ++i) {
+    EXPECT_NEAR(reloaded->body_mass[i], model->body_mass[i], MjTol(1e-6, 1e-5))
+        << "body " << i;
+  }
+}
+
+TEST_F(XMLWriterTest, SmallPositiveNumberNotRoundedToZero) {
+  static constexpr char xml[] = R"(
+  <mujoco>
+    <worldbody>
+      <body>
+        <joint type="free"/>
+        <inertial pos="0 0 0" mass="1e-6"
+          diaginertia="5.67e-13 5.67e-13 5.67e-13"/>
+      </body>
+    </worldbody>
+  </mujoco>
+  )";
+  std::array<char, 1024> error;
+  MjModelPtr model = LoadModelFromString(xml, error.data(), error.size());
+  ASSERT_THAT(model.get(), NotNull()) << error.data();
+
+  std::string saved = SaveAndReadXml(model.get());
+  EXPECT_THAT(saved, Not(HasSubstr("diaginertia=\"0 0 0\"")));
+  MjModelPtr reloaded =
+      LoadModelFromString(saved.c_str(), error.data(), error.size());
+  ASSERT_THAT(reloaded.get(), NotNull()) << error.data() << "\n" << saved;
+  EXPECT_NEAR(reloaded->body_inertia[3], 5.67e-13, MjTol(1e-18, 1e-18));
+}
+
+TEST_F(XMLWriterTest, QuatTrigNoiseSnapsToZero) {
+  static constexpr char xml[] = R"(
+  <mujoco>
+    <worldbody>
+      <body name="noisy" quat="6.12323e-17 0 0 1">
+        <geom size="0.1"/>
+      </body>
+    </worldbody>
+  </mujoco>
+  )";
+  std::array<char, 1024> error;
+  MjModelPtr model = LoadModelFromString(xml, error.data(), error.size());
+  ASSERT_THAT(model.get(), NotNull()) << error.data();
+
+  std::string saved = SaveAndReadXml(model.get());
+  EXPECT_THAT(saved, HasSubstr("quat=\"0 0 0 1\""));
+  EXPECT_THAT(saved, Not(HasSubstr("6.12323e-17")));
+}
+
+TEST_F(XMLWriterTest, DeleteAttachedSubDefault) {
+  mock_warning_handler.ExpectWarnings();
+
+  static constexpr char parent_xml[] = R"(
+  <mujoco>
+    <default>
+      <geom friction="0.8 0.005 0.0001"/>
+    </default>
+    <worldbody>
+      <frame name="mount"/>
+    </worldbody>
+  </mujoco>
+  )";
+  static constexpr char child_xml[] = R"(
+  <mujoco>
+    <default>
+      <geom friction="0.3 0.005 0.0001"/>
+      <default class="sub">
+        <geom density="500"/>
+      </default>
+    </default>
+    <worldbody>
+      <body name="child_body"/>
+    </worldbody>
+  </mujoco>
+  )";
+
+  std::array<char, 1024> error;
+  mjSpec* parent =
+      mj_parseXMLString(parent_xml, nullptr, error.data(), error.size());
+  mjSpec* child =
+      mj_parseXMLString(child_xml, nullptr, error.data(), error.size());
+  ASSERT_THAT(parent, NotNull()) << error.data();
+  ASSERT_THAT(child, NotNull()) << error.data();
+
+  mjsFrame* mount = mjs_findFrame(parent, "mount");
+  mjsBody* body = mjs_findBody(child, "child_body");
+  ASSERT_THAT(mjs_attach(mount->element, body->element, "", ""), NotNull())
+      << mjs_getError(parent);
+
+  mjsDefault* sub_def = mjs_findDefault(parent, "sub");
+  ASSERT_THAT(sub_def, NotNull());
+  EXPECT_EQ(mjs_delete(parent, sub_def->element), 0);
+  EXPECT_THAT(mjs_findDefault(parent, "sub"), IsNull());
+
+  mjModel* model = mj_compile(parent, nullptr);
+  ASSERT_THAT(model, NotNull()) << mjs_getError(parent);
+
+  mj_deleteModel(model);
+  mj_deleteSpec(child);
+  mj_deleteSpec(parent);
+}
+
+TEST_F(XMLWriterTest, BodyToFrameGeomlessBodyPreservesInertial) {
+  static constexpr char xml[] = R"(
+  <mujoco>
+    <compiler inertiafromgeom="true"/>
+    <worldbody>
+      <body name="parent">
+        <joint type="free"/>
+        <inertial pos="0 0 0" mass="1" diaginertia="0.1 0.1 0.1"/>
+        <body name="child">
+          <inertial pos="0 0 0" mass="2" diaginertia="0.1 0.2 0.3"/>
+        </body>
+      </body>
+    </worldbody>
+  </mujoco>
+  )";
+  std::array<char, 1024> error;
+  mjSpec* spec = mj_parseXMLString(xml, nullptr, error.data(), error.size());
+  ASSERT_THAT(spec, NotNull()) << error.data();
+
+  mjsBody* child = mjs_findBody(spec, "child");
+  ASSERT_THAT(child, NotNull());
+  ASSERT_THAT(mjs_bodyToFrame(&child), NotNull()) << mjs_getError(spec);
+
+  mjModel* model = mj_compile(spec, nullptr);
+  ASSERT_THAT(model, NotNull()) << mjs_getError(spec);
+  EXPECT_NEAR(model->body_mass[1], 3.0, MjTol(1e-6, 1e-5));
+
+  mj_deleteModel(model);
+  mj_deleteSpec(spec);
+}
+
 }  // namespace
 }  // namespace mujoco

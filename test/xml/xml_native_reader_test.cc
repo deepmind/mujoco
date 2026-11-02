@@ -5799,5 +5799,82 @@ TEST_F(ActuatorParseTest, ShortcutInheritrangeDefaultOverride) {
   EXPECT_MJTNUM_EQ(m->actuator_ctrlrange[2 * m->actuator_ctrladr[5] + 1], 2);
 }
 
+TEST_F(XMLReaderTest, SubnormalFloatAndOverflowAttributes) {
+  static constexpr char xml_subnormal[] = R"(
+  <mujoco>
+    <worldbody>
+      <geom size="0.1" rgba="1e-40 1e-45 1e-50 1" pos="1e-315 0 0"/>
+    </worldbody>
+  </mujoco>
+  )";
+  std::array<char, 1024> error;
+  MjModelPtr m = LoadModelFromString(xml_subnormal, error.data(), error.size());
+  ASSERT_THAT(m.get(), NotNull()) << error.data();
+  EXPECT_GT(m->geom_rgba[0], 0.0f);
+  EXPECT_GT(m->geom_rgba[1], 0.0f);
+  EXPECT_EQ(m->geom_rgba[2], 0.0f);
+  EXPECT_EQ(m->geom_rgba[3], 1.0f);
+
+  static constexpr char xml_overflow[] = R"(
+  <mujoco>
+    <worldbody>
+      <geom size="0.1" rgba="1e40 1 1 1"/>
+    </worldbody>
+  </mujoco>
+  )";
+  MjModelPtr bad =
+      LoadModelFromString(xml_overflow, error.data(), error.size());
+  EXPECT_THAT(bad.get(), IsNull());
+  EXPECT_THAT(error.data(), HasSubstr("number is too large"));
+}
+
+TEST_F(XMLReaderTest, CustomNumericLargeAndInvalidSizes) {
+  std::string values;
+  for (int i = 0; i < 600; ++i) {
+    if (i > 0) values += ' ';
+    values += std::to_string(i + 1);
+  }
+  std::string xml_large =
+      "<mujoco><custom>"
+      "<numeric name=\"explicit\" size=\"650\" data=\"1 2 3\"/>"
+      "<numeric name=\"inferred\" data=\"" +
+      values +
+      "\"/>"
+      "</custom></mujoco>";
+  std::array<char, 1024> error;
+  MjModelPtr m = LoadModelFromString(xml_large, error.data(), error.size());
+  ASSERT_THAT(m.get(), NotNull()) << error.data();
+  ASSERT_EQ(m->nnumeric, 2);
+  EXPECT_EQ(m->numeric_size[0], 650);
+  EXPECT_MJTNUM_EQ(m->numeric_data[0], 1);
+  EXPECT_MJTNUM_EQ(m->numeric_data[2], 3);
+  EXPECT_MJTNUM_EQ(m->numeric_data[649], 0);
+  EXPECT_EQ(m->numeric_size[1], 600);
+  EXPECT_MJTNUM_EQ(m->numeric_data[m->numeric_adr[1] + 599], 600);
+
+  for (const char* bad_xml : {
+           "<mujoco><custom>"
+           "<numeric name=\"a\" size=\"0\" data=\"1\"/>"
+           "</custom></mujoco>",
+           "<mujoco><custom><numeric name=\"a\" "
+           "size=\"-2\"/></custom></mujoco>",
+           "<mujoco><custom><numeric name=\"a\"/></custom></mujoco>",
+           "<mujoco><custom>"
+           "<numeric name=\"a\" size=\"2\" data=\"1 2 3\"/>"
+           "</custom></mujoco>",
+       }) {
+    MjModelPtr bad = LoadModelFromString(bad_xml, error.data(), error.size());
+    EXPECT_THAT(bad.get(), IsNull()) << bad_xml;
+  }
+
+  MjModelPtr bad_size = LoadModelFromString(
+      "<mujoco><custom><numeric name=\"a\" "
+      "size=\"2000000000\"/></custom></mujoco>",
+      error.data(), error.size());
+  EXPECT_THAT(bad_size.get(), IsNull());
+  EXPECT_THAT(error.data(),
+              testing::HasSubstr("custom field size exceeds maximum"));
+}
+
 }  // namespace
 }  // namespace mujoco

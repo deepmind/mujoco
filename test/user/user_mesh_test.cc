@@ -1742,6 +1742,63 @@ TEST_F(MjCMeshTest, CacheRespectsSmoothNormal) {
             AsVector(smooth->mesh_normal, 3 * smooth->nmeshnormal));
 }
 
+TEST_F(MjCMeshTest, CacheRespectsRefPoseAndOctreeMaxDepth) {
+  constexpr char xml_pose[] = R"(
+  <mujoco>
+    <asset>
+      <mesh name="cube" file="%s" refpos="%s" refquat="%s"/>
+    </asset>
+    <worldbody>
+      <geom type="mesh" mesh="cube"/>
+    </worldbody>
+  </mujoco>
+  )";
+  std::string path = GetTestDataFilePath("user/testdata/cube.stl");
+  MjModelPtr base =
+      LoadModelFromString(absl::StrFormat(xml_pose, path, "0 0 0", "1 0 0 0"));
+  MjModelPtr shifted =
+      LoadModelFromString(absl::StrFormat(xml_pose, path, "1 2 3", "1 0 0 0"));
+  MjModelPtr rotated = LoadModelFromString(
+      absl::StrFormat(xml_pose, path, "0 0 0", "0.92387953 0 0 0.38268343"));
+  ASSERT_THAT(base.get(), NotNull());
+  ASSERT_THAT(shifted.get(), NotNull());
+  ASSERT_THAT(rotated.get(), NotNull());
+  EXPECT_GT(mj_getCacheSize(mj_getCache()), 0);
+  EXPECT_NE(AsVector(base->mesh_pos, 3), AsVector(shifted->mesh_pos, 3));
+  EXPECT_NE(AsVector(base->mesh_vert, 3 * base->nmeshvert),
+            AsVector(rotated->mesh_vert, 3 * rotated->nmeshvert));
+
+  constexpr char xml_sdf[] = R"(
+  <mujoco>
+    <asset>
+      <mesh name="cube" file="%s" maxhullvert="16"/>
+    </asset>
+    <worldbody>
+      <geom type="sdf" mesh="cube"/>
+    </worldbody>
+  </mujoco>
+  )";
+  std::array<char, 1024> error;
+  std::string sdf_str = absl::StrFormat(xml_sdf, path);
+  mjSpec* s1 =
+      mj_parseXMLString(sdf_str.c_str(), 0, error.data(), error.size());
+  mjSpec* s2 =
+      mj_parseXMLString(sdf_str.c_str(), 0, error.data(), error.size());
+  ASSERT_THAT(s1, NotNull()) << error.data();
+  ASSERT_THAT(s2, NotNull()) << error.data();
+  mjs_asMesh(mjs_findElement(s1, mjOBJ_MESH, "cube"))->octree_maxdepth = 4;
+  mjs_asMesh(mjs_findElement(s2, mjOBJ_MESH, "cube"))->octree_maxdepth = 2;
+  mjModel* m1 = mj_compile(s1, nullptr);
+  mjModel* m2 = mj_compile(s2, nullptr);
+  ASSERT_THAT(m1, NotNull()) << mjs_getError(s1);
+  ASSERT_THAT(m2, NotNull()) << mjs_getError(s2);
+  EXPECT_GT(m1->noct, m2->noct);
+  mj_deleteModel(m2);
+  mj_deleteModel(m1);
+  mj_deleteSpec(s2);
+  mj_deleteSpec(s1);
+}
+
 TEST_F(MjCMeshTest, QhullCache) {
   static constexpr char xml1[] = R"(
     <mujoco>
