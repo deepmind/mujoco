@@ -75,7 +75,7 @@ static mat4 CalcClipFromWorld(const mjModel* model, const mjData* data,
   const float frustum_near = zclip[0];
   const float frustum_far = zclip[1];
 
-  bool orthographic = model->vis.global.orthographic;
+  bool orthographic = mjv_camera.orthographic;
   if (mjv_camera.type == mjCAMERA_FIXED) {
     const int cid = mjv_camera.fixedcamid;
     if (cid < 0 || cid >= model->ncam) {

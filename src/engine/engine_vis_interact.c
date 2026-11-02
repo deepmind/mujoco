@@ -80,11 +80,10 @@ void mjv_model2room(mjtNum* roompos, mjtNum* roomquat, const mjtNum* modelpos,
     mju_f2n(translate, scn->translate, 3);
     mju_f2n(rotate, scn->rotate, 4);
 
-    // map from model to room space
-    mju_mulPose(roompos, roomquat, translate, rotate, modelpos, modelquat);
-
-    // scale position
-    mju_scl3(roompos, roompos, scn->scale);
+    // scale position and map from model to room space
+    mjtNum scaledpos[3];
+    mju_scl3(scaledpos, modelpos, scn->scale);
+    mju_mulPose(roompos, roomquat, translate, rotate, scaledpos, modelquat);
   }
 
   // disabled: copy
@@ -377,7 +376,7 @@ void mjv_moveCamera(const mjModel* m, int action, mjtNum reldx, mjtNum reldy, mj
       cam->azimuth -= reldx * 180.0;
     }
     if (action == mjMOUSE_TURN_V) {
-      cam->elevation -= reldy * 180.0;
+      cam->elevation = mju_clip(cam->elevation - reldy * 180.0, -89, 89);
     }
     mjv_cameraFrame(NULL, forward, NULL, NULL, NULL, cam);
 
@@ -442,6 +441,9 @@ void mjv_movePerturb(const mjModel* m, const mjData* d, int action, mjtNum reldx
   const mjtNum zaxis[3] = {0, 0, 1};
 
   int sel = pert->select;
+  if (sel <= 0 || sel >= m->nbody) {
+    return;
+  }
   const mjtNum* xmat = d->xmat+9*sel;
   mjtNum forward[3], vec[3], scl, q1[4], xiquat[4];
 
@@ -718,7 +720,7 @@ void mjv_applyPerturbForce(const mjModel* m, mjData* d, const mjvPerturb* pert) 
   int sel = pert->select;
 
   // exit if nothing to do
-  if (sel < 0 || sel >= m->nbody || !(pert->active | pert->active2)) {
+  if (sel <= 0 || sel >= m->nbody || !(pert->active | pert->active2)) {
     return;
   }
 
@@ -775,12 +777,17 @@ void mjv_applyPerturbForce(const mjModel* m, mjData* d, const mjvPerturb* pert) 
   if (((pert->active | pert->active2) & mjPERT_ROTATE)) {
     // spring perturbation torque, with critical damping
     mjtNum stiffness = m->vis.map.stiffnessrot;
-    mjtNum xiquat[4], difquat[4];
+    mjtNum xiquat[4], difquat[4], rottorque[3];
     mju_mulQuat(xiquat, d->xquat+4*sel, m->body_iquat+4*sel);
     mju_negQuat(xiquat, xiquat);
     mju_mulQuat(difquat, pert->refquat, xiquat);
-    mju_quat2Vel(torque, difquat, 1.0/(stiffness*inertia));
-    mju_addToScl3(torque, body_rotvel, -mju_sqrt(stiffness)*inertia);
+    mju_quat2Vel(rottorque, difquat, 1.0/(stiffness*inertia));
+    mju_addToScl3(rottorque, body_rotvel, -mju_sqrt(stiffness)*inertia);
+    if ((pert->active | pert->active2) & mjPERT_TRANSLATE) {
+      mju_addTo3(torque, rottorque);
+    } else {
+      mju_copy3(torque, rottorque);
+    }
   }
 }
 
@@ -837,7 +844,7 @@ mjvGLCamera mjv_averageCamera(const mjvGLCamera* cam1, const mjvGLCamera* cam2) 
 mjvGLCamera mjv_camera2GLCamera(const mjModel* model, const mjData* data,
                                 const mjvCamera* mjv_camera) {
   mjvGLCamera gl_camera;
-  gl_camera.orthographic = model->vis.global.orthographic;
+  gl_camera.orthographic = mjv_camera->orthographic;
   if (mjv_camera->type == mjCAMERA_FIXED) {
     const int cid = mjv_camera->fixedcamid;
     if (cid < 0 || cid >= model->ncam) {
@@ -929,7 +936,8 @@ int mjv_select(const mjModel* m, const mjData* d, const mjvOption* vopt,
   mju_normalize3(left);
 
   // compute frustum halfwidth so as to match viewport aspect ratio
-  mjtNum halfwidth = 0.5*aspectratio*(cam.frustum_top - cam.frustum_bottom);
+  mjtNum halfwidth = cam.frustum_width ? cam.frustum_width
+                     : 0.5*aspectratio*(cam.frustum_top - cam.frustum_bottom);
 
   // compute up and left offsets from normalized cursor
   mjtNum d_up = cam.frustum_bottom + rely*(cam.frustum_top-cam.frustum_bottom);
@@ -966,6 +974,10 @@ int mjv_select(const mjModel* m, const mjData* d, const mjvOption* vopt,
   if (vopt->flags[mjVIS_FLEXVERT] || vopt->flags[mjVIS_FLEXEDGE] ||
       vopt->flags[mjVIS_FLEXFACE] || vopt->flags[mjVIS_FLEXSKIN]) {
     for (int i=0; i < m->nflex; i++) {
+      if (!vopt->flexgroup[mjMAX(0, mjMIN(mjNGROUP-1, m->flex_group[i]))]) {
+        continue;
+      }
+
       // process one flex
       int vertid;
       mjtNum newdist =
@@ -989,6 +1001,10 @@ int mjv_select(const mjModel* m, const mjData* d, const mjvOption* vopt,
   *skinid = -1;
   if (vopt->flags[mjVIS_SKIN]) {
     for (int i=0; i < m->nskin; i++) {
+      if (!vopt->skingroup[mjMAX(0, mjMIN(mjNGROUP-1, m->skin_group[i]))]) {
+        continue;
+      }
+
       // process one skin
       int vertid;
       mjtNum newdist = mju_raySkin(m->skin_facenum[i], m->skin_vertnum[i],

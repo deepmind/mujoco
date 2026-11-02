@@ -1695,7 +1695,9 @@ void VisualizationGui(mjModel* model, mjvOption* vis_options, mjvCamera* camera,
     ImGui::TreePop();
   }
   if (SectionHeader("Free Camera")) {
-    ImGui_SwitchToggle("Orthographic", &vis.global.orthographic);
+    if (ImGui_SwitchToggle("Orthographic", &camera->orthographic)) {
+      vis.global.orthographic = camera->orthographic;
+    }
     ImGui_Input("FOV", &vis.global.fovy, {.format = "%0.2f"});
     ImGui_InputN("Center", stat.center, 3, {.format = "%0.2f"});
     ImGui_Input("Azimuth", &vis.global.azimuth, {.format = "%0.2f"});

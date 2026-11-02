@@ -538,7 +538,7 @@ void mjv_cameraFrustum(float zver[2], float zhor[2], float zclip[2], const mjMod
   switch (cam->type) {
   case mjCAMERA_FREE:
   case mjCAMERA_TRACKING:
-    orthographic = m->vis.global.orthographic;
+    orthographic = cam->orthographic;
     fovy = m->vis.global.fovy;
     break;
 
@@ -1575,7 +1575,7 @@ static void addSpatialTendonGeoms(const mjModel* m, mjData* d, const mjvOption* 
         setMaterial(m, thisgeom, m->tendon_matid[i], m->tendon_rgba+4*i, vopt->flags);
 
         // vopt->label: only the first segment
-        if (vopt->label == mjLABEL_TENDON && npoints/2) {
+        if (vopt->label == mjLABEL_TENDON && j == 0) {
           makeLabel(m, mjOBJ_TENDON, i, thisgeom->label);
         }
 
@@ -1806,6 +1806,7 @@ static void addFlexBvhGeoms(const mjModel* m, mjData* d, const mjvOption* vopt, 
     }
 
     // control points box
+    mj_markStack(d);
     mjtNum* xpos = mjSTACKALLOC(d, 3*m->flex_nodenum[f], mjtNum);
     int nstart = m->flex_nodeadr[f];
     int* bodyid = m->flex_nodebodyid + m->flex_nodeadr[f];
@@ -1862,6 +1863,7 @@ static void addFlexBvhGeoms(const mjModel* m, mjData* d, const mjvOption* vopt, 
             if (!shell_mode || nb_boundary) {
               mjvGeom* thisgeom = acquireGeom(scn, i, mjCAT_DECOR, mjOBJ_UNKNOWN);
               if (!thisgeom) {
+                mj_freeStack(d);
                 return;
               }
               mjv_connector(thisgeom, mjGEOM_LINE, 3, xpos+offset, xpos+offset1);
@@ -1875,6 +1877,7 @@ static void addFlexBvhGeoms(const mjModel* m, mjData* d, const mjvOption* vopt, 
             if (!shell_mode || nb_boundary) {
               mjvGeom* thisgeom = acquireGeom(scn, i, mjCAT_DECOR, mjOBJ_UNKNOWN);
               if (!thisgeom) {
+                mj_freeStack(d);
                 return;
               }
               mjv_connector(thisgeom, mjGEOM_LINE, 3, xpos+offset, xpos+offset2);
@@ -1888,6 +1891,7 @@ static void addFlexBvhGeoms(const mjModel* m, mjData* d, const mjvOption* vopt, 
             if (!shell_mode || nb_boundary) {
               mjvGeom* thisgeom = acquireGeom(scn, i, mjCAT_DECOR, mjOBJ_UNKNOWN);
               if (!thisgeom) {
+                mj_freeStack(d);
                 return;
               }
               mjv_connector(thisgeom, mjGEOM_LINE, 3, xpos+offset, xpos+offset3);
@@ -1897,6 +1901,7 @@ static void addFlexBvhGeoms(const mjModel* m, mjData* d, const mjvOption* vopt, 
         }
       }
     }
+    mj_freeStack(d);
   }
 }
 
@@ -1908,7 +1913,8 @@ static void addMeshBvhGeoms(const mjModel* m, mjData* d, const mjvOption* vopt, 
   for (int geomid = 0; geomid < m->ngeom; geomid++) {
     int meshid = m->geom_dataid[geomid];
     // skip if not a mesh or if there is an octree
-    if (meshid == -1 || m->geom_type[geomid] == mjGEOM_SDF || m->mesh_octadr[meshid] >= 0) {
+    if (meshid == -1 || m->geom_type[geomid] == mjGEOM_HFIELD ||
+        m->geom_type[geomid] == mjGEOM_SDF || m->mesh_octadr[meshid] >= 0) {
       continue;
     }
 
@@ -3321,7 +3327,7 @@ void mjv_updateCamera(const mjModel* m, const mjData* d, mjvCamera* cam, mjvScen
   case mjCAMERA_FREE:
   case mjCAMERA_TRACKING:
     ipd = m->vis.global.ipd;
-    orthographic = m->vis.global.orthographic;
+    orthographic = cam->orthographic;
     break;
   case mjCAMERA_FIXED: {
     // fixedcamid range already validated by mjv_cameraFrustum

@@ -172,7 +172,7 @@ void mjv_makeScene(const mjModel* m, mjvScene* scn, int maxgeom) {
     int nface = 0;
     for (int f=0; f < nflex; f++) {
       // 1D : 0
-      if (m->flex_dim[f] == 0) {
+      if (m->flex_dim[f] == 1) {
         scn->flexfacenum[f] = 0;
       }
 

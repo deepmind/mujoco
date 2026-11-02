@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <cmath>
+#include <cstddef>
 #include <string>
 
 #include <gmock/gmock.h>
@@ -589,6 +591,529 @@ TEST_F(MjvSceneTest, GeomCastshadow) {
           << "objid=" << geom.objid;
     }
   }
+
+  FreeSceneObjects();
+}
+
+TEST_F(MjvSceneTest, AddFlexBvhGeomsDoesNotLeakStack) {
+  static constexpr char kFlexXml[] = R"(
+  <mujoco>
+    <worldbody>
+      <body name="softbody">
+        <flexcomp name="soft" type="grid" count="2 2 2" spacing=".05 .05 .05"
+                  dim="3" radius=".001" mass=".005" dof="trilinear"/>
+      </body>
+    </worldbody>
+  </mujoco>
+  )";
+  MjModelPtr model = LoadModelFromString(kFlexXml);
+  ASSERT_THAT(model.get(), NotNull());
+  ASSERT_GT(model->nflex, 0);
+  ASSERT_GT(model->flex_interp[0], 0);
+
+  InitSceneObjects(model.get());
+  MjDataPtr data = MakeData(model);
+  mj_forward(model.get(), data.get());
+
+  size_t pstack_before = data->pstack;
+  for (int frame = 0; frame < 5; ++frame) {
+    mjv_updateScene(model.get(), data.get(), &opt_, &pert_, &cam_, mjCAT_ALL,
+                    &scn_);
+    EXPECT_EQ(data->pstack, pstack_before)
+        << "pstack leaked at frame " << frame;
+  }
+
+  FreeSceneObjects();
+}
+
+TEST_F(MjvSceneTest, AddMeshBvhGeomsSkipsHfield) {
+  static constexpr char kXml[] = R"(
+  <mujoco>
+    <asset>
+      <mesh name="m" vertex="0 0 0  1 0 0  0 1 0  0 0 1"/>
+      <hfield name="h1" nrow="2" ncol="2" size="1 1 1 1"/>
+      <hfield name="h2" nrow="2" ncol="2" size="1 1 1 1"/>
+    </asset>
+    <worldbody>
+      <geom type="mesh" mesh="m" pos="0 0 0"/>
+      <geom type="hfield" hfield="h1" pos="10 0 0"/>
+      <geom type="hfield" hfield="h2" pos="20 0 0"/>
+    </worldbody>
+  </mujoco>
+  )";
+  MjModelPtr model = LoadModelFromString(kXml);
+  ASSERT_THAT(model.get(), NotNull());
+  EXPECT_EQ(model->nmesh, 1);
+  EXPECT_EQ(model->nhfield, 2);
+
+  InitSceneObjects(model.get());
+  for (int i = 0; i < mjNVISFLAG; ++i) {
+    opt_.flags[i] = 0;
+  }
+  opt_.flags[mjVIS_MESHBVH] = 1;
+
+  MjDataPtr data = MakeData(model);
+  mj_forward(model.get(), data.get());
+
+  mjv_updateScene(model.get(), data.get(), &opt_, &pert_, &cam_, mjCAT_ALL,
+                  &scn_);
+
+  int mesh_lineboxes = 0;
+  int hfield_lineboxes = 0;
+  for (int g = 0; g < scn_.ngeom; ++g) {
+    if (scn_.geoms[g].type == mjGEOM_LINEBOX &&
+        scn_.geoms[g].category == mjCAT_DECOR) {
+      if (scn_.geoms[g].pos[0] > 5.0f) {
+        hfield_lineboxes++;
+      } else {
+        mesh_lineboxes++;
+      }
+    }
+  }
+  EXPECT_GT(mesh_lineboxes, 0);
+  EXPECT_EQ(hfield_lineboxes, 0);
+
+  FreeSceneObjects();
+}
+
+TEST_F(MjvSceneTest, MakeSceneFlexDim1AllocatesZeroFaces) {
+  static constexpr char kXml[] = R"(
+  <mujoco>
+    <worldbody>
+      <flexcomp name="cable" type="direct" dim="1"
+                point="0 0 0  1 0 0  2 0 0" element="0 1  1 2"/>
+    </worldbody>
+  </mujoco>
+  )";
+
+  MjModelPtr model = LoadModelFromString(kXml);
+  ASSERT_THAT(model.get(), NotNull());
+  ASSERT_EQ(model->nflex, 1);
+  ASSERT_EQ(model->flex_dim[0], 1);
+  ASSERT_EQ(model->flex_elemnum[0], 2);
+
+  InitSceneObjects(model.get());
+  EXPECT_EQ(scn_.flexfacenum[0], 0);
+  EXPECT_EQ(scn_.flexface, nullptr);
+  FreeSceneObjects();
+}
+
+TEST_F(MjvSceneTest, CatenaryTendonLabelsOnlyFirstSegment) {
+  static constexpr char kXml[] = R"(
+  <mujoco>
+    <worldbody>
+      <site name="s0" pos="0 0 1"/>
+      <site name="s1" pos="1 0 1"/>
+    </worldbody>
+    <tendon>
+      <spatial name="rope" limited="true" range="0 2.0">
+        <site site="s0"/>
+        <site site="s1"/>
+      </spatial>
+    </tendon>
+  </mujoco>
+  )";
+
+  MjModelPtr model = LoadModelFromString(kXml);
+  ASSERT_THAT(model.get(), NotNull());
+  MjDataPtr data = MakeData(model);
+  mj_forward(model.get(), data.get());
+
+  InitSceneObjects(model.get());
+  mjv_defaultOption(&opt_);
+  opt_.label = mjLABEL_TENDON;
+  mjv_updateScene(model.get(), data.get(), &opt_, &pert_, &cam_, mjCAT_ALL,
+                  &scn_);
+
+  int tendon_geoms = 0;
+  int labeled_geoms = 0;
+  for (int i = 0; i < scn_.ngeom; ++i) {
+    const mjvGeom& geom = scn_.geoms[i];
+    if (geom.objtype == mjOBJ_TENDON && geom.objid == 0) {
+      if (tendon_geoms == 0) {
+        EXPECT_NE(geom.label[0], '\0');
+      }
+      tendon_geoms++;
+      if (geom.label[0] != '\0') {
+        labeled_geoms++;
+      }
+    }
+  }
+  EXPECT_GT(tendon_geoms, 1);
+  EXPECT_EQ(labeled_geoms, 1);
+  FreeSceneObjects();
+}
+
+TEST_F(MjvSceneTest, Model2RoomDoesNotScaleTranslation) {
+  mjvScene scn;
+  mjv_defaultScene(&scn);
+  scn.enabletransform = 1;
+  scn.translate[0] = 10.0f;
+  scn.translate[1] = -4.0f;
+  scn.translate[2] = 6.0f;
+  scn.rotate[0] = 1.0f;
+  scn.rotate[1] = 0.0f;
+  scn.rotate[2] = 0.0f;
+  scn.rotate[3] = 0.0f;
+  scn.scale = 2.0f;
+
+  mjtNum modelpos[3] = {3.0, 5.0, -2.0};
+  mjtNum modelquat[4] = {1.0, 0.0, 0.0, 0.0};
+  mjtNum roompos[3] = {0.0, 0.0, 0.0};
+  mjtNum roomquat[4] = {1.0, 0.0, 0.0, 0.0};
+  mjtNum roundtrip_pos[3] = {0.0, 0.0, 0.0};
+  mjtNum roundtrip_quat[4] = {1.0, 0.0, 0.0, 0.0};
+
+  mjv_model2room(roompos, roomquat, modelpos, modelquat, &scn);
+  EXPECT_MJTNUM_EQ(roompos[0], static_cast<mjtNum>(10.0 + 2.0 * 3.0));
+  EXPECT_MJTNUM_EQ(roompos[1], static_cast<mjtNum>(-4.0 + 2.0 * 5.0));
+  EXPECT_MJTNUM_EQ(roompos[2], static_cast<mjtNum>(6.0 + 2.0 * (-2.0)));
+
+  mjv_room2model(roundtrip_pos, roundtrip_quat, roompos, roomquat, &scn);
+  EXPECT_MJTNUM_EQ(roundtrip_pos[0], modelpos[0]);
+  EXPECT_MJTNUM_EQ(roundtrip_pos[1], modelpos[1]);
+  EXPECT_MJTNUM_EQ(roundtrip_pos[2], modelpos[2]);
+}
+
+TEST_F(MjvSceneTest, MovePerturbInvalidSelect) {
+  static constexpr char kXml[] = R"(
+  <mujoco>
+    <worldbody>
+      <body pos="0 0 1">
+        <freejoint/>
+        <geom type="sphere" size="0.1"/>
+      </body>
+    </worldbody>
+  </mujoco>
+  )";
+
+  MjModelPtr model = LoadModelFromString(kXml);
+  ASSERT_THAT(model.get(), NotNull());
+  MjDataPtr data = MakeData(model);
+  mj_forward(model.get(), data.get());
+
+  InitSceneObjects(model.get());
+  mjv_updateScene(model.get(), data.get(), &opt_, &pert_, &cam_, mjCAT_ALL,
+                  &scn_);
+
+  for (int bad_sel : {0, -1, static_cast<int>(model->nbody)}) {
+    mjv_defaultPerturb(&pert_);
+    pert_.select = bad_sel;
+
+    mjv_movePerturb(model.get(), data.get(), mjMOUSE_MOVE_V_REL, 0.25, 0.35,
+                    &scn_, &pert_);
+    EXPECT_MJTNUM_EQ(pert_.refpos[0], static_cast<mjtNum>(0.0))
+        << "bad_sel=" << bad_sel;
+    EXPECT_MJTNUM_EQ(pert_.refpos[1], static_cast<mjtNum>(0.0))
+        << "bad_sel=" << bad_sel;
+    EXPECT_MJTNUM_EQ(pert_.refpos[2], static_cast<mjtNum>(0.0))
+        << "bad_sel=" << bad_sel;
+
+    mjv_movePerturb(model.get(), data.get(), mjMOUSE_ROTATE_V, 0.25, 0.35,
+                    &scn_, &pert_);
+    EXPECT_MJTNUM_EQ(pert_.refquat[0], static_cast<mjtNum>(1.0))
+        << "bad_sel=" << bad_sel;
+    EXPECT_MJTNUM_EQ(pert_.refquat[1], static_cast<mjtNum>(0.0))
+        << "bad_sel=" << bad_sel;
+    EXPECT_MJTNUM_EQ(pert_.refquat[2], static_cast<mjtNum>(0.0))
+        << "bad_sel=" << bad_sel;
+    EXPECT_MJTNUM_EQ(pert_.refquat[3], static_cast<mjtNum>(0.0))
+        << "bad_sel=" << bad_sel;
+  }
+
+  FreeSceneObjects();
+}
+
+TEST_F(MjvSceneTest, ApplyPerturbForceCombinesTranslateAndRotateTorque) {
+  static constexpr char kXml[] = R"(
+  <mujoco>
+    <worldbody>
+      <body name="box" pos="0 0 1">
+        <freejoint/>
+        <geom type="box" size="0.2 0.2 0.2" mass="1"/>
+      </body>
+    </worldbody>
+  </mujoco>
+  )";
+
+  MjModelPtr model = LoadModelFromString(kXml);
+  ASSERT_THAT(model.get(), NotNull());
+  MjDataPtr data = MakeData(model);
+  mj_forward(model.get(), data.get());
+
+  InitSceneObjects(model.get());
+  mjv_updateScene(model.get(), data.get(), &opt_, &pert_, &cam_, mjCAT_ALL,
+                  &scn_);
+  mjv_defaultPerturb(&pert_);
+  pert_.select = 1;
+  pert_.localpos[0] = 0.2;
+  pert_.localpos[1] = 0.0;
+  pert_.localpos[2] = 0.0;
+
+  pert_.active = mjPERT_TRANSLATE;
+  pert_.active2 = mjPERT_ROTATE;
+  mjv_initPerturb(model.get(), data.get(), &scn_, &pert_);
+
+  pert_.refselpos[1] += 0.5;
+  const mjtNum axis[3] = {0, 0, 1};
+  mjtNum dquat[4];
+  mju_axisAngle2Quat(dquat, axis, 0.2);
+  mju_mulQuat(pert_.refquat, dquat, pert_.refquat);
+
+  pert_.active = mjPERT_TRANSLATE;
+  pert_.active2 = 0;
+  mju_zero(data->xfrc_applied, 6 * model->nbody);
+  mjv_applyPerturbForce(model.get(), data.get(), &pert_);
+  mjtNum torque_translate[3];
+  mju_copy3(torque_translate, data->xfrc_applied + 6 * pert_.select + 3);
+  EXPECT_GT(mju_norm3(torque_translate), 1e-3);
+
+  pert_.active = 0;
+  pert_.active2 = mjPERT_ROTATE;
+  mju_zero(data->xfrc_applied, 6 * model->nbody);
+  mjv_applyPerturbForce(model.get(), data.get(), &pert_);
+  mjtNum torque_rotate[3];
+  mju_copy3(torque_rotate, data->xfrc_applied + 6 * pert_.select + 3);
+  EXPECT_GT(mju_norm3(torque_rotate), 1e-3);
+
+  pert_.active = mjPERT_TRANSLATE;
+  pert_.active2 = mjPERT_ROTATE;
+  mju_zero(data->xfrc_applied, 6 * model->nbody);
+  mjv_applyPerturbForce(model.get(), data.get(), &pert_);
+  const mjtNum* torque_both = data->xfrc_applied + 6 * pert_.select + 3;
+  for (int j = 0; j < 3; ++j) {
+    EXPECT_MJTNUM_EQ(torque_both[j], torque_translate[j] + torque_rotate[j])
+        << "j=" << j;
+  }
+
+  FreeSceneObjects();
+}
+
+TEST_F(MjvSceneTest, SelectRespectsCalibratedFrustumWidth) {
+  static constexpr char kXml[] = R"(
+  <mujoco>
+    <worldbody>
+      <camera name="cam" pos="0 0 1" zaxis="0 0 1"
+              sensorsize="0.04 0.02" focal="0.01 0.01"/>
+      <body name="target_body" pos="1.9 0 0">
+        <geom name="target_geom" type="sphere" size="0.05"/>
+      </body>
+    </worldbody>
+  </mujoco>
+  )";
+
+  MjModelPtr model = LoadModelFromString(kXml);
+  ASSERT_THAT(model.get(), NotNull());
+  MjDataPtr data = MakeData(model);
+  mj_forward(model.get(), data.get());
+
+  InitSceneObjects(model.get());
+  cam_.type = mjCAMERA_FIXED;
+  cam_.fixedcamid = 0;
+  mjv_updateScene(model.get(), data.get(), &opt_, &pert_, &cam_, mjCAT_ALL,
+                  &scn_);
+  ASSERT_GT(scn_.camera[0].frustum_width, 0.0f);
+
+  mjtNum selpnt[3] = {0, 0, 0};
+  int geomid = -1;
+  int flexid = -1;
+  int skinid = -1;
+  int bodyid = mjv_select(model.get(), data.get(), &opt_,
+                          /*aspectratio=*/1.0, /*relx=*/0.975, /*rely=*/0.5,
+                          &scn_, selpnt, &geomid, &flexid, &skinid);
+  EXPECT_EQ(bodyid, 1);
+  EXPECT_EQ(geomid, 0);
+
+  FreeSceneObjects();
+}
+
+TEST_F(MjvSceneTest, MoveCameraTurnVClampedElevationPreservesHeadpos) {
+  static constexpr char kXml[] = R"(
+  <mujoco>
+    <worldbody>
+      <geom type="sphere" size="0.1"/>
+    </worldbody>
+  </mujoco>
+  )";
+
+  MjModelPtr model = LoadModelFromString(kXml);
+  ASSERT_THAT(model.get(), NotNull());
+
+  mjvCamera cam;
+  mjv_defaultCamera(&cam);
+  cam.type = mjCAMERA_FREE;
+  cam.azimuth = 0.0;
+  cam.elevation = 85.0;
+  cam.distance = 2.0;
+
+  mjtNum headpos_before[3] = {0, 0, 0};
+  mjtNum forward_before[3] = {0, 0, 0};
+  mjv_cameraFrame(headpos_before, forward_before, nullptr, nullptr, nullptr,
+                  &cam);
+
+  mjv_moveCamera(model.get(), mjMOUSE_TURN_V, 0.0, -0.1, &cam);
+  EXPECT_MJTNUM_EQ(cam.elevation, static_cast<mjtNum>(89.0));
+
+  mjtNum headpos_after[3] = {0, 0, 0};
+  mjtNum forward_after[3] = {0, 0, 0};
+  mjv_cameraFrame(headpos_after, forward_after, nullptr, nullptr, nullptr,
+                  &cam);
+  for (int j = 0; j < 3; ++j) {
+    EXPECT_NEAR(headpos_after[j], headpos_before[j], MjTol(1e-12, 1e-5));
+  }
+}
+
+TEST_F(MjvSceneTest, CameraOrthographicGovernedByCameraNotModel) {
+  static constexpr char kXml[] = R"(
+  <mujoco>
+    <visual>
+      <global orthographic="true" fovy="2"/>
+    </visual>
+    <worldbody>
+      <geom type="sphere" size="0.1"/>
+    </worldbody>
+  </mujoco>
+  )";
+
+  MjModelPtr model = LoadModelFromString(kXml);
+  ASSERT_THAT(model.get(), NotNull());
+  MjDataPtr data = MakeData(model);
+  mj_forward(model.get(), data.get());
+
+  // 1) mjv_defaultFreeCamera initializes cam.orthographic from
+  // model->vis.global.orthographic.
+  mjvCamera cam_default;
+  mjv_defaultFreeCamera(model.get(), &cam_default);
+  EXPECT_EQ(cam_default.orthographic, 1);
+
+  const float expected_ortho_half_height = model->vis.global.fovy / 2;
+  const float znear = model->vis.map.znear * model->stat.extent;
+  const float expected_persp_half_height =
+      znear * mju_tan(model->vis.global.fovy * mjPI / 360.0);
+
+  InitSceneObjects(model.get());
+
+  // Helper lambda to test frustum, gl_camera, and scene camera
+  auto verify_camera = [&](const mjvCamera& cam, bool expect_ortho) {
+    float zver[2] = {0, 0};
+    mjv_cameraFrustum(zver, nullptr, nullptr, model.get(), &cam);
+    if (expect_ortho) {
+      EXPECT_FLOAT_EQ(zver[0], expected_ortho_half_height);
+    } else {
+      EXPECT_NEAR(zver[0], expected_persp_half_height, 1e-6);
+    }
+
+    mjvGLCamera gl_cam = mjv_camera2GLCamera(model.get(), data.get(), &cam);
+    EXPECT_EQ(gl_cam.orthographic, expect_ortho ? 1 : 0);
+
+    mjvCamera cam_copy = cam;
+    mjv_updateCamera(model.get(), data.get(), &cam_copy, &scn_);
+    EXPECT_EQ(scn_.camera[0].orthographic, expect_ortho ? 1 : 0);
+  };
+
+  // Case A: model->vis.global.orthographic = 0, cam.orthographic = 1 (behaves
+  // orthographic)
+  model->vis.global.orthographic = 0;
+  mjvCamera cam_ortho = cam_default;
+  cam_ortho.orthographic = 1;
+  cam_ortho.azimuth = 0.0;
+  cam_ortho.elevation = 0.0;
+  cam_ortho.distance = 2.0;
+  verify_camera(cam_ortho, /*expect_ortho=*/true);
+
+  // Case B: model->vis.global.orthographic = 1, cam.orthographic = 0 (behaves
+  // perspective)
+  model->vis.global.orthographic = 1;
+  mjvCamera cam_persp = cam_default;
+  cam_persp.orthographic = 0;
+  cam_persp.azimuth = 0.0;
+  cam_persp.elevation = 0.0;
+  cam_persp.distance = 2.0;
+  verify_camera(cam_persp, /*expect_ortho=*/false);
+
+  // Verify mjv_moveCamera: cam.orthographic controls moveCamera, independent of
+  // model
+  mjvCamera cam_ortho_m0 = cam_ortho;
+  model->vis.global.orthographic = 0;
+  mjv_moveCamera(model.get(), mjMOUSE_MOVE_H, 0.1, 0.0, &cam_ortho_m0);
+
+  mjvCamera cam_ortho_m1 = cam_ortho;
+  model->vis.global.orthographic = 1;
+  mjv_moveCamera(model.get(), mjMOUSE_MOVE_H, 0.1, 0.0, &cam_ortho_m1);
+
+  // Both orthographic moves must produce identical results regardless of model
+  // flag
+  for (int j = 0; j < 3; ++j) {
+    EXPECT_NEAR(cam_ortho_m0.lookat[j], cam_ortho_m1.lookat[j],
+                MjTol(1e-12, 1e-5));
+  }
+
+  mjvCamera cam_persp_m0 = cam_persp;
+  model->vis.global.orthographic = 0;
+  mjv_moveCamera(model.get(), mjMOUSE_MOVE_H, 0.1, 0.0, &cam_persp_m0);
+
+  mjvCamera cam_persp_m1 = cam_persp;
+  model->vis.global.orthographic = 1;
+  mjv_moveCamera(model.get(), mjMOUSE_MOVE_H, 0.1, 0.0, &cam_persp_m1);
+
+  // Both perspective moves must produce identical results regardless of model
+  // flag
+  for (int j = 0; j < 3; ++j) {
+    EXPECT_NEAR(cam_persp_m0.lookat[j], cam_persp_m1.lookat[j],
+                MjTol(1e-12, 1e-5));
+  }
+
+  // Orthographic and perspective move amounts must differ
+  EXPECT_GT(mju_dist3(cam_ortho_m0.lookat, cam_persp_m0.lookat), 1e-3);
+
+  FreeSceneObjects();
+}
+
+TEST_F(MjvSceneTest, MjvSelectRespectsFlexAndSkinGroups) {
+  static constexpr char kXml[] = R"(
+  <mujoco>
+    <worldbody>
+      <body name="b0" pos="0 0 0"/>
+    </worldbody>
+    <deformable>
+      <flex name="f0" dim="2" group="3" body="b0 b0 b0"
+            vertex="-1 -1 0  1 -1 0  0 1 0" element="0 1 2"/>
+      <skin name="s0" group="3" vertex="-1 -1 0.5  1 -1 0.5  0 1 0.5" face="0 1 2">
+        <bone body="b0" bindpos="0 0 0" bindquat="1 0 0 0" vertid="0 1 2" vertweight="1 1 1"/>
+      </skin>
+    </deformable>
+  </mujoco>
+  )";
+
+  char error[1024] = "";
+  MjModelPtr model = LoadModelFromString(kXml, error, sizeof(error));
+  ASSERT_THAT(model.get(), NotNull()) << error;
+  MjDataPtr data = MakeData(model);
+  mj_forward(model.get(), data.get());
+
+  InitSceneObjects(model.get());
+  mjv_defaultOption(&opt_);
+  ASSERT_EQ(opt_.flexgroup[3], 0);
+  ASSERT_EQ(opt_.skingroup[3], 0);
+
+  cam_.type = mjCAMERA_FREE;
+  cam_.lookat[0] = 0.0;
+  cam_.lookat[1] = 0.0;
+  cam_.lookat[2] = 0.0;
+  cam_.distance = 2.0;
+  cam_.azimuth = 90.0;
+  cam_.elevation = -90.0;
+
+  mjv_updateScene(model.get(), data.get(), &opt_, &pert_, &cam_, mjCAT_ALL,
+                  &scn_);
+
+  mjtNum selpnt[3] = {0, 0, 0};
+  int geomid = -1, flexid = -1, skinid = -1;
+  int selbody = mjv_select(model.get(), data.get(), &opt_, 1.0, 0.5, 0.5, &scn_,
+                           selpnt, &geomid, &flexid, &skinid);
+  EXPECT_EQ(selbody, -1);
+  EXPECT_EQ(flexid, -1);
+  EXPECT_EQ(skinid, -1);
 
   FreeSceneObjects();
 }

@@ -1025,7 +1025,7 @@ void MakeVisualizationSection(mj::Simulate* sim, const mjModel* m) {
     {mjITEM_EDITFLOAT, "Diffuse",         2, &(vis->headlight.diffuse),    "3"},
     {mjITEM_EDITFLOAT, "Specular",        2, &(vis->headlight.specular),   "3"},
     {mjITEM_SEPARATOR, "Free Camera", 1},
-    {mjITEM_RADIO,     "Orthographic",    2, &(vis->global.orthographic),  "No\nYes"},
+    {mjITEM_RADIO,     "Orthographic",    2, &sim->cam.orthographic,       "No\nYes"},
     {mjITEM_EDITFLOAT, "Field of view",   2, &(vis->global.fovy),          "1"},
     {mjITEM_EDITNUM,   "Center",          2, &(stat->center),              "3"},
     {mjITEM_EDITFLOAT, "Azimuth",         2, &(vis->global.azimuth),       "1"},
@@ -1810,7 +1810,13 @@ void UiEvent(mjuiState* state) {
 
     // visualization section
     else if (it && it->sectionid == SECT_VISUALIZATION) {
-      if (!mju::strcmp_arr(it->name, "Align")) { sim->pending_.align = true; }
+      if (!mju::strcmp_arr(it->name, "Align")) {
+        sim->pending_.align = true;
+      } else if (!mju::strcmp_arr(it->name, "Orthographic")) {
+        mjVisual* vis = sim->is_passive_ ? (sim->m_passive_ ? &sim->m_passive_->vis : nullptr)
+                                         : (sim->m_ ? &sim->m_->vis : nullptr);
+        if (vis) { vis->global.orthographic = sim->cam.orthographic; }
+      }
     }
 
     // group section
@@ -2249,7 +2255,8 @@ void Simulate::Sync(bool state_only) {
 
   if (pending_.align) {
     AlignAndScaleView(this, m_);
-    pending_.align = false;
+    pending_.align                   = false;
+    pending_.ui_update_visualization = true;
   }
 
   if (pending_.copy_key) {
@@ -2784,6 +2791,12 @@ void Simulate::Render() {
          opt_prev_.frame != opt.frame ||
          IsDifferent(opt_prev_.flags, opt.flags))) {
       pending_.ui_update_rendering = true;
+    }
+
+    if (this->ui0_enable &&
+        this->ui0.sect[SECT_VISUALIZATION].state &&
+        cam_prev_.orthographic != cam.orthographic) {
+      mjui0_update_section(this, SECT_VISUALIZATION);
     }
 
     if (this->ui0_enable &&
