@@ -184,7 +184,14 @@ PYBIND11_MODULE(_functions, pymodule, pybind11::mod_gil_not_used()) {
 
   // Initialization
   Def<traits::mj_defaultLROpt>(pymodule);
-  Def<traits::mj_defaultSolRefImp>(pymodule);
+  Def<traits::mj_defaultSolRefImp>(
+      pymodule,
+      [](std::optional<Eigen::Ref<Eigen::Vector<mjtNum, mjNREF>>> solref,
+         std::optional<Eigen::Ref<Eigen::Vector<mjtNum, mjNIMP>>> solimp) {
+        return InterceptMjErrors(::mj_defaultSolRefImp)(
+            solref.has_value() ? solref->data() : nullptr,
+            solimp.has_value() ? solimp->data() : nullptr);
+      });
   Def<traits::mj_defaultOption>(pymodule);
   Def<traits::mj_defaultVisual>(pymodule);
   // Skipped: mj_copyModel (have MjModel.__copy__, memory managed by MjModel)
@@ -917,7 +924,49 @@ PYBIND11_MODULE(_functions, pymodule, pybind11::mod_gil_not_used()) {
       py::arg("vertid") = std::nullopt, py::arg("normal") = std::nullopt,
       py::doc(traits::mj_rayFlex::doc),
       py::call_guard<py::gil_scoped_release>());
-  Def<traits::mju_raySkin>(pymodule);
+  Def<traits::mju_raySkin>(
+      pymodule,
+      [](int nface, int nvert,
+         Eigen::Ref<const Eigen::Array<int, Eigen::Dynamic, Eigen::Dynamic,
+                                       Eigen::RowMajor>>
+             face,
+         Eigen::Ref<const Eigen::Array<float, Eigen::Dynamic, Eigen::Dynamic,
+                                       Eigen::RowMajor>>
+             vert,
+         const mjtNum(*pnt)[3], const mjtNum(*vec)[3],
+         std::optional<Eigen::Ref<Eigen::Vector<int, 1>>> vertid) {
+        if (nface < 0 || nvert < 0) {
+          throw py::value_error("nface and nvert must be non-negative");
+        }
+        if (face.size() != 3 * static_cast<Eigen::Index>(nface)) {
+          throw py::type_error("face should be of size 3*nface");
+        }
+        if (vert.size() != 3 * static_cast<Eigen::Index>(nvert)) {
+          throw py::type_error("vert should be of size 3*nvert");
+        }
+        Eigen::Array<int, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>
+            face_copy;
+        const int* face_ptr = face.data();
+        if (face.outerStride() != face.cols()) {
+          face_copy = face;
+          face_ptr = face_copy.data();
+        }
+        Eigen::Array<float, Eigen::Dynamic, Eigen::Dynamic, Eigen::RowMajor>
+            vert_copy;
+        const float* vert_ptr = vert.data();
+        if (vert.outerStride() != vert.cols()) {
+          vert_copy = vert;
+          vert_ptr = vert_copy.data();
+        }
+        for (Eigen::Index i = 0; i < face.size(); ++i) {
+          if (face_ptr[i] < 0 || face_ptr[i] >= nvert) {
+            throw py::value_error("face vertex index out of bounds");
+          }
+        }
+        return InterceptMjErrors(::mju_raySkin)(
+            nface, nvert, face_ptr, vert_ptr, &(*pnt)[0], &(*vec)[0],
+            vertid.has_value() ? vertid->data() : nullptr);
+      });
 
   // Interaction
   Def<traits::mjv_defaultCamera>(pymodule);

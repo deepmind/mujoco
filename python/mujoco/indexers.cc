@@ -151,6 +151,11 @@ py::array_t<T> MakeArray(T* base_ptr, int index, std::vector<int>&& shape,
         shape[0] = 0;
       }
     }
+  } else if (MjSize == &raw::MjModel::nJten) {
+    int adr = m.ten_J_rowadr[index];
+    offset = adr < 0 ? 0 : adr;
+    int num = adr < 0 ? 0 : m.ten_J_rownnz[index];
+    shape.push_back(num);
   } else {
     // Do not return a NumPy array with shape () since these aren't very nice
     // to work with. Instead, always return singleton arrays with shape (1,).

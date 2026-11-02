@@ -316,6 +316,18 @@ MjModelWrapper::~MjWrapper() {
   }
 }
 
+namespace {
+mjVFS* GetOpenVfs(MjVfs* vfs) {
+  if (vfs) {
+    if (!vfs->is_open()) {
+      throw std::runtime_error("VFS is closed");
+    }
+    return vfs->get();
+  }
+  return nullptr;
+}
+}  // namespace
+
 // Helper function for both LoadXMLFile and LoadBinaryFile.
 // Creates a temporary MJB from the assets dictionary if one is supplied.
 template <typename LoadFunc>
@@ -370,6 +382,7 @@ MjModelWrapper MjModelWrapper::LoadXMLFile(
   if (assets.has_value() && vfs != nullptr) {
     throw py::value_error("Cannot specify both 'assets' and 'vfs'.");
   }
+  mjVFS* vfs_ptr = GetOpenVfs(vfs);
 
   const auto converted_assets = ConvertAssetsDict(assets);
   raw::MjModel* model;
@@ -377,7 +390,7 @@ MjModelWrapper MjModelWrapper::LoadXMLFile(
     py::gil_scoped_release no_gil;
     char error[1024];
     model = LoadModelFileImpl(
-        filename, converted_assets, vfs ? vfs->get() : nullptr,
+        filename, converted_assets, vfs_ptr,
         [&error](const char* filename, const mjVFS* vfs) {
           return InterceptMjErrors(mj_loadXML)(
               filename, vfs, error, sizeof(error));
@@ -396,13 +409,14 @@ MjModelWrapper MjModelWrapper::LoadBinaryFile(
   if (assets.has_value() && vfs != nullptr) {
     throw py::value_error("Cannot specify both 'assets' and 'vfs'.");
   }
+  mjVFS* vfs_ptr = GetOpenVfs(vfs);
 
   const auto converted_assets = ConvertAssetsDict(assets);
   raw::MjModel* model;
   {
     py::gil_scoped_release no_gil;
     model = LoadModelFileImpl(filename, converted_assets,
-                              vfs ? vfs->get() : nullptr,
+                              vfs_ptr,
                               InterceptMjErrors(mj_loadModel));
     if (!model) {
       throw py::value_error("mj_loadModel: failed to load from mjb");
@@ -418,6 +432,7 @@ MjModelWrapper MjModelWrapper::LoadXML(
   if (assets.has_value() && vfs != nullptr) {
     throw py::value_error("Cannot specify both 'assets' and 'vfs'.");
   }
+  mjVFS* vfs_ptr = GetOpenVfs(vfs);
 
   auto converted_assets = ConvertAssetsDict(assets);
   raw::MjModel* model;
@@ -427,16 +442,16 @@ MjModelWrapper MjModelWrapper::LoadXML(
     bool file_added = false;
     Cleanup file_cleanup = [&]() {
       if (file_added) {
-        mj_deleteFileVFS(vfs->get(), model_identifier.c_str());
+        mj_deleteFileVFS(vfs_ptr, model_identifier.c_str());
       }
     };
-    if (vfs != nullptr) {
-      while (mj_containsBufferVFS(vfs->get(), model_identifier.c_str())) {
+    if (vfs_ptr != nullptr) {
+      while (mj_containsBufferVFS(vfs_ptr, model_identifier.c_str())) {
         model_identifier =
             model_identifier.substr(0, model_identifier.size() - 4) + "_.xml";
       }
 
-      mj_addBufferVFS(vfs->get(), model_identifier.c_str(), xml.c_str(),
+      mj_addBufferVFS(vfs_ptr, model_identifier.c_str(), xml.c_str(),
                       xml.length());
       file_added = true;
     } else {
@@ -450,7 +465,7 @@ MjModelWrapper MjModelWrapper::LoadXML(
     }
     char error[1024];
     model = LoadModelFileImpl(model_identifier, converted_assets,
-                              vfs ? vfs->get() : nullptr,
+                              vfs_ptr,
                               [&error](const char* filename, const mjVFS* vfs) {
                                 return InterceptMjErrors(mj_loadXML)(
                                     filename, vfs, error, sizeof(error));
@@ -464,32 +479,6 @@ MjModelWrapper MjModelWrapper::LoadXML(
 
 MjModelWrapper MjModelWrapper::WrapRawModel(raw::MjModel* m) {
   return MjModelWrapper(m);
-}
-
-py::tuple RecompileSpec(raw::MjSpec* spec, const MjModelWrapper& old_m,
-                        const MjDataWrapper& old_d) {
-  raw::MjModel* m = static_cast<raw::MjModel*>(mju_malloc(sizeof(mjModel)));
-  m->buffer = nullptr;
-  raw::MjData* d = mj_copyData(nullptr, old_m.get(), old_d.get());
-
-  bool compile_failed = false;
-
-  {
-    // Release GIL before calling mj_recompile which may spawn threads
-    py::gil_scoped_release no_gil;
-    if (mj_recompile(spec, nullptr, m, d)) {
-      compile_failed = true;
-    }
-  }
-
-  if (compile_failed) {
-    throw py::value_error(mjs_getError(spec));
-  }
-
-  py::object m_pyobj = py::cast((MjModelWrapper(m)));
-  py::object d_pyobj =
-      py::cast((MjDataWrapper(py::cast<MjModelWrapper*>(m_pyobj), d)));
-  return py::make_tuple(m_pyobj, d_pyobj);
 }
 
 namespace {
@@ -612,7 +601,7 @@ MjContactList::MjStructList(raw::MjContact* ptr, int nconmax, int* ncon,
 
 // Slicing
 MjContactList::MjStructList(MjContactList& other, py::slice slice)
-    : StructListBase(other, slice), ncon_(other.ncon_) {}
+    : StructListBase(other, slice), ncon_(nullptr) {}
 
 // ==================== MJDATA =================================================
 static void MjDataCapsuleDestructor(PyObject* pyobj) {
@@ -1269,6 +1258,9 @@ MjvSceneWrapper::MjWrapper()
           }(),
           &MjvSceneCapsuleDestructor),
       nskinvert(0),
+      nflexface(0),
+      nflexedge(0),
+      nflexvert(0),
       XN(geoms, 0),
       XN(geomorder, 0),
       XN(flexedgeadr, 0),
@@ -1376,7 +1368,7 @@ MjvSceneWrapper::MjWrapper(const MjModelWrapper& model, int maxgeom)
 
 template <typename T>
 static T* MallocAndCopy(const T* src, int count) {
-  if (src) {
+  if (src && count > 0) {
     T* out = static_cast<T*>(mju_malloc(count * sizeof(T)));
     std::memcpy(out, src, count * sizeof(T));
     return out;
@@ -1388,13 +1380,17 @@ static T* MallocAndCopy(const T* src, int count) {
 MjvSceneWrapper::MjWrapper(const MjvSceneWrapper& other) : MjvSceneWrapper() {
   mjv_freeScene(ptr_);
   *ptr_ = *other.ptr_;
+  nskinvert = other.nskinvert;
+  nflexface = other.nflexface;
+  nflexedge = other.nflexedge;
+  nflexvert = other.nflexvert;
 
 #define XN(var, n)                               \
   ptr_->var = MallocAndCopy(other.ptr_->var, n); \
   var = InitPyArray(std::array{n}, ptr_->var, owner_);
 
-  XN(geoms, ptr_->ngeom);
-  XN(geomorder, ptr_->ngeom);
+  XN(geoms, ptr_->maxgeom);
+  XN(geomorder, ptr_->maxgeom);
   XN(flexedgeadr, ptr_->nflex);
   XN(flexedgenum, ptr_->nflex);
   XN(flexvertadr, ptr_->nflex);

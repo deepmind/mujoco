@@ -149,7 +149,9 @@ template <typename T>
 class StructListBase {
  public:
   StructListBase(T* ptr, int num, pybind11::handle owner, bool lazy = false)
-      : ptr_(ptr), num_(num), owner_(owner) {
+      : ptr_(ptr),
+        num_(num),
+        owner_(pybind11::reinterpret_borrow<pybind11::object>(owner)) {
     if (!lazy) {
       PopulateUpTo(size());
     }
@@ -159,9 +161,10 @@ class StructListBase {
   StructListBase(StructListBase&& other)
       : ptr_(other.ptr_),
         num_(other.num_),
+        stride_(other.stride_),
         owner_(std::move(other.owner_)),
         wrappers_(std::move(other.wrappers_)) {}
-        // populate_mutex_ is default-constructed (std::mutex is not movable)
+  // populate_mutex_ is default-constructed (std::mutex is not movable)
 
   virtual ~StructListBase() = default;
 
@@ -177,37 +180,52 @@ class StructListBase {
     return num_;
   }
 
+  pybind11::ssize_t stride() const { return stride_; }
   T* get() const { return ptr_; }
   pybind11::handle owner() const { return owner_; }
 
  protected:
   void PopulateUpTo(int n) {
+    if (n < 0) {
+      return;
+    }
     MutexLockIfGilDisabled lock(populate_mutex_);
     wrappers_.reserve(n + 1);
-    while (wrappers_.size() <= n) {
-      wrappers_.push_back(
-          std::make_shared<MjWrapper<T>>(&ptr_[wrappers_.size()], owner_));
+    while (static_cast<int>(wrappers_.size()) <= n) {
+      wrappers_.push_back(std::make_shared<MjWrapper<T>>(
+          ptr_ + static_cast<pybind11::ssize_t>(wrappers_.size()) * stride_,
+          owner_));
     }
   }
 
   // Slicing
   StructListBase(StructListBase& other, pybind11::slice slice)
       : owner_(other.owner_) {
-    pybind11::size_t start, stop, step, slicelength;
+    pybind11::ssize_t start, stop, step, slicelength;
     if (!slice.compute(other.size(), &start, &stop, &step, &slicelength)) {
-      throw pybind11::index_error();
+      throw pybind11::error_already_set();
     }
-    other.PopulateUpTo(stop);
-    ptr_ = &other.ptr_[start];
-    for (int i = start; i < stop; i += step) {
-      wrappers_.push_back(other.wrappers_[i]);
+    num_ = slicelength;
+    stride_ = other.stride_ * step;
+    if (slicelength > 0) {
+      ptr_ = other.ptr_ + start * other.stride_;
+      pybind11::ssize_t max_idx =
+          step > 0 ? start + (slicelength - 1) * step : start;
+      other.PopulateUpTo(static_cast<int>(max_idx));
+      wrappers_.reserve(slicelength);
+      for (pybind11::ssize_t i = 0, idx = start; i < slicelength;
+           ++i, idx += step) {
+        wrappers_.push_back(other.wrappers_[idx]);
+      }
+    } else {
+      ptr_ = nullptr;
     }
-    num_ = wrappers_.size();
   }
 
   T* ptr_;
   int num_;
-  pybind11::handle owner_;
+  pybind11::ssize_t stride_ = 1;
+  pybind11::object owner_;
 
   // Using shared_ptr here so that we get identical Python objects when slicing.
   std::vector<std::shared_ptr<MjWrapper<T>>> wrappers_;

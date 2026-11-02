@@ -442,6 +442,7 @@ PYBIND11_MODULE(_callbacks, pymodule, pybind11::mod_gil_not_used()) {
         MutexLockIfGilDisabled lock(GetCallbackMutex());
         old = py_mju_user_malloc;
         py_mju_user_malloc = nullptr;
+        ::mju_user_malloc = nullptr;
       }
     } else {
       auto* cfuncptr = GetCFuncPtr<decltype(::mju_user_malloc)>(h);
@@ -465,6 +466,7 @@ PYBIND11_MODULE(_callbacks, pymodule, pybind11::mod_gil_not_used()) {
         MutexLockIfGilDisabled lock(GetCallbackMutex());
         old = py_mju_user_free;
         py_mju_user_free = nullptr;
+        ::mju_user_free = nullptr;
       }
     } else {
       auto* cfuncptr = GetCFuncPtr<decltype(::mju_user_free)>(h);

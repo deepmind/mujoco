@@ -199,9 +199,17 @@ def _array_binding_code(
       return MjTypeVec<char>(self.{fullvarname}, {field.extents[0]});
     }},
     []({rawclassname}& self, py::object rhs) {{
+      char buf[{field.extents[0]}] = {{}};
       int i = 0;
       for (auto val : rhs) {{
-        self.{fullvarname}[i++] = py::cast<char>(val);
+        if (i >= {field.extents[0]}) {{
+          throw py::value_error(
+              "{varname} may have at most {field.extents[0]} characters");
+        }}
+        buf[i++] = py::cast<char>(val);
+      }}
+      for (int j = 0; j < {field.extents[0]}; ++j) {{
+        self.{fullvarname}[j] = buf[j];
       }}
     }}, py::return_value_policy::move);"""
   # all other array types

@@ -26,9 +26,9 @@
   X( int,     actuator_, actadr,       nactuator, 1                    ) \
   X( int,     actuator_, actnum,       nactuator, 1                    ) \
   X( int,     actuator_, group,        nactuator, 1                    ) \
-  X( mjtByte, actuator_, ctrllimited,  nu,        1                    ) \
-  X( mjtByte, actuator_, forcelimited, nactuator, 1                    ) \
-  X( mjtByte, actuator_, actlimited,   nactuator, 1                    ) \
+  X( mjtBool, actuator_, ctrllimited,  nu,        1                    ) \
+  X( mjtBool, actuator_, forcelimited, nactuator, 1                    ) \
+  X( mjtBool, actuator_, actlimited,   nactuator, 1                    ) \
   X( mjtNum,  actuator_, dynprm,       nactuator, mjNDYN               ) \
   X( mjtNum,  actuator_, gainprm,      nactuator, mjNGAIN              ) \
   X( mjtNum,  actuator_, biasprm,      nactuator, mjNBIAS              ) \
@@ -82,7 +82,7 @@
   X( int,     eq_, type,    neq, 1         ) \
   X( int,     eq_, obj1id,  neq, 1         ) \
   X( int,     eq_, obj2id,  neq, 1         ) \
-  X( mjtByte, eq_, active0, neq, 1         ) \
+  X( mjtBool, eq_, active0, neq, 1         ) \
   X( mjtNum,  eq_, solref,  neq, mjNREF    ) \
   X( mjtNum,  eq_, solimp,  neq, mjNIMP    ) \
   X( mjtNum,  eq_, data,    neq, mjNEQDATA )
@@ -101,7 +101,7 @@
   X( int,     geom_, group,       ngeom, 1                ) \
   X( int,     geom_, priority,    ngeom, 1                ) \
   X( mjtByte, geom_, sameframe,   ngeom, 1                ) \
-  X( mjtByte, geom_, castshadow,  ngeom, 1                ) \
+  X( mjtBool, geom_, castshadow,  ngeom, 1                ) \
   X( mjtNum,  geom_, solmix,      ngeom, 1                ) \
   X( mjtNum,  geom_, solref,      ngeom, mjNREF           ) \
   X( mjtNum,  geom_, solimp,      ngeom, mjNIMP           ) \
@@ -131,7 +131,7 @@
   X( int,     jnt_, dofadr,       njnt, 1               ) \
   X( int,     jnt_, group,        njnt, 1               ) \
   X( int,     jnt_, plasticadr,   njnt, 1               ) \
-  X( mjtByte, jnt_, limited,      njnt, 1               ) \
+  X( mjtBool, jnt_, limited,      njnt, 1               ) \
   X( mjtNum,  jnt_, pos,          njnt, 3               ) \
   X( mjtNum,  jnt_, axis,         njnt, 3               ) \
   X( mjtNum,  jnt_, stiffness,    njnt, 1               ) \
@@ -159,8 +159,8 @@
   X( int,     light_, bodyid,        nlight,  1 ) \
   X( int,     light_, targetbodyid,  nlight,  1 ) \
   X( int,     light_, type,          nlight,  1 ) \
-  X( mjtByte, light_, castshadow,    nlight,  1 ) \
-  X( mjtByte, light_, active,        nlight,  1 ) \
+  X( mjtBool, light_, castshadow,    nlight,  1 ) \
+  X( mjtBool, light_, active,        nlight,  1 ) \
   X( mjtNum,  light_, pos,           nlight,  3 ) \
   X( mjtNum,  light_, dir,           nlight,  3 ) \
   X( mjtNum,  light_, poscom0,       nlight,  3 ) \
@@ -175,7 +175,7 @@
 
 #define MJMODEL_MATERIAL                   \
   X( int,     mat_, texid,       nmat, mjNTEXROLE ) \
-  X( mjtByte, mat_, texuniform,  nmat, 1 ) \
+  X( mjtBool, mat_, texuniform,  nmat, 1 ) \
   X( float,   mat_, texrepeat,   nmat, 2 ) \
   X( float,   mat_, emission,    nmat, 1 ) \
   X( float,   mat_, specular,    nmat, 1 ) \
@@ -254,7 +254,7 @@
   X( int,     tendon, _matid,        ntendon, 1                  ) \
   X( int,     tendon, _group,        ntendon, 1                  ) \
   X( int,     tendon_, plasticadr,   ntendon, 1                  ) \
-  X( mjtByte, tendon, _limited,      ntendon, 1                  ) \
+  X( mjtBool, tendon, _limited,      ntendon, 1                  ) \
   X( mjtNum,  tendon, _width,        ntendon, 1                  ) \
   X( mjtNum,  tendon, _solref_lim,   ntendon, mjNREF             ) \
   X( mjtNum,  tendon, _solimp_lim,   ntendon, mjNIMP             ) \
@@ -275,7 +275,7 @@
   X( float,   tendon, _rgba,         ntendon, 4                  ) \
   X( int,     ten_,   J_rownnz,      ntendon, 1                  ) \
   X( int,     ten_,   J_rowadr,      ntendon, 1                  ) \
-  X( int,     ten_,   J_colind,      ntendon, MJ_M(nv)           )
+  X( int,     ten_,   J_colind,      nJten,   1                  )
 
 #define MJMODEL_TEXTURE                         \
   X( int,     tex_, type,           ntex,     1 ) \

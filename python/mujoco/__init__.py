@@ -164,6 +164,20 @@ def from_zip(file: Union[str, IO[bytes]]) -> _specs.MjSpec:
   return _specs.MjSpec.from_string(xml_string, assets=assets)
 
 
+def _bind_getattr(elements: Sequence[Any], key: str):
+  items = []
+  for e in elements:
+    val = getattr(e, key)
+    if isinstance(val, (str, bytes)):
+      items.append(val)
+    else:
+      try:
+        items.extend(val)
+      except TypeError:
+        items.append(val)
+  return items
+
+
 class _MjBindModel:
   """Wrapper for MjModel that allows binding multiple specs."""
 
@@ -171,13 +185,22 @@ class _MjBindModel:
     object.__setattr__(self, 'elements', elements)
 
   def __getattr__(self, key: str):
-    items = []
-    for e in self.elements:
-      items.extend(getattr(e, key))
-    return items
+    return _bind_getattr(self.elements, key)
 
   def __setattr__(self, key: str, value: Any):
-    raise AttributeError(f'Cannot set {key} on MjModel.')
+    try:
+      values = list(value)
+    except TypeError:
+      raise ValueError(
+          f'Expected {len(self.elements)} values, got non-iterable'
+          f' {type(value).__name__}'
+      ) from None
+    if len(values) != len(self.elements):
+      raise ValueError(
+          f'Expected {len(self.elements)} values, got {len(values)}'
+      )
+    for element, val in zip(self.elements, values):
+      setattr(element, key, val)
 
 
 class _MjBindData:
@@ -187,15 +210,22 @@ class _MjBindData:
     object.__setattr__(self, 'elements', elements)
 
   def __getattr__(self, key: str):
-    items = []
-    for e in self.elements:
-      items.extend(getattr(e, key))
-    return items
+    return _bind_getattr(self.elements, key)
 
   def __setattr__(self, key: str, value: Any):
-    value_it = iter(value)
-    for element in self.elements:
-      setattr(element, key, next(value_it))
+    try:
+      values = list(value)
+    except TypeError:
+      raise ValueError(
+          f'Expected {len(self.elements)} values, got non-iterable'
+          f' {type(value).__name__}'
+      ) from None
+    if len(values) != len(self.elements):
+      raise ValueError(
+          f'Expected {len(self.elements)} values, got {len(values)}'
+      )
+    for element, val in zip(self.elements, values):
+      setattr(element, key, val)
 
 
 def _bind_model(

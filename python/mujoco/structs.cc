@@ -94,7 +94,8 @@ constexpr bool IsNoneIndex(std::string_view name) {
          name == "dof_island";
 }
 
-py::tuple RecompileSpec(raw::MjSpec* spec, const MjModelWrapper& old_m,
+py::tuple RecompileSpec(raw::MjSpec* spec, const mjVFS* vfs,
+                        const MjModelWrapper& old_m,
                         const MjDataWrapper& old_d) {
   raw::MjModel* m = static_cast<raw::MjModel*>(mju_malloc(sizeof(mjModel)));
   m->buffer = nullptr;
@@ -105,7 +106,7 @@ py::tuple RecompileSpec(raw::MjSpec* spec, const MjModelWrapper& old_m,
   {
     // Release GIL before calling mj_recompile which may spawn threads
     py::gil_scoped_release no_gil;
-    if (mj_recompile(spec, nullptr, m, d)) {
+    if (mj_recompile(spec, vfs, m, d)) {
       compile_failed = true;
     }
   }
@@ -655,12 +656,15 @@ This is useful for example when the MJB is not available as a file on disk.)"));
 
   py::class_<MjWarningStatList> mjWarningStatList(m, "_MjWarningStatList");
   mjWarningStatList.def("__getitem__", &MjWarningStatList::operator[],
-                        py::return_value_policy::reference);
+                        py::return_value_policy::reference_internal);
   mjWarningStatList.def(
       "__getitem__",
-      [](MjWarningStatList& list, ::mjtWarning idx) { return list[idx]; },
-      py::return_value_policy::reference);
-  mjWarningStatList.def("__getitem__", &MjWarningStatList::Slice);
+      [](MjWarningStatList& list, ::mjtWarning idx) -> MjWarningStatWrapper& {
+        return list[idx];
+      },
+      py::return_value_policy::reference_internal);
+  mjWarningStatList.def("__getitem__", &MjWarningStatList::Slice,
+                        py::keep_alive<0, 1>());
   mjWarningStatList.def("__len__", &MjWarningStatList::size);
   DefineStructFunctions(mjWarningStatList);
 
@@ -783,12 +787,15 @@ This is useful for example when the MJB is not available as a file on disk.)"));
 
   py::class_<MjTimerStatList> mjTimerStatList(m, "_MjTimerStatList");
   mjTimerStatList.def("__getitem__", &MjTimerStatList::operator[],
-                      py::return_value_policy::reference);
+                      py::return_value_policy::reference_internal);
   mjTimerStatList.def(
       "__getitem__",
-      [](MjTimerStatList& list, ::mjtTimer idx) { return list[idx]; },
-      py::return_value_policy::reference);
-  mjTimerStatList.def("__getitem__", &MjTimerStatList::Slice);
+      [](MjTimerStatList& list, ::mjtTimer idx) -> MjTimerStatWrapper& {
+        return list[idx];
+      },
+      py::return_value_policy::reference_internal);
+  mjTimerStatList.def("__getitem__", &MjTimerStatList::Slice,
+                      py::keep_alive<0, 1>());
   mjTimerStatList.def("__len__", &MjTimerStatList::size);
   DefineStructFunctions(mjTimerStatList);
 
@@ -825,8 +832,9 @@ This is useful for example when the MJB is not available as a file on disk.)"));
 
   py::class_<MjSolverStatList> mjSolverStatList(m, "_MjSolverStatList");
   mjSolverStatList.def("__getitem__", &MjSolverStatList::operator[],
-                       py::return_value_policy::reference);
-  mjSolverStatList.def("__getitem__", &MjSolverStatList::Slice);
+                       py::return_value_policy::reference_internal);
+  mjSolverStatList.def("__getitem__", &MjSolverStatList::Slice,
+                       py::keep_alive<0, 1>());
   mjSolverStatList.def("__len__", &MjSolverStatList::size);
   DefineStructFunctions(mjSolverStatList);
 
@@ -912,24 +920,31 @@ This is useful for example when the MJB is not available as a file on disk.)"));
 
   py::class_<MjContactList> mjContactList(m, "_MjContactList");
   mjContactList.def("__getitem__", &MjContactList::operator[],
-                    py::return_value_policy::reference);
-  mjContactList.def("__getitem__", &MjContactList::Slice);
+                    py::return_value_policy::reference_internal);
+  mjContactList.def("__getitem__", &MjContactList::Slice,
+                    py::keep_alive<0, 1>());
   mjContactList.def("__len__", &MjContactList::size);
   DefineStructFunctions(mjContactList);
 
-#define X(type, var)                                                     \
-  mjContactList.def_property_readonly(#var, [](const MjContactList& c) { \
-    return py::array_t<type>(std::vector<int>{c.size()},                 \
-                             std::vector<int>{sizeof(raw::MjContact)},   \
-                             &c.get()->var, c.owner());                  \
+#define X(type, var)                                                      \
+  mjContactList.def_property_readonly(#var, [](const MjContactList& c) {  \
+    const py::ssize_t n = c.size();                                       \
+    const py::ssize_t s =                                                 \
+        c.stride() * static_cast<py::ssize_t>(sizeof(raw::MjContact));    \
+    return py::array_t<type>(std::vector<py::ssize_t>{n},                 \
+                             std::vector<py::ssize_t>{s},                 \
+                             n > 0 ? &c.get()->var : nullptr, c.owner()); \
   });
-#define XN(type, var)                                                    \
-  mjContactList.def_property_readonly(#var, [](const MjContactList& c) { \
-    return py::array_t<type>(                                            \
-        std::vector<int>{c.size(),                                       \
-                         sizeof(raw::MjContact::var) / sizeof(type)},    \
-        std::vector<int>{sizeof(raw::MjContact), sizeof(type)},          \
-        &c.get()->var[0], c.owner());                                    \
+#define XN(type, var)                                                        \
+  mjContactList.def_property_readonly(#var, [](const MjContactList& c) {     \
+    const py::ssize_t n = c.size();                                          \
+    const py::ssize_t dim = sizeof(raw::MjContact::var) / sizeof(type);      \
+    const py::ssize_t s =                                                    \
+        c.stride() * static_cast<py::ssize_t>(sizeof(raw::MjContact));       \
+    return py::array_t<type>(                                                \
+        std::vector<py::ssize_t>{n, dim},                                    \
+        std::vector<py::ssize_t>{s, static_cast<py::ssize_t>(sizeof(type))}, \
+        n > 0 ? &c.get()->var[0] : nullptr, c.owner());                      \
   });
   X(mjtNum, dist);
   XN(mjtNum, pos);
@@ -1565,9 +1580,14 @@ This is useful for example when the MJB is not available as a file on disk.)"));
       py::arg("m"), py::arg("d"), py::arg("cam"),
       py::doc(python_traits::mjv_camera2GLCamera::doc));
 
-  m.def("_recompile_spec_addr", [](uintptr_t spec_addr, const MjModelWrapper& m,
-                                   const MjDataWrapper& d) {
-    return RecompileSpec(reinterpret_cast<raw::MjSpec*>(spec_addr), m, d);
-  });
+  m.def(
+      "_recompile_spec_addr",
+      [](uintptr_t spec_addr, const MjModelWrapper& m, const MjDataWrapper& d,
+         uintptr_t vfs_addr) {
+        return RecompileSpec(reinterpret_cast<raw::MjSpec*>(spec_addr),
+                             reinterpret_cast<const mjVFS*>(vfs_addr), m, d);
+      },
+      py::arg("spec_addr"), py::arg("m"), py::arg("d"),
+      py::arg("vfs_addr") = 0);
 }  // PYBIND11_MODULE NOLINT(readability/fn_size)
 }  // namespace mujoco::python::_impl

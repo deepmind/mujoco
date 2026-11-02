@@ -81,6 +81,22 @@ using MjNumRef2 = Eigen::Ref<const Eigen::Matrix<mjtNum, 2, 1>>;
 using MjNumRef3 = Eigen::Ref<const Eigen::Matrix<mjtNum, 3, 1>>;
 using MjNumRef5 = Eigen::Ref<const Eigen::Matrix<mjtNum, 5, 1>>;
 
+namespace {
+mjVFS* GetOpenVfs(MjVfs* vfs) {
+  if (vfs) {
+    if (!vfs->is_open()) {
+      throw std::runtime_error("VFS is closed");
+    }
+    return vfs->get();
+  }
+  return nullptr;
+}
+
+mjVFS* GetOpenVfs(std::optional<MjVfs*> vfs) {
+  return GetOpenVfs(vfs.value_or(nullptr));
+}
+}  // namespace
+
 template <typename LoadFunc>
 static raw::MjSpec* LoadSpecFileImpl(const std::string& filename,
                                      const std::vector<_impl::VfsAsset>& assets,
@@ -342,13 +358,14 @@ PYBIND11_MODULE(_specs, m, pybind11::mod_gil_not_used()) {
           throw py::value_error(
               "Cannot specify both 'vfs' and 'include'/'assets'.");
         }
-        if (vfs) {
+        mjVFS* vfs_ptr = GetOpenVfs(vfs);
+        if (vfs_ptr) {
           raw::MjSpec* spec;
           {
             py::gil_scoped_release no_gil;
             char error[1024];
             spec = InterceptMjErrors(mj_parse)(
-                filename.c_str(), nullptr, vfs->get(), error, sizeof(error));
+                filename.c_str(), nullptr, vfs_ptr, error, sizeof(error));
             if (!spec) {
               throw py::value_error(error);
             }
@@ -404,12 +421,13 @@ PYBIND11_MODULE(_specs, m, pybind11::mod_gil_not_used()) {
           throw py::value_error(
               "Cannot specify both 'vfs' and 'include'/'assets'.");
         }
-        if (vfs) {
+        mjVFS* vfs_ptr = GetOpenVfs(vfs);
+        if (vfs_ptr) {
           raw::MjSpec* spec;
           {
             py::gil_scoped_release no_gil;
             char error[1024];
-            spec = InterceptMjErrors(mj_parseXMLString)(xml.c_str(), vfs->get(),
+            spec = InterceptMjErrors(mj_parseXMLString)(xml.c_str(), vfs_ptr,
                                                         error, sizeof(error));
             if (!spec) {
               throw py::value_error(error);
@@ -465,11 +483,27 @@ PYBIND11_MODULE(_specs, m, pybind11::mod_gil_not_used()) {
         include or assets.
   )mydelimiter",
       py::return_value_policy::move);
-  mjSpec.def("recompile", [mjmodel_mjdata_from_spec_ptr](
-                              const MjSpec& self, py::object m, py::object d) {
-    return mjmodel_mjdata_from_spec_ptr(reinterpret_cast<uintptr_t>(self.ptr),
-                                        m, d);
-  });
+  mjSpec.def(
+      "recompile",
+      [mjmodel_mjdata_from_spec_ptr](MjSpec& self, py::object m, py::object d,
+                                     std::optional<MjVfs*> vfs) {
+        mjVFS* user_vfs = GetOpenVfs(vfs);
+        std::optional<mjVFS> local_vfs;
+        mjVFS* vfs_ptr = self.AssetsVfs(user_vfs, local_vfs);
+        struct LocalVfsGuard {
+          mjVFS* vfs;
+          bool active;
+          ~LocalVfsGuard() {
+            if (active) {
+              mj_deleteVFS(vfs);
+            }
+          }
+        } guard{vfs_ptr, local_vfs.has_value()};
+        return mjmodel_mjdata_from_spec_ptr(
+            reinterpret_cast<uintptr_t>(self.ptr), m, d,
+            reinterpret_cast<uintptr_t>(vfs_ptr));
+      },
+      py::arg("m"), py::arg("d"), py::arg("vfs") = py::none());
   mjSpec.def("copy", [](const MjSpec& self) -> MjSpec { return MjSpec(self); });
   mjSpec.def_property_readonly("_address", [](const MjSpec& self) {
     return reinterpret_cast<uintptr_t>(self.ptr);
@@ -504,7 +538,7 @@ PYBIND11_MODULE(_specs, m, pybind11::mod_gil_not_used()) {
       "compile",
       [mjmodel_from_raw_ptr](MjSpec& self,
                              std::optional<MjVfs*> vfs) -> py::object {
-        mjVFS* vfs_ptr = vfs.has_value() ? (*vfs)->get() : nullptr;
+        mjVFS* vfs_ptr = GetOpenVfs(vfs);
         return mjmodel_from_raw_ptr(
             reinterpret_cast<uintptr_t>(self.Compile(vfs_ptr)));
       },
@@ -512,7 +546,7 @@ PYBIND11_MODULE(_specs, m, pybind11::mod_gil_not_used()) {
   mjSpec.def(
       "fuse_static",
       [](MjSpec& self, std::optional<MjVfs*> vfs) {
-        return self.FuseStatic(vfs.has_value() ? (*vfs)->get() : nullptr);
+        return self.FuseStatic(GetOpenVfs(vfs));
       },
       py::arg("vfs") = py::none(),
       R"mydelimiter(
@@ -530,7 +564,7 @@ PYBIND11_MODULE(_specs, m, pybind11::mod_gil_not_used()) {
   mjSpec.def(
       "discard_visual",
       [](MjSpec& self, std::optional<MjVfs*> vfs) {
-        return self.DiscardVisual(vfs.has_value() ? (*vfs)->get() : nullptr);
+        return self.DiscardVisual(GetOpenVfs(vfs));
       },
       py::arg("vfs") = py::none(),
       R"mydelimiter(
@@ -562,7 +596,7 @@ PYBIND11_MODULE(_specs, m, pybind11::mod_gil_not_used()) {
   mjSpec.def(
       "adopt_inertial",
       [](MjSpec& self, raw::MjsBody* body, std::optional<MjVfs*> vfs) {
-        self.AdoptInertial(body, vfs.has_value() ? (*vfs)->get() : nullptr);
+        self.AdoptInertial(body, GetOpenVfs(vfs));
       },
       py::arg("body"), py::arg("vfs") = py::none(),
       R"mydelimiter(
@@ -967,7 +1001,7 @@ PYBIND11_MODULE(_specs, m, pybind11::mod_gil_not_used()) {
           }
           file_str = mesh->c_str();
         }
-        const mjVFS* vfs_ptr = vfs ? vfs->get() : nullptr;
+        const mjVFS* vfs_ptr = GetOpenVfs(vfs);
 
         int count_arr[3] = {10, 10, 10};
         if (count.has_value()) {

@@ -2951,6 +2951,140 @@ class SpecsTest(absltest.TestCase):
     model = spec.compile()
     np.testing.assert_array_equal(model.flex_matid, [-1, -1])
 
+  def test_char_array_bounds_check(self):
+    spec = mujoco.MjSpec()
+    spec.compiler.eulerseq = 'zyx'
+    self.assertEqual(''.join(spec.compiler.eulerseq), 'zyx')
+
+    with self.assertRaisesRegex(
+        ValueError, 'eulerseq may have at most 3 characters'
+    ):
+      spec.compiler.eulerseq = 'xyzw'
+    self.assertEqual(''.join(spec.compiler.eulerseq), 'zyx')
+
+    with self.assertRaisesRegex(
+        ValueError, 'eulerseq may have at most 3 characters'
+    ):
+      spec.compiler.eulerseq = ['x', 'y', 'z', 'w']
+    self.assertEqual(''.join(spec.compiler.eulerseq), 'zyx')
+
+    tex = spec.add_texture(name='sky', type=mujoco.mjtTexture.mjTEXTURE_SKYBOX)
+    tex.gridlayout = '.U..LFRB.D..'
+    self.assertEqual(''.join(tex.gridlayout), '.U..LFRB.D..')
+
+    with self.assertRaisesRegex(
+        ValueError, 'gridlayout may have at most 12 characters'
+    ):
+      tex.gridlayout = '.' * 13
+    self.assertEqual(''.join(tex.gridlayout), '.U..LFRB.D..')
+
+    tex.gridsize = [2, 4]
+    tex.gridlayout = 'LFRB.D..'
+    self.assertEqual(list(tex.gridlayout)[:8], list('LFRB.D..'))
+    self.assertEqual(list(tex.gridlayout)[8:], ['\x00'] * 4)
+
+  def test_recompile_with_assets_and_vfs(self):
+    cube_obj = textwrap.dedent("""\
+        v -1 -1 -1
+        v  1 -1 -1
+        v  1  1 -1
+        v -1  1 -1
+        v -1 -1  1
+        v  1 -1  1
+        v  1  1  1
+        v -1  1  1
+        f 1 2 3 4
+        f 5 8 7 6
+        f 1 5 6 2
+        f 2 6 7 3
+        f 3 7 8 4
+        f 4 8 5 1
+    """).encode('utf-8')
+    xml = """
+      <mujoco>
+        <asset>
+          <mesh name="box" file="box.obj"/>
+        </asset>
+        <worldbody>
+          <body name="b">
+            <joint name="j" type="hinge"/>
+            <geom type="mesh" mesh="box"/>
+          </body>
+        </worldbody>
+      </mujoco>
+    """
+
+    # Recompile using in-memory spec.assets.
+    spec_assets = mujoco.MjSpec.from_string(xml, assets={'box.obj': cube_obj})
+    m1 = spec_assets.compile()
+    d1 = mujoco.MjData(m1)
+    d1.qpos[0] = 0.42
+    spec_assets.worldbody.add_body(name='extra').add_geom(size=[0.1, 0, 0])
+    m2, d2 = spec_assets.recompile(m1, d1)
+    self.assertEqual(m2.ngeom, 2)
+    self.assertAlmostEqual(d2.qpos[0], 0.42)
+
+    # Recompile using explicit MjVfs.
+    with mujoco.MjVfs() as vfs:
+      vfs['box.obj'] = cube_obj
+      spec_vfs = mujoco.MjSpec.from_string(xml)
+      m3 = spec_vfs.compile(vfs=vfs)
+      d3 = mujoco.MjData(m3)
+      d3.qpos[0] = 0.75
+      spec_vfs.worldbody.add_body(name='extra').add_geom(size=[0.1, 0, 0])
+      m4, d4 = spec_vfs.recompile(m3, d3, vfs=vfs)
+      self.assertEqual(m4.ngeom, 2)
+      self.assertAlmostEqual(d4.qpos[0], 0.75)
+
+      with self.assertRaises(ValueError):
+        spec_assets.recompile(m2, d2, vfs=vfs)
+
+    closed_vfs = mujoco.MjVfs()
+    closed_vfs.close()
+    with self.assertRaises(RuntimeError):
+      spec_vfs.recompile(m4, d4, vfs=closed_vfs)
+
+  def test_bind_sequence_setattr_and_scalar_str_getattr(self):
+    spec = mujoco.MjSpec.from_string("""
+      <mujoco>
+        <worldbody>
+          <body name="b1">
+            <joint name="box" type="hinge" damping="0.1"/>
+            <geom size="0.1"/>
+          </body>
+          <body name="b2">
+            <joint name="sphere" type="hinge" damping="0.2"/>
+            <geom size="0.1"/>
+          </body>
+        </worldbody>
+      </mujoco>
+    """)
+    joints = [spec.joint('box'), spec.joint('sphere')]
+    model = spec.compile()
+    data = mujoco.MjData(model)
+
+    self.assertEqual(model.bind(joints).id, [0, 1])
+    self.assertEqual(data.bind(joints).id, [0, 1])
+    self.assertEqual(model.bind(joints).name, ['box', 'sphere'])
+    self.assertEqual(data.bind(joints).name, ['box', 'sphere'])
+
+    model.bind(joints).damping = [0.5, 1.5]
+    np.testing.assert_allclose(model.bind(joints).damping, [0.5, 1.5])
+    np.testing.assert_allclose(model.dof_damping, [0.5, 1.5])
+
+  def test_closed_vfs_raises(self):
+    vfs = mujoco.MjVfs()
+    vfs.close()
+    with self.assertRaisesWithLiteralMatch(RuntimeError, "VFS is closed"):
+      mujoco.MjSpec.from_string("<mujoco/>", vfs=vfs)
+    spec = mujoco.MjSpec.from_string("<mujoco/>")
+    with self.assertRaisesWithLiteralMatch(RuntimeError, "VFS is closed"):
+      spec.compile(vfs=vfs)
+    with self.assertRaisesWithLiteralMatch(RuntimeError, "VFS is closed"):
+      spec.fuse_static(vfs=vfs)
+    with self.assertRaisesWithLiteralMatch(RuntimeError, "VFS is closed"):
+      spec.discard_visual(vfs=vfs)
+
 
 if __name__ == '__main__':
   absltest.main()
