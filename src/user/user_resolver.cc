@@ -72,19 +72,20 @@ struct Resolver {
   template <typename T>
   void operator()(
       const char* name, T& pval, const T& cval, T dval, ResolveMerge merge = kMergeError) {
-    if (pval == cval) return;
-
     // check authored status
-    bool parent_authored = mjs_isAuthored(parent, &pval);
-    bool child_authored  = mjs_isAuthored(child, &cval);
-
     // fall back to default comparison for fields without authored tracking
-    if (!parent_authored && !child_authored) {
-      parent_authored = (pval != dval);
-      child_authored  = (cval != dval);
-    }
-
+    bool child_authored = mjs_isAuthored(child, &cval) || (cval != dval);
     if (!child_authored) return;
+
+    bool parent_authored = mjs_isAuthored(parent, &pval) || (pval != dval);
+
+    if (pval == cval) {
+      if (!mjs_isAuthored(parent, &pval) && mode == mjCONFLICT_MERGE) {
+        mjSpec* pspec = parent;
+        ops.push_back([pspec, &pval]() { mjs_setAuthored(pspec, &pval, 1); });
+      }
+      return;
+    }
 
     // "FIELD: parent has X, child has Y"
     auto prefix = [&]() {
@@ -97,7 +98,11 @@ struct Resolver {
     if (!parent_authored) {
       std::string p = prefix();
       if (mode == mjCONFLICT_MERGE) {
-        ops.push_back([&pval, cval]() { pval = cval; });
+        mjSpec* pspec = parent;
+        ops.push_back([pspec, &pval, cval]() {
+          pval = cval;
+          mjs_setAuthored(pspec, &pval, 1);
+        });
         warnings.push_back(p + ", adopting child value");
       } else {
         warnings.push_back(p + ", keeping parent value");
@@ -122,7 +127,11 @@ struct Resolver {
           warnings.push_back(
               prefix() + (merged == cval ? std::string(", taking ") + desc
                                          : std::string(", keeping parent value (") + desc + ")"));
-          ops.push_back([&pval, merged]() { pval = merged; });
+          mjSpec* pspec = parent;
+          ops.push_back([pspec, &pval, merged]() {
+            pval = merged;
+            mjs_setAuthored(pspec, &pval, 1);
+          });
           break;
         }
       case mjCONFLICT_ERROR:
@@ -137,27 +146,11 @@ struct Resolver {
                   mjtNum (&pval)[N],
                   const mjtNum (&cval)[N],
                   const mjtNum (&dval)[N]) {
-    bool equal = true;
-    for (int i = 0; i < N; i++) {
-      if (pval[i] != cval[i]) {
-        equal = false;
-        break;
-      }
-    }
-    if (equal) return;
-
     // check authored status
-    bool parent_authored = mjs_isAuthored(parent, pval);
-    bool child_authored  = mjs_isAuthored(child, cval);
+    bool child_authored = mjs_isAuthored(child, cval);
 
     // fall back to default comparison for fields without authored tracking
-    if (!parent_authored && !child_authored) {
-      for (int i = 0; i < N; i++) {
-        if (pval[i] != dval[i]) {
-          parent_authored = true;
-          break;
-        }
-      }
+    if (!child_authored) {
       for (int i = 0; i < N; i++) {
         if (cval[i] != dval[i]) {
           child_authored = true;
@@ -165,8 +158,32 @@ struct Resolver {
         }
       }
     }
-
     if (!child_authored) return;
+
+    bool parent_authored = mjs_isAuthored(parent, pval);
+    if (!parent_authored) {
+      for (int i = 0; i < N; i++) {
+        if (pval[i] != dval[i]) {
+          parent_authored = true;
+          break;
+        }
+      }
+    }
+
+    bool equal = true;
+    for (int i = 0; i < N; i++) {
+      if (pval[i] != cval[i]) {
+        equal = false;
+        break;
+      }
+    }
+    if (equal) {
+      if (!mjs_isAuthored(parent, pval) && mode == mjCONFLICT_MERGE) {
+        mjSpec* pspec = parent;
+        ops.push_back([pspec, &pval]() { mjs_setAuthored(pspec, pval, 1); });
+      }
+      return;
+    }
 
     // "FIELD: parent has X Y Z, child has X Y Z"
     auto prefix = [&]() {
@@ -181,8 +198,10 @@ struct Resolver {
       if (mode == mjCONFLICT_MERGE) {
         std::array<mjtNum, N> vals;
         for (int i = 0; i < N; i++) vals[i] = cval[i];
-        ops.push_back([&pval, vals]() {
+        mjSpec* pspec = parent;
+        ops.push_back([pspec, &pval, vals]() {
           for (int i = 0; i < N; i++) pval[i] = vals[i];
+          mjs_setAuthored(pspec, pval, 1);
         });
         warnings.push_back(p + ", adopting child value");
       } else {
@@ -203,30 +222,41 @@ struct Resolver {
     }
   }
 
-  // resolve bitfield conflicts
-  void operator()(int& pval, int cval, const char* const names[], int nbit, int pauth, int cauth) {
-    // fall back to treating all bits as authored if no tracking available
-    if (!pauth && !cauth) {
-      pauth = ~0;
-      cauth = ~0;
-    }
+  // compute effective authored bitmask, falling back to C-API mutations
+  int EffectiveBitAuthored(const mjSpec* spec, const int& val, int auth) const {
+    if (mjs_isAuthored(spec, &val)) return ~0;
+    return auth | val;
+  }
 
-    // only consider bits that the child actually authored
-    int child_authored = cval & cauth;
-    if (!child_authored) return;
+  // resolve bitfield conflicts
+  void operator()(
+      int& pval, const int& cval, const char* const names[], int nbit, int& pauth, int cauth) {
+    // compute effective authored bitmasks
+    int eff_cauth = EffectiveBitAuthored(child, cval, cauth);
+    if (!eff_cauth) return;
+
+    int eff_pauth = EffectiveBitAuthored(parent, pval, pauth);
+
+    // merge set bits and authored bitmask from child
     if (mode == mjCONFLICT_MERGE) {
-      int added = child_authored & ~pval;
+      int added = cval & ~pval;
       for (int i = 0; i < nbit; i++) {
         if ((added >> i) & 1) {
           warnings.push_back(std::string("flag '") + names[i] + "': added from child");
         }
       }
-      ops.push_back([&pval, child_authored]() { pval |= child_authored; });
+      int adopted_auth = cauth | cval;
+      if (cval || (adopted_auth & ~pauth)) {
+        ops.push_back([&pval, &pauth, cval, adopted_auth]() {
+          pval  |= cval;
+          pauth |= adopted_auth;
+        });
+      }
       return;
     }
 
     // only report conflicts for bits where both parent and child authored
-    int both = pauth & cauth;
+    int both = eff_pauth & eff_cauth;
     int diff = (pval ^ cval) & both;
     for (int i = 0; i < nbit; i++) {
       if ((diff >> i) & 1) {
@@ -248,28 +278,32 @@ struct Resolver {
   }
 
   // resolve disableactuator bitfield conflicts
-  void operator()(int& pval, int cval, int pauth, int cauth) {
-    // fall back to treating all bits as authored if no tracking available
-    if (!pauth && !cauth) {
-      pauth = ~0;
-      cauth = ~0;
-    }
+  void operator()(int& pval, const int& cval, int& pauth, int cauth) {
+    // compute effective authored bitmasks
+    int eff_cauth = EffectiveBitAuthored(child, cval, cauth);
+    if (!eff_cauth) return;
 
-    // only consider bits that the child actually authored
-    int child_authored = cval & cauth;
-    if (!child_authored) return;
+    int eff_pauth = EffectiveBitAuthored(parent, pval, pauth);
+
+    // merge set bits and authored bitmask from child
     if (mode == mjCONFLICT_MERGE) {
       for (int i = 0; i < mjNGROUP; i++) {
-        if (((child_authored & ~pval) >> i) & 1) {
+        if (((cval & ~pval) >> i) & 1) {
           char buf[64];
           snprintf(buf, sizeof(buf), "disableactuator group %d: added from child", i);
           warnings.push_back(buf);
         }
       }
-      ops.push_back([&pval, child_authored]() { pval |= child_authored; });
+      int adopted_auth = cauth | cval;
+      if (cval || (adopted_auth & ~pauth)) {
+        ops.push_back([&pval, &pauth, cval, adopted_auth]() {
+          pval  |= cval;
+          pauth |= adopted_auth;
+        });
+      }
       return;
     }
-    int both = pauth & cauth;
+    int both = eff_pauth & eff_cauth;
     int diff = (pval ^ cval) & both;
     for (int i = 0; i < mjNGROUP; i++) {
       if ((diff >> i) & 1) {
@@ -345,7 +379,7 @@ void VisitConflicts(mjSpec* parent, const mjSpec* child, Resolver& r) {
   r("o_friction", po.o_friction, co.o_friction, d.o_friction);
 
   // bitfields (pass authored bitmasks)
-  const mjsAuthored& pa = parent->authored;
+  mjsAuthored&       pa = parent->authored;
   const mjsAuthored& ca = child->authored;
   r(po.disableflags,
     co.disableflags,

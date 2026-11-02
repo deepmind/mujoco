@@ -27,6 +27,7 @@ namespace {
 
 using ::testing::HasSubstr;
 using ::testing::IsNull;
+using ::testing::Not;
 using ::testing::NotNull;
 
 TEST_F(MujocoTest, AttachWarningsSurviveRecompile) {
@@ -352,9 +353,13 @@ TEST_F(MujocoTest, AttachConflictWarningBitfields) {
 
   mjSpec* parent = mj_makeSpec();
   parent->option.disableflags = mjDSBL_GRAVITY | mjDSBL_CONTACT;
+  parent->authored.disableflags =
+      mjDSBL_GRAVITY | mjDSBL_CONTACT | mjDSBL_ACTUATION;
 
   mjSpec* child = mj_makeSpec();
   child->option.disableflags = mjDSBL_GRAVITY | mjDSBL_ACTUATION;
+  child->authored.disableflags =
+      mjDSBL_GRAVITY | mjDSBL_CONTACT | mjDSBL_ACTUATION;
 
   mjsBody* world = mjs_findBody(parent, "world");
   mjsElement* attached =
@@ -462,9 +467,11 @@ TEST_F(MujocoTest, AttachConflictErrorBitfields) {
   mjSpec* parent = mj_makeSpec();
   parent->compiler.conflict = mjCONFLICT_ERROR;
   parent->option.disableflags = mjDSBL_GRAVITY;
+  parent->authored.disableflags = mjDSBL_GRAVITY | mjDSBL_CONTACT;
 
   mjSpec* child = mj_makeSpec();
   child->option.disableflags = mjDSBL_CONTACT;
+  child->authored.disableflags = mjDSBL_GRAVITY | mjDSBL_CONTACT;
 
   mjsBody* world = mjs_findBody(parent, "world");
   mjsElement* attached = mjs_attach(world->element, child->element, "", "");
@@ -969,6 +976,651 @@ TEST_F(MujocoTest, AttachConflictWarningZFarDefaultMessage) {
 
   mj_deleteSpec(parent);
   mj_deleteSpec(child);
+}
+
+TEST_F(MujocoTest, AttachConflictXMLBitfieldAuthoredDefault) {
+  mock_warning_handler.ExpectWarnings();
+  std::array<char, 1024> err;
+
+  // error mode: child explicitly authors constraint="enable" (0), conflicting
+  // with parent's constraint="disable" (1)
+  {
+    static constexpr char parent_xml[] = R"(
+      <mujoco>
+        <compiler conflict="error"/>
+        <option>
+          <flag constraint="disable"/>
+        </option>
+        <worldbody/>
+      </mujoco>
+    )";
+    static constexpr char child_xml[] = R"(
+      <mujoco>
+        <option>
+          <flag constraint="enable"/>
+        </option>
+        <worldbody/>
+      </mujoco>
+    )";
+
+    mjSpec* parent =
+        mj_parseXMLString(parent_xml, nullptr, err.data(), err.size());
+    ASSERT_THAT(parent, NotNull()) << err.data();
+    mjSpec* child =
+        mj_parseXMLString(child_xml, nullptr, err.data(), err.size());
+    ASSERT_THAT(child, NotNull()) << err.data();
+
+    mjsBody* world = mjs_findBody(parent, "world");
+    mjsElement* attached =
+        mjs_attach(world->element, child->element, "child_", "");
+    EXPECT_THAT(attached, IsNull());
+    EXPECT_THAT(mjs_getError(parent),
+                HasSubstr("flag 'Constraint': parent set, child unset"));
+
+    mj_deleteSpec(parent);
+    mj_deleteSpec(child);
+  }
+
+  // warning mode: authored zero bits in disableflags and enableflags emit
+  // warnings and preserve parent flags
+  {
+    static constexpr char parent_xml[] = R"(
+      <mujoco>
+        <compiler conflict="warning"/>
+        <option>
+          <flag constraint="disable" energy="enable"/>
+        </option>
+        <worldbody/>
+      </mujoco>
+    )";
+    static constexpr char child_xml[] = R"(
+      <mujoco>
+        <option>
+          <flag constraint="enable" energy="disable"/>
+        </option>
+        <worldbody/>
+      </mujoco>
+    )";
+
+    mjSpec* parent =
+        mj_parseXMLString(parent_xml, nullptr, err.data(), err.size());
+    ASSERT_THAT(parent, NotNull()) << err.data();
+    mjSpec* child =
+        mj_parseXMLString(child_xml, nullptr, err.data(), err.size());
+    ASSERT_THAT(child, NotNull()) << err.data();
+
+    mjsBody* world = mjs_findBody(parent, "world");
+    mjsElement* attached =
+        mjs_attach(world->element, child->element, "child_", "");
+    ASSERT_THAT(attached, NotNull()) << mjs_getError(parent);
+    EXPECT_EQ(parent->option.disableflags, mjDSBL_CONSTRAINT);
+    EXPECT_EQ(parent->option.enableflags, mjENBL_ENERGY);
+    EXPECT_EQ(mjs_numWarnings(parent), 1);
+    std::string w = mjs_getWarning(parent, 0);
+    EXPECT_THAT(w, HasSubstr("flag 'Constraint': parent set, child unset"));
+    EXPECT_THAT(w, HasSubstr("flag 'Energy': parent set, child unset"));
+
+    mj_deleteSpec(parent);
+    mj_deleteSpec(child);
+  }
+
+  // disableactuator: child clears authored group bit via C API
+  {
+    static constexpr char parent_xml[] = R"(
+      <mujoco>
+        <compiler conflict="error"/>
+        <option actuatorgroupdisable="2"/>
+        <worldbody/>
+      </mujoco>
+    )";
+    static constexpr char child_xml[] = R"(
+      <mujoco>
+        <option actuatorgroupdisable="2"/>
+        <worldbody/>
+      </mujoco>
+    )";
+
+    mjSpec* parent =
+        mj_parseXMLString(parent_xml, nullptr, err.data(), err.size());
+    ASSERT_THAT(parent, NotNull()) << err.data();
+    mjSpec* child =
+        mj_parseXMLString(child_xml, nullptr, err.data(), err.size());
+    ASSERT_THAT(child, NotNull()) << err.data();
+    child->option.disableactuator = 0;
+
+    mjsBody* world = mjs_findBody(parent, "world");
+    mjsElement* attached =
+        mjs_attach(world->element, child->element, "child_", "");
+    EXPECT_THAT(attached, IsNull());
+    EXPECT_THAT(mjs_getError(parent),
+                HasSubstr("disableactuator group 2: parent set, child unset"));
+
+    mj_deleteSpec(parent);
+    mj_deleteSpec(child);
+  }
+}
+
+TEST_F(MujocoTest, AttachConflictMixedXMLAndCApi) {
+  std::array<char, 1024> err;
+
+  // scalar: XML parent + C-API child
+  {
+    static constexpr char parent_xml[] = R"(
+      <mujoco>
+        <compiler conflict="error"/>
+        <option timestep="0.005"/>
+        <worldbody/>
+      </mujoco>
+    )";
+    mjSpec* parent =
+        mj_parseXMLString(parent_xml, nullptr, err.data(), err.size());
+    ASSERT_THAT(parent, NotNull()) << err.data();
+
+    mjSpec* child = mj_makeSpec();
+    child->option.timestep = 0.01;
+
+    mjsBody* world = mjs_findBody(parent, "world");
+    EXPECT_THAT(mjs_attach(world->element, child->element, "child_", ""),
+                IsNull());
+    EXPECT_THAT(mjs_getError(parent),
+                HasSubstr("timestep: parent has 0.005, child has 0.01"));
+
+    mj_deleteSpec(parent);
+    mj_deleteSpec(child);
+  }
+
+  // scalar: C-API parent + XML child explicitly authoring default value
+  {
+    mjSpec* parent = mj_makeSpec();
+    parent->compiler.conflict = mjCONFLICT_ERROR;
+    parent->option.timestep = 0.01;
+
+    static constexpr char child_xml[] = R"(
+      <mujoco>
+        <option timestep="0.002"/>
+        <worldbody/>
+      </mujoco>
+    )";
+    mjSpec* child =
+        mj_parseXMLString(child_xml, nullptr, err.data(), err.size());
+    ASSERT_THAT(child, NotNull()) << err.data();
+
+    mjsBody* world = mjs_findBody(parent, "world");
+    EXPECT_THAT(mjs_attach(world->element, child->element, "child_", ""),
+                IsNull());
+    EXPECT_THAT(mjs_getError(parent),
+                HasSubstr("timestep: parent has 0.01, child has 0.002"));
+
+    mj_deleteSpec(parent);
+    mj_deleteSpec(child);
+  }
+
+  // array: C-API parent + XML child explicitly authoring default gravity
+  {
+    mjSpec* parent = mj_makeSpec();
+    parent->compiler.conflict = mjCONFLICT_ERROR;
+    parent->option.gravity[2] = -1.62;
+
+    static constexpr char child_xml[] = R"(
+      <mujoco>
+        <option gravity="0 0 -9.81"/>
+        <worldbody/>
+      </mujoco>
+    )";
+    mjSpec* child =
+        mj_parseXMLString(child_xml, nullptr, err.data(), err.size());
+    ASSERT_THAT(child, NotNull()) << err.data();
+
+    mjsBody* world = mjs_findBody(parent, "world");
+    EXPECT_THAT(mjs_attach(world->element, child->element, "child_", ""),
+                IsNull());
+    EXPECT_THAT(
+        mjs_getError(parent),
+        HasSubstr("gravity: parent has 0 0 -1.62, child has 0 0 -9.81"));
+
+    mj_deleteSpec(parent);
+    mj_deleteSpec(child);
+  }
+
+  // bitfield: XML parent + C-API child, and post-parse C-API bitfield mutation
+  {
+    static constexpr char parent_xml[] = R"(
+      <mujoco>
+        <compiler conflict="error"/>
+        <option>
+          <flag gravity="enable" contact="enable"/>
+        </option>
+        <worldbody/>
+      </mujoco>
+    )";
+    mjSpec* parent =
+        mj_parseXMLString(parent_xml, nullptr, err.data(), err.size());
+    ASSERT_THAT(parent, NotNull()) << err.data();
+
+    mjSpec* child = mj_makeSpec();
+    child->option.disableflags = mjDSBL_GRAVITY;
+
+    mjsBody* world = mjs_findBody(parent, "world");
+    EXPECT_THAT(mjs_attach(world->element, child->element, "c1_", ""),
+                IsNull());
+    EXPECT_THAT(mjs_getError(parent),
+                HasSubstr("flag 'Gravity': parent unset, child set"));
+
+    static constexpr char xml_child_str[] = R"(
+      <mujoco>
+        <option>
+          <flag gravity="enable"/>
+        </option>
+        <worldbody/>
+      </mujoco>
+    )";
+    mjSpec* xml_child =
+        mj_parseXMLString(xml_child_str, nullptr, err.data(), err.size());
+    ASSERT_THAT(xml_child, NotNull()) << err.data();
+    xml_child->option.disableflags |= mjDSBL_CONTACT;
+
+    EXPECT_THAT(mjs_attach(world->element, xml_child->element, "c2_", ""),
+                IsNull());
+    EXPECT_THAT(mjs_getError(parent),
+                HasSubstr("flag 'Contact': parent unset, child set"));
+
+    mj_deleteSpec(xml_child);
+    mj_deleteSpec(child);
+    mj_deleteSpec(parent);
+  }
+
+  // disjoint bitfields: XML parent (<flag contact="disable"/>) + C-API child
+  // (mjDSBL_GRAVITY) in error and merge modes
+  {
+    static constexpr char parent_error_xml[] = R"(
+      <mujoco>
+        <compiler conflict="error"/>
+        <option>
+          <flag contact="disable"/>
+        </option>
+        <worldbody/>
+      </mujoco>
+    )";
+    mjSpec* parent =
+        mj_parseXMLString(parent_error_xml, nullptr, err.data(), err.size());
+    ASSERT_THAT(parent, NotNull()) << err.data();
+
+    mjSpec* child = mj_makeSpec();
+    child->option.disableflags = mjDSBL_GRAVITY;
+
+    mjsBody* world = mjs_findBody(parent, "world");
+    ASSERT_THAT(mjs_attach(world->element, child->element, "c_", ""), NotNull())
+        << mjs_getError(parent);
+    EXPECT_FALSE(mjs_isWarning(parent));
+    EXPECT_EQ(parent->option.disableflags, mjDSBL_CONTACT);
+
+    mj_deleteSpec(child);
+    mj_deleteSpec(parent);
+
+    MockWarningHandler merge_warnings;
+    merge_warnings.ExpectWarnings();
+    static constexpr char parent_merge_xml[] = R"(
+      <mujoco>
+        <compiler conflict="merge"/>
+        <option>
+          <flag contact="disable"/>
+        </option>
+        <worldbody/>
+      </mujoco>
+    )";
+    parent =
+        mj_parseXMLString(parent_merge_xml, nullptr, err.data(), err.size());
+    ASSERT_THAT(parent, NotNull()) << err.data();
+
+    child = mj_makeSpec();
+    child->option.disableflags = mjDSBL_GRAVITY;
+
+    world = mjs_findBody(parent, "world");
+    ASSERT_THAT(mjs_attach(world->element, child->element, "c_", ""), NotNull())
+        << mjs_getError(parent);
+    EXPECT_EQ(parent->option.disableflags, mjDSBL_CONTACT | mjDSBL_GRAVITY);
+    EXPECT_EQ(mjs_numWarnings(parent), 1);
+    EXPECT_THAT(mjs_getWarning(parent, 0),
+                HasSubstr("flag 'Gravity': added from child"));
+    EXPECT_THAT(mjs_getWarning(parent, 0), Not(HasSubstr("Contact")));
+
+    mj_deleteSpec(child);
+    mj_deleteSpec(parent);
+  }
+
+  // disjoint bitfields: C-API parent (mjDSBL_GRAVITY) + XML child
+  // (<flag contact="disable"/>) in error and merge modes
+  {
+    static constexpr char child_xml[] = R"(
+      <mujoco>
+        <option>
+          <flag contact="disable"/>
+        </option>
+        <worldbody/>
+      </mujoco>
+    )";
+
+    mjSpec* parent = mj_makeSpec();
+    parent->compiler.conflict = mjCONFLICT_ERROR;
+    parent->option.disableflags = mjDSBL_GRAVITY;
+
+    mjSpec* child =
+        mj_parseXMLString(child_xml, nullptr, err.data(), err.size());
+    ASSERT_THAT(child, NotNull()) << err.data();
+
+    mjsBody* world = mjs_findBody(parent, "world");
+    ASSERT_THAT(mjs_attach(world->element, child->element, "c_", ""), NotNull())
+        << mjs_getError(parent);
+    EXPECT_FALSE(mjs_isWarning(parent));
+    EXPECT_EQ(parent->option.disableflags, mjDSBL_GRAVITY);
+
+    mj_deleteSpec(child);
+    mj_deleteSpec(parent);
+
+    MockWarningHandler merge_warnings;
+    merge_warnings.ExpectWarnings();
+    parent = mj_makeSpec();
+    parent->compiler.conflict = mjCONFLICT_MERGE;
+    parent->option.disableflags = mjDSBL_GRAVITY;
+
+    child = mj_parseXMLString(child_xml, nullptr, err.data(), err.size());
+    ASSERT_THAT(child, NotNull()) << err.data();
+
+    world = mjs_findBody(parent, "world");
+    ASSERT_THAT(mjs_attach(world->element, child->element, "c_", ""), NotNull())
+        << mjs_getError(parent);
+    EXPECT_EQ(parent->option.disableflags, mjDSBL_GRAVITY | mjDSBL_CONTACT);
+    EXPECT_EQ(mjs_numWarnings(parent), 1);
+    EXPECT_THAT(mjs_getWarning(parent, 0),
+                HasSubstr("flag 'Contact': added from child"));
+    EXPECT_THAT(mjs_getWarning(parent, 0), Not(HasSubstr("Gravity")));
+
+    mj_deleteSpec(child);
+    mj_deleteSpec(parent);
+  }
+
+  // disjoint bitfields: two C-API specs setting disjoint flags in error and
+  // merge modes
+  {
+    mjSpec* parent = mj_makeSpec();
+    parent->compiler.conflict = mjCONFLICT_ERROR;
+    parent->option.disableflags = mjDSBL_GRAVITY;
+    parent->option.disableactuator = 1 << 1;
+
+    mjSpec* child = mj_makeSpec();
+    child->option.disableflags = mjDSBL_CONTACT;
+    child->option.disableactuator = 1 << 2;
+
+    mjsBody* world = mjs_findBody(parent, "world");
+    ASSERT_THAT(mjs_attach(world->element, child->element, "c_", ""), NotNull())
+        << mjs_getError(parent);
+    EXPECT_FALSE(mjs_isWarning(parent));
+    EXPECT_EQ(parent->option.disableflags, mjDSBL_GRAVITY);
+    EXPECT_EQ(parent->option.disableactuator, 1 << 1);
+
+    mj_deleteSpec(child);
+    mj_deleteSpec(parent);
+
+    MockWarningHandler merge_warnings;
+    merge_warnings.ExpectWarnings();
+    parent = mj_makeSpec();
+    parent->compiler.conflict = mjCONFLICT_MERGE;
+    parent->option.disableflags = mjDSBL_GRAVITY;
+    parent->option.disableactuator = 1 << 1;
+
+    child = mj_makeSpec();
+    child->option.disableflags = mjDSBL_CONTACT;
+    child->option.disableactuator = 1 << 2;
+
+    world = mjs_findBody(parent, "world");
+    ASSERT_THAT(mjs_attach(world->element, child->element, "c_", ""), NotNull())
+        << mjs_getError(parent);
+    EXPECT_EQ(parent->option.disableflags, mjDSBL_GRAVITY | mjDSBL_CONTACT);
+    EXPECT_EQ(parent->option.disableactuator, (1 << 1) | (1 << 2));
+    EXPECT_EQ(mjs_numWarnings(parent), 1);
+    EXPECT_THAT(mjs_getWarning(parent, 0),
+                HasSubstr("flag 'Contact': added from child"));
+    EXPECT_THAT(mjs_getWarning(parent, 0),
+                HasSubstr("disableactuator group 2: added from child"));
+
+    mj_deleteSpec(child);
+    mj_deleteSpec(parent);
+  }
+}
+
+TEST_F(MujocoTest, AttachMergeAdoptedAttributeMarkedAuthored) {
+  mock_warning_handler.ExpectWarnings();
+  std::array<char, 1024> err;
+
+  // non-default scalar adopted from child1 is not overwritten by child2
+  {
+    static constexpr char parent_xml[] = R"(
+      <mujoco>
+        <compiler conflict="merge"/>
+        <worldbody>
+          <frame name="f1"/>
+          <frame name="f2"/>
+        </worldbody>
+      </mujoco>
+    )";
+    static constexpr char child1_xml[] = R"(
+      <mujoco>
+        <option timestep="0.001"/>
+        <worldbody>
+          <body name="b1">
+            <geom size="0.1"/>
+          </body>
+        </worldbody>
+      </mujoco>
+    )";
+    static constexpr char child2_xml[] = R"(
+      <mujoco>
+        <option timestep="0.005"/>
+        <worldbody>
+          <body name="b2">
+            <geom size="0.1"/>
+          </body>
+        </worldbody>
+      </mujoco>
+    )";
+
+    mjSpec* parent =
+        mj_parseXMLString(parent_xml, nullptr, err.data(), err.size());
+    ASSERT_THAT(parent, NotNull()) << err.data();
+    mjSpec* child1 =
+        mj_parseXMLString(child1_xml, nullptr, err.data(), err.size());
+    ASSERT_THAT(child1, NotNull()) << err.data();
+    mjSpec* child2 =
+        mj_parseXMLString(child2_xml, nullptr, err.data(), err.size());
+    ASSERT_THAT(child2, NotNull()) << err.data();
+
+    ASSERT_THAT(mjs_attach(mjs_findFrame(parent, "f1")->element,
+                           mjs_findBody(child1, "b1")->element, "c1_", ""),
+                NotNull());
+    EXPECT_EQ(parent->option.timestep, mjtNum(0.001));
+
+    ASSERT_THAT(mjs_attach(mjs_findFrame(parent, "f2")->element,
+                           mjs_findBody(child2, "b2")->element, "c2_", ""),
+                NotNull());
+    EXPECT_EQ(parent->option.timestep, mjtNum(0.001));
+
+    mj_deleteSpec(child2);
+    mj_deleteSpec(child1);
+    mj_deleteSpec(parent);
+  }
+
+  // explicitly authored default scalar and array adopted from child1 are
+  // preserved when child2 attaches
+  {
+    static constexpr char parent_xml[] = R"(
+      <mujoco>
+        <compiler conflict="merge"/>
+        <worldbody>
+          <frame name="f1"/>
+          <frame name="f2"/>
+          <frame name="f3"/>
+        </worldbody>
+      </mujoco>
+    )";
+    static constexpr char child1_xml[] = R"(
+      <mujoco>
+        <option timestep="0.002" gravity="0 0 -9.81">
+          <flag constraint="disable"/>
+        </option>
+        <worldbody>
+          <body name="b1">
+            <geom size="0.1"/>
+          </body>
+        </worldbody>
+      </mujoco>
+    )";
+    static constexpr char child2_xml[] = R"(
+      <mujoco>
+        <option timestep="0.005"/>
+        <worldbody>
+          <body name="b2">
+            <geom size="0.1"/>
+          </body>
+        </worldbody>
+      </mujoco>
+    )";
+    static constexpr char child3_xml[] = R"(
+      <mujoco>
+        <option gravity="0 0 -1.62"/>
+        <worldbody>
+          <body name="b3">
+            <geom size="0.1"/>
+          </body>
+        </worldbody>
+      </mujoco>
+    )";
+
+    mjSpec* parent =
+        mj_parseXMLString(parent_xml, nullptr, err.data(), err.size());
+    ASSERT_THAT(parent, NotNull()) << err.data();
+    mjSpec* child1 =
+        mj_parseXMLString(child1_xml, nullptr, err.data(), err.size());
+    ASSERT_THAT(child1, NotNull()) << err.data();
+    mjSpec* child2 =
+        mj_parseXMLString(child2_xml, nullptr, err.data(), err.size());
+    ASSERT_THAT(child2, NotNull()) << err.data();
+    mjSpec* child3 =
+        mj_parseXMLString(child3_xml, nullptr, err.data(), err.size());
+    ASSERT_THAT(child3, NotNull()) << err.data();
+
+    ASSERT_THAT(mjs_attach(mjs_findFrame(parent, "f1")->element,
+                           mjs_findBody(child1, "b1")->element, "c1_", ""),
+                NotNull());
+    ASSERT_THAT(mjs_attach(mjs_findFrame(parent, "f2")->element,
+                           mjs_findBody(child2, "b2")->element, "c2_", ""),
+                NotNull());
+    EXPECT_EQ(parent->option.timestep, mjtNum(0.002));
+
+    // child3's unmergeable gravity conflicts with child1's adopted default
+    EXPECT_THAT(mjs_attach(mjs_findFrame(parent, "f3")->element,
+                           mjs_findBody(child3, "b3")->element, "c3_", ""),
+                IsNull());
+    EXPECT_THAT(mjs_getError(parent), HasSubstr("gravity"));
+
+    // child1's adopted disableflag is also marked authored on parent
+    parent->compiler.conflict = mjCONFLICT_ERROR;
+    static constexpr char child4_xml[] = R"(
+      <mujoco>
+        <option>
+          <flag constraint="enable"/>
+        </option>
+        <worldbody>
+          <body name="b4">
+            <geom size="0.1"/>
+          </body>
+        </worldbody>
+      </mujoco>
+    )";
+    mjSpec* child4 =
+        mj_parseXMLString(child4_xml, nullptr, err.data(), err.size());
+    ASSERT_THAT(child4, NotNull()) << err.data();
+    EXPECT_THAT(mjs_attach(mjs_findFrame(parent, "f3")->element,
+                           mjs_findBody(child4, "b4")->element, "c4_", ""),
+                IsNull());
+    EXPECT_THAT(mjs_getError(parent), HasSubstr("flag 'Constraint'"));
+
+    mj_deleteSpec(child4);
+    mj_deleteSpec(child3);
+    mj_deleteSpec(child2);
+    mj_deleteSpec(child1);
+    mj_deleteSpec(parent);
+  }
+
+  // equal C-API scalar and array values on parent are marked authored on merge
+  {
+    mjSpec* parent = mj_makeSpec();
+    parent->compiler.conflict = mjCONFLICT_MERGE;
+    parent->option.timestep = 0.001;
+    parent->option.gravity[2] = -1.62;
+    EXPECT_EQ(parent->authored.option, 0);
+
+    static constexpr char child1_xml[] = R"(
+      <mujoco>
+        <option timestep="0.001" gravity="0 0 -1.62"/>
+        <worldbody>
+          <body name="b1">
+            <geom size="0.1"/>
+          </body>
+        </worldbody>
+      </mujoco>
+    )";
+    static constexpr char child2_xml[] = R"(
+      <mujoco>
+        <option timestep="0.005"/>
+        <worldbody>
+          <body name="b2">
+            <geom size="0.1"/>
+          </body>
+        </worldbody>
+      </mujoco>
+    )";
+    static constexpr char child3_xml[] = R"(
+      <mujoco>
+        <option gravity="0 0 -3.71"/>
+        <worldbody>
+          <body name="b3">
+            <geom size="0.1"/>
+          </body>
+        </worldbody>
+      </mujoco>
+    )";
+    mjSpec* child1 =
+        mj_parseXMLString(child1_xml, nullptr, err.data(), err.size());
+    ASSERT_THAT(child1, NotNull()) << err.data();
+    mjSpec* child2 =
+        mj_parseXMLString(child2_xml, nullptr, err.data(), err.size());
+    ASSERT_THAT(child2, NotNull()) << err.data();
+    mjSpec* child3 =
+        mj_parseXMLString(child3_xml, nullptr, err.data(), err.size());
+    ASSERT_THAT(child3, NotNull()) << err.data();
+
+    mjsBody* world = mjs_findBody(parent, "world");
+    ASSERT_THAT(mjs_attach(world->element, child1->element, "c1_", ""),
+                NotNull())
+        << mjs_getError(parent);
+    EXPECT_EQ(parent->authored.option, child1->authored.option);
+
+    // after resetting to defaults via C API, authored bits still protect both
+    parent->option.timestep = 0.002;
+    parent->option.gravity[2] = -9.81;
+    ASSERT_THAT(mjs_attach(world->element, child2->element, "c2_", ""),
+                NotNull())
+        << mjs_getError(parent);
+    EXPECT_EQ(parent->option.timestep, mjtNum(0.002));
+    EXPECT_THAT(mjs_attach(world->element, child3->element, "c3_", ""),
+                IsNull());
+    EXPECT_THAT(mjs_getError(parent), HasSubstr("gravity"));
+
+    mj_deleteSpec(child3);
+    mj_deleteSpec(child2);
+    mj_deleteSpec(child1);
+    mj_deleteSpec(parent);
+  }
 }
 
 }  // namespace
