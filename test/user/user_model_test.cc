@@ -3890,6 +3890,55 @@ TEST_F(FrameScaleTest, MeshInstancesDelete) {
   mj_deleteSpec(spec);
 }
 
+// deleting a joint or an actuator of a compiled model removes its values from
+// the keyframes; those of a model which is not compiled are given for the
+// layout after the deletion
+TEST_F(MujocoTest, DeleteJointAndActuatorKeepsKeyframes) {
+  static constexpr char xml[] = R"(
+  <mujoco>
+    <worldbody>
+      <body>
+        <joint name="j1" type="slide" axis="1 0 0"/>
+        <joint name="j2" type="slide" axis="0 1 0"/>
+        <geom size=".1"/>
+      </body>
+    </worldbody>
+    <actuator>
+      <motor name="a1" joint="j1"/>
+      <motor name="a2" joint="j2"/>
+    </actuator>
+    <keyframe>
+      <key qpos=".1 .2" ctrl=".3 .4"/>
+    </keyframe>
+  </mujoco>
+  )";
+  for (bool compile : {false, true}) {
+    std::array<char, 1024> error;
+    mjSpec* spec = mj_parseXMLString(xml, nullptr, error.data(), error.size());
+    ASSERT_THAT(spec, NotNull()) << error.data();
+    if (compile) {
+      mjModel* m = mj_compile(spec, nullptr);
+      ASSERT_THAT(m, NotNull()) << mjs_getError(spec);
+      mj_deleteModel(m);
+    } else {
+      mjsKey* key = mjs_asKey(mjs_firstElement(spec, mjOBJ_KEY));
+      const double qpos = .2, ctrl = .4;
+      mjs_setDouble(key->qpos, &qpos, 1);
+      mjs_setDouble(key->ctrl, &ctrl, 1);
+    }
+    ASSERT_EQ(mjs_delete(spec, mjs_findElement(spec, mjOBJ_ACTUATOR, "a1")), 0);
+    ASSERT_EQ(mjs_delete(spec, mjs_findElement(spec, mjOBJ_JOINT, "j1")), 0);
+    mjModel* m = mj_compile(spec, nullptr);
+    ASSERT_THAT(m, NotNull()) << mjs_getError(spec);
+    ASSERT_EQ(m->nq, 1);
+    ASSERT_EQ(m->nu, 1);
+    EXPECT_MJTNUM_EQ(m->key_qpos[0], .2) << compile;
+    EXPECT_MJTNUM_EQ(m->key_ctrl[0], .4) << compile;
+    mj_deleteModel(m);
+    mj_deleteSpec(spec);
+  }
+}
+
 // a flex made from a mesh asset takes the asset at its own scale, also after a
 // compilation which scaled the asset for a geom
 TEST_F(FrameScaleTest, MeshInstanceMakeFlex) {

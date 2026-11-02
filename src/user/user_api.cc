@@ -661,18 +661,29 @@ static mjsElement* attachBody(mjCFrame*      parent,
                               const mjCBody* child,
                               const char*    prefix,
                               const char*    suffix) {
-  mjCBody* mutable_child = const_cast<mjCBody*>(child);
-  mutable_child->prefix  = prefix ? prefix : "";
-  mutable_child->suffix  = suffix ? suffix : "";
+  mjCBody*    mutable_child = const_cast<mjCBody*>(child);
+  std::string oldprefix     = mutable_child->prefix;
+  std::string oldsuffix     = mutable_child->suffix;
+  mutable_child->prefix     = prefix ? prefix : "";
+  mutable_child->suffix     = suffix ? suffix : "";
+  mjsElement* result        = nullptr;
   try {
-    *parent += *mutable_child;
-  } catch (mjCError& e) {
-    parent->model->SetError(e);
-    return nullptr;
+    *parent               += *mutable_child;
+    result                 = parent->last_attached->element;
+    parent->last_attached  = nullptr;
+  } catch (mjCError& e) { parent->model->SetError(e); }
+
+  // a copy, or a failed attachment, leaves the child as it was; the namespace which the attachment
+  // gives the model of the child is cleared only when it succeeds
+  if (!result || parent->model->GetDeepCopy()) {
+    mutable_child->prefix = oldprefix;
+    mutable_child->suffix = oldsuffix;
   }
-  mjsBody* attached_body = parent->last_attached;
-  parent->last_attached  = nullptr;
-  return attached_body->element;
+  if (!result) {
+    mutable_child->model->prefix.clear();
+    mutable_child->model->suffix.clear();
+  }
+  return result;
 }
 
 
@@ -681,18 +692,29 @@ static mjsElement* attachFrame(mjCBody*        parent,
                                const mjCFrame* child,
                                const char*     prefix,
                                const char*     suffix) {
-  mjCFrame* mutable_child = const_cast<mjCFrame*>(child);
-  mutable_child->prefix   = prefix ? prefix : "";
-  mutable_child->suffix   = suffix ? suffix : "";
+  mjCFrame*   mutable_child = const_cast<mjCFrame*>(child);
+  std::string oldprefix     = mutable_child->prefix;
+  std::string oldsuffix     = mutable_child->suffix;
+  mutable_child->prefix     = prefix ? prefix : "";
+  mutable_child->suffix     = suffix ? suffix : "";
+  mjsElement* result        = nullptr;
   try {
-    *parent += *mutable_child;
-  } catch (mjCError& e) {
-    parent->model->SetError(e);
-    return nullptr;
+    *parent               += *mutable_child;
+    result                 = parent->last_attached->element;
+    parent->last_attached  = nullptr;
+  } catch (mjCError& e) { parent->model->SetError(e); }
+
+  // a copy, or a failed attachment, leaves the child as it was; the namespace which the attachment
+  // gives the model of the child is cleared only when it succeeds
+  if (!result || parent->model->GetDeepCopy()) {
+    mutable_child->prefix = oldprefix;
+    mutable_child->suffix = oldsuffix;
   }
-  mjsFrame* attached_frame = parent->last_attached;
-  parent->last_attached    = nullptr;
-  return attached_frame->element;
+  if (!result) {
+    mutable_child->model->prefix.clear();
+    mutable_child->model->suffix.clear();
+  }
+  return result;
 }
 
 
@@ -716,7 +738,15 @@ static mjsElement* attachToSite(mjCSite*       parent,
                          spec->compiler.degree,
                          spec->compiler.eulerseq,
                          &parent->spec.alt);
-  return attachBody(frame, child, prefix, suffix);
+
+  // the frame which was added for the attachment is removed if it fails, keeping its error
+  mjsElement* attached = attachBody(frame, child, prefix, suffix);
+  if (!attached) {
+    try {
+      *body->model -= frame;
+    } catch (mjCError&) {}
+  }
+  return attached;
 }
 
 
@@ -742,6 +772,12 @@ static mjsElement* attachFrameToSite(mjCSite*        parent,
                          &parent->spec.alt);
 
   mjsElement* attached_frame = attachFrame(body, child, prefix, suffix);
+  if (!attached_frame) {
+    try {
+      *body->model -= frame;
+    } catch (mjCError&) {}
+    return nullptr;
+  }
   mjs_setFrame(attached_frame, &frame->spec);
   return attached_frame;
 }
@@ -771,6 +807,27 @@ mjsElement* mjs_attach(mjsElement*       parent,
     model->SetError(mjCError(0,
                              "Child spec is already attached by reference; enable deep copy to "
                              "attach a spec more than once."));
+    return nullptr;
+  }
+
+  // check the parent and the child before anything is modified; a spec is attached as a frame
+  if (parent->elemtype != mjOBJ_FRAME &&
+      parent->elemtype != mjOBJ_BODY &&
+      parent->elemtype != mjOBJ_SITE) {
+    model->SetError(mjCError(0, "parent element is not a frame, body or site"));
+    return nullptr;
+  }
+  if (parent->elemtype == mjOBJ_FRAME && !mjs_getParent(parent)) {
+    model->SetError(mjCError(0, "Frame does not have a parent body."));
+    return nullptr;
+  }
+  mjtObj childtype = child->elemtype == mjOBJ_MODEL ? mjOBJ_FRAME : child->elemtype;
+  if (parent->elemtype == mjOBJ_BODY && childtype != mjOBJ_FRAME) {
+    model->SetError(mjCError(0, "child element is not a frame"));
+    return nullptr;
+  }
+  if (childtype != mjOBJ_BODY && childtype != mjOBJ_FRAME) {
+    model->SetError(mjCError(0, "child element is not a body or frame"));
     return nullptr;
   }
 
@@ -842,12 +899,8 @@ mjsElement* mjs_attach(mjsElement*       parent,
                             static_cast<const mjCBody*>(child),
                             prefix,
                             suffix);
-      } else if (child->elemtype == mjOBJ_FRAME) {
-        mjsBody* parent_body = mjs_getParent(parent);
-        if (!parent_body) {
-          model->SetError(mjCError(0, "Frame does not have a parent body."));
-          return nullptr;
-        }
+      } else {
+        mjsBody*    parent_body    = mjs_getParent(parent);
         mjCFrame*   frame          = static_cast<mjCFrame*>(parent);
         mjsElement* attached_frame = attachFrame(static_cast<mjCBody*>(parent_body->element),
                                                  static_cast<const mjCFrame*>(child),
@@ -855,21 +908,13 @@ mjsElement* mjs_attach(mjsElement*       parent,
                                                  suffix);
         if (mjs_setFrame(attached_frame, &frame->spec)) { return nullptr; }
         result = attached_frame;
-      } else {
-        model->SetError(mjCError(0, "child element is not a body or frame"));
-        return nullptr;
       }
       break;
     case mjOBJ_BODY:
-      if (child->elemtype == mjOBJ_FRAME) {
-        result = attachFrame(static_cast<mjCBody*>(parent),
-                             static_cast<const mjCFrame*>(child),
-                             prefix,
-                             suffix);
-      } else {
-        model->SetError(mjCError(0, "child element is not a frame"));
-        return nullptr;
-      }
+      result = attachFrame(static_cast<mjCBody*>(parent),
+                           static_cast<const mjCFrame*>(child),
+                           prefix,
+                           suffix);
       break;
     case mjOBJ_SITE:
       if (child->elemtype == mjOBJ_BODY) {
@@ -877,14 +922,11 @@ mjsElement* mjs_attach(mjsElement*       parent,
                               static_cast<const mjCBody*>(child),
                               prefix,
                               suffix);
-      } else if (child->elemtype == mjOBJ_FRAME) {
+      } else {
         result = attachFrameToSite(static_cast<mjCSite*>(parent),
                                    static_cast<const mjCFrame*>(child),
                                    prefix,
                                    suffix);
-      } else {
-        model->SetError(mjCError(0, "child element is not a body or frame"));
-        return nullptr;
       }
       break;
     default:

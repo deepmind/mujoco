@@ -2532,8 +2532,12 @@ void mjCFlex::PointToLocal() {
 
 void mjCFlex::NameSpace(const mjCModel* m) {
   mjCBase::NameSpace(m);
-  for (auto& name : spec_vertbody_) { name = m->prefix + name + m->suffix; }
-  for (auto& name : spec_nodebody_) { name = m->prefix + name + m->suffix; }
+  for (auto& name : spec_vertbody_) {
+    if (!name.empty() && name != "world") { name = m->prefix + name + m->suffix; }
+  }
+  for (auto& name : spec_nodebody_) {
+    if (!name.empty() && name != "world") { name = m->prefix + name + m->suffix; }
+  }
   if (model != m) {
     for (auto& mat : spec_material_) {
       if (!mat.empty()) { mat = m->prefix + mat + m->suffix; }

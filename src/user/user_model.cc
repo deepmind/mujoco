@@ -389,12 +389,15 @@ void mjCModel::SaveDofOffsets(bool computesize) {
   }
 
   for (auto actuator : actuators_) {
-    if (actuator->actdim > 0) {
+    // an actdim of 0 is explicit, and a dc motor is stateless unless it says otherwise
+    if (actuator->actdim >= 0) {
       actuator->actdim_ = actuator->actdim;
-    } else if (actuator->spec.actdim > 0) {
+    } else if (actuator->spec.actdim >= 0) {
       actuator->actdim_ = actuator->spec.actdim;
     } else {
-      actuator->actdim_ = (actuator->spec.dyntype != mjDYN_NONE);
+      // TODO: handle SO3 integrator (3) and PID (nslot) actdim before compile
+      actuator->actdim_ =
+          (actuator->spec.dyntype != mjDYN_NONE && actuator->spec.dyntype != mjDYN_DCMOTOR);
     }
     actuator->actadr_  = actuator->actdim_ ? actadr : -1;
     actadr            += actuator->actdim_;
@@ -518,13 +521,21 @@ mjCModel& mjCModel::operator+=(const mjCModel& other) {
     // do not copy assets for self-attach
     // TODO: asset should be copied only when referenced
     CopyList(meshes_, other.meshes_, other);
-    CopyList(skins_, other.skins_, other);
     CopyList(hfields_, other.hfields_, other);
     CopyList(textures_, other.textures_, other);
     CopyList(materials_, other.materials_, other);
     CopyList(numerics_, other.numerics_, other);
     CopyList(texts_, other.texts_, other);
+    CopyList(skins_, other.skins_, other);
+  } else {
+    // on self-attach, only copy skins whose spec explicitly lists bones (not file-only skins)
+    std::vector<mjCSkin*> explicit_skins;
+    for (mjCSkin* skin : other.skins_) {
+      if (skin->spec.bodyname && !skin->spec.bodyname->empty()) { explicit_skins.push_back(skin); }
+    }
+    CopyList(skins_, explicit_skins, other);
   }
+
   CopyList(flexes_, other.flexes_, other);
   CopyList(pairs_, other.pairs_, other);
   CopyList(excludes_, other.excludes_, other);
@@ -560,11 +571,9 @@ mjCModel& mjCModel::operator+=(const mjCModel& other) {
 
 template <class T>
 void mjCModel::RemoveFromList(std::vector<T*>& list, const mjCModel& other) {
-  int nlist   = (int)list.size();
-  int removed = 0;
+  int nlist = (int)list.size();
   for (int i = 0; i < nlist; i++) {
-    T* element   = list[i];
-    element->id -= removed;
+    T* element = list[i];
     try {
       // check if the element contains an error
       element->NameSpace(&other);
@@ -584,12 +593,12 @@ void mjCModel::RemoveFromList(std::vector<T*>& list, const mjCModel& other) {
       list.erase(list.begin() + i);
       nlist--;
       i--;
-      removed++;
+      for (int k = 0; k < nlist; k++) { list[k]->id = -1; }
+      if (!list.empty()) {
+        ids[list[0]->elemtype].clear();
+        ProcessList_(ids, list, list[0]->elemtype, /*checkrepeat=*/false);
+      }
     }
-  }
-  if (removed > 0 && !list.empty()) {
-    // if any elements were removed, update ids using processlist
-    ProcessList_(ids, list, list[0]->elemtype, /*checkrepeat=*/false);
   }
 }
 
@@ -770,13 +779,21 @@ mjCModel& mjCModel::RemoveSubtree(const T& subtree) {
   MakeTreeLists();
   ProcessLists(/*checkrepeat=*/false);
 
-  // check if we have to remove anything else
+  // check if we have to remove anything else; flexes before the elements that can reference them,
+  // tuples last, since they can reference any of them
+  RemoveFromList(skins_, oldmodel);
+  RemoveFromList(flexes_, oldmodel);
   RemoveFromList(pairs_, oldmodel);
   RemoveFromList(excludes_, oldmodel);
   RemoveFromList(tendons_, oldmodel);
   RemoveFromList(equalities_, oldmodel);
   RemoveFromList(actuators_, oldmodel);
   RemoveFromList(sensors_, oldmodel);
+  size_t ntuples;
+  do {
+    ntuples = tuples_.size();
+    RemoveFromList(tuples_, oldmodel);
+  } while (tuples_.size() != ntuples);
 
   // structure changed, the signature is no longer valid
   InvalidateSignature();
@@ -904,6 +921,9 @@ void mjCModel::operator-=(mjsElement* el) {
     }
   }
 
+  mjCModel oldmodel(*this);
+  oldmodel.ProcessLists(/*checkrepeat=*/false);
+
   // plugin instances referenced before the deletion, mjs_bodyToFrame removes the body from the tree
   mjCBody* body = el->elemtype == mjOBJ_BODY ? static_cast<mjCBody*>(el) : nullptr;
   std::unordered_set<const mjsElement*> referenced = ReferencedPlugins(body);
@@ -914,6 +934,17 @@ void mjCModel::operator-=(mjsElement* el) {
   if (el->elemtype == mjOBJ_FRAME) {
     mjCFrame* frame  = static_cast<mjCFrame*>(el);
     *this           -= *frame;
+  }
+
+  // an element with values in the keyframes of a compiled model: they are now pending, the next
+  // compilation reassembles them without it; bodies and frames do this when their subtree is
+  // removed. In an uncompiled model, authored keyframe vectors are raw arrays that are laid out
+  // directly at compile time, so only compiled models re-store keyframes upon element deletion.
+  if (IsCompiled() && (el->elemtype == mjOBJ_JOINT ||
+                       el->elemtype == mjOBJ_ACTUATOR ||
+                       el->elemtype == mjOBJ_TENDON ||
+                       el->elemtype == mjOBJ_FLEX)) {
+    StoreKeyframes(this);
   }
 
   ResetTreeLists();
@@ -967,6 +998,12 @@ void mjCModel::operator-=(mjsElement* el) {
 
   MakeTreeLists();
   ProcessLists(/*checkrepeat=*/false);
+
+  size_t ntuples;
+  do {
+    ntuples = tuples_.size();
+    RemoveFromList(tuples_, oldmodel);
+  } while (tuples_.size() != ntuples);
 
   // delete the plugin instances that only the removed elements referenced
   RemovePlugins(referenced);
@@ -4639,14 +4676,14 @@ void mjCModel::RestoreState(const std::string& state_name,
       mjuu_copyvec(act + actuator->actadr_, actuator->act(state_name).data(), n);
     }
 
-    // restore ctrl
+    // restore ctrl; inputs which were not saved keep the neutral value the caller gave them, e.g.
+    // the identity which mj_resetData gives a quaternion, also when the saved one has another size
     if (actuator->ctrladr_ != -1 && actuator->ctrlnum_ > 0 && ctrl) {
-      if (!actuator->ctrl(state_name).empty() && mjuu_defined(actuator->ctrl(state_name)[0])) {
-        int n = std::min((int)actuator->ctrl(state_name).size(), actuator->ctrlnum_);
-        mjuu_copyvec(ctrl + actuator->ctrladr_, actuator->ctrl(state_name).data(), n);
-        for (int j = n; j < actuator->ctrlnum_; j++) { ctrl[actuator->ctrladr_ + j] = 0; }
-      } else {
-        for (int j = 0; j < actuator->ctrlnum_; j++) { ctrl[actuator->ctrladr_ + j] = 0; }
+      const std::vector<mjtNum>& saved = actuator->ctrl(state_name);
+      bool quat = actuator->gaintype == mjGAIN_SO3 && actuator->ctrlspec_ == mjCHART_QUAT;
+      if (!saved.empty() && mjuu_defined(saved[0]) && (!quat || saved.size() == 4)) {
+        int n = std::min((int)saved.size(), actuator->ctrlnum_);
+        mjuu_copyvec(ctrl + actuator->ctrladr_, saved.data(), n);
       }
     }
   }
@@ -5243,7 +5280,7 @@ void mjCModel::StoreKeyframes(mjCModel* dest) {
     if (key->inplace_) { inplacekeys_.push_back(key->pending_.name); }
   }
 
-  if (!compiled) { nq = nv = na = nu = nactuator = nout = nmocap = 0; }
+  if (!compiled) { nq = nv = na = nu = nactuator = nout = nmocap = nplastic = 0; }
 
   // the tree of this model changes: until it is compiled again, its keyframes are given their
   // vectors for the tree as it is then

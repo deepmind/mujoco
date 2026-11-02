@@ -2631,10 +2631,15 @@ mjCFrame* mjCBody::ToFrame(bool mergeinertial) {
     bool parent_infers = parent->InfersInertial() && !parent->geoms.empty();
     bool scaled        = ScaledInertial() || parent->ScaledInertial();
 
+    // a body which does not infer its inertial gives no mass to its geoms, e.g. with a massless
+    // inertial: a parent which infers its inertial from geoms must not gain theirs, so the inertia
+    // it has now is written to its spec, as when fusing static bodies
+    bool keepparent = !InfersInertial() && !given && !geoms.empty() && parent->InfersInertial();
+
     // one is given and the other inferred: compile the tree to know what is inferred; if both
     // are inferred, the geoms move to the parent and take the inertia with them. Scaled
     // inertials are merged as compiled
-    if ((given && parent_infers) || (inferred && parent_given) || (given && scaled)) {
+    if ((given && parent_infers) || (inferred && parent_given) || (given && scaled) || keepparent) {
       if (!model->Resolve(nullptr)) {
         std::string error = model->GetError().message;
         throw mjCError(this,
@@ -2642,7 +2647,11 @@ mjCFrame* mjCBody::ToFrame(bool mergeinertial) {
                        "VFS, call mjs_adoptInertial first: %s",
                        error.c_str());
       }
-      if (given || mass >= mjMINVAL) { parent->MergeInertial(this); }
+      if (keepparent) {
+        parent->AdoptInertial();
+      } else if (given || mass >= mjMINVAL) {
+        parent->MergeInertial(this);
+      }
     } else if (given) {
       parent->MergeInertial(this);
     }
@@ -7187,8 +7196,15 @@ void mjCEquality::PointToLocal() {
 
 void mjCEquality::NameSpace(const mjCModel* m) {
   mjCBase::NameSpace(m);
-  if (!spec_name1_.empty()) { spec_name1_ = m->prefix + spec_name1_ + m->suffix; }
-  if (!spec_name2_.empty()) { spec_name2_ = m->prefix + spec_name2_ + m->suffix; }
+
+  // the world body keeps its name
+  bool body = spec.objtype == mjOBJ_BODY;
+  if (!spec_name1_.empty() && !(body && spec_name1_ == "world")) {
+    spec_name1_ = m->prefix + spec_name1_ + m->suffix;
+  }
+  if (!spec_name2_.empty() && !(body && spec_name2_ == "world")) {
+    spec_name2_ = m->prefix + spec_name2_ + m->suffix;
+  }
 }
 
 
@@ -9928,6 +9944,16 @@ void mjCTuple::PointToLocal() {
 void mjCTuple::NameSpace(const mjCModel* m) {
   if (!name.empty()) { name = m->prefix + name + m->suffix; }
   for (int i = 0; i < spec_objname_.size(); i++) {
+    // the world body keeps its name, and so do assets, which are not copied for self-attach
+    mjtObj type  = i < (int)spec_objtype_.size() ? (mjtObj)spec_objtype_[i] : mjOBJ_UNKNOWN;
+    bool   world = (type == mjOBJ_BODY || type == mjOBJ_XBODY) && spec_objname_[i] == "world";
+    bool   asset = type == mjOBJ_MESH ||
+                   type == mjOBJ_HFIELD ||
+                   type == mjOBJ_TEXTURE ||
+                   type == mjOBJ_MATERIAL ||
+                   type == mjOBJ_NUMERIC ||
+                   type == mjOBJ_TEXT;
+    if (world || (asset && model == m)) { continue; }
     spec_objname_[i] = m->prefix + spec_objname_[i] + m->suffix;
   }
 }
@@ -9972,8 +9998,12 @@ void mjCTuple::ResolveReferences(const mjCModel* m) {
 
   // find objects, fill in ids
   for (int i = 0; i < objtype_.size(); i++) {
-    // find object by type and name
+    // find object by type and name; a tuple which is being attached is not yet in the name map of
+    // the model, nor are those attached with it, and it can reference itself
     mjCBase* res = m->FindObject(objtype_[i], objname_[i]);
+    if (!res && objtype_[i] == mjOBJ_TUPLE) {
+      res = objname_[i] == name ? this : m->SearchObject(mjOBJ_TUPLE, objname_[i]);
+    }
     if (!res) {
       throw mjCError(this, "unrecognized object '%s' in tuple %d", objname_[i].c_str(), id);
     }
