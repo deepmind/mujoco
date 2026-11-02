@@ -26,7 +26,9 @@ material {
         { type : float4, name : BaseColorFactor },
         { type : float, name : MetallicFactor },
         { type : float, name : RoughnessFactor },
-        { type : float, name : EmissiveFactor }
+        { type : float, name : EmissiveFactor },
+        { type : float3, name : UvScale },
+        { type : float3, name : UvOffset }
     ],
     requires : [
         uv0
@@ -35,7 +37,7 @@ material {
 
 fragment {
   void material(inout MaterialInputs material) {
-    vec2 uv = getUV0();
+    vec2 uv = getUV0() * materialParams.UvScale.xy + materialParams.UvOffset.xy;
 
     material.normal = texture(materialParams_Normal, uv).xyz * 2.0 - 1.0;
     prepareMaterial(material);

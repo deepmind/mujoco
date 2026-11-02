@@ -153,7 +153,7 @@ MaterialManager::MaterialType MaterialManager::GetMaterialType(
       return ObjectManager::kPbr;
     }
   } else if (material.metallic >= 0) {
-    if (material.color[3] < 1.0f) {
+    if (material.opacity_texture || material.color[3] < 1.0f) {
       return ObjectManager::kPbrTransparent;
     } else if (material.reflectance > 0) {
       return ObjectManager::kPbrReflect;
@@ -161,7 +161,7 @@ MaterialManager::MaterialType MaterialManager::GetMaterialType(
       return ObjectManager::kPbr;
     }
   } else if (material.roughness >= 0) {
-    if (material.color[3] < 1.0f) {
+    if (material.opacity_texture || material.color[3] < 1.0f) {
       return ObjectManager::kPbrTransparent;
     } else if (material.reflectance > 0) {
       return ObjectManager::kPbrReflect;
