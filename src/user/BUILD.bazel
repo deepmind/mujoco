@@ -23,7 +23,17 @@ cc_library(
         "user_objects.h",
         "user_resolver.h",
     ],
-    conlyopts = ["-std=c11"],
+    conlyopts = [
+        "-std=c11",
+        "-Werror",
+        "-Wall",
+        "-Wpedantic",
+        "-Wstrict-prototypes",
+        "-Wshadow",
+        "-Wunused",
+        "-Wvla",
+        "-Wimplicit-fallthrough",
+    ],
     copts = [
         "-I" + MJ_ROOT + "/src",
         "-fexceptions",

@@ -5,10 +5,22 @@ licenses(["notice"])
 
 package(default_visibility = ["//:__subpackages__"])
 
+# Public mjr_* headers live in //:libmujoco_hdrs.
+# buildifier: disable=no-hdrs-no-alwayslink
 cc_library(
     name = "noop",
     srcs = ["render_noop.c"],
-    conlyopts = ["-std=c11"],
+    conlyopts = [
+        "-std=c11",
+        "-Werror",
+        "-Wall",
+        "-Wpedantic",
+        "-Wstrict-prototypes",
+        "-Wshadow",
+        "-Wunused",
+        "-Wvla",
+        "-Wimplicit-fallthrough",
+    ],
     copts = [
         "-I" + MJ_ROOT + "/src",
         "-fvisibility=hidden",

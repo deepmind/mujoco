@@ -55,11 +55,22 @@ cc_library(
     ],
 )
 
+_C_CONLYOPTS = [
+    "-std=c11",
+    "-Werror",
+    "-Wall",
+    "-Wpedantic",
+    "-Wstrict-prototypes",
+    "-Wunused",
+    "-Wvla",
+    "-Wimplicit-fallthrough",
+]
+
 cc_library(
     name = "render_context",
     srcs = ["render_context.c"],
     hdrs = ["render_context.h"],
-    conlyopts = ["-std=c11"],
+    conlyopts = _C_CONLYOPTS + ["-std=c11"],
     copts = [
         "-I" + MJ_ROOT + "/src",
         "-fvisibility=hidden",
@@ -88,7 +99,7 @@ cc_library(
     name = "render_gl2",
     srcs = ["render_gl2.c"],
     hdrs = ["render_gl2.h"],
-    conlyopts = ["-std=c11"],
+    conlyopts = _C_CONLYOPTS + ["-std=c11"],
     copts = [
         "-I" + MJ_ROOT + "/src",
         "-fvisibility=hidden",
@@ -113,7 +124,7 @@ cc_library(
     name = "render_gl3",
     srcs = ["render_gl3.c"],
     hdrs = ["render_gl3.h"],
-    conlyopts = ["-std=c11"],
+    conlyopts = _C_CONLYOPTS + ["-std=c11"],
     copts = [
         "-I" + MJ_ROOT + "/src",
         "-fvisibility=hidden",
@@ -144,7 +155,7 @@ cc_library(
     name = "render_util",
     srcs = ["render_util.c"],
     hdrs = ["render_util.h"],
-    conlyopts = ["-std=c11"],
+    conlyopts = _C_CONLYOPTS + ["-std=c11"],
     copts = [
         "-I" + MJ_ROOT + "/src",
         "-fvisibility=hidden",

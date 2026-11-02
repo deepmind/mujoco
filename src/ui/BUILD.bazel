@@ -9,7 +9,16 @@ cc_library(
     name = "ui_main",
     srcs = ["ui_main.c"],
     hdrs = ["ui_main.h"],
-    conlyopts = ["-std=c11"],
+    conlyopts = [
+        "-std=c11",
+        "-Werror",
+        "-Wall",
+        "-Wpedantic",
+        "-Wstrict-prototypes",
+        "-Wunused",
+        "-Wvla",
+        "-Wimplicit-fallthrough",
+    ],
     copts = [
         "-I" + MJ_ROOT + "/src",
         "-fvisibility=hidden",
