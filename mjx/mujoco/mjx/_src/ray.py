@@ -207,15 +207,16 @@ def _ray_mesh(
     dist = jax.vmap(_ray_triangle, in_axes=(0, None, None, None))(
         vert, pnt[i], vec[i], basis[i]
     )
-    dists.append(dist)
-    geom_ids.append(np.repeat(geom_id[i], dist.size))
+    dists.append(jp.min(dist))
+    geom_ids.append(geom_id[i])
 
-  dists = jp.concatenate(dists)
+  dists = jp.array(dists)
   min_id = jp.argmin(dists)
   # Grab the best distance amongst all meshes, bypassing the argmin in `ray`.
   # This avoids having to compute the best distance per mesh.
   dist = dists[min_id, None]
-  id_ = jp.array(np.concatenate(geom_ids))[min_id, None]
+  geom_ids_array = jp.array(geom_ids)
+  id_ = geom_ids_array[min_id, None]
 
   return dist, id_
 
