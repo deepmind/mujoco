@@ -645,6 +645,223 @@ TEST_F(DerivativeTest, StepSkip) {
   mj_deleteModel(model);
 }
 
+// mj_stepSkip dispatches to mj_ipc when mjENBL_IPC is enabled
+TEST_F(DerivativeTest, StepSkipIPC) {
+  static constexpr char kXml[] = R"(
+  <mujoco>
+    <option integrator="discrete" solver="CG" timestep="0.005">
+      <flag ipc="enable" warmstart="disable"/>
+    </option>
+    <worldbody>
+      <geom type="plane" size="2 2 0.1"/>
+      <flexcomp name="f" type="grid" count="2 2 1" spacing="0.1 0.1 0.1"
+                pos="0 0 0.02" dim="2" radius="0.01" mass="0.2">
+        <contact selfcollide="none" margin="0.03"/>
+        <elasticity young="1e3" poisson="0.2" damping="1"/>
+      </flexcomp>
+    </worldbody>
+  </mujoco>
+  )";
+
+  char error[1024];
+  MjModelPtr m = LoadModelFromString(kXml, error, sizeof(error));
+  ASSERT_THAT(m.get(), NotNull()) << error;
+  MjDataPtr d_step = MakeData(m);
+  MjDataPtr d_skip = MakeData(m);
+
+  // initial velocity toward the ground plane so IPC barrier is active
+  for (int i = 2; i < m->nv; i += 3) {
+    d_step->qvel[i] = -0.5;
+  }
+
+  for (mjtStage stage : {mjSTAGE_NONE, mjSTAGE_POS, mjSTAGE_VEL}) {
+    mj_copyData(d_skip.get(), m.get(), d_step.get());
+    if (stage >= mjSTAGE_POS) {
+      mj_forward(m.get(), d_skip.get());
+    }
+    if (stage == mjSTAGE_POS) {
+      d_skip->qvel[0] += 0.1;
+    }
+
+    MjDataPtr d_ref = MakeData(m);
+    mj_copyData(d_ref.get(), m.get(), d_skip.get());
+
+    mj_stepSkip(m.get(), d_skip.get(), stage, 0);
+    mj_step(m.get(), d_ref.get());
+
+    EXPECT_THAT(AsVector(d_skip->qpos, m->nq),
+                Pointwise(MjNear(1e-12, 1e-6), AsVector(d_ref->qpos, m->nq)));
+    EXPECT_THAT(AsVector(d_skip->qvel, m->nv),
+                Pointwise(MjNear(1e-12, 1e-6), AsVector(d_ref->qvel, m->nv)));
+  }
+}
+
+// mj_stepSkip refactorizes implicit integrators when qDeriv depends on ctrl/act
+TEST_F(DerivativeTest, StepSkipImplicitCtrlActDeriv) {
+  static constexpr char kXml[] = R"(
+  <mujoco>
+    <option timestep="0.05">
+      <flag warmstart="disable"/>
+    </option>
+    <worldbody>
+      <body>
+        <joint name="j0" type="slide"/>
+        <geom type="sphere" size="0.1" mass="1"/>
+      </body>
+      <body>
+        <joint name="j1" type="slide"/>
+        <geom type="sphere" size="0.1" mass="1"/>
+      </body>
+      <body>
+        <joint name="j2" type="slide"/>
+        <geom type="sphere" size="0.1" mass="1"/>
+      </body>
+    </worldbody>
+    <actuator>
+      <damper joint="j0" kv="10" ctrlrange="0 5"/>
+      <position joint="j1" kp="20" dampratio="1" forcerange="-1 1"/>
+      <general joint="j2" dyntype="filter" dynprm="0.1"
+               gaintype="affine" gainprm="0 0 -8"/>
+    </actuator>
+  </mujoco>
+  )";
+
+  char error[1024];
+  MjModelPtr m = LoadModelFromString(kXml, error, sizeof(error));
+  ASSERT_THAT(m.get(), NotNull()) << error;
+  MjDataPtr d = MakeData(m);
+
+  int nv = m->nv, na = m->na, nu = m->nu;
+  int ndx = 2 * nv + na;
+  mjtNum eps = MjTol(1e-6, 1e-3);
+
+  for (mjtIntegrator integrator : {mjINT_IMPLICIT, mjINT_IMPLICITFAST}) {
+    m->opt.integrator = integrator;
+    mj_resetData(m.get(), d.get());
+    d->qvel[0] = 1.2;
+    d->qvel[1] = 0.8;
+    d->qvel[2] = -0.9;
+    d->ctrl[0] = 1.0;
+    d->ctrl[1] = 0.02;  // unsaturated; large nudge pushes into forcerange
+    d->ctrl[2] = 0.5;
+    d->act[0] = 1.5;
+
+    // verify mj_stepSkip at mjSTAGE_VEL matches mj_step after ctrl and act
+    // nudges
+    mj_forward(m.get(), d.get());
+    MjDataPtr d_skip = MakeData(m);
+    MjDataPtr d_full = MakeData(m);
+    mj_copyData(d_skip.get(), m.get(), d.get());
+    d_skip->ctrl[0] = 3.0;
+    d_skip->ctrl[1] = 2.0;  // crosses into saturation
+    d_skip->act[0] = 2.5;
+    mj_copyData(d_full.get(), m.get(), d_skip.get());
+
+    mj_stepSkip(m.get(), d_skip.get(), mjSTAGE_VEL, 0);
+    mj_step(m.get(), d_full.get());
+    EXPECT_THAT(AsVector(d_skip->qvel, nv),
+                Pointwise(MjNear(1e-12, 1e-6), AsVector(d_full->qvel, nv)));
+
+    // verify mjd_transitionFD matches full mj_step centered differences
+    mj_resetData(m.get(), d.get());
+    d->qvel[0] = 1.2;
+    d->qvel[1] = 0.8;
+    d->qvel[2] = -0.9;
+    d->ctrl[0] = 1.0;
+    d->ctrl[1] = 0.01;
+    d->ctrl[2] = 0.5;
+    d->act[0] = 1.5;
+
+    vector<mjtNum> A(ndx * ndx), B(ndx * nu);
+    mjd_transitionFD(m.get(), d.get(), eps, /*flg_centered=*/1, A.data(),
+                     B.data(), nullptr, nullptr);
+
+    // check B columns (ctrl) and A column 2*nv (filter act) against mj_step
+    for (int col_u = 0; col_u < 2; col_u++) {
+      MjDataPtr dp = MakeData(m), dm = MakeData(m);
+      mj_copyData(dp.get(), m.get(), d.get());
+      mj_copyData(dm.get(), m.get(), d.get());
+      dp->ctrl[col_u] += eps;
+      dm->ctrl[col_u] -= eps;
+      mj_step(m.get(), dp.get());
+      mj_step(m.get(), dm.get());
+      for (int r = 0; r < nv; r++) {
+        mjtNum dq = (dp->qpos[r] - dm->qpos[r]) / (2 * eps);
+        mjtNum dv = (dp->qvel[r] - dm->qvel[r]) / (2 * eps);
+        EXPECT_NEAR(B[r * nu + col_u], dq, MjTol(1e-8, 1e-3));
+        EXPECT_NEAR(B[(nv + r) * nu + col_u], dv, MjTol(1e-8, 1e-3));
+      }
+    }
+
+    MjDataPtr dp = MakeData(m), dm = MakeData(m);
+    mj_copyData(dp.get(), m.get(), d.get());
+    mj_copyData(dm.get(), m.get(), d.get());
+    dp->act[0] += eps;
+    dm->act[0] -= eps;
+    mj_step(m.get(), dp.get());
+    mj_step(m.get(), dm.get());
+    for (int r = 0; r < nv; r++) {
+      mjtNum dv = (dp->qvel[r] - dm->qvel[r]) / (2 * eps);
+      EXPECT_NEAR(A[(nv + r) * ndx + 2 * nv], dv, MjTol(1e-8, 1e-3));
+    }
+  }
+}
+
+// mj_stepSkip refactorizes Euler integrator when nonlinear dampingpoly is
+// present
+TEST_F(DerivativeTest, StepSkipEulerPolyDamping) {
+  static constexpr char kXml[] = R"(
+  <mujoco>
+    <option integrator="Euler" timestep="0.05">
+      <flag warmstart="disable"/>
+    </option>
+    <worldbody>
+      <body>
+        <joint name="j0" type="slide" damping="1 2 3"/>
+        <geom type="sphere" size="0.1" mass="1"/>
+      </body>
+      <body>
+        <joint name="j1" type="slide" damping="0.5"/>
+        <geom type="sphere" size="0.1" mass="1"/>
+      </body>
+    </worldbody>
+    <actuator>
+      <motor joint="j1" damping="0 1.5"/>
+    </actuator>
+  </mujoco>
+  )";
+
+  char error[1024];
+  MjModelPtr m = LoadModelFromString(kXml, error, sizeof(error));
+  ASSERT_THAT(m.get(), NotNull()) << error;
+  MjDataPtr d = MakeData(m);
+  d->qvel[0] = 1.3;
+  d->qvel[1] = -0.9;
+
+  int nv = m->nv;
+  int ndx = 2 * nv;
+  mjtNum eps = MjTol(1e-6, 1e-3);
+  vector<mjtNum> A(ndx * ndx);
+  mjd_transitionFD(m.get(), d.get(), eps, /*flg_centered=*/1, A.data(), nullptr,
+                   nullptr, nullptr);
+
+  for (int j = 0; j < nv; j++) {
+    MjDataPtr dp = MakeData(m), dm = MakeData(m);
+    mj_copyData(dp.get(), m.get(), d.get());
+    mj_copyData(dm.get(), m.get(), d.get());
+    dp->qvel[j] += eps;
+    dm->qvel[j] -= eps;
+    mj_step(m.get(), dp.get());
+    mj_step(m.get(), dm.get());
+    for (int r = 0; r < nv; r++) {
+      mjtNum dq = (dp->qpos[r] - dm->qpos[r]) / (2 * eps);
+      mjtNum dv = (dp->qvel[r] - dm->qvel[r]) / (2 * eps);
+      EXPECT_NEAR(A[r * ndx + nv + j], dq, MjTol(1e-8, 1e-3));
+      EXPECT_NEAR(A[(nv + r) * ndx + nv + j], dv, MjTol(1e-8, 1e-3));
+    }
+  }
+}
+
 // Analytic transition matrices for linear dynamical system xn = A*x + B*u
 //   given modified mass matrix H (`data->qH`) and
 //   Ac = H^-1 [diag(-stiffness) diag(-damping)]
@@ -878,6 +1095,78 @@ TEST_F(DerivativeTest, SensorDerivatives) {
 
   mju_free(DFD);
   mju_free(CFD);
+}
+
+// centered control-to-sensor FD derivatives preserve sign and ctrlrange
+// clamping
+TEST_F(DerivativeTest, CenteredSensorControlDerivatives) {
+  static constexpr char kXml[] = R"(
+  <mujoco>
+    <option gravity="0 0 0">
+      <flag warmstart="disable"/>
+    </option>
+    <default>
+      <geom contype="0" conaffinity="0"/>
+    </default>
+    <worldbody>
+      <body>
+        <joint name="j0" type="slide" axis="1 0 0"/>
+        <geom size=".1" mass="1"/>
+        <site name="s0"/>
+      </body>
+      <body>
+        <joint name="j1" type="slide" axis="1 0 0"/>
+        <geom size=".1" mass="2"/>
+      </body>
+    </worldbody>
+
+    <actuator>
+      <general name="a0" joint="j0" gainprm="3" ctrlrange="-1 1"/>
+      <general name="a1" joint="j1" gainprm="-4"/>
+    </actuator>
+
+    <sensor>
+      <actuatorfrc actuator="a0"/>
+      <actuatorfrc actuator="a1"/>
+      <accelerometer site="s0"/>
+    </sensor>
+  </mujoco>
+  )";
+
+  char error[1024];
+  MjModelPtr m = LoadModelFromString(kXml, error, sizeof(error));
+  ASSERT_THAT(m.get(), NotNull()) << error;
+  MjDataPtr d = MakeData(m);
+
+  int nu = m->nu, ns = m->nsensordata;
+  ASSERT_EQ(nu, 2);
+  ASSERT_EQ(ns, 5);
+  mjtNum eps = MjEps(1e-6, 1e-3);
+
+  // interior and boundary controls: centered and fallback one-sided
+  // differencing
+  d->ctrl[1] = -0.3;
+  vector<mjtNum> D(ns * nu);
+  const vector<mjtNum> expected_D = {
+      3, 0,   // actuatorfrc a0
+      0, -4,  // actuatorfrc a1
+      3, 0,   // accelerometer x
+      0, 0,   // accelerometer y
+      0, 0,   // accelerometer z
+  };
+  for (mjtNum ctrl0 : {mjtNum(0.2), mjtNum(1.0), mjtNum(-1.0)}) {
+    d->ctrl[0] = ctrl0;
+    mjd_transitionFD(m.get(), d.get(), eps, /*flg_centered=*/1, nullptr,
+                     nullptr, nullptr, D.data());
+    EXPECT_THAT(D, Pointwise(MjNear(1e-9, 5e-4), expected_D));
+  }
+
+  // beyond ctrlrange: clamped actuator column is zero
+  d->ctrl[0] = 2.0;
+  mjd_transitionFD(m.get(), d.get(), eps, /*flg_centered=*/1, nullptr, nullptr,
+                   nullptr, D.data());
+  const vector<mjtNum> expected_clamped_D = {0, 0, 0, -4, 0, 0, 0, 0, 0, 0};
+  EXPECT_THAT(D, Pointwise(MjNear(1e-9, 5e-4), expected_clamped_D));
 }
 
 // if sensor derivatives aren't requested, don't compute sensors
@@ -1128,6 +1417,63 @@ TEST_F(DerivativeTest, LinearSystemInverse) {
 
   mj_deleteData(data);
   mj_deleteModel(model);
+}
+
+// mjd_inverseFD updates actuation before acceleration sensors when
+// flg_actuation=1
+TEST_F(DerivativeTest, InverseFDActuationSensor) {
+  static constexpr char kXml[] = R"(
+  <mujoco>
+    <worldbody>
+      <body>
+        <joint name="j" type="slide"/>
+        <geom type="sphere" size="0.1" mass="2"/>
+      </body>
+    </worldbody>
+    <actuator>
+      <general name="act" joint="j" gaintype="fixed" gainprm="1"
+               biastype="affine" biasprm="0 -10 -4"/>
+    </actuator>
+    <sensor>
+      <actuatorfrc actuator="act"/>
+      <jointactuatorfrc joint="j"/>
+    </sensor>
+  </mujoco>
+  )";
+
+  char error[1024];
+  MjModelPtr m = LoadModelFromString(kXml, error, sizeof(error));
+  ASSERT_THAT(m.get(), NotNull()) << error;
+  MjDataPtr d = MakeData(m);
+
+  d->qpos[0] = 0.3;
+  d->qvel[0] = -0.7;
+  d->qacc[0] = 1.2;
+  d->ctrl[0] = 2.0;
+
+  int nv = m->nv, ns = m->nsensordata;
+  vector<mjtNum> DfDq(nv * nv), DfDv(nv * nv), DfDa(nv * nv);
+  vector<mjtNum> DsDq(nv * ns), DsDv(nv * ns), DsDa(nv * ns);
+  mjtNum eps = MjTol(1e-6, 1e-3);
+
+  mjd_inverseFD(m.get(), d.get(), eps, /*flg_actuation=*/1, DfDq.data(),
+                DfDv.data(), DfDa.data(), DsDq.data(), DsDv.data(), DsDa.data(),
+                nullptr);
+
+  // force = m*qacc - (ctrl - 10*qpos - 4*qvel)
+  // dF/dq = 10, dF/dv = 4, dF/da = 2
+  EXPECT_NEAR(DfDq[0], 10.0, MjTol(1e-6, 1e-2));
+  EXPECT_NEAR(DfDv[0], 4.0, MjTol(1e-6, 1e-2));
+  EXPECT_NEAR(DfDa[0], 2.0, MjTol(1e-6, 1e-2));
+
+  // actuatorfrc = jointactuatorfrc = ctrl - 10*qpos - 4*qvel
+  // ds/dq = -10, ds/dv = -4, ds/da = 0
+  EXPECT_NEAR(DsDq[0], -10.0, MjTol(1e-6, 1e-2));
+  EXPECT_NEAR(DsDq[1], -10.0, MjTol(1e-6, 1e-2));
+  EXPECT_NEAR(DsDv[0], -4.0, MjTol(1e-6, 1e-2));
+  EXPECT_NEAR(DsDv[1], -4.0, MjTol(1e-6, 1e-2));
+  EXPECT_NEAR(DsDa[0], 0.0, MjTol(1e-8, 1e-4));
+  EXPECT_NEAR(DsDa[1], 0.0, MjTol(1e-8, 1e-4));
 }
 
 // utility: generate two random quaternions with a given angle difference

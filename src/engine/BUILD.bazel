@@ -118,9 +118,11 @@ cc_library(
         "mjUSEPLATFORMSIMD",
     ],
     deps = [
+        ":engine_core_util",
         ":engine_forward",
         ":engine_macro",
         ":engine_memory",
+        ":engine_sensor",
         ":engine_support",
         ":engine_util_blas",
         ":engine_util_errmem",

@@ -3478,6 +3478,9 @@ void mjd_passive_vel(const mjModel* m, mjData* d) {
     d->qDeriv[adr] -= mjd_xPolyForce(damping, poly, v, mjNPOLY, 1);
   }
 
+  // flex_edgedamping is intentionally omitted: qDeriv uses tree-only D sparsity, which drops
+  // off-diagonal blocks between flexcomp vertex trees and would break translational invariance
+
   // tendon damping
   int ntendon = m->ntendon;
   for (int i=0; i < ntendon; i++) {
