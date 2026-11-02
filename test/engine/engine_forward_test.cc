@@ -1046,8 +1046,69 @@ TEST_F(ForwardTest, MjcbControlDisabled) {
   // expect that callback was not used
   EXPECT_EQ(data->ctrl[0], 0.0);
 
+  // same for mj_step1
+  mj_resetData(model.get(), data.get());
+  mj_step1(model.get(), data.get());
+  EXPECT_EQ(data->ctrl[0], 0.0);
+  model->opt.disableflags &= ~mjDSBL_ACTUATION;
+  mj_step1(model.get(), data.get());
+  EXPECT_EQ(data->ctrl[0], 2.0);
+
   // remove global control callback
   mjcb_control = nullptr;
+}
+
+// filtered position servos on a ball joint track a target wound through pi
+TEST_F(ForwardTest, FilteredPositionBallTracksWindingTarget) {
+  static constexpr char xml[] = R"(
+  <mujoco>
+    <option integrator="implicitfast">
+      <flag contact="disable" gravity="disable"/>
+    </option>
+    <worldbody>
+      <body>
+        <joint name="ball" type="ball"/>
+        <geom type="box" size=".05 .07 .03"/>
+      </body>
+    </worldbody>
+    <actuator>
+      <position joint="ball" gear="1 0 0" kp="1" dampratio="1"
+        timeconst="0.01"/>
+      <position joint="ball" gear="0 1 0" kp="1" dampratio="1"
+        timeconst="0.01"/>
+      <position joint="ball" gear="0 0 1" kp="1" dampratio="1"
+        timeconst="0.01"/>
+    </actuator>
+  </mujoco>
+  )";
+  char error[1024];
+  MjModelPtr model = LoadModelFromString(xml, error, sizeof(error));
+  ASSERT_THAT(model.get(), NotNull()) << error;
+  MjDataPtr data = MakeData(model);
+  mjModel* m = model.get();
+  mjData* d = data.get();
+
+  for (mjtDyn dyntype : {mjDYN_FILTEREXACT, mjDYN_FILTER}) {
+    for (int i = 0; i < m->nu; i++) {
+      m->actuator_dyntype[i] = dyntype;
+    }
+    mj_resetData(m, d);
+
+    // ramp the z target from 0 to 2*pi, expect tracking on the circle
+    const mjtNum rate = 0.5;  // rad/s
+    mjtNum max_error = 0;
+    while (d->time < 2 * mjPI / rate) {
+      d->ctrl[2] = rate * d->time;
+      mj_step(m, d);
+      mjtNum err = d->ctrl[2] - d->actuator_length[2];
+      err -= 2 * mjPI * mju_round(err / (2 * mjPI));
+      max_error = mju_max(max_error, mju_abs(err));
+    }
+    EXPECT_LT(max_error, 0.5) << "dyntype " << dyntype;
+
+    // the filter state is kept as the representative nearest the length
+    EXPECT_LE(mju_abs(d->act[2] - d->actuator_length[2]), mjPI);
+  }
 }
 
 TEST_F(ForwardTest, gravcomp) {
@@ -8338,6 +8399,153 @@ TEST_F(ForwardTest, RungeKuttaQaccIsEffectiveAcceleration) {
     EXPECT_NEAR(d->qacc_warmstart[0], a3, MjTol(1e-12, 1e-4));
     EXPECT_GT(mju_abs(qacc_rk - a3), 0.01);
   }
+}
+
+// under RK4, delayed sensors record stage-0 values (a pure time shift of a
+// non-delayed sensor, independent of whether flg_rnepost was set at stage 0)
+TEST_F(ForwardTest, RungeKuttaDelayedAccelerometer) {
+  static const std::string kXmlBoth = R"(
+  <mujoco>
+    <option integrator="RK4" timestep="0.015625">
+      <flag contact="disable"/>
+    </option>
+    <worldbody>
+      <body>
+        <joint name="j" type="hinge" axis="0 1 0"/>
+        <geom size="0.1" pos="0.3 0 0" mass="1"/>
+        <site name="s" pos="0.3 0 0" euler="20 35 10"/>
+      </body>
+    </worldbody>
+    <actuator>
+      <motor joint="j"/>
+    </actuator>
+    <sensor>
+      <accelerometer site="s"/>
+      <accelerometer site="s" delay="0.046875" nsample="10" interp="zoh"/>
+      <accelerometer site="s" delay="0.0625" interval="0.03125" nsample="10"
+        interp="zoh"/>
+    </sensor>
+  </mujoco>
+  )";
+  std::string xml_delayed_only = kXmlBoth;
+  const std::string target = "      <accelerometer site=\"s\"/>\n";
+  size_t pos = xml_delayed_only.find(target);
+  ASSERT_NE(pos, std::string::npos);
+  xml_delayed_only.erase(pos, target.size());
+
+  char error[1024];
+  MjModelPtr m1 = LoadModelFromString(kXmlBoth.c_str(), error, sizeof(error));
+  ASSERT_THAT(m1.get(), NotNull()) << error;
+  MjModelPtr m2 =
+      LoadModelFromString(xml_delayed_only.c_str(), error, sizeof(error));
+  ASSERT_THAT(m2.get(), NotNull()) << error;
+
+  MjDataPtr d1 = MakeData(m1);
+  MjDataPtr d2 = MakeData(m2);
+  d1->qvel[0] = 2.5;
+  d2->qvel[0] = 2.5;
+
+  constexpr int kSteps = 10;
+  std::vector<std::array<mjtNum, 3>> nodelay(kSteps);
+  for (int step = 0; step < kSteps; ++step) {
+    mjtNum ctrl = 4.0 * mju_sin(0.7 * step);
+    d1->ctrl[0] = ctrl;
+    d2->ctrl[0] = ctrl;
+    mj_step(m1.get(), d1.get());
+    mj_step(m2.get(), d2.get());
+
+    for (int k = 0; k < 3; ++k) {
+      nodelay[step][k] = d1->sensordata[k];
+    }
+
+    // continuous delay = 3*h: exact shift by 3 steps regardless of flg_rnepost
+    if (step >= 3) {
+      for (int k = 0; k < 3; ++k) {
+        EXPECT_NEAR(d1->sensordata[3 + k], nodelay[step - 3][k],
+                    MjTol(1e-12, 1e-5))
+            << "step " << step << " axis " << k;
+        EXPECT_NEAR(d2->sensordata[k], nodelay[step - 3][k], MjTol(1e-12, 1e-5))
+            << "step " << step << " axis " << k;
+      }
+    }
+
+    // interval = 2*h, delay = 4*h: samples even steps and holds on odd steps
+    if (step >= 4) {
+      int sample_step = ((step - 4) / 2) * 2;
+      for (int k = 0; k < 3; ++k) {
+        EXPECT_NEAR(d1->sensordata[6 + k], nodelay[sample_step][k],
+                    MjTol(1e-12, 1e-5))
+            << "step " << step << " axis " << k;
+        EXPECT_NEAR(d2->sensordata[3 + k], nodelay[sample_step][k],
+                    MjTol(1e-12, 1e-5))
+            << "step " << step << " axis " << k;
+      }
+    }
+  }
+}
+
+// under RK4, rotational setpoint wrapping and DC-motor LuGre bristle updates
+// read stage-0 actuator_length and actuator_velocity rather than stage-3 values
+TEST_F(ForwardTest, RungeKuttaStage0ActuatorState) {
+  static constexpr char xml[] = R"(
+  <mujoco>
+    <option integrator="RK4" timestep="0.02" gravity="0 0 0">
+      <flag contact="disable"/>
+    </option>
+    <worldbody>
+      <body>
+        <joint name="ball" type="ball"/>
+        <inertial pos="0 0 0" mass="1" diaginertia="1 1 1"/>
+      </body>
+      <body pos="1 0 0">
+        <joint name="dc_jnt" type="hinge" axis="0 0 1"/>
+        <inertial pos="0 0 0" mass="1" diaginertia="1 1 1"/>
+      </body>
+    </worldbody>
+    <actuator>
+      <general name="integ" joint="ball" dyntype="integrator" gaintype="fixed"
+               biastype="affine" gainprm="1" biasprm="0 -1 0" gear="1 0 0"/>
+      <position name="filt" joint="ball" kp="1" timeconst="0.1" gear="1 0 0"/>
+      <dcmotor name="dc" joint="dc_jnt" motorconst="1" resistance="1"
+               lugre="100 1 0.5 1.5 0.1"/>
+    </actuator>
+  </mujoco>
+  )";
+  char error[1024];
+  MjModelPtr model = LoadModelFromString(xml, error, sizeof(error));
+  ASSERT_THAT(model.get(), NotNull()) << error;
+  MjDataPtr data = MakeData(model);
+  mjModel* m = model.get();
+  mjData* d = data.get();
+
+  // ball spins fast around x: stage-0 length is 0, stage-3 length is ~0.4 rad,
+  // so act = pi + 0.1 must wrap to -pi + 0.1 against stage-0 length = 0
+  d->qvel[0] = 20.0;
+  d->act[0] = mjPI + 0.1;
+  d->act[1] = mjPI + 0.1;
+  d->ctrl[1] = mjPI + 0.1;
+
+  // dc_jnt accelerates strongly from v0 = 0.2 so stage-3 velocity differs a lot
+  d->qvel[3] = 0.2;
+  d->qfrc_applied[3] = 50.0;
+  int dc_id = mj_name2id(m, mjOBJ_ACTUATOR, "dc");
+  ASSERT_GE(dc_id, 0);
+  int bristle_adr = m->actuator_actadr[dc_id];
+  d->act[bristle_adr] = 0.01;
+
+  mj_forward(m, d);
+
+  // mj_Euler advances bristle state from stage-0 actuator_velocity
+  MjDataPtr data_ref = MakeData(model);
+  mj_copyData(data_ref.get(), m, d);
+  mj_Euler(m, data_ref.get());
+  mjtNum expected_bristle = data_ref->act[bristle_adr];
+
+  mj_RungeKutta(m, d, 4);
+
+  EXPECT_NEAR(d->act[0], -mjPI + 0.1, MjTol(1e-12, 1e-5));
+  EXPECT_NEAR(d->act[1], -mjPI + 0.1, MjTol(1e-12, 1e-5));
+  EXPECT_NEAR(d->act[bristle_adr], expected_bristle, MjTol(1e-12, 1e-5));
 }
 
 }  // namespace

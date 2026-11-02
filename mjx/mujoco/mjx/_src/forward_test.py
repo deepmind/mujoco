@@ -39,7 +39,7 @@ def _assert_attr_eq(a, b, attr, tol=_TOLERANCE):
   _assert_eq(getattr(a, attr), getattr(b, attr), attr, tol=tol)
 
 
-class ForwardTest(absltest.TestCase):
+class ForwardTest(parameterized.TestCase):
 
   def test_forward(self):
     m = test_util.load_test_file('constraints.xml')
@@ -117,6 +117,43 @@ class ForwardTest(absltest.TestCase):
     dx = mjx.put_data(m, d)
 
     dx = jax.jit(mjx.fwd_actuation)(mx, dx)
+    _assert_attr_eq(d, dx, 'qfrc_actuator')
+    _assert_attr_eq(d, dx, 'actuator_force')
+
+    # next activations and step
+    mujoco.mj_step(m, d)
+    dx = jax.jit(mjx.step)(mx, dx)
+    _assert_attr_eq(d, dx, 'act')
+
+  @parameterized.parameters('filter', 'filterexact')
+  def test_filtered_rotational_setpoint_wrapping(self, dyntype):
+    xml = f"""
+    <mujoco>
+      <worldbody>
+        <body>
+          <joint name="ball" type="ball"/>
+          <geom size=".1"/>
+        </body>
+      </worldbody>
+      <actuator>
+        <general joint="ball" gear="0 0 1" dyntype="{dyntype}" dynprm="0.1"
+                 gaintype="fixed" gainprm="1" biastype="affine" biasprm="0 -1 0"/>
+      </actuator>
+      <keyframe>
+        <key qpos="{np.cos(1.5)} 0 0 {np.sin(1.5)}" act="3" ctrl="-3"/>
+      </keyframe>
+    </mujoco>
+    """
+    m = mujoco.MjModel.from_xml_string(xml)
+    d = mujoco.MjData(m)
+    mujoco.mj_resetDataKeyframe(m, d, 0)
+    mujoco.mj_forward(m, d)
+
+    mx = mjx.put_model(m)
+    dx = mjx.put_data(m, d)
+
+    dx = jax.jit(mjx.fwd_actuation)(mx, dx)
+    _assert_attr_eq(d, dx, 'act_dot')
     _assert_attr_eq(d, dx, 'qfrc_actuator')
     _assert_attr_eq(d, dx, 'actuator_force')
 
@@ -211,6 +248,47 @@ class ForwardTest(absltest.TestCase):
         dx.qpos, d.qpos, atol=2e-5, rtol=0, err_msg='mismatch: qpos'
     )
     _assert_attr_eq(d, dx, 'qvel')
+
+  def test_rk4_qacc_and_actuator_state(self):
+    """RK4 stores effective qacc, stage-3 warmstart, and wraps act at stage-0 length."""
+    m = mujoco.MjModel.from_xml_string("""
+        <mujoco>
+          <option integrator="RK4" timestep="0.02" gravity="0 0 0">
+            <flag contact="disable"/>
+          </option>
+          <worldbody>
+            <body>
+              <joint name="slide" type="slide" axis="1 0 0" stiffness="4" damping="0.5"/>
+              <inertial pos="0 0 0" mass="1" diaginertia="1 1 1"/>
+            </body>
+            <body pos="1 0 0">
+              <joint name="ball" type="ball"/>
+              <inertial pos="0 0 0" mass="1" diaginertia="1 1 1"/>
+            </body>
+          </worldbody>
+          <actuator>
+            <general joint="ball" dyntype="integrator" gaintype="fixed"
+                     biastype="affine" gainprm="1" biasprm="0 -1 0" gear="1 0 0"/>
+          </actuator>
+        </mujoco>
+        """)
+    d = mujoco.MjData(m)
+    d.qpos[0] = 1.0
+    d.qvel[1] = 20.0
+    d.act[0] = np.pi + 0.1
+    mujoco.mj_forward(m, d)
+    v0 = d.qvel.copy()
+
+    dx = jax.jit(mjx.rungekutta4)(mjx.put_model(m), mjx.put_data(m, d))
+    mujoco.mj_RungeKutta(m, d, 4)
+
+    qacc_eff = (np.asarray(dx.qvel) - v0) / m.opt.timestep
+    _assert_eq(dx.qacc, qacc_eff, 'qacc_eff')
+    _assert_attr_eq(d, dx, 'qacc')
+    _assert_attr_eq(d, dx, 'qacc_warmstart')
+    _assert_attr_eq(d, dx, 'act')
+    self.assertGreater(abs(float(dx.qacc[0] - dx.qacc_warmstart[0])), 1e-3)
+    self.assertLess(float(dx.act[0]), 0.0)
 
   def test_eulerdamp(self):
     m = test_util.load_test_file('pendula.xml')

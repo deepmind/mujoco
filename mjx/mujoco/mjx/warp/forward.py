@@ -23,7 +23,6 @@ import mujoco.mjx.third_party.mujoco_warp as mjwarp
 from mujoco.mjx.third_party.mujoco_warp._src import types as mjwp_types
 import warp as wp
 
-
 _m = mjwarp.Model(
     **{f.name: None for f in dataclasses.fields(mjwarp.Model) if f.init}
 )
@@ -42,7 +41,6 @@ _e = mjwarp.Constraint(
 _cb = mjwp_types.Callback(
     **{f.name: None for f in dataclasses.fields(mjwp_types.Callback) if f.init}
 )
-
 
 @ffi.format_args_for_warp
 def _forward_shim(
@@ -3285,6 +3283,8 @@ def _step_shim(
     geom_type: wp.array[int],
     has_1d_flex: bool,
     has_3d_flex: bool,
+    has_actuator_dcmotor: bool,
+    has_actuator_wrap: bool,
     has_efm_actuator: bool,
     has_ellipsoid_geom: bool,
     has_flex_edge_stiff_damp: bool,
@@ -3972,6 +3972,8 @@ def _step_shim(
   _m.geom_type = geom_type
   _m.has_1d_flex = has_1d_flex
   _m.has_3d_flex = has_3d_flex
+  _m.has_actuator_dcmotor = has_actuator_dcmotor
+  _m.has_actuator_wrap = has_actuator_wrap
   _m.has_efm_actuator = has_efm_actuator
   _m.has_ellipsoid_geom = has_ellipsoid_geom
   _m.has_flex_edge_stiff_damp = has_flex_edge_stiff_damp
@@ -5490,6 +5492,8 @@ def _step_jax_impl(m: types.Model, d: types.Data):
       m.geom_type,
       m._impl.has_1d_flex,
       m._impl.has_3d_flex,
+      m._impl.has_actuator_dcmotor,
+      m._impl.has_actuator_wrap,
       m._impl.has_efm_actuator,
       m._impl.has_ellipsoid_geom,
       m._impl.has_flex_edge_stiff_damp,

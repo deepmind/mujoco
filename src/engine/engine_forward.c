@@ -312,7 +312,8 @@ static mjtNum wrapPeriod(const mjModel* m, int i) {
   int servo = m->actuator_gaintype[i] == mjGAIN_FIXED  &&
               m->actuator_biastype[i] == mjBIAS_AFFINE &&
               m->actuator_gainprm[mjNGAIN*i] == -m->actuator_biasprm[mjNBIAS*i+1] &&
-              (dyntype == mjDYN_NONE || dyntype == mjDYN_INTEGRATOR);
+              (dyntype == mjDYN_NONE || dyntype == mjDYN_INTEGRATOR ||
+               dyntype == mjDYN_FILTER || dyntype == mjDYN_FILTEREXACT);
 
   // PID shape: kp and kv are single-sourced in the affine bias
   int pid = m->actuator_gaintype[i] == mjGAIN_PID;
@@ -451,10 +452,14 @@ void mj_fwdActuation(const mjModel* m, mjData* d) {
     }
 
     case mjDYN_FILTER:              // linear filter: dynprm = tau
-    case mjDYN_FILTEREXACT:
+    case mjDYN_FILTEREXACT: {
+      // rotational setpoint: filter toward the representative nearest the current act
+      mjtNum period = wrapPeriod(m, i);
+      mjtNum u = period > 0 ? wrapSetpoint(ctrl[uadr], d->act[act_last], period) : ctrl[uadr];
       tau = mju_max(mjMINVAL, dynprm[0]);
-      d->act_dot[act_last] = (ctrl[uadr] - d->act[act_last]) / tau;
+      d->act_dot[act_last] = (u - d->act[act_last]) / tau;
       break;
+    }
 
     case mjDYN_MUSCLE:              // muscle model: dynprm = (tau_act, tau_deact)
       d->act_dot[act_last] = mju_muscleDynamics(ctrl[uadr], d->act[act_last], dynprm);
@@ -1316,10 +1321,22 @@ void mj_fwdConstraintCG(const mjModel* m, mjData* d) {
 
 //-------------------------- state advancement and integration  ------------------------------------
 
+// return 1 if sensor i is due for delayed history insertion at d->time
+static int isDelayedSensorDue(const mjModel* m, const mjData* d, int i) {
+  if (m->sensor_history[2*i] == 0 || m->sensor_delay[i] <= 0) {
+    return 0;
+  }
+  mjtNum interval = m->sensor_interval[2*i];
+  return interval <= 0 || d->history[m->sensor_historyadr[i]] + interval <= d->time;
+}
+
+
 // the work every integrator does at the pre-step state before it writes the new one: history
 // buffers, activations, sleep
 //   act_dot: activation derivatives
-static void advanceStart(const mjModel* m, mjData* d, const mjtNum* act_dot) {
+//   sensordata_delay: optional pre-evaluated values for due delayed sensors (NULL to compute here)
+static void advanceStart(const mjModel* m, mjData* d, const mjtNum* act_dot,
+                         const mjtNum* sensordata_delay) {
   int nactuator = m->nactuator, nsensor = m->nsensor;
 
   // advance history buffers
@@ -1337,6 +1354,7 @@ static void advanceStart(const mjModel* m, mjData* d, const mjtNum* act_dot) {
     }
 
     // advance sensor history buffers
+    const mjtNum* delay_ptr = sensordata_delay;
     for (int i = 0; i < nsensor; i++) {
       int nsample = m->sensor_history[2*i];
       if (nsample == 0) continue;
@@ -1354,8 +1372,13 @@ static void advanceStart(const mjModel* m, mjData* d, const mjtNum* act_dot) {
           buf[0] += interval;  // advance by exact interval (continuous time)
           mjtNum* slot = mju_historyInsert(buf, nsample, dim, d->time);
           if (delay > 0) {
-            // have delay, compute sensor
-            mj_computeSensor(m, d, i, slot);
+            // have delay, copy pre-evaluated sensor or compute
+            if (delay_ptr) {
+              mju_copy(slot, delay_ptr, dim);
+              delay_ptr += dim;
+            } else {
+              mj_computeSensor(m, d, i, slot);
+            }
           } else {
             // no delay, copy from sensordata (already computed)
             mju_copy(slot, d->sensordata + m->sensor_adr[i], dim);
@@ -1364,7 +1387,12 @@ static void advanceStart(const mjModel* m, mjData* d, const mjtNum* act_dot) {
       } else if (delay > 0) {
         // delay-only mode: always compute and insert
         mjtNum* slot = mju_historyInsert(buf, nsample, dim, d->time);
-        mj_computeSensor(m, d, i, slot);
+        if (delay_ptr) {
+          mju_copy(slot, delay_ptr, dim);
+          delay_ptr += dim;
+        } else {
+          mj_computeSensor(m, d, i, slot);
+        }
       } else {
         // history-only mode: copy from sensordata (already computed)
         mjtNum* slot = mju_historyInsert(buf, nsample, dim, d->time);
@@ -1387,7 +1415,9 @@ static void advanceStart(const mjModel* m, mjData* d, const mjtNum* act_dot) {
     // rotational setpoints stored in act: replace with an equivalent bounded representative,
     // like the actrange clamp above, this is a projection applied at integration time
     for (int i=0; i < nactuator; i++) {
-      if (m->actuator_dyntype[i] != mjDYN_INTEGRATOR) {
+      mjtDyn dyntype = m->actuator_dyntype[i];
+      if (dyntype != mjDYN_INTEGRATOR && dyntype != mjDYN_FILTER &&
+          dyntype != mjDYN_FILTEREXACT) {
         continue;
       }
 
@@ -1961,13 +1991,11 @@ static void advanceFinish(const mjModel* m, mjData* d, const mjtNum* qvel) {
 }
 
 
-// advance state and time
-//   act_dot: activation derivatives
-//   qacc:    acceleration used to update d->qvel (d->qvel += h*qacc)
-//   qvel:    optional velocity used for position integration; if NULL, use d->qvel
-void mj_advance(const mjModel* m, mjData* d,
-                const mjtNum* act_dot, const mjtNum* qacc, const mjtNum* qvel) {
-  advanceStart(m, d, act_dot);
+// advance state and time, with optional pre-evaluated values for due delayed sensors
+static void advance(const mjModel* m, mjData* d,
+                    const mjtNum* act_dot, const mjtNum* qacc, const mjtNum* qvel,
+                    const mjtNum* sensordata_delay) {
+  advanceStart(m, d, act_dot, sensordata_delay);
 
   // advance velocities
   int sleep_filter = mjENABLED(mjENBL_SLEEP) && d->ntree_awake < m->ntree;
@@ -1990,6 +2018,16 @@ void mj_advance(const mjModel* m, mjData* d,
 }
 
 
+// advance state and time
+//   act_dot: activation derivatives
+//   qacc:    acceleration used to update d->qvel (d->qvel += h*qacc)
+//   qvel:    optional velocity used for position integration; if NULL, use d->qvel
+void mj_advance(const mjModel* m, mjData* d,
+                const mjtNum* act_dot, const mjtNum* qacc, const mjtNum* qvel) {
+  advance(m, d, act_dot, qacc, qvel, NULL);
+}
+
+
 // advance state and time to a verified endpoint, for an integrator that solved the step at the
 // position level: the effective acceleration is published first, as it is the step's acceleration
 // at the pre-step state (a delayed acceleration sensor reads it there); then the pre-step work,
@@ -2002,7 +2040,7 @@ void mj_advance(const mjModel* m, mjData* d,
 void mj_commit(const mjModel* m, mjData* d, const mjtNum* act_dot,
                const mjtNum* qpos, const mjtNum* qvel, const mjtNum* qacc) {
   mju_copy(d->qacc, qacc, m->nv);
-  advanceStart(m, d, act_dot);
+  advanceStart(m, d, act_dot, NULL);
   mju_copy(d->qpos, qpos, m->nq);
   mju_copy(d->qvel, qvel, m->nv);
   advanceFinish(m, d, d->qvel);
@@ -2183,6 +2221,27 @@ void mj_RungeKutta(const mjModel* m, mjData* d, int N) {
     mju_copy(X[0]+nq+nv, d->act, na);
     mju_copy(F[0]+nv, d->act_dot, na);
   }
+  mjtNum *actuator_length0 = NULL, *actuator_velocity0 = NULL;
+  if (na && m->nout && !mjDISABLED(mjDSBL_ACTUATION)) {
+    int save_len = 0, save_vel = 0;
+    for (int i=0; i < m->nactuator; i++) {
+      mjtDyn dyntype = m->actuator_dyntype[i];
+      if ((dyntype == mjDYN_INTEGRATOR || dyntype == mjDYN_FILTER ||
+           dyntype == mjDYN_FILTEREXACT) && wrapPeriod(m, i) > 0) {
+        save_len = 1;
+      } else if (dyntype == mjDYN_DCMOTOR) {
+        save_vel = 1;
+      }
+    }
+    if (save_len) {
+      actuator_length0 = mjSTACKALLOC(d, m->nout, mjtNum);
+      mju_copy(actuator_length0, d->actuator_length, m->nout);
+    }
+    if (save_vel) {
+      actuator_velocity0 = mjSTACKALLOC(d, m->nout, mjtNum);
+      mju_copy(actuator_velocity0, d->actuator_velocity, m->nout);
+    }
+  }
   mjtNum *ten_length0 = NULL, *ten_J0 = NULL;
   if (m->nplastic && m->ntendon) {
     ten_length0 = mjSTACKALLOC(d, m->ntendon, mjtNum);
@@ -2210,6 +2269,27 @@ void mj_RungeKutta(const mjModel* m, mjData* d, int N) {
       mju_copy(xquat0, d->xquat, 4 * m->nbody);
       xmat0 = mjSTACKALLOC(d, 9 * m->nbody, mjtNum);
       mju_copy(xmat0, d->xmat, 9 * m->nbody);
+    }
+  }
+
+  // pre-evaluate due delayed sensors at stage 0 before stages 1..N-1 overwrite d
+  mjtNum* sensordata_delay0 = NULL;
+  if (m->nhistory > 0) {
+    int ndelaydata = 0;
+    for (int i=0; i < m->nsensor; i++) {
+      if (isDelayedSensorDue(m, d, i)) {
+        ndelaydata += m->sensor_dim[i];
+      }
+    }
+    if (ndelaydata > 0) {
+      sensordata_delay0 = mjSTACKALLOC(d, ndelaydata, mjtNum);
+      mjtNum* ptr = sensordata_delay0;
+      for (int i=0; i < m->nsensor; i++) {
+        if (isDelayedSensorDue(m, d, i)) {
+          mj_computeSensor(m, d, i, ptr);
+          ptr += m->sensor_dim[i];
+        }
+      }
     }
   }
 
@@ -2259,6 +2339,12 @@ void mj_RungeKutta(const mjModel* m, mjData* d, int N) {
   mju_copy(d->qpos, X[0], nq);
   mju_copy(d->qvel, X[0]+nq, nv);
   mju_copy(d->act, X[0]+nq+nv, na);
+  if (actuator_length0) {
+    mju_copy(d->actuator_length, actuator_length0, m->nout);
+  }
+  if (actuator_velocity0) {
+    mju_copy(d->actuator_velocity, actuator_velocity0, m->nout);
+  }
   if (ten_length0) {
     mju_copy(d->ten_length, ten_length0, m->ntendon);
     if (ten_J0) {
@@ -2278,11 +2364,11 @@ void mj_RungeKutta(const mjModel* m, mjData* d, int N) {
     }
   }
 
-  // effective acceleration of the step (RK weighted combination), read by delayed sensors
-  mju_copy(d->qacc, dX+nv, nv);
-
   // advance state and time
-  mj_advance(m, d, dX+2*nv, dX+nv, dX);
+  advance(m, d, dX+2*nv, dX+nv, dX, sensordata_delay0);
+
+  // effective acceleration of the step (RK weighted combination)
+  mju_copy(d->qacc, dX+nv, nv);
 
   // warm start the next step from the last stage's acceleration, the most recent solve
   mju_copy(d->qacc_warmstart, F[N-1], nv);
@@ -2673,7 +2759,7 @@ void mj_step1(const mjModel* m, mjData* d) {
     mj_energyVel(m, d);
   }
 
-  if (mjcb_control) {
+  if (mjcb_control && !mjDISABLED(mjDSBL_ACTUATION)) {
     mjcb_control(m, d);
   }
   TM_END(mjTIMER_STEP);

@@ -190,7 +190,12 @@ def _wrap_period(
     gaintype == GainType.FIXED
     and biastype == BiasType.AFFINE
     and gainprm[0] == -biasprm[1]
-    and (dyntype == DynType.NONE or dyntype == DynType.INTEGRATOR)
+    and (
+      dyntype == DynType.NONE
+      or dyntype == DynType.INTEGRATOR
+      or dyntype == DynType.FILTER
+      or dyntype == DynType.FILTEREXACT
+    )
   )
   if not is_servo:
     return 0.0
@@ -300,7 +305,7 @@ def _next_activation(
         act_dot_scale,
         limit and actuator_actlimited[uid],
       )
-      if limit and dyntype == DynType.INTEGRATOR:
+      if limit and (dyntype == DynType.INTEGRATOR or dyntype == DynType.FILTER or dyntype == DynType.FILTEREXACT):
         gaintype = actuator_gaintype[uid]
         biastype = actuator_biastype[uid]
         gainprm = actuator_gainprm[actuator_gainprm_id, uid]
@@ -1709,6 +1714,19 @@ def rungekutta4(m: Model, d: Data):
     act_t0 = None
     act_dot_rk = None
 
+  save_len = bool(
+    m.na
+    and not (m.opt.disableflags & DisableBit.ACTUATION)
+    and m.has_actuator_wrap
+  )
+  save_vel = bool(
+    m.na
+    and not (m.opt.disableflags & DisableBit.ACTUATION)
+    and m.has_actuator_dcmotor
+  )
+  actuator_length_t0 = wp.clone(d.actuator_length) if save_len else None
+  actuator_velocity_t0 = wp.clone(d.actuator_velocity) if save_vel else None
+
   if m.nplastic > 0 and m.ntendon > 0:
     ten_length_t0 = wp.clone(d.ten_length)
     ten_J_t0 = wp.clone(d.ten_J)
@@ -1742,7 +1760,7 @@ def rungekutta4(m: Model, d: Data):
   for i in range(3):
     a, b = float(A[i]), B[i + 1]
     _rk_perturb_state(m, d, a, qpos_t0, qvel_t0, qvel_stage, act_t0)
-    forward(m, d)
+    _forward(m, d, skip_sensor=True)
     wp.launch(
       _rk_correct_velocity,
       dim=(d.nworld, m.njnt),
@@ -1757,12 +1775,14 @@ def rungekutta4(m: Model, d: Data):
   # last stage's acceleration, the most recent solve: warm start for the next step
   qacc_last = wp.clone(d.qacc)
 
-  # effective acceleration of the step (RK weighted combination), read by delayed sensors
-  wp.copy(d.qacc, qacc_rk)
-
   if m.na:
     wp.copy(d.act, act_t0)
     wp.copy(d.act_dot, act_dot_rk)
+
+  if actuator_length_t0 is not None:
+    wp.copy(d.actuator_length, actuator_length_t0)
+  if actuator_velocity_t0 is not None:
+    wp.copy(d.actuator_velocity, actuator_velocity_t0)
 
   if ten_length_t0 is not None:
     wp.copy(d.ten_length, ten_length_t0)
@@ -1779,6 +1799,9 @@ def rungekutta4(m: Model, d: Data):
     wp.copy(d.xmat, xmat_t0)
 
   _advance(m, d, qacc_rk, qvel_rk)
+
+  # effective acceleration of the step (RK weighted combination)
+  wp.copy(d.qacc, qacc_rk)
   wp.copy(d.qacc_warmstart, qacc_last)
 
 
@@ -2751,6 +2774,25 @@ def _actuator_force(
   u_first = ctrl
 
   dyntype = actuator_dyntype[uid]
+  gaintype = actuator_gaintype[uid]
+  biastype = actuator_biastype[uid]
+  trntype = actuator_trntype[uid]
+  trnid = actuator_trnid[uid]
+  gainprm = actuator_gainprm[worldid % actuator_gainprm.shape[0], uid]
+  biasprm = actuator_biasprm[worldid % actuator_biasprm.shape[0], uid]
+  gear = actuator_gear[worldid % actuator_gear.shape[0], uid]
+  period = _wrap_period(
+    jnt_type,
+    trntype,
+    dyntype,
+    gaintype,
+    biastype,
+    trnid,
+    gainprm,
+    biasprm,
+    gear,
+  )
+
   act_first = actuator_actadr[uid]
   if na and act_first >= 0:
     act_last = act_first + actuator_actnum[uid] - 1
@@ -2760,13 +2802,16 @@ def _actuator_force(
       act_dot = ctrl
     elif dyntype == DynType.FILTER or dyntype == DynType.FILTEREXACT:
       act = act_in[worldid, act_last]
-      act_dot = (ctrl - act) / wp.max(dynprm[0], MJ_MINVAL)
+      # rotational setpoint: filter toward the representative nearest the current act
+      u_filter = ctrl
+      if period > 0.0:
+        u_filter -= period * wp.round((u_filter - act) / period)
+      act_dot = (u_filter - act) / wp.max(dynprm[0], MJ_MINVAL)
     elif dyntype == DynType.MUSCLE:
       dynprm = actuator_dynprm[worldid % actuator_dynprm.shape[0], uid]
       act = act_in[worldid, act_last]
       act_dot = util_misc.muscle_dynamics(ctrl, act, dynprm)
     elif dyntype == DynType.DCMOTOR:
-      gainprm = actuator_gainprm[worldid % actuator_gainprm.shape[0], uid]
       slots = util_misc.dcmotor_slots(dynprm, gainprm)
       adr = act_first
 
@@ -2918,8 +2963,6 @@ def _actuator_force(
   velocity = actuator_velocity_in[worldid, uid]
 
   # gain
-  gaintype = actuator_gaintype[uid]
-  gainprm = actuator_gainprm[worldid % actuator_gainprm.shape[0], uid]
   dynprm = actuator_dynprm[worldid % actuator_dynprm.shape[0], uid]
 
   gain = 0.0
@@ -2963,9 +3006,6 @@ def _actuator_force(
   # GainType.USER: gain stays 0, modified by act_gain_callback
 
   # bias
-  biastype = actuator_biastype[uid]
-  biasprm = actuator_biasprm[worldid % actuator_biasprm.shape[0], uid]
-
   bias = 0.0  # BiasType.NONE or BiasType.USER (modified by act_bias_callback)
   if biastype == BiasType.AFFINE:
     bias = biasprm[0] + biasprm[1] * length + biasprm[2] * velocity
@@ -2978,20 +3018,6 @@ def _actuator_force(
       K = gainprm[1]
       bias -= gain * K * velocity
 
-  trntype = actuator_trntype[uid]
-  trnid = actuator_trnid[uid]
-  gear = actuator_gear[worldid % actuator_gear.shape[0], uid]
-  period = _wrap_period(
-    jnt_type,
-    trntype,
-    dyntype,
-    gaintype,
-    biastype,
-    trnid,
-    gainprm,
-    biasprm,
-    gear,
-  )
   if period > 0.0:
     err = ctrl_act - length
     ctrl_act -= period * wp.round(err / period)
@@ -3401,9 +3427,7 @@ def _energy_vel(m: Model, d: Data):
       sensor.energy_vel(m, d)
 
 
-@event_scope
-def forward(m: Model, d: Data):
-  """Forward dynamics."""
+def _forward(m: Model, d: Data, skip_sensor: bool = False):
   check_discrete(m)
   sleep_enabled = bool(m.opt.enableflags & EnableBit.SLEEP) and not bool(m.opt.disableflags & DisableBit.ISLAND)
   if sleep_enabled:
@@ -3411,12 +3435,14 @@ def forward(m: Model, d: Data):
     sleep.update_sleep(m, d)
 
   fwd_position(m, d, factorize=False)
-  d.sensordata.zero_()
-  sensor.sensor_pos(m, d)
+  if not skip_sensor:
+    d.sensordata.zero_()
+    sensor.sensor_pos(m, d)
   _energy_pos(m, d)
 
   fwd_velocity(m, d)
-  sensor.sensor_vel(m, d)
+  if not skip_sensor:
+    sensor.sensor_vel(m, d)
   _energy_vel(m, d)
 
   if not (m.opt.disableflags & DisableBit.ACTUATION):
@@ -3428,9 +3454,18 @@ def forward(m: Model, d: Data):
   solver.solve(m, d)
   if m.opt.integrator == IntegratorType.DISCRETE:
     _launch_discrete_free_gyro(m, d, d.qacc, d.qacc, False)
-  if m.opt.run_rne_postconstraint or (not (m.opt.disableflags & DisableBit.SENSOR) and m.sensor_rne_postconstraint):
+  if m.opt.run_rne_postconstraint or (
+    not skip_sensor and not (m.opt.disableflags & DisableBit.SENSOR) and m.sensor_rne_postconstraint
+  ):
     smooth.rne_postconstraint(m, d)
-  sensor.sensor_acc(m, d, skip_rne_postconstraint=True)
+  if not skip_sensor:
+    sensor.sensor_acc(m, d, skip_rne_postconstraint=True)
+
+
+@event_scope
+def forward(m: Model, d: Data):
+  """Forward dynamics."""
+  _forward(m, d)
 
 
 @event_scope

@@ -105,7 +105,15 @@ def _wrap_period(m: Model) -> jax.Array:
   is_servo_type = (
       (m.actuator_gaintype == GainType.FIXED)
       & (m.actuator_biastype == BiasType.AFFINE)
-      & np.isin(m.actuator_dyntype, (DynType.NONE, DynType.INTEGRATOR))
+      & np.isin(
+          m.actuator_dyntype,
+          (
+              DynType.NONE,
+              DynType.INTEGRATOR,
+              DynType.FILTER,
+              DynType.FILTEREXACT,
+          ),
+      )
   )
   is_site_ref = (m.actuator_trntype == TrnType.SITE) & (
       m.actuator_trnid[:, 1] >= 0
@@ -166,13 +174,14 @@ def fwd_actuation(m: Model, d: Data) -> Data:
     ctrl = jp.clip(ctrl, ctrlrange[:, 0], ctrlrange[:, 1])
 
   # act_dot for stateful actuators
-  def get_act_dot(dyn_typ, dyn_prm, ctrl, act):
+  def get_act_dot(dyn_typ, dyn_prm, ctrl, act, period):
     if dyn_typ == DynType.NONE:
       act_dot = jp.array(0.0)
     elif dyn_typ == DynType.INTEGRATOR:
       act_dot = ctrl
     elif dyn_typ in (DynType.FILTER, DynType.FILTEREXACT):
-      act_dot = (ctrl - act) / jp.clip(dyn_prm[0], mujoco.mjMINVAL)
+      u = _wrap_setpoint(ctrl, act, period)
+      act_dot = (u - act) / jp.clip(dyn_prm[0], mujoco.mjMINVAL)
     elif dyn_typ == DynType.MUSCLE:
       act_dot = support.muscle_dynamics(ctrl, act, dyn_prm)
     else:
@@ -184,12 +193,13 @@ def fwd_actuation(m: Model, d: Data) -> Data:
     act_dot = scan.flat(
         m,
         get_act_dot,
-        'uuua',
+        'uuuau',
         'a',
         m.actuator_dyntype,
         m.actuator_dynprm,
         ctrl,
         d.act,
+        _wrap_period(m),
         group_by='u',
     )
 
@@ -394,7 +404,7 @@ def _next_activation(m: Model, d: Data, act_dot: jax.Array) -> jax.Array:
     else:
       act = act + act_dot * m.opt.timestep
     act = jp.clip(act, actrange[0], actrange[1])
-    if dyntype == DynType.INTEGRATOR:
+    if dyntype in (DynType.INTEGRATOR, DynType.FILTER, DynType.FILTEREXACT):
       act = _wrap_setpoint(act, length, period)
     return act
 
@@ -508,9 +518,16 @@ def rungekutta4(m: Model, d: Data) -> Data:
   out, _ = jax.lax.scan(f, (qvel, qacc, act_dot, kqvel, d), abt, unroll=3)
   qvel, qacc, act_dot, _, d1 = out
 
-  d = d1.replace(qpos=d0.qpos, qvel=d0.qvel, act=d0.act, time=d0.time)
-  d = _advance(m, d, act_dot, qacc, qvel)
-  return d
+  d = d1.replace(
+      qpos=d0.qpos,
+      qvel=d0.qvel,
+      act=d0.act,
+      time=d0.time,
+      actuator_length=d0.actuator_length,
+  )
+  return _advance(m, d, act_dot, qacc, qvel).replace(
+      qacc=qacc, qacc_warmstart=d1.qacc
+  )
 
 
 @named_scope

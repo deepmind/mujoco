@@ -624,6 +624,40 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
       | (mjm.actuator_biastype == mujoco.mjtBias.mjBIAS_SO3)
     )
   )
+  has_actuator_wrap = False
+  for i in range(mjm.nactuator):
+    dyntype = int(mjm.actuator_dyntype[i])
+    if dyntype in (
+      int(mujoco.mjtDyn.mjDYN_INTEGRATOR),
+      int(mujoco.mjtDyn.mjDYN_FILTER),
+      int(mujoco.mjtDyn.mjDYN_FILTEREXACT),
+    ):
+      gaintype = int(mjm.actuator_gaintype[i])
+      biastype = int(mjm.actuator_biastype[i])
+      if (
+        gaintype == int(mujoco.mjtGain.mjGAIN_FIXED)
+        and biastype == int(mujoco.mjtBias.mjBIAS_AFFINE)
+        and mjm.actuator_gainprm[i, 0] == -mjm.actuator_biasprm[i, 1]
+      ):
+        trntype = int(mjm.actuator_trntype[i])
+        if trntype in (int(mujoco.mjtTrn.mjTRN_JOINT), int(mujoco.mjtTrn.mjTRN_JOINTINPARENT)):
+          jntid = int(mjm.actuator_trnid[i, 0])
+          jnt_type = int(mjm.jnt_type[jntid])
+          if jnt_type == int(mujoco.mjtJoint.mjJNT_BALL) and np.any(mjm.actuator_gear[i, :3] != 0.0):
+            has_actuator_wrap = True
+            break
+        elif (
+          trntype == int(mujoco.mjtTrn.mjTRN_SITE)
+          and mjm.actuator_trnid[i, 1] >= 0
+          and np.all(mjm.actuator_gear[i, :3] == 0.0)
+          and np.any(mjm.actuator_gear[i, 3:6] != 0.0)
+        ):
+          has_actuator_wrap = True
+          break
+  m.has_actuator_wrap = has_actuator_wrap
+  m.has_actuator_dcmotor = bool(
+    mjm.nactuator > 0 and np.any(mjm.actuator_dyntype == int(mujoco.mjtDyn.mjDYN_DCMOTOR))
+  )
   m.has_1d_flex = bool(mjm.nflex > 0 and np.any(mjm.flex_dim == 1))
   m.has_2d_flex = bool(mjm.nflex > 0 and np.any(mjm.flex_dim == 2))
   m.has_3d_flex = bool(mjm.nflex > 0 and np.any(mjm.flex_dim == 3))

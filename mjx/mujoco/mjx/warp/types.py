@@ -316,6 +316,8 @@ class ModelWarp(PyTreeNode):
   has_1d_flex: bool
   has_2d_flex: bool
   has_3d_flex: bool
+  has_actuator_dcmotor: bool
+  has_actuator_wrap: bool
   has_efm_actuator: bool
   has_ellipsoid_geom: bool
   has_flex_edge_stiff_damp: bool
@@ -1136,6 +1138,8 @@ _NDIM = {
         'has_1d_flex': 0,
         'has_2d_flex': 0,
         'has_3d_flex': 0,
+        'has_actuator_dcmotor': 0,
+        'has_actuator_wrap': 0,
         'has_efm_actuator': 0,
         'has_ellipsoid_geom': 0,
         'has_flex_edge_stiff_damp': 0,
@@ -1953,6 +1957,8 @@ _BATCH_DIM = {
         'has_1d_flex': False,
         'has_2d_flex': False,
         'has_3d_flex': False,
+        'has_actuator_dcmotor': False,
+        'has_actuator_wrap': False,
         'has_efm_actuator': False,
         'has_ellipsoid_geom': False,
         'has_flex_edge_stiff_damp': False,
