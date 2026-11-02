@@ -1540,16 +1540,44 @@ static void _resetData(const mjModel* m, mjData* d, unsigned char debug_value) {
       mjtNum* buf = d->history + m->sensor_historyadr[i];
 
       // user slot: last compute time (phase=0 means -period, i.e. first compute at t=0)
-      buf[0] = (period > 0) ? (phase == 0 ? -period : phase) : -dt;
+      mjtNum t0 = (phase == 0) ? -period : phase;
+      buf[0] = (period > 0) ? t0 : -dt;
       buf[1] = n - 1;  // cursor: newest at logical index n-1
 
       mjtNum* times = buf + 2;
       if (period > 0) {
-        // samples spaced at period intervals, rounded up to dt grid
-        mjtNum t0 = (phase == 0) ? -period : phase;
-        for (int j = 0; j < n; j++) {
-          mjtNum continuous_t = t0 - (n-1-j)*period;
-          times[j] = dt > 0 ? mju_ceil(continuous_t / dt) * dt : continuous_t;
+        if (dt <= 0) {
+          for (int j = 0; j < n; j++) {
+            times[j] = t0 - (n-1-j)*period;
+          }
+        } else if (period <= dt) {
+          // sub-timestep or equal period: exact integer dt grid
+          int offset = (phase == 0) ? n : n - 1;
+          for (int j = 0; j < n; j++) {
+            times[j] = -(offset-j)*dt;
+          }
+        } else {
+          // samples spaced at period intervals, rounded up to dt grid
+          // relative near-integer snap and k >= next_k clamp are floating-point safety nets
+          mjtNum next_k = 0;
+#ifdef mjUSESINGLE
+          const mjtNum reltol = 1e-6f;
+#else
+          const mjtNum reltol = 1e-12;
+#endif
+          for (int j = n - 1; j >= 0; j--) {
+            mjtNum r = (t0 - (n-1-j)*period) / dt;
+            mjtNum r_round = mju_floor(r + 0.5);
+            if (mju_abs(r - r_round) <= reltol * mju_max(1, mju_abs(r))) {
+              r = r_round;
+            }
+            mjtNum k = mju_ceil(r);
+            if (j < n - 1 && k >= next_k) {
+              k = next_k - 1;
+            }
+            times[j] = k * dt;
+            next_k = k;
+          }
         }
       } else {
         // no period: timestamps at [-n*dt, ..., -dt]

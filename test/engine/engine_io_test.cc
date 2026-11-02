@@ -136,6 +136,64 @@ TEST_F(EngineIoTest, MakeDataReturnsNullOnFailure) {
   EXPECT_THAT(data, IsNull());
 }
 
+TEST_F(EngineIoTest, SubTimestepSensorIntervalStrictlyMonotonic) {
+  for (int nsample : {5, 7, 10, 16}) {
+    std::string xml = absl::StrFormat(
+        R"(
+        <mujoco>
+          <option timestep="0.01" gravity="0 0 0"/>
+          <worldbody>
+            <body>
+              <joint name="slide" type="slide"/>
+              <geom size="0.1"/>
+            </body>
+          </worldbody>
+          <sensor>
+            <jointpos joint="slide" delay="0.02" interval="0.002 0" nsample="%d"/>
+            <jointpos joint="slide" delay="0.02" interval="0.002 -0.001" nsample="%d"/>
+            <jointpos joint="slide" delay="0.02" interval="0.01 0" nsample="%d"/>
+            <jointpos joint="slide" delay="0.02" interval="0.01 -0.005" nsample="%d"/>
+            <jointpos joint="slide" delay="0.02" interval="0.015 0" nsample="%d"/>
+          </sensor>
+        </mujoco>
+        )",
+        nsample, nsample, nsample, nsample, nsample);
+    std::array<char, 1024> error;
+    MjModelPtr model =
+        LoadModelFromString(xml.c_str(), error.data(), error.size());
+    ASSERT_THAT(model.get(), NotNull()) << error.data();
+    MjDataPtr data = MakeData(model);
+
+    for (int s = 0; s < model->nsensor; s++) {
+      int n = model->sensor_history[2 * s];
+      ASSERT_EQ(n, nsample);
+      const mjtNum* buf = data->history + model->sensor_historyadr[s];
+      const mjtNum* times = buf + 2;
+      for (int j = 0; j < n - 1; j++) {
+        EXPECT_LT(times[j], times[j + 1])
+            << "nsample=" << nsample << " sensor=" << s << " index=" << j;
+      }
+      if (s < 4) {
+        int offset = (s % 2 == 0) ? n : n - 1;
+        for (int j = 0; j < n; j++) {
+          EXPECT_NEAR(times[j], -(offset - j) * model->opt.timestep,
+                      MjTol(1e-12, 1e-6))
+              << "nsample=" << nsample << " sensor=" << s << " index=" << j;
+        }
+      }
+    }
+
+    // Verify t=0 sample on sensor 0 (phase=0) is recorded and read after delay.
+    data->qpos[0] = 5.0;
+    mj_step(model.get(), data.get());
+    EXPECT_NEAR(data->sensordata[0], 0.0, MjTol(1e-10, 1e-6));
+    mj_step(model.get(), data.get());
+    EXPECT_NEAR(data->sensordata[0], 0.0, MjTol(1e-10, 1e-6));
+    mj_step(model.get(), data.get());
+    EXPECT_NEAR(data->sensordata[0], 5.0, MjTol(1e-10, 1e-6));
+  }
+}
+
 TEST_F(EngineIoTest, ResetVariableSizes) {
   constexpr char xml[] = "<mujoco/>";
 
