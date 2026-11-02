@@ -3349,9 +3349,9 @@ def _energy_pos_passive_flex(deterministic: bool = False):
   @wp.kernel(module="unique", module_options=module_options)
   def kernel(
     # Model:
-    flex_dim: wp.array[int],
     flexedge_length0: wp.array[float],
     flex_edgestiffness: wp.array[float],
+    flex_interp: wp.array[int],
     flexedge_rigid: wp.array[bool],
     flex_edgeflexid: wp.array[int],
     # Data in:
@@ -3365,8 +3365,7 @@ def _energy_pos_passive_flex(deterministic: bool = False):
       return
 
     f = flex_edgeflexid[edgeid]
-
-    if flex_dim[f] > 1:
+    if flex_interp[f] != 0:
       return
 
     stiffness = flex_edgestiffness[f]
@@ -3430,14 +3429,14 @@ def energy_pos(m: Model, d: Data):
         outputs=[d.energy],
       )
 
-    # add 1d flex-level springs
+    # add flex-level edge springs
     wp.launch(
       _energy_pos_passive_flex(bool(m.opt.deterministic & DeterminismType.ATOMICS)),
       dim=(d.nworld, m.nflexedge),
       inputs=[
-        m.flex_dim,
         m.flexedge_length0,
         m.flex_edgestiffness,
+        m.flex_interp,
         m.flexedge_rigid,
         m.flex_edgeflexid,
         d.flexedge_length,

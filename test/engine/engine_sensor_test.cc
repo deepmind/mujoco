@@ -473,6 +473,114 @@ TEST_F(SensorTest, PotentialEnergyFreeJointSpring) {
   EXPECT_NEAR(data->sensordata[0], 0.5 * 2 * 14, MjTol(1e-12, 1e-5));
 }
 
+// potential energy includes edge springs of 2D and 3D flexes
+TEST_F(SensorTest, FlexEdgeSpringPotentialEnergy2D3D) {
+  static constexpr char xml[] = R"(
+  <mujoco>
+    <option gravity="0 0 0">
+      <flag energy="enable"/>
+    </option>
+    <worldbody>
+      <body name="a0">
+        <geom size="0.05"/>
+      </body>
+      <body name="a1" pos="1 0 0">
+        <joint type="slide" axis="1 0 0"/>
+        <geom size="0.05"/>
+      </body>
+      <body name="a2" pos="0 1 0">
+        <geom size="0.05"/>
+      </body>
+      <body name="t0" pos="3 0 0">
+        <geom size="0.05"/>
+      </body>
+      <body name="t1" pos="4 0 0">
+        <joint type="slide" axis="1 0 0"/>
+        <geom size="0.05"/>
+      </body>
+      <body name="t2" pos="3 1 0">
+        <geom size="0.05"/>
+      </body>
+      <body name="t3" pos="3 0 1">
+        <geom size="0.05"/>
+      </body>
+    </worldbody>
+    <deformable>
+      <flex name="tri" dim="2" body="a0 a1 a2" element="0 1 2">
+        <edge damping="0.1"/>
+      </flex>
+      <flex name="tet" dim="3" body="t0 t1 t2 t3" element="0 1 2 3">
+        <edge damping="0.1"/>
+      </flex>
+    </deformable>
+    <sensor>
+      <e_potential/>
+    </sensor>
+  </mujoco>
+  )";
+  char error[1024];
+  MjModelPtr m = LoadModelFromString(xml, error, sizeof(error));
+  ASSERT_THAT(m.get(), NotNull()) << error;
+  ASSERT_EQ(m->nflex, 2);
+  m->flex_edgestiffness[0] = 100;
+  m->flex_edgestiffness[1] = 50;
+  MjDataPtr d = MakeData(m);
+
+  d->qpos[0] = 0.2;
+  d->qpos[1] = -0.3;
+  mj_forward(m.get(), d.get());
+
+  // edge springs generate passive forces on both flexes
+  EXPECT_LT(d->qfrc_spring[0], -10.0);
+  EXPECT_GT(d->qfrc_spring[1], 10.0);
+
+  mjtNum expected = 0;
+  for (int f = 0; f < m->nflex; f++) {
+    int adr = m->flex_edgeadr[f];
+    for (int e = adr; e < adr + m->flex_edgenum[f]; e++) {
+      if (!m->flexedge_rigid[e]) {
+        mjtNum disp = m->flexedge_length0[e] - d->flexedge_length[e];
+        expected += 0.5 * m->flex_edgestiffness[f] * disp * disp;
+      }
+    }
+  }
+  EXPECT_GT(expected, 1.0);
+  EXPECT_NEAR(d->energy[0], expected, MjTol(1e-12, 1e-5));
+  EXPECT_NEAR(d->sensordata[0], expected, MjTol(1e-12, 1e-5));
+}
+
+// interpolated flexes are skipped in edge spring potential energy even if
+// flex_edgestiffness > 0 is set at runtime
+TEST_F(SensorTest, FlexEdgeSpringPotentialEnergyInterpolatedSkipped) {
+  static constexpr char xml[] = R"(
+  <mujoco>
+    <option gravity="0 0 0">
+      <flag energy="enable"/>
+    </option>
+    <worldbody>
+      <flexcomp name="test" type="grid" count="2 2 2" spacing="1 1 1" dim="3" dof="trilinear">
+        <contact selfcollide="none"/>
+      </flexcomp>
+    </worldbody>
+    <sensor>
+      <e_potential/>
+    </sensor>
+  </mujoco>
+  )";
+  char error[1024];
+  MjModelPtr m = LoadModelFromString(xml, error, sizeof(error));
+  ASSERT_THAT(m.get(), NotNull()) << error;
+  ASSERT_EQ(m->nflex, 1);
+  ASSERT_NE(m->flex_interp[0], 0);
+  m->flex_edgestiffness[0] = 100;
+  MjDataPtr d = MakeData(m);
+
+  mj_forward(m.get(), d.get());
+
+  EXPECT_EQ(d->energy[0], 0);
+  EXPECT_EQ(d->sensordata[0], 0);
+}
+
 TEST_F(SensorTest, KineticEnergy) {
   constexpr char xml[] = R"(
   <mujoco>
