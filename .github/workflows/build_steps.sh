@@ -268,7 +268,7 @@ configure_mujoco() {
 
 build_mujoco_core() {
     echo "Building MuJoCo core and plugins..."
-    cmake --build . --config=Release --target mujoco actuator elasticity sensor sdf_plugin ${CMAKE_BUILD_ARGS}
+    cmake --build . --config=Release --target mujoco actuator sensor sdf_plugin ${CMAKE_BUILD_ARGS}
 }
 
 
@@ -303,7 +303,6 @@ copy_plugins_posix() {
     echo "Copying plugins..."
     mkdir -p ${TMPDIR}/mujoco_install/mujoco_plugin &&
     cp lib/libactuator.* ${TMPDIR}/mujoco_install/mujoco_plugin &&
-    cp lib/libelasticity.* ${TMPDIR}/mujoco_install/mujoco_plugin &&
     cp lib/libsensor.* ${TMPDIR}/mujoco_install/mujoco_plugin &&
     cp lib/libsdf_plugin.* ${TMPDIR}/mujoco_install/mujoco_plugin
 }
@@ -317,7 +316,6 @@ copy_plugins_window() {
         dll_dir="bin/Release"
     fi
     cp ${dll_dir}/actuator.dll ${TMPDIR}/mujoco_install/mujoco_plugin &&
-    cp ${dll_dir}/elasticity.dll ${TMPDIR}/mujoco_install/mujoco_plugin &&
     cp ${dll_dir}/sensor.dll ${TMPDIR}/mujoco_install/mujoco_plugin
 }
 
@@ -749,7 +747,7 @@ build_studio_platform_libs() {
     _configure_studio_host
     echo "Building the Studio platform libraries, assets and engine plugins..."
     cmake --build build_host -j"${NJOBS}" \
-        --target mujoco_studio_platform mujoco_studio_assets matc resgen cmgen actuator elasticity sensor sdf_plugin
+        --target mujoco_studio_platform mujoco_studio_assets matc resgen cmgen actuator sensor sdf_plugin
 }
 
 
@@ -764,7 +762,7 @@ build_studio_cpp_viewer() {
     fi
     echo "Building the C++ Studio viewer app (mujoco_studio) in ${host_dir}..."
     cmake --build "${host_dir}" -j"${NJOBS}" \
-        --target mujoco_studio actuator elasticity sensor sdf_plugin
+        --target mujoco_studio actuator sensor sdf_plugin
 }
 
 
@@ -815,7 +813,7 @@ install_studio_platform() {
 
     # 2. Engine plugins (setup.py packages them from MUJOCO_PLUGIN_PATH).
     mkdir -p "${prefix}/mujoco_plugin"
-    for plugin in actuator elasticity sensor sdf_plugin; do
+    for plugin in actuator sensor sdf_plugin; do
         find "${plugin_dir}" -name "*${plugin}.${plugin_ext}" \
             -exec cp {} "${prefix}/mujoco_plugin/" \; 2>/dev/null || true
     done
@@ -939,7 +937,7 @@ build_engine() {
 
     mkdir -p "${prefix}/mujoco_plugin"
     local plugin
-    for plugin in actuator elasticity sensor sdf_plugin; do
+    for plugin in actuator sensor sdf_plugin; do
         find build/lib build/bin -maxdepth 2 \
             \( -name "lib${plugin}.so" -o -name "lib${plugin}.dylib" -o -name "${plugin}.dll" \) \
             -exec cp {} "${prefix}/mujoco_plugin/" \; 2>/dev/null || true

@@ -807,13 +807,20 @@ TEST_F(SolverTest, ConeFoldEquivalent) {
 // magnitude below their diagonals. In single precision rounding loses one:
 // Newton must clamp and decouple it and continue, not abort or diverge.
 TEST_F(SolverTest, NewtonHessianSurvivesLostPivot) {
-  constexpr char xml[] = R"(
-  <mujoco>
-    <worldbody>
-      <composite type="cable" curve="s" count="41 1 1" size="1" initial="none">
-        <joint kind="main" damping=".015"/>
-        <geom type="capsule" size=".005" contype="0" conaffinity="0"/>
-      </composite>
+  std::string xml = "<mujoco><worldbody>";
+  for (int i = 0; i < 40; i++) {
+    xml += (i == 0)    ? "<body pos='0 0 0'>"
+           : (i == 39) ? "<body name='B_last' pos='.025 0 0'>"
+                       : "<body pos='.025 0 0'>";
+    xml += "<joint type='ball' damping='.015'/>";
+    xml +=
+        "<geom type='capsule' size='.005' fromto='0 0 0 .025 0 0' "
+        "contype='0' conaffinity='0'/>";
+  }
+  for (int i = 0; i < 40; i++) {
+    xml += "</body>";
+  }
+  xml += R"(
       <body name="slider" pos="1 0 0">
         <joint type="slide" axis="1 0 0" damping=".1"/>
         <geom size=".01" contype="0" conaffinity="0"/>
@@ -826,7 +833,7 @@ TEST_F(SolverTest, NewtonHessianSurvivesLostPivot) {
   )";
 
   char error[1024];
-  MjModelPtr model = LoadModelFromString(xml, error, sizeof(error));
+  MjModelPtr model = LoadModelFromString(xml.c_str(), error, sizeof(error));
   ASSERT_THAT(model.get(), NotNull()) << error;
   model->opt.solver = mjSOL_NEWTON;
 

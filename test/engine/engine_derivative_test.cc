@@ -3502,7 +3502,9 @@ TEST_F(DerivativeTest, FlexRodHessianAtRest) {
 
     vector<mjtNum> vec(nv), res(nv, 0);
     for (int i = 0; i < nv; i++) {
-      vec[i] = mju_Halton(i, 3) - 0.5;
+      int jnt = model->dof_jntid[i];
+      vec[i] =
+          (model->jnt_type[jnt] == mjJNT_SLIDE) ? mju_Halton(i, 3) - 0.5 : 0;
     }
     mjd_flexStretch_mul(model.get(), data.get(), res.data(), vec.data(), 1, 0);
 

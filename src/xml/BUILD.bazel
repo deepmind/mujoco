@@ -112,7 +112,6 @@ cc_library(
     deps = [
         ":xml_util",
         "//:libmujoco_hdrs",
-        "//src/user:user_composite",
         "//src/user:user_model",
         "@tinyxml2",
     ],
@@ -174,7 +173,6 @@ cc_library(
         ":xml_util",
         "//:libmujoco_hdrs",
         "//src/engine:engine_util_misc",
-        "//src/user:user_composite",
         "//src/user:user_model",
         "//src/user:user_util",
         "@tinyxml2",

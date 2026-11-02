@@ -21,7 +21,6 @@
 #include <cstring>
 #include <functional>
 #include <memory>
-#include <queue>
 #include <sstream>
 #include <string>
 #include <unordered_map>
@@ -35,7 +34,7 @@
 #include <mujoco/mjspec.h>
 #include <mujoco/mjtype.h>
 #include "cc/array_safety.h"
-#include "engine/engine_plugin.h"
+#include "engine/engine_core_util.h"
 #include "engine/engine_util_errmem.h"
 #include "engine/engine_util_misc.h"
 #include "user/user_api.h"
@@ -214,6 +213,13 @@ bool mjCFlexcomp::Make(mjsBody* body, char* error, int error_sz, const mjVFS* vf
       break;
 
     case mjFCOMPTYPE_DIRECT:
+      if (dflex->dim == 1 && element.empty() && point.size() >= 6 && point.size() % 3 == 0) {
+        int n = point.size() / 3;
+        for (int i = 0; i < n - 1; i++) {
+          element.push_back(i);
+          element.push_back(i + 1);
+        }
+      }
       res = true;
       break;
 
@@ -602,6 +608,43 @@ bool mjCFlexcomp::Make(mjsBody* body, char* error, int error_sz, const mjVFS* vf
         mjs_setString(pplugin->name, plugin_instance_name.c_str());
       }
     }
+  }
+
+  // add twist hinge body and joint for 1D elastic open rods with a clamped root edge
+  if (pf->dim == 1 &&
+      !rigid &&
+      doftype == mjFCOMPDOF_FULL &&
+      pf->young > 0 &&
+      type != mjFCOMPTYPE_CIRCLE &&
+      pinned.size() >= 2 &&
+      pinned[0] &&
+      pinned[1]) {
+    mjsBody* pb = mjs_addBody(body, 0);
+    mjuu_setvec(pb->pos, 0, 0, 0);
+    mjuu_zerovec(pb->ipos, 3);
+
+    // rotational inertia of the twist hinge: polar mass moment of the rod about its axis
+    double polar =
+        pf->section == mjFLEXSECTION_BOX
+            ? (pf->sectionsize[0] * pf->sectionsize[0] + pf->sectionsize[1] * pf->sectionsize[1]) /
+                  3
+            : pf->radius * pf->radius / 2;
+    double twistinertia  = mass * polar > mjMINVAL ? mass * polar : bodymass;
+    pb->mass             = bodymass;
+    pb->inertia[0]       = twistinertia;
+    pb->inertia[1]       = twistinertia;
+    pb->inertia[2]       = twistinertia;
+    pb->explicitinertial = true;
+
+    mjsJoint* jnt = mjs_addJoint(pb, 0);
+    jnt->type     = mjJNT_HINGE;
+    mjuu_setvec(jnt->pos, 0, 0, 0);
+    mjuu_setvec(jnt->axis, 1, 0, 0);
+
+    char txt[100];
+    mju::sprintf_arr(txt, "%s_twist", name.c_str());
+    mjs_setName(pb->element, txt);
+    mjs_setName(jnt->element, txt);
   }
 
   // create nodal mesh for trilinear/quadratic interpolation
@@ -1613,44 +1656,32 @@ static bool RodCurvatureBinormal(const double* xa,
   return true;
 }
 
-// unit axes (u, v) orthogonal to the edge (x1, x2); any such axes can be used, since the bending
-// energy of a hinge pair does not depend on rotations of the axes about the edge
-static void RodEdgeFrame(const double* x1, const double* x2, double u[3], double v[3]) {
-  double t[3] = {x2[0] - x1[0], x2[1] - x1[1], x2[2] - x1[2]};
-  mjuu_normvec(t, 3);
-
-  // project (0, 1, 0), or (0, 0, 1) if the edge is nearly along y, orthogonal to the edge
-  int    axis = (-0.5 < t[1] && t[1] < 0.5) ? 1 : 2;
-  double a[3] = {0, 0, 0};
-  a[axis]     = 1;
-  double s    = mjuu_dot3(t, a);
-
-  u[0] = a[0] - s * t[0];
-  u[1] = a[1] - s * t[1];
-  u[2] = a[2] - s * t[2];
-  mjuu_normvec(u, 3);
-  mjuu_crossvec(v, t, u);
-}
-
-// compute isotropic rod bending data for a 1D flex, following Bergou et al., "Discrete Elastic
-// Rods", https://www.cs.columbia.edu/cg/pdfs/143-rods.pdf. Every vertex shared by exactly two edges
-// is a hinge with stiffness k = EI / (|e_prev| + |e_next|); vertices with other valences carry no
-// bending energy.
+// compute isotropic rod bending and torsion data for a 1D flex, following Bergou et al., "Discrete
+// Elastic Rods", https://www.cs.columbia.edu/cg/pdfs/143-rods.pdf. Every vertex shared by exactly
+// two edges is a hinge with bending stiffness k = EI / (|e_prev| + |e_next|); vertices with other
+// valences carry no bending energy.
 //   EI: bending rigidity, Young's modulus times the second moment of area of the cross-section
+//   GJ: torsional rigidity, shear modulus times the torsion constant of the cross-section
 // Hinges bent by more than kRodStraightTol in the reference configuration are curved. Adjacent
-// curved hinges are stored as a pair across every edge they share, splitting the stiffness of each
-// hinge evenly among its pairs; all other hinges are stored singly.
+// curved hinges are stored as a pair across every edge they share, splitting the bending stiffness
+// of each hinge evenly among its pairs and adding dihedral torsion stiffness kt = GJ / (2 |e|)
+// across the shared edge e; all other hinges are stored singly.
 //   layout: bending[0] = number of records, then per record
 //           single hinge: [v_prev, v, v_next, -1, k, 0, |kb0|, 0, 0, 0], |kb0| = 0 if straight
-//           hinge pair:   [v0, v1, v2, v3, k1 / n1, k2 / n2, om0[4]] for hinges v1 and v2, with n
-//                         the number of pairs of a hinge and om0 the reference curvature binormals
-//                         of both hinges along the axes of RodEdgeFrame(v1, v2)
+//           hinge pair:   [v0, v1, v2, v3, k1 / n1, k2 / n2, |kb0_1|, |kb0_2|, kt cos(dphi0),
+//                         kt sin(dphi0)] for hinges v1 and v2, with n the number of pairs of a
+//                         hinge and dphi0 the reference dihedral angle between kb0_1 and kb0_2
+//                         about the shared edge (v1, v2)
 // returns 1 on success, or 0 with the id of the first degenerate vertex in *bad
 static int ComputeRodBending(std::vector<double>&                    bending,
                              const double*                           pos,
                              int                                     nvert,
                              const std::vector<std::pair<int, int>>& edges,
-                             double                                  EI,
+                             double                                  EI1,
+                             double                                  EI2,
+                             double                                  GJ,
+                             double                                  psi0,
+                             int                                     twist_jnt,
                              int*                                    bad) {
   *bad = -1;
 
@@ -1663,6 +1694,8 @@ static int ComputeRodBending(std::vector<double>&                    bending,
 
   // hinge stiffness and reference curvature
   std::vector<double> stiffness(nvert, 0);
+  std::vector<double> dstiffness(nvert, 0);
+  std::vector<double> torsion(nvert, 0);
   std::vector<double> curvature(nvert, 0);
   for (int v = 0; v < nvert; v++) {
     if (neighbors[v].size() != 2) { continue; }
@@ -1674,34 +1707,50 @@ static int ComputeRodBending(std::vector<double>&                    bending,
       *bad = v;
       return 0;
     }
-    stiffness[v] = EI / (l0 + l1);
+    stiffness[v]  = EI1 / (l0 + l1);
+    dstiffness[v] = (EI2 - EI1) / (l0 + l1);
+    torsion[v]    = GJ / (l0 + l1);
 
     // reference curvature binormal magnitude 2*tan(phi/2), approximately the bend angle phi
     double norm = sqrt(mjuu_dot3(kb, kb));
     if (norm > kRodStraightTol) { curvature[v] = norm; }
   }
 
-  // number of pairs of each hinge
+  // number of pairs of each hinge (only for isotropic cross-sections; anisotropic chains stay as
+  // single hinges for the Bishop-frame tridiagonal twist solve)
   std::vector<int> npair(nvert, 0);
-  for (const auto& e : edges) {
-    if (curvature[e.first] > 0 && curvature[e.second] > 0) {
-      npair[e.first]++;
-      npair[e.second]++;
+  if (EI1 == EI2) {
+    for (const auto& e : edges) {
+      if (curvature[e.first] > 0 && curvature[e.second] > 0) {
+        npair[e.first]++;
+        npair[e.second]++;
+      }
     }
   }
 
   // hinge pairs across edges shared by curved hinges
   bending.assign(1, 0);
   for (const auto& e : edges) {
+    if (EI1 != EI2) { break; }
     int v1 = e.first;
     int v2 = e.second;
     if (curvature[v1] == 0 || curvature[v2] == 0) { continue; }
     int    v0 = neighbors[v1][0] == v2 ? neighbors[v1][1] : neighbors[v1][0];
     int    v3 = neighbors[v2][0] == v1 ? neighbors[v2][1] : neighbors[v2][0];
-    double kb1[3], kb2[3], u[3], v[3];
-    RodCurvatureBinormal(pos + 3 * v0, pos + 3 * v1, pos + 3 * v2, kb1, nullptr, nullptr);
+    double kb1[3], kb2[3], l1;
+    RodCurvatureBinormal(pos + 3 * v0, pos + 3 * v1, pos + 3 * v2, kb1, nullptr, &l1);
     RodCurvatureBinormal(pos + 3 * v1, pos + 3 * v2, pos + 3 * v3, kb2, nullptr, nullptr);
-    RodEdgeFrame(pos + 3 * v1, pos + 3 * v2, u, v);
+    double t[3] = {pos[3 * v2 + 0] - pos[3 * v1 + 0],
+                   pos[3 * v2 + 1] - pos[3 * v1 + 1],
+                   pos[3 * v2 + 2] - pos[3 * v1 + 2]};
+    mjuu_normvec(t, 3);
+    double r0a = curvature[v1];
+    double r0b = curvature[v2];
+    double cross[3];
+    mjuu_crossvec(cross, kb1, kb2);
+    double cos_dphi0 = mjuu_dot3(kb1, kb2) / (r0a * r0b);
+    double sin_dphi0 = mjuu_dot3(cross, t) / (r0a * r0b);
+    double kt        = GJ / (2 * l1);
 
     bending.push_back(v0);
     bending.push_back(v1);
@@ -1709,10 +1758,10 @@ static int ComputeRodBending(std::vector<double>&                    bending,
     bending.push_back(v3);
     bending.push_back(stiffness[v1] / npair[v1]);
     bending.push_back(stiffness[v2] / npair[v2]);
-    bending.push_back(mjuu_dot3(kb1, u));
-    bending.push_back(mjuu_dot3(kb1, v));
-    bending.push_back(mjuu_dot3(kb2, u));
-    bending.push_back(mjuu_dot3(kb2, v));
+    bending.push_back(r0a);
+    bending.push_back(r0b);
+    bending.push_back(kt * cos_dphi0);
+    bending.push_back(kt * sin_dphi0);
     bending[0]++;
   }
 
@@ -1724,11 +1773,11 @@ static int ComputeRodBending(std::vector<double>&                    bending,
     bending.push_back(neighbors[v][1]);
     bending.push_back(-1);
     bending.push_back(stiffness[v]);
-    bending.push_back(0);
+    bending.push_back(dstiffness[v]);
     bending.push_back(curvature[v]);
-    bending.push_back(0);
-    bending.push_back(0);
-    bending.push_back(0);
+    bending.push_back(twist_jnt);
+    bending.push_back(torsion[v]);
+    bending.push_back(psi0);
     bending[0]++;
   }
   return 1;
@@ -2413,6 +2462,14 @@ int mjCFlex::PlasticNum() const {
     return 0;
   }
   if (compiled) {
+    // twist reference of a 1D rod chain with a twist hinge on its first (single) hinge
+    if (dim == 1 &&
+        bending.size() >= 1 + mjROD_HINGE_SIZE &&
+        bending[0] > 0 &&
+        bending[1 + 3] < 0 &&
+        bending[1 + 7] >= 0) {
+      return mjROD_STATE_SIZE;
+    }
     int pnum = 0;
     if (stressyield > 0 && !interpolated && !rigid && dim >= 2) {
       if (!stiffness.empty() && stiffness[0] != 0) { pnum += (dim == 2 ? 3 : 6) * nelem; }
@@ -2421,6 +2478,12 @@ int mjCFlex::PlasticNum() const {
     return pnum;
   }
   bool rgd = !spec_vert_.empty() && spec_vertbody_.size() == 1;
+  if (!rgd && spec.dim == 1 && spec.young > 0 && spec_nodebody_.empty() && model) {
+    const mjCBase* twist = model->FindObject(mjOBJ_JOINT, name + "_twist");
+    if (twist && static_cast<const mjCJoint*>(twist)->spec.type == mjJNT_HINGE) {
+      return mjROD_STATE_SIZE;
+    }
+  }
   if (rgd || spec.stressyield <= 0 || !spec_nodebody_.empty() || spec.dim < 2 || spec.young <= 0) {
     return 0;
   }
@@ -3060,7 +3123,7 @@ void mjCFlex::Compile(const mjVFS* vfs) {
   }
   if (vert_.size() % 3) { throw mjCError(this, "vert size must be a multiple of 3"); }
   if (edgestiffness > 0 && dim > 1) {
-    throw mjCError(this, "edge stiffness only available for dim=1, please use elasticity plugins");
+    throw mjCError(this, "edge stiffness only available for dim=1, please use <elasticity>");
   }
   nelem = (int)elem_.size() / (dim + 1);
 
@@ -3361,6 +3424,7 @@ void mjCFlex::Compile(const mjVFS* vfs) {
   if (dim == 2) { CreateFlapStencil(flaps, elem_, edgeidx_); }
 
   // compute elasticity
+  if (shear < 0) { throw mjCError(this, "shear modulus must be non-negative"); }
   if (young > 0) {
     if (poisson < 0 || poisson >= 0.5) {
       throw mjCError(this, "Poisson ratio must be in [0, 0.5)");
@@ -3406,30 +3470,102 @@ void mjCFlex::Compile(const mjVFS* vfs) {
       }
     }
 
-    // rod bending stiffness (1D, not interpolated or rigid)
+    // rod bending and torsion stiffness (1D, not interpolated or rigid)
     if (dim == 1 && !interpolated && !rigid) {
-      double I = 0;
+      double I1 = 0, I2 = 0, J = 0, psi0 = 0;
       if (section == mjFLEXSECTION_CIRCLE) {
         if (radius <= 0) {
           throw mjCError(this, "1D flex elasticity with circle section requires positive radius");
         }
-        I = mjPI * pow(radius, 4) / 4;
+        I1 = mjPI * pow(radius, 4) / 4;
+        I2 = I1;
+        J  = 2 * I1;
       } else if (section == mjFLEXSECTION_BOX) {
         if (sectionsize[0] <= 0 || sectionsize[1] <= 0) {
           throw mjCError(this, "1D flex elasticity with box section requires positive sectionsize");
         }
-        // full sizes; the isotropic model uses the weak axis
-        double w = 2 * sectionsize[0];
-        double h = 2 * sectionsize[1];
-        I        = std::min(w * h * h * h, h * w * w * w) / 12;
+        // half-sizes a >= b: I1 is the weak axis, I2 is the strong axis
+        double a = std::max(sectionsize[0], sectionsize[1]);
+        double b = std::min(sectionsize[0], sectionsize[1]);
+        I1       = 4.0 * a * b * b * b / 3.0;
+        I2       = 4.0 * b * a * a * a / 3.0;
+        J        = a * b * b * b * (16.0 / 3.0 - 3.36 * (b / a) * (1.0 - pow(b / a, 4) / 12.0));
+        if (sectionsize[0] < sectionsize[1]) { psi0 = 0.5 * mjPI; }
       } else {
         throw mjCError(this, "unknown 1D flex section %d", nullptr, section);
       }
-      int bad;
-      if (!ComputeRodBending(bending, vertxpos.data(), nvert, edge, young * I, &bad)) {
+      int       twist_jnt = -1;
+      mjCJoint* twist     = nullptr;
+      if (!name.empty() && vertbodyid.size() >= 2 && vertbodyid[0] == vertbodyid[1]) {
+        std::string twist_name = name + "_twist";
+        mjCBase*    jobj       = model->FindObject(mjOBJ_JOINT, twist_name);
+        if (jobj) {
+          mjCJoint* jnt = static_cast<mjCJoint*>(jobj);
+          if (jnt->type == mjJNT_HINGE) {
+            twist_jnt = jnt->id;
+            twist     = jnt;
+          }
+        }
+      }
+      double G = shear > 0 ? shear : young / (2 * (1 + poisson));
+      int    bad;
+      if (!ComputeRodBending(bending,
+                             vertxpos.data(),
+                             nvert,
+                             edge,
+                             young * I1,
+                             young * I2,
+                             G * J,
+                             psi0,
+                             twist_jnt,
+                             &bad)) {
         throw mjCError(this, "degenerate 1D flex hinge at vertex %d", nullptr, bad);
       }
       if (bending[0] == 0) { bending.clear(); }
+
+      // anisotropic box cross-sections require a single open chain of single hinges
+      if (section == mjFLEXSECTION_BOX && !bending.empty()) {
+        int  nhinge     = (int)bending[0];
+        bool open_chain = (edge.size() == static_cast<size_t>(nhinge + 1));
+        for (int h = 0; h < nhinge && open_chain; h++) {
+          const double* hinge = bending.data() + 1 + mjROD_HINGE_SIZE * h;
+          if (hinge[3] >= 0) { open_chain = false; }
+          if (h > 0) {
+            const double* prev = bending.data() + 1 + mjROD_HINGE_SIZE * (h - 1);
+            if ((int)hinge[0] != (int)prev[1] || (int)hinge[1] != (int)prev[2]) {
+              open_chain = false;
+            }
+          }
+        }
+        if (open_chain) {
+          const double* first = bending.data() + 1;
+          const double* last  = bending.data() + 1 + mjROD_HINGE_SIZE * (nhinge - 1);
+          if ((int)last[1] == (int)first[0] || (int)last[2] == (int)first[0]) {
+            open_chain = false;
+          }
+        }
+        if (!open_chain) {
+          throw mjCError(this, "1D flex elasticity with box section requires an open chain");
+        }
+      }
+
+      // Rayleigh damping of the twist hinge, with the series torsional stiffness 2 kt_eff of a
+      // chain of single hinges (see mj_rodTwistStiffness), unless the joint sets its own damping
+      if (twist && !bending.empty()) {
+        int    nhinge = (int)bending[0];
+        double inv_kt = 0;
+        for (int h = 0; h < nhinge && inv_kt >= 0; h++) {
+          const double* hinge      = bending.data() + 1 + mjROD_HINGE_SIZE * h;
+          bool          contiguous = h == 0 || ((int)hinge[0] == (int)hinge[1 - mjROD_HINGE_SIZE] &&
+                                                (int)hinge[1] == (int)hinge[2 - mjROD_HINGE_SIZE]);
+          if (hinge[3] >= 0 || (hinge[6] > 0 && hinge[5] == 0) || !contiguous) {
+            inv_kt = -1;
+          } else if (hinge[8] > 0) {
+            inv_kt += 1 / hinge[8];
+          }
+        }
+        if (inv_kt > 0 && twist->spec.damping[0] == 0) { twist->damping[0] = damping * 2 / inv_kt; }
+      }
     }
 
     // bending stiffness (2D only)

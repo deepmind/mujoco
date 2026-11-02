@@ -101,7 +101,6 @@ cc_library(
         ":platform_ui_adapter",
         "//:libmujoco_hdrs",
         "//plugin/actuator:register",
-        "//plugin/elasticity:register",
         "//plugin/sdf:register",
         "//plugin/sensor:register",
         "//src/cc:array_safety",

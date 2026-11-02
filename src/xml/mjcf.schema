@@ -405,32 +405,6 @@ enum lrmode : mjtLRMode {
   all          = mjLRMODE_ALL
 }
 
-enum comp {
-  particle   = mjCOMPTYPE_PARTICLE
-  grid       = mjCOMPTYPE_GRID
-  rope       = mjCOMPTYPE_ROPE
-  loop       = mjCOMPTYPE_LOOP
-  cable      = mjCOMPTYPE_CABLE
-  cloth      = mjCOMPTYPE_CLOTH
-}
-
-enum jkind {   # vestigial: composite pruning left a single kind
-  main   = mjCOMPKIND_JOINT
-}
-
-enum initial {
-  none   = 0
-  free   = 1
-  ball   = 2
-}
-
-enum shape {
-  s        = mjCOMPSHAPE_LINE
-  "cos(s)" = mjCOMPSHAPE_COS
-  "sin(s)" = mjCOMPSHAPE_SIN
-  "0"      = mjCOMPSHAPE_ZERO
-}
-
 enum meshinertia : mjtMeshInertia {
   convex   = mjMESH_INERTIA_CONVEX
   legacy   = mjMESH_INERTIA_LEGACY
@@ -1057,7 +1031,6 @@ element body : mjsBody {
   child camera *
   child light *
   child plugin *
-  child composite *
   child flexcomp *
 }
 
@@ -1213,82 +1186,6 @@ element light : mjsLight {
   exclusive directional type
 }
 
-element composite {
-  prefix             : string
-  type               : enum<comp> (required)
-  count              : int[1..3]
-  offset             : double[3] (dim=L)
-  vertex             : double[] (dim=L)
-  initial            : enum<initial> = ball
-  curve              : string
-  size               : double[1..3] (dim="L, L, 1")
-  quat               : double[4] (dim=1)
-  child composite_joint *
-  child composite_skin ?
-  child composite_geom ?
-  child composite_site ?
-  child plugin *
-}
-
-element composite_joint (xml=joint) {
-  kind               : enum<jkind> (required)
-  group              : int
-  stiffness          : double (dim="F Q^-1")
-  damping            : double (dim="F T Q^-1")
-  armature           : double (dim="F T^2 Q^-1")
-  solreffix          : double[1..mjNREF] (dim=solref)
-  solimpfix          : double[1..mjNIMP] (dim="1, 1, Q, 1, 1")
-  type               : enum<jointtype>
-  axis               : double[3] (dim=1)
-  limited            : enum<FalseTrueAuto> = auto
-  range              : double[2] (dim=Q)
-  margin             : double (dim=Q)
-  solreflimit        : double[1..mjNREF] (dim=solref)
-  solimplimit        : double[1..mjNIMP] (dim="1, 1, Q, 1, 1")
-  frictionloss       : double (dim=F)
-  solreffriction     : double[1..mjNREF] (dim=solref)
-  solimpfriction     : double[1..mjNIMP] (dim="1, 1, Q, 1, 1")
-}
-
-element composite_skin (xml=skin) {
-  texcoord           : bool
-  material           : ref<material>
-  group              : int
-  rgba               : float[4] (dim=1)
-  inflate            : double (dim=L)
-  subgrid            : int
-}
-
-element composite_geom (xml=geom) {
-  type               : enum<geomtype>
-  contype            : int
-  conaffinity        : int
-  condim             : int
-  group              : int
-  priority           : int
-  size               : double[1..3] (dim=L)
-  material           : ref<material>
-  rgba               : float[4] (dim=1)
-  friction           : double[1..3] (dim="1, L, L")
-  mass               : double (dim=M)
-  density            : double (dim="M L^-3")
-  solmix             : double (dim=1)
-  solref             : double[1..mjNREF] (dim=solref)
-  solimp             : double[1..mjNIMP] (dim="1, 1, L, 1, 1")
-  margin             : double (dim=L)
-  gap                : double (dim=L)
-  surfacevel         : double[1..6] (dim="L T^-1, L T^-1, L T^-1, A T^-1, A T^-1, A T^-1")
-  adhesion           : double (dim="M L T^-2")
-}
-
-element composite_site (xml=site) {
-  group              : int
-  size               : double[1..3] (dim=L)
-  material           : ref<material>
-  rgba               : float[4] (dim=1)
-  mesh               : ref<mesh> (field=meshname)
-}
-
 element flexcomp {
   name               : id<flex> (required)
   type               : enum<fcomp>
@@ -1336,6 +1233,7 @@ element flexcomp_edge (xml=edge) {
 element elasticity : mjsFlex {
   young              : double (dim="M L^-1 T^-2")
   poisson            : double (dim=1)
+  shear              : double (dim="M L^-1 T^-2")
   damping            : double (dim=T)
   thickness          : double = -1 (dim=L)
   yield              : double (field=stressyield, dim=1)
@@ -2301,7 +2199,6 @@ element worldbody (alias=body) {
   child camera *
   child light *
   child plugin *
-  child composite *
   child flexcomp *
 }
 
@@ -2325,7 +2222,6 @@ element frame : mjsFrame (alias=body) {
   child camera *
   child light *
   child plugin *
-  child composite *
   child flexcomp *
 }
 
@@ -2348,7 +2244,6 @@ element replicate (alias=body) {
   child camera *
   child light *
   child plugin *
-  child composite *
 }
 
 

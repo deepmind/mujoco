@@ -1659,9 +1659,16 @@ static void effBlockApply(const mjModel* m, mjData* d, mjtNum* x, const mjtNum* 
     effCovSolve(m, d, L, fold, x, b);
     return;
   }
-  mj_markStack(d);
-  mjtNum* rhs = mjSTACKALLOC(d, nv, mjtNum);
-  mju_copy(rhs, b, nv);   // b may alias x, which the sweep below overwrites
+  int need_stack = (x == b) || flg_dense || flg_bend;
+  if (need_stack) {
+    mj_markStack(d);
+  }
+  const mjtNum* rhs = b;
+  if (x == b) {
+    mjtNum* buf = mjSTACKALLOC(d, nv, mjtNum);
+    mju_copy(buf, b, nv);   // b aliases x, which the sweep below overwrites
+    rhs = buf;
+  }
 
   // dofs no factor covers: backbone solve, using the qH backbone factor when diagonal
   // terms exist, else qLD
@@ -1710,7 +1717,9 @@ static void effBlockApply(const mjModel* m, mjData* d, mjtNum* x, const mjtNum* 
       x[m->efm0_dofid[i]] = bfz[i];
     }
   }
-  mj_freeStack(d);
+  if (need_stack) {
+    mj_freeStack(d);
+  }
 }
 
 
@@ -2299,6 +2308,16 @@ static int effDiagStiff(const mjModel* m, mjData* d) {
         any = any || k > 0;
       }
       break;
+    }
+  }
+
+  // twist hinges of 1D rods: series torsional stiffness of the chain
+  for (int f=0; f < m->nflex; f++) {
+    int dof;
+    mjtNum k = mj_rodTwistStiffness(m, f, &dof);
+    if (k > 0) {
+      d->efm_ck[dof] += h*k;
+      any = 1;
     }
   }
 

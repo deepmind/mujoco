@@ -449,6 +449,7 @@ inline constexpr int kLightAttrsN = sizeof(kLightAttrs) / sizeof(kLightAttrs[0])
 inline constexpr mjXAttr kElasticityAttrs[] = {
   {"young", mjXAttr::kDouble, 1, true, false, false, false, (int)offsetof(mjsFlex, young)},
   {"poisson", mjXAttr::kDouble, 1, true, false, false, false, (int)offsetof(mjsFlex, poisson)},
+  {"shear", mjXAttr::kDouble, 1, true, false, false, false, (int)offsetof(mjsFlex, shear)},
   {"damping", mjXAttr::kDouble, 1, true, false, false, false, (int)offsetof(mjsFlex, damping)},
   {"thickness", mjXAttr::kDouble, 1, true, false, false, false, (int)offsetof(mjsFlex, thickness)},
   {"yield", mjXAttr::kDouble, 1, true, false, false, false, (int)offsetof(mjsFlex, stressyield)},

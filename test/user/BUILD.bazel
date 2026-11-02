@@ -102,7 +102,6 @@ cc_test(
     deps = [
         "//:mujoco",
         "//plugin/actuator:register",
-        "//plugin/elasticity:register",
         "//plugin/sdf:register",
         "//plugin/sensor:register",
         "//src/user:user_model",
@@ -127,7 +126,6 @@ cc_test(
     deps = [
         "//:mujoco",
         "//plugin/actuator:register",
-        "//plugin/elasticity:register",
         "//plugin/sdf:register",
         "//plugin/sensor:register",
         "//src/xml:xml_api",
@@ -154,7 +152,6 @@ cc_test(
     deps = [
         "//:mujoco",
         "//plugin/actuator:register",
-        "//plugin/elasticity:register",
         "//plugin/sdf:register",
         "//plugin/sensor:register",
         "//src/xml:xml_api",
@@ -163,24 +160,6 @@ cc_test(
         "//test:compare_spec",
         "//test:fixture",
         "@abseil-cpp//absl/strings",
-        "@googletest//:gtest_main",
-    ],
-)
-
-cc_test(
-    name = "user_composite_test",
-    srcs = ["user_composite_test.cc"],
-    conlyopts = ["-std=c11"],
-    copts = [
-        "-I" + MJ_ROOT,
-        "-I" + MJ_ROOT + "/src",
-    ],
-    cxxopts = ["-std=c++20"],
-    deps = [
-        "//:mujoco",
-        "//src/cc:array_safety",
-        "//test:fixture",
-        "@abseil-cpp//absl/strings:str_format",
         "@googletest//:gtest_main",
     ],
 )

@@ -36,12 +36,6 @@ mujoco_plugin(
 )
 
 mujoco_plugin(
-    name = "plugin_elasticity",
-    library_name = "plugin/libelasticity",
-    deps = ["//plugin/elasticity:register"],
-)
-
-mujoco_plugin(
     name = "plugin_sdf",
     library_name = "plugin/libsdf_plugin",
     deps = ["//plugin/sdf:register"],
@@ -75,7 +69,6 @@ py_library(
         ":_specs",
         ":_structs",
         ":plugin_actuator",
-        ":plugin_elasticity",
         ":plugin_sdf",
         ":plugin_sensor",
     ],

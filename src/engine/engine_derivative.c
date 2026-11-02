@@ -1658,8 +1658,27 @@ void mjd_flexBend_mul(const mjModel* m, mjData* d, mjtNum* res, const mjtNum* ve
 // Jacobian J (nvrt x 3*nvrt) and weight W = s1*Wk + s2*damping*Wd of 1D rod hinge h of flex f, a
 // single hinge (nvrt = 3, kb space) or a hinge pair (nvrt = 4, om space), so that the stiffness is
 // J'WJ; returns 0 if the hinge is degenerate
+// weights Wk, Wd (9 x nhinge each, kb space) of all hinges of the 1D rod chain of flex f, evaluated
+// once on the mjData stack (the caller marks and frees it); NULL if the chain is isotropic or
+// not handled by mj_rodChain
+static mjtNum* rodChainWeights(const mjModel* m, mjData* d, int f) {
+  const mjtNum* b = m->flex_bending + m->flex_bendingadr[f];
+  int nhinge = (int)b[0];
+  if (nhinge <= 0 || b[1 + 3] >= 0 || b[1 + 5] == 0) {
+    return NULL;
+  }
+  mjtNum* W = mjSTACKALLOC(d, 18*nhinge, mjtNum);
+  if (!mj_rodChain(m, d, f, NULL, NULL, NULL, W, W + 9*nhinge, NULL)) {
+    return NULL;
+  }
+  return W;
+}
+
+
+// chain: weights of the chain of flex f from rodChainWeights, or NULL
 static int rodHingeWeight(const mjModel* m, const mjData* d, int f, int h, mjtNum s1, mjtNum s2,
-                          int v[4], int* nvrt, mjtNum J[48], mjtNum W[16]) {
+                          const mjtNum* chain, int v[4], int* nvrt, mjtNum J[48],
+                          mjtNum W[16]) {
   const mjtNum* hinge = m->flex_bending + m->flex_bendingadr[f] + 1 + mjROD_HINGE_SIZE*h;
   const mjtNum* xpos = d->flexvert_xpos + 3*m->flex_vertadr[f];
   for (int i = 0; i < 4; i++) {
@@ -1672,7 +1691,13 @@ static int rodHingeWeight(const mjModel* m, const mjData* d, int f, int h, mjtNu
     if (!mj_rodHinge(xpos + 3*v[0], xpos + 3*v[1], xpos + 3*v[2], kb, J)) {
       return 0;
     }
-    mj_rodHingeWeights(NULL, Wk, Wd, kb, hinge[4], hinge[6]);
+    if (chain && hinge[5] != 0) {
+      int nhinge = (int)m->flex_bending[m->flex_bendingadr[f]];
+      mju_copy(Wk, chain + 9*h, 9);
+      mju_copy(Wd, chain + 9*nhinge + 9*h, 9);
+    } else {
+      mj_rodHingeWeights(NULL, Wk, Wd, kb, hinge[4], hinge[6]);
+    }
   } else {
     mjtNum om[4];
     if (!mj_rodPair(xpos + 3*v[0], xpos + 3*v[1], xpos + 3*v[2], xpos + 3*v[3], om, J)) {
@@ -1692,9 +1717,10 @@ static int rodHingeWeight(const mjModel* m, const mjData* d, int f, int h, mjtNu
 // world-space stiffness (3*nvrt x 3*nvrt) of 1D rod hinge h of flex f: J'(s1*Wk + s2*damping*Wd)J,
 // with block (i, j) at rows 3i..3i+2 and columns 3j..3j+2; returns 0 if the hinge is degenerate
 static int rodHingeStiffness(const mjModel* m, const mjData* d, int f, int h,
-                             mjtNum s1, mjtNum s2, int v[4], int* nvrt, mjtNum K[144]) {
+                             mjtNum s1, mjtNum s2, const mjtNum* chain, int v[4], int* nvrt,
+                             mjtNum K[144]) {
   mjtNum J[48], W[16];
-  if (!rodHingeWeight(m, d, f, h, s1, s2, v, nvrt, J, W)) {
+  if (!rodHingeWeight(m, d, f, h, s1, s2, chain, v, nvrt, J, W)) {
     return 0;
   }
 
@@ -1718,11 +1744,12 @@ static void flexRod_mul(const mjModel* m, mjData* d, int f, mjtNum* res, const m
   mjtNum* wres = mjSTACKALLOC(d, 3*nvert, mjtNum);
   mj_flexGather(m, d, f, wvec, vec);
   mju_zero(wres, 3*nvert);
+  const mjtNum* chain = rodChainWeights(m, d, f);
 
   for (int h = 0; h < nhinge; h++) {
     int v[4], n;
     mjtNum J[48], W[16];
-    if (!rodHingeWeight(m, d, f, h, s1, s2, v, &n, J, W)) {
+    if (!rodHingeWeight(m, d, f, h, s1, s2, chain, v, &n, J, W)) {
       continue;
     }
 
@@ -2358,10 +2385,12 @@ int mjd_flexStiff_assemble(const mjModel* m, mjData* d, int* rownnz, int* rowadr
     // rod hinges: world 3x3 blocks rotated into the body frames
     if (flexRod_active(m, f)) {
       int va = m->flex_vertadr[f];
+      mj_markStack((mjData*)d);
+      const mjtNum* chain = rodChainWeights(m, (mjData*)d, f);
       for (int h = 0; h < (int)m->flex_bending[m->flex_bendingadr[f]]; h++) {
         int v[4], nr;
         mjtNum K[144];
-        if (!rodHingeStiffness(m, d, f, h, s1, s2, v, &nr, K)) {
+        if (!rodHingeStiffness(m, d, f, h, s1, s2, chain, v, &nr, K)) {
           continue;
         }
         int ndof = 3*nr;
@@ -2387,6 +2416,7 @@ int mjd_flexStiff_assemble(const mjModel* m, mjData* d, int* rownnz, int* rowadr
           }
         }
       }
+      mj_freeStack((mjData*)d);
       continue;
     }
 

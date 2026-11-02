@@ -2662,6 +2662,12 @@ struct MjsFlex {
   void set_poisson(double value) {
     ptr_->poisson = value;
   }
+  double shear() const {
+    return ptr_->shear;
+  }
+  void set_shear(double value) {
+    ptr_->shear = value;
+  }
   double damping() const {
     return ptr_->damping;
   }

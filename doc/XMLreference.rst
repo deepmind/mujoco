@@ -198,11 +198,11 @@ Meta elements
 
 These elements are not strictly part of the low-level MJCF format definition, but rather instruct the compiler to
 perform some operation on the model. A general property of meta-elements is that they disappear from the model upon
-saving the XML; the exception is :ref:`frame<frame>`, which is preserved. There are currently six meta-elements in
+saving the XML; the exception is :ref:`frame<frame>`, which is preserved. There are currently five meta-elements in
 MJCF:
 
 - :ref:`include<include>`, :ref:`frame<frame>`, and :ref:`replicate<replicate>` which are outside of the schema.
-- :ref:`composite<body-composite>`, :ref:`flexcomp<body-flexcomp>` and :ref:`attach<body-attach>` which are part of the
+- :ref:`flexcomp<body-flexcomp>` and :ref:`attach<body-attach>` which are part of the
   schema, but serve to procedurally generate other MJCF elements.
 
 .. _frame:
@@ -3582,305 +3582,12 @@ Attributes may be applied or ignored depending on the lighting model being used.
    Exponent for spotlights, used by the default Phong lighting model. This setting controls the softness of the
    spotlight cutoff. Physically-based lighting models use :ref:`softness<body-light-softness>` instead.
 
-.. _body-composite:
-
-:el-prefix:`body/` |-| **composite** |*|
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-
-This is not a model element, but rather a macro which expands into multiple model elements representing a composite
-object. These elements are bodies (with their own joints and geoms) that become children of the parent body containing
-the macro. The macro expansion is done by the model compiler. If the resulting model is then saved, the macro will be
-replaced with the actual model elements. The defaults mechanism used in the rest of MJCF does not apply here, even if
-the parent body has a childclass attribute defined. Instead there are internal defaults adjusted automatically for each
-composite object type. See :ref:`CComposite` in the modeling guide for more detailed explanation. Note that several
-legacy composite types have been replaced by :ref:`replicate<replicate>` (for repeated objects) and
-:ref:`flexcomp<body-flexcomp>` (for soft objects). Therefore, the only supported composite type is now
-cable, which produces an inextensible chain of bodies connected with ball joints.
-
-.. _body-composite-prefix:
-
-:at:`prefix`: :at-val:`string, optional`
-   All automatically generated model elements have names indicating the element type and index. For example, the body at
-   coordinates (2, 0) in a 2D grid is named "B2_0" by default. If prefix="C" is specified, the same body is named
-   "CB2_0". The prefix is needed when multiple composite objects are used in the same model, to avoid name conflicts.
-
-.. _body-composite-type:
-
-:at:`type`: :at-val:`[cable], required`
-   This attribute determines the type of composite object. The only supported type is cable.
-
-   The **cable** type creates a 1D chain of bodies connected with ball joints, each having a geom with user-defined type
-   (cylinder, capsule or box). The geometry can either be defined with an array of 3D vertex coordinates :at:`vertex`
-   or with prescribed functions with the option :at:`curve`. Only linear and trigonometric functions are supported. For
-   example, an helix can be obtained with curve="cos(s) sin(s) s". The size is set with the option
-   :at:`size`, resulting in :math:`f(s)=\{\text{size}[1]\cdot\cos(2\pi\cdot\text{size}[2]),\;
-   \text{size}[1]\cdot\sin(2\pi\cdot\text{size}[2]),\; \text{size}[0]\cdot s\}`.
-
-.. _body-composite-count:
-
-:at:`count`: :at-val:`int(3), required`
-   The element count in each dimension of the grid. This can have 1, 2 or 3 numbers, specifying the element count along
-   the X, Y and Z axis of the parent body frame within. Any missing numbers default to 1. If any of these numbers is 1,
-   all subsequent numbers must also be 1, so that the leading dimensions of the grid are used. This means for example
-   that a 1D grid will always extend along the X axis. To achieve a different orientation, rotate the frame of the
-   parent body. Note that some types imply a grid of certain dimensionality, so the requirements for this attribute
-   depend on the specified type.
-
-.. _body-composite-offset:
-
-:at:`offset`: :at-val:`real(3), "0 0 0"`
-   It specifies a 3D offset from the center of the parent body to the center of the first body of the cable. The offset
-   is expressed in the local coordinate frame of the parent body.
-
-.. _body-composite-quat:
-
-:at:`quat`: :at-val:`real(4), "1 0 0 0"`
-   It specifies a quaternion that rotates the first body frame. The quaternion is expressed in the parent body frame.
-
-.. _body-composite-vertex:
-
-:at:`vertex`: :at-val:`real(3*nvert), optional`
-   Vertex 3D positions in global coordinates.
-
-.. _body-composite-initial:
-
-:at:`initial`: :at-val:`[free, ball, none], "ball"`
-   Behavior of the first point. Free: free joint. Ball: ball joint. None: no dof.
-
-.. _body-composite-curve:
-
-:at:`curve`: :at-val:`string(3), optional`
-   Functions specifying the vertex positions. Available functions are `s`, `cos(s)`, and `sin(s)`, where `s` is the arc
-   length parameter.
-
-.. _body-composite-size:
-
-:at:`size`: :at-val:`int(3), optional`
-   Scaling of the curve functions. `size[0]` is the scaling of `s`, `size[1]` is the radius of `\cos(s)` and `\sin(s)`,
-   and `size[2]` is the speed of the argument (i.e. `\cos(2*\pi*size[2]*s)`).
-
-
-.. _composite-joint:
-
-:el-prefix:`composite/` |-| **joint** |*|
-'''''''''''''''''''''''''''''''''''''''''
-
-Depending on the composite type, some joints are created automatically (e.g. the universal joints in rope) while other
-joints are optional (e.g. the stretch and twist joints in rope). This sub-element is used to specify which optional
-joints should be created, as well as to adjust the attributes of both automatic and optional joints.
-
-.. _composite-joint-kind:
-
-:at:`kind`: :at-val:`[main], required`
-   The joint kind here is orthogonal to the joint type in the rest of MJCF. The joint kind refers to the function of the
-   joint within the mechanism comprising the composite body, while the joint type (hinge or slide) is implied by the
-   joint kind and composite body type.
-
-   The **main** kind corresponds to the main joints forming each composite type. These joints are automatically included
-   in the model even if the joint sub-element is missing. The main joints are 3D sliders for particle and grid; 1D
-   sliders for box, cylinder and rope; universal joints for cloth, rope and loop. Even though the main joints are
-   included automatically, this sub-element is still useful for adjusting their attributes.
-
-.. _composite-joint-solreffix:
-
-.. _composite-joint-solimpfix:
-
-:at:`solreffix`, :at:`solimpfix`
-   These are the solref and solimp attributes used to equality-constrain the joint. Whether or not a given joint is
-   quality-constrained depends on the joint kind and composite object type as explained above. For joints that are not
-   equality-constrained, this attribute has no effect. The defaults are adjusted depending on the composite type.
-   Otherwise these attributes obey the same rules as all other solref and solimp attributes in MJCF. See :ref:`Solver
-   parameters <CSolver>`.
-
-.. _composite-joint-axis:
-
-.. _composite-joint-group:
-
-.. _composite-joint-stiffness:
-
-.. _composite-joint-damping:
-
-.. _composite-joint-armature:
-
-.. _composite-joint-limited:
-
-.. _composite-joint-range:
-
-.. _composite-joint-margin:
-
-.. _composite-joint-solreflimit:
-
-.. _composite-joint-solimplimit:
-
-.. _composite-joint-frictionloss:
-
-.. _composite-joint-solreffriction:
-
-.. _composite-joint-solimpfriction:
-
-.. _composite-joint-type:
-
-.. |body/composite/joint attrib list| replace::
-   :at:`axis`, :at:`group`, :at:`stiffness`, :at:`damping`, :at:`armature`, :at:`limited`, :at:`range`, :at:`margin`,
-   :at:`solreflimit`, :at:`solimplimit`, :at:`frictionloss`, :at:`solreffriction`, :at:`solimpfriction`, :at:`type`
-
-|body/composite/joint attrib list|
-   Same meaning as regular :ref:`joint <body-joint>` attributes.
-
-
-.. _composite-geom:
-
-:el-prefix:`composite/` |-| **geom** |?|
-''''''''''''''''''''''''''''''''''''''''
-
-This sub-element adjusts the attributes of the geoms in the composite object. The default attributes are the same as in
-the rest of MJCF (except that user-defined defaults have no effect here). Note that the geom sub-element can appear
-only once, unlike joint and tendon sub-elements which can appear multiple times. This is because different kinds of
-joints and tendons have different sets of attributes, while all geoms in the composite object are identical.
-
-.. _composite-geom-type:
-
-.. _composite-geom-contype:
-
-.. _composite-geom-conaffinity:
-
-.. _composite-geom-condim:
-
-.. _composite-geom-group:
-
-.. _composite-geom-priority:
-
-.. _composite-geom-size:
-
-.. _composite-geom-material:
-
-.. _composite-geom-rgba:
-
-.. _composite-geom-friction:
-
-.. _composite-geom-mass:
-
-.. _composite-geom-density:
-
-.. _composite-geom-solmix:
-
-.. _composite-geom-solref:
-
-.. _composite-geom-solimp:
-
-.. _composite-geom-margin:
-
-.. _composite-geom-gap:
-
-.. _composite-geom-surfacevel:
-
-.. _composite-geom-adhesion:
-
-.. |body/composite/geom attrib list| replace::
-   :at:`type`, :at:`contype`, :at:`conaffinity`, :at:`condim`, :at:`group`, :at:`priority`, :at:`size`, :at:`material`,
-   :at:`rgba`, :at:`friction`, :at:`mass`, :at:`density`, :at:`solmix`, :at:`solref`, :at:`solimp`, :at:`margin`,
-   :at:`gap`, :at:`surfacevel`, :at:`adhesion`
-
-|body/composite/geom attrib list|
-   Same meaning as regular :ref:`geom <body-geom>` attributes.
-
-
-.. _composite-site:
-
-:el-prefix:`composite/` |-| **site** |?|
-''''''''''''''''''''''''''''''''''''''''
-
-This sub-element adjusts the attributes of the sites in the composite object. Otherwise it is the same as geom above.
-
-.. _composite-site-group:
-
-.. _composite-site-size:
-
-.. _composite-site-material:
-
-.. _composite-site-mesh:
-
-.. _composite-site-rgba:
-
-:at:`group`, :at:`size`, :at:`material`, :at:`mesh`, :at:`rgba`
-   Same meaning as regular :ref:`site <body-site>` attributes.
-
-
-.. _composite-skin:
-
-:el-prefix:`composite/` |-| **skin** |?|
-''''''''''''''''''''''''''''''''''''''''
-
-If this element is included, the model compiler will generate a skinned mesh asset and attach it to the element bodies
-of the composite object. Skin can be attached to 2D grid, cloth, box, cylinder and ellipsoid. For other composite types
-it has no effect. Note that the skin created here is equivalent to a skin specified directly in the XML, as opposed to a
-skin loaded from file. So if the model is saved as XML, it will contain a large section describing the
-automatically-generated skin.
-
-.. _composite-skin-texcoord:
-
-:at:`texcoord`: :at-val:`[false, true], "false"`
-   If this is true, explicit texture coordinates will be generated, mapping the skin to the unit square in texture
-   space. This is needed when the material specifies a texture. If texcoord is false and the skin has texture, the
-   texture will appear fixed to the world instead of the skin. The reason for having this attribute in the first place
-   is because skins with texture coordinates upload these coordinates to the GPU even if no texture is applied later. So
-   this attribute should be set to false in cases where no texture will be applied via the material attribute.
-
-.. _composite-skin-material:
-
-.. _composite-skin-rgba:
-
-.. _composite-skin-group:
-
-:at:`material`, :at:`rgba`, :at:`group`:
-   Same meaning as in :ref:`geom <body-geom>`.
-
-.. _composite-skin-inflate:
-
-:at:`inflate`: :at-val:`real, "0"`
-   The default value of 0 means that the automatically-generated skin passes through the centers of the body elements
-   comprising the composite object. Positive values offset each skin vertex by the specified amount, in the direction
-   normal to the (non-inflated) skin at that vertex. This has two uses. First, in 2D objects, a small positive inflate
-   factor is needed to avoid aliasing artifacts. Second, collisions are done with geoms that create some thickness, even
-   for 2D objects. Inflating the skin with a value equal to the geom size will render the skin as a "mattress" that
-   better represents the actual collision geometry. The value of this attribute is copied into the corresponding
-   attribute of the :el:`skin` asset being created.
-
-.. _composite-skin-subgrid:
-
-:at:`subgrid`: :at-val:`int, "0"`
-   This is only applicable to cloth and 2D grid types, and has no effect for any other composite type. The default value
-   of 0 means that the skin has as many vertices as the number of element bodies. A positive value causes subdivision,
-   with the specified number of (additional) grid lines. In this case the model compiler generates a denser skin using
-   bi-cubic interpolation. This increases the quality of the rendering (especially in the absence of textures) but also
-   slows down the renderer, so use it with caution. Values above 3 are unlikely to be needed.
-
-
-.. _composite-plugin:
-
-:el-prefix:`composite/` |-| **plugin** |?|
-''''''''''''''''''''''''''''''''''''''''''
-
-Associate this composite with an :ref:`engine plugin<exPlugin>`. Either :at:`plugin` or :at:`instance` are required.
-
-.. _composite-plugin-plugin:
-
-:at:`plugin`: :at-val:`string, optional`
-   Plugin identifier, used for implicit plugin instantiation.
-
-.. _composite-plugin-instance:
-
-:at:`instance`: :at-val:`string, optional`
-   Instance name, used for explicit plugin instantiation.
-
-
-
 .. _body-flexcomp:
 
 :el-prefix:`body/` |-| **flexcomp** |*|
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-Similar to :el:`composite`, this element is not a model element, but rather a macro which expands into multiple
+This element is not a model element, but rather a macro which expands into multiple
 model elements representing a deformable entity. In particular this macro creates one
 :ref:`flex<deformable-flex>` element, a number of bodies that are children of the body in which the :el:`flexcomp` is
 defined, and optionally one :ref:`flex equality<equality-flex>` which constrains all flex edges to their initial length.
@@ -3898,12 +3605,12 @@ flexcomp point is not pinned, a new child body is created at the coordinates of 
 parent body), and then the coordinates of the flex vertex within that new body are (0,0,0). The mechanism for
 :ref:`pinning<flexcomp-pin>` flexcomp points is explained below.
 
-While :el:`composite` objects need bodies with geoms for collisions and sites for connecting tendons, flexes
-generate their own collisions and shape-preserving forces. Thus the bodies created here are much simpler: no geoms,
-sites or tendons are needed.
+Flexes generate their own collisions and shape-preserving forces, so the bodies created here need no geoms, sites or
+tendons.
 Most of the bodies created here have 3 orthogonal slider joints, corresponding to freely moving point masses. In some
-cases we generate radial slider joints, allowing only expansion and contraction. Since no geoms are generated, the
-bodies need to have explicit inertial parameters.
+cases we generate radial slider joints, allowing only expansion and contraction, and for clamped elastic 1D rods
+(``<pin id="0 1"/>``) an extra ``<name>_twist`` body with a hinge joint of the same name is created to represent the
+end twist. Since no geoms are generated, the bodies need to have explicit inertial parameters.
 
 Below is a simple example of a flexcomp, modeling a (somewhat flexible) double pendulum with one end pinned to the
 world:
@@ -4041,8 +3748,7 @@ saving the XML:
    floating body. The box surface is triangulated, and when :at:`dim=3` (default) each flex element is a tetrahedron
    connecting the center of the box with one triangle face. When :at:`dim=2`, an open-top surface shell of triangle
    elements is generated (the ``+z`` top face is omitted, as in ``model/flex/basket.xml``). :at:`count` and
-   :at:`spacing` determine the count and spacing of the flex bodies, similar to the **grid** type in 3D. Note that when
-   :at:`dim=3`, the resulting flex has the same topology as the box generated by :el:`composite`.
+   :at:`spacing` determine the count and spacing of the flex bodies, similar to the **grid** type in 3D.
 
    **cylinder** is the same as **box**, except the points are projected on the surface of a cylinder (when :at:`dim=2`,
    the ``+z`` top face is likewise omitted).
@@ -4270,6 +3976,7 @@ element is used to adjust the properties of all edges in the flex.
 
 .. _flexcomp-elasticity-young:
 .. _flexcomp-elasticity-poisson:
+.. _flexcomp-elasticity-shear:
 .. _flexcomp-elasticity-damping:
 .. _flexcomp-elasticity-thickness:
 .. _flexcomp-elasticity-yield:
@@ -4278,7 +3985,8 @@ element is used to adjust the properties of all edges in the flex.
 .. _flexcomp-elasticity-sectionsize:
 
 .. |body/flexcomp/elasticity attrib list| replace::
-   :at:`young`, :at:`poisson`, :at:`damping`, :at:`thickness`, :at:`yield`, :at:`elastic2d`, :at:`section`, :at:`sectionsize`
+   :at:`young`, :at:`poisson`, :at:`shear`, :at:`damping`, :at:`thickness`, :at:`yield`, :at:`elastic2d`, :at:`section`,
+   :at:`sectionsize`
 
 |body/flexcomp/elasticity attrib list|
    Same as in :ref:`flex/elasticity<flex-elasticity>`.
@@ -4299,7 +4007,9 @@ multiple times is allowed.
 :at:`id`: :at-val:`int(n), required`
    Zero-based ids of points to pin. When the points are automatically-generated, the user needs to understand their
    layout in order to decide which points to pin. This can be done by first creating a flexcomp without any pins,
-   loading it in the simulator, and showing the body labels.
+   loading it in the simulator, and showing the body labels. For 1D elastic rods, ``<pin id="0 1"/>`` clamps the first
+   edge and its material frame to the parent body and creates a ``<name>_twist`` hinge joint at the other end, whereas
+   ``<pin id="0"/>`` anchors only the first point (a spherical joint) without a twist joint.
 
 .. _flexcomp-pin-range:
 
@@ -4813,7 +4523,7 @@ these mechanisms to be combined as desired.
 :el-prefix:`flex/` |-| **elasticity** |?|
 '''''''''''''''''''''''''''''''''''''''''
 
-The elasticity model is a `Saint Venant-Kirchhoff
+**2D and 3D flexes** use a `Saint Venant-Kirchhoff
 <https://en.wikipedia.org/wiki/Hyperelastic_material#Saint_Venant%E2%80%93Kirchhoff_model>`__ model discretized with
 piecewise linear finite elements, intended to simulate the compression or elongation of hyperelastic materials subjected
 to large displacements (finite rotations) and small strains, since it uses a nonlinear strain-displacement but a linear
@@ -4830,28 +4540,45 @@ The bending energy of 2D flexes is a discrete hinge model for flat references, n
 into a cylinder of curvature :math:`\kappa` stores the Kirchhoff plate energy :math:`D \kappa^2 / 2` per unit area, with
 bending rigidity :math:`D = E t^3 / (12 (1 - \nu^2))`. Poisson's ratio enters the bending energy only through :math:`D`.
 
-For 1D flexes, elasticity is a twist-free, isotropic `discrete elastic rod
-<https://www.cs.columbia.edu/cg/pdfs/143-rods.pdf>`__ bending model with the cross-section given by
-:ref:`section<flex-elasticity-section>`. Every vertex shared by exactly two edges stores the energy
-:math:`k |\kappa b|^2`, where :math:`\kappa b` is the discrete curvature binormal and
-:math:`k = E I / (\ell_0 + \ell_1)`, with :math:`I` the second moment of area of the cross-section and
-:math:`\ell_{0,1}` the reference lengths of the two edges. Vertices bent by more than :math:`10^{-4}` rad in the
-reference configuration ``qpos0`` keep their reference curvature, so that a rod with a curved reference, such as a ring
-or an arc, is at rest in that shape. A bent vertex without bent neighbors stores
-:math:`k (|\kappa b| - |\kappa b_0|)^2`, with :math:`\kappa b_0` the reference binormal, so only its curvature magnitude
-is held and its bending plane is free. Without material frames, the binormals of adjacent bent vertices are compared in
-pairs with their reference values, up to a common rotation about the shared edge, so the rod has no torsional
-stiffness: it resists changes in curvature magnitude, but a curved rod can deform out of its plane at constant curvature
-(e.g. an arc can coil into a helix) with a resistance that vanishes as the discretization is refined. Rods with
-torsional stiffness, such as coil springs, can use the :ref:`cable<CComposite>` composite instead. Vertices bent by less
-than :math:`10^{-4}` rad are treated as straight; a curved initial pose of a straight rod, e.g. coiled or draped, can be
-set with ``qpos`` or a :ref:`keyframe<keyframe>`, and the rod then starts with stored bending energy. Twist is assumed
-to relax instantly, which is exact for a straight reference unless the orientation of both ends of the rod is
-constrained. Stretching is not included; use :ref:`edge<flex-edge>` constraints (or edge stiffness under integrators
-other than ``discrete``) instead. Rod bending is integrated implicitly by the :ref:`discrete<option-integrator>`
-integrator, using a positive semi-definite approximation of its Hessian, and explicitly by ``Euler`` and ``RK4`` (not
-supported under ``implicit`` and ``implicitfast``). It is not supported by :ref:`dof<body-flexcomp-dof>` **trilinear**
-and **quadratic**.
+**1D flexes** are `discrete elastic rods <https://www.cs.columbia.edu/cg/pdfs/143-rods.pdf>`__ with bending and torsion
+and cross-section given by :ref:`section<flex-elasticity-section>` (see :ref:`Rods <CRod>` for details):
+
+- **Bending:** Every interior vertex shared by two edges of reference lengths :math:`\ell_0, \ell_1` stores bending
+  energy :math:`k |\kappa b - \kappa b_0|^2` with stiffness :math:`k = E I / (\ell_0 + \ell_1)`, where :math:`\kappa b`
+  is the discrete curvature binormal and :math:`I` is the second moment of area of the cross-section. Vertices bent by
+  more than :math:`10^{-4}` rad in ``qpos0`` keep their reference curvature :math:`\kappa b_0` (so curved rods such as
+  rings or arcs are at rest in ``qpos0``); for an isolated curved vertex with circular cross-section, only the curvature
+  magnitude :math:`|\kappa b_0|` is held and its bending plane is free. Less-bent vertices are treated as straight
+  (:math:`\kappa b_0 = 0`); to start a straight rod in a bent or coiled pose with stored energy, set ``qpos`` or use a
+  :ref:`keyframe<keyframe>`.
+- **Torsion:** Each vertex of a single-hinge chain has torsional stiffness :math:`k_t = G J / (\ell_0 + \ell_1)`, while
+  pairs of adjacent curved vertices on a circular rod penalize the dihedral twist of their osculating planes across the
+  shared edge of length :math:`\ell_1` with stiffness :math:`k_d = G J / (2 \ell_1)`. Here :math:`G` is the shear
+  modulus from :ref:`shear<flex-elasticity-shear>` or :math:`G = E / (2 (1 + \nu))` when :at:`shear` is zero, and
+  :math:`J` is the Saint-Venant torsional constant of the cross-section.
+- **Clamped vs. free ends:** With ``<pin id="0 1"/>``, the body holding the first edge clamps the material frame at the
+  root and receives the reaction torque of the rod; for open rods created by :ref:`flexcomp<body-flexcomp>`, a
+  ``<name>_twist`` body and hinge joint are added to control the twist at the other end (which can be actuated, with
+  polar mass moment of inertia and Rayleigh damping of the torsional chain). Without a clamped first edge (e.g.,
+  ``<pin id="0"/>`` or unpinned), no twist joint is created and end twist relaxes instantaneously.
+- **Box sections:** For :at:`section` **box**, the principal bending stiffnesses :math:`k_{1,2} = E I_{1,2} / (\ell_0 +
+  \ell_1)` are anisotropic and the edge material angles are solved quasistatically at each step so bending and twist
+  relax into the weak bending axis; all vertices remain single hinges with directional reference curvature in the
+  material frame. Requires a single open chain.
+- **State:** Each rod with a twist joint stores 7 numbers in ``mjData.plastic`` at ``flex_plasticadr[f]`` for its
+  parallel-transported twist reference frame, so state snapshots must include ``mjSTATE_PLASTIC``.
+- **Limitations:** Stretching is not included; use :ref:`edge<flex-edge>` equality constraints (or edge stiffness under
+  integrators other than ``discrete``) instead. Rod elasticity is integrated implicitly by
+  :ref:`discrete<option-integrator>` (using a positive semi-definite Hessian approximation) and explicitly by ``Euler``
+  and ``RK4``; ``implicit`` and ``implicitfast`` are not supported, nor are :ref:`dof<body-flexcomp-dof>` **trilinear**
+  and **quadratic**.
+
+Non-interpolated flex elasticity supports vertices attached to articulated bodies, including jointless welded children.
+A vertex pinned to a moving body follows that body's motion and applies its reaction force and torque to the body.
+With the :ref:`discrete<option-integrator>` integrator, use :ref:`solver<option-solver>` **CG** for general attachments.
+Newton supports fixed attachments and independent slide bodies with local positive X, Y and Z joints in that order
+and fixed ancestors. Mocap attachments are not supported for non-rigid flexes with elasticity because mocap poses do
+not provide velocities for elastic damping, except for 1D flexes with zero :ref:`damping<flex-elasticity-damping>`.
 
 .. _flex-elasticity-young:
 
@@ -4865,6 +4592,14 @@ and **quadratic**.
    Poisson's ratio, the ratio of transverse deformation to applied longitudinal strain.
    This unitless quantity is in the range :math:`[0, 0.5)`.
    Small or large values imply compressibility or incompressiblity, respectively.
+
+.. _flex-elasticity-shear:
+
+:at:`shear`: :at-val:`real(1), "0"`
+   Shear modulus :math:`G` used for the torsional stiffness of 1D flexes, units of
+   :math:`\textrm{pressure}=\textrm{force}/\textrm{area}`. Must be non-negative. If zero, the isotropic value
+   :math:`G = E / (2 (1 + \nu))` is computed from :ref:`young<flex-elasticity-young>` and
+   :ref:`poisson<flex-elasticity-poisson>`; if positive, it overrides that value. Ignored for 2D and 3D flexes.
 
 .. _flex-elasticity-damping:
 
@@ -4911,21 +4646,15 @@ and **quadratic**.
    "both": bending and stretching. Bending is not yet supported by :ref:`dof<body-flexcomp-dof>` **trilinear** and
    **quadratic**.
 
-   Non-interpolated flex elasticity supports vertices attached to articulated bodies, including jointless welded children.
-   A vertex pinned to a moving body follows that body's motion and applies its reaction force and torque to the body.
-   With the :ref:`discrete<option-integrator>` integrator, use :ref:`solver<option-solver>` **CG** for general attachments.
-   Newton supports fixed attachments and independent slide bodies with local positive X, Y and Z joints in that order
-   and fixed ancestors. Mocap attachments are not supported for non-rigid flexes with elasticity because mocap poses do
-   not provide velocities for elastic damping, except for 1D flexes with zero :ref:`damping<flex-elasticity-damping>`.
-
 .. _flex-elasticity-section:
 
 :at:`section`: :at-val:`[circle, box], "circle"`
-   Cross-section of 1D flexes, used to compute the second moment of area :math:`I` of the bending stiffness. "circle":
-   :math:`I = \pi r^4 / 4`, where :math:`r` is the flex :ref:`radius <deformable-flex-radius>`. "box": rectangle with
-   half-sizes given by :ref:`sectionsize<flex-elasticity-sectionsize>`. Since the bending model is isotropic, a box uses
-   the second moment of area of its weak axis, :math:`I = \min(w h^3, h w^3) / 12`, where :math:`w, h` are the full
-   sizes. Collisions and rendering always use the flex radius.
+   Cross-section of 1D flexes, used to compute the second moments of area :math:`I_1, I_2` and torsional constant
+   :math:`J` of the bending and torsional stiffnesses. "circle": :math:`I_1 = I_2 = \pi r^4 / 4` and
+   :math:`J = \pi r^4 / 2`, where :math:`r` is the flex :ref:`radius <deformable-flex-radius>`. "box": rectangle with
+   half-sizes given by :ref:`sectionsize<flex-elasticity-sectionsize>` and full sizes :math:`w, h`, with principal
+   second moments :math:`I_1 = h w^3 / 12`, :math:`I_2 = w h^3 / 12`, and Saint-Venant torsional constant :math:`J`
+   (requires an open chain). Collisions and rendering always use the flex radius.
 
 .. _flex-elasticity-sectionsize:
 
@@ -5035,9 +4764,7 @@ vertex. Normals then are computed automatically given the resulting global verte
 Finally, the skin can be inflated by applying an offset to each vertex position along its (computed) normal.
 Skins are one-sided for rendering purposes; this is because back-face culling is needed to avoid shading and aliasing
 artifacts. When the skin is a closed 3D shape this does not matter because the back sides cannot be seen. But if the
-skin is a 2D object, we have to specify both sides and offset them slightly to avoid artifacts. Note that the
-composite objects generate skins automatically. So one can save an XML model with a composite
-object, and obtain an elaborate example of how a skin is specified in the XML.
+skin is a 2D object, we have to specify both sides and offset them slightly to avoid artifacts.
 
 Similar to meshes, skins can be specified directly in the XML via attributes documented later, or loaded from a binary
 SKN file which is in a custom format. The specification of skins is more complex than meshes because of the bone
@@ -11511,7 +11238,7 @@ plugin, or when global plugin configuration is desired. See plugin :ref:`declara
 
 Configuration of a plugin instance. When implicitly declaring a plugin under a model element, configuration is
 performed with identical semantics using :el:`element/plugin/config`. The elements which currently support plugins are
-:el:`body`, :el:`composite`, :el:`actuator` and :el:`sensor`.
+:el:`body`, :el:`flexcomp`, :el:`actuator` and :el:`sensor`.
 
 .. _plugin-config-key:
 

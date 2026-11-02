@@ -2032,6 +2032,313 @@ mjtNum RodBendingEnergy(const mjModel* m, const mjData* d, int f) {
     mjtNum denom = mju_norm3(e0) * mju_norm3(e1) + mju_dot3(e0, e1);
     mju_scl3(kb, cross, 2 / denom);
   };
+  int nhinge = (int)b[0];
+  bool is_chain = nhinge > 0;
+  bool any_aniso = false;
+  int twist_jnt = -1;
+  for (int h = 0; h < nhinge && is_chain; h++) {
+    const mjtNum* hinge = b + 1 + kRodHingeSize * h;
+    if (hinge[3] >= 0 || (hinge[6] > 0 && hinge[5] == 0)) is_chain = false;
+    if (h > 0) {
+      const mjtNum* prev = b + 1 + kRodHingeSize * (h - 1);
+      if ((int)hinge[0] != (int)prev[1] || (int)hinge[1] != (int)prev[2]) {
+        is_chain = false;
+      }
+    }
+    if (hinge[5] != 0) any_aniso = true;
+    if (h == 0 && hinge[7] >= 0 && hinge[8] > 0) twist_jnt = (int)hinge[7];
+  }
+  int va = m->flex_vertadr[f];
+  bool root_clamped = (m->flex_vertbodyid[va + (int)b[1 + 0]] ==
+                       m->flex_vertbodyid[va + (int)b[1 + 1]]);
+  if (!root_clamped) twist_jnt = -1;
+  if (is_chain && (any_aniso || twist_jnt >= 0)) {
+    int nedge = nhinge + 1;
+    int nvert_chain = nhinge + 2;
+    std::vector<int> v_chain(nvert_chain);
+    for (int h = 0; h < nhinge; h++) {
+      v_chain[h] = (int)b[1 + kRodHingeSize * h + 0];
+    }
+    v_chain[nhinge] = (int)b[1 + kRodHingeSize * (nhinge - 1) + 1];
+    v_chain[nhinge + 1] = (int)b[1 + kRodHingeSize * (nhinge - 1) + 2];
+
+    auto body_pose0 = [&](int b_id, mjtNum pos[3], mjtNum quat[4]) {
+      mju_zero3(pos);
+      quat[0] = 1;
+      quat[1] = quat[2] = quat[3] = 0;
+      for (int cur = b_id; cur > 0; cur = m->body_parentid[cur]) {
+        mjtNum p[3], q[4];
+        mju_rotVecQuat(p, pos, m->body_quat + 4 * cur);
+        mju_add3(pos, p, m->body_pos + 3 * cur);
+        mju_mulQuat(q, m->body_quat + 4 * cur, quat);
+        mju_copy4(quat, q);
+      }
+    };
+    auto pt = [](const mjtNum t_from[3], const mjtNum t_to[3],
+                 const mjtNum u_in[3], mjtNum u_out[3], mjtNum v_out[3]) {
+      mjtNum denom = 1 + mju_dot3(t_from, t_to);
+      mjtNum sum[3];
+      mju_add3(sum, t_from, t_to);
+      mjtNum scale = mju_dot3(t_to, u_in) / denom;
+      mju_addScl3(u_out, u_in, sum, -scale);
+      mju_normalize3(u_out);
+      mju_cross(v_out, t_to, u_out);
+    };
+
+    std::vector<mjtNum> xpos0(3 * nvert_chain);
+    int b0 = m->flex_vertbodyid[va + v_chain[0]];
+    mjtNum p0_b0[3], q0_b0[4], qneg0[4], qrot[4];
+    body_pose0(b0, p0_b0, q0_b0);
+    mju_negQuat(qneg0, q0_b0);
+    mju_mulQuat(qrot, d->xquat + 4 * b0, qneg0);
+    for (int k = 0; k < nvert_chain; k++) {
+      int gv = va + v_chain[k];
+      int bk = m->flex_vertbodyid[gv];
+      mjtNum pk[3], qk[4], off[3], rel[3], rot_rel[3];
+      body_pose0(bk, pk, qk);
+      mju_rotVecQuat(off, m->flex_vert + 3 * gv, qk);
+      mju_addTo3(pk, off);
+      mju_sub3(rel, pk, p0_b0);
+      mju_rotVecQuat(rot_rel, rel, qrot);
+      mju_add3(xpos0.data() + 3 * k, d->xpos + 3 * b0, rot_rel);
+    }
+
+    mjtNum e0_ref[3], frame_loc[9] = {0}, t0_ref[3], u0_ref[3], v0_ref[3];
+    mju_sub3(e0_ref, xpos0.data() + 3, xpos0.data());
+    mju_mulMatTVec3(frame_loc, d->xmat + 9 * b0, e0_ref);
+    mju_normalize3(frame_loc);
+    if (frame_loc[1] < 0.5 && frame_loc[1] > -0.5) {
+      frame_loc[4] = 1;
+    } else {
+      frame_loc[5] = 1;
+    }
+    mju_addToScl3(frame_loc + 3, frame_loc,
+                  -mju_dot3(frame_loc, frame_loc + 3));
+    mju_normalize3(frame_loc + 3);
+    mju_cross(frame_loc + 6, frame_loc, frame_loc + 3);
+    mjtNum psi0 = b[1 + 9];
+    mjtNum c0 = mju_cos(psi0), s0 = mju_sin(psi0);
+    mjtNum u_loc[3], v_loc[3];
+    for (int c = 0; c < 3; c++) {
+      u_loc[c] = c0 * frame_loc[3 + c] + s0 * frame_loc[6 + c];
+      v_loc[c] = -s0 * frame_loc[3 + c] + c0 * frame_loc[6 + c];
+    }
+    mju_mulMatVec3(t0_ref, d->xmat + 9 * b0, frame_loc);
+    mju_mulMatVec3(u0_ref, d->xmat + 9 * b0, u_loc);
+    mju_mulMatVec3(v0_ref, d->xmat + 9 * b0, v_loc);
+
+    std::vector<mjtNum> om0(2 * nhinge, 0);
+    mjtNum t_prev_ref[3], u_prev_ref[3], v_prev_ref[3];
+    mju_copy3(t_prev_ref, t0_ref);
+    mju_copy3(u_prev_ref, u0_ref);
+    mju_copy3(v_prev_ref, v0_ref);
+    for (int h = 0; h < nhinge; h++) {
+      if (any_aniso && b[1 + kRodHingeSize * h + 6] > 0) {
+        mjtNum e0r[3], e1r[3], cr[3], kb_ref[3];
+        mju_sub3(e0r, xpos0.data() + 3 * (h + 1), xpos0.data() + 3 * h);
+        mju_sub3(e1r, xpos0.data() + 3 * (h + 2), xpos0.data() + 3 * (h + 1));
+        mju_cross(cr, e0r, e1r);
+        mjtNum den = mju_norm3(e0r) * mju_norm3(e1r) + mju_dot3(e0r, e1r);
+        mju_scl3(kb_ref, cr, 2 / den);
+        om0[2 * h + 0] = mju_dot3(kb_ref, u_prev_ref);
+        om0[2 * h + 1] = mju_dot3(kb_ref, v_prev_ref);
+      }
+      mjtNum t_next_ref[3], u_next_ref[3], v_next_ref[3];
+      mju_sub3(t_next_ref, xpos0.data() + 3 * (h + 2),
+               xpos0.data() + 3 * (h + 1));
+      mju_normalize3(t_next_ref);
+      pt(t_prev_ref, t_next_ref, u_prev_ref, u_next_ref, v_next_ref);
+      mju_copy3(t_prev_ref, t_next_ref);
+      mju_copy3(u_prev_ref, u_next_ref);
+      mju_copy3(v_prev_ref, v_next_ref);
+    }
+
+    std::vector<mjtNum> t_edge(3 * nedge), u_edge(3 * nedge), v_edge(3 * nedge);
+    for (int e = 0; e < nedge; e++) {
+      mju_sub3(t_edge.data() + 3 * e, xpos + 3 * v_chain[e + 1],
+               xpos + 3 * v_chain[e]);
+      mju_normalize3(t_edge.data() + 3 * e);
+    }
+    if (!root_clamped && mju_dot3(t0_ref, t_edge.data()) < -1 + 1e-10) {
+      mju_addScl3(u_edge.data(), u0_ref, t_edge.data(),
+                  -mju_dot3(u0_ref, t_edge.data()));
+      mju_normalize3(u_edge.data());
+      mju_cross(v_edge.data(), t_edge.data(), u_edge.data());
+    } else {
+      pt(t0_ref, t_edge.data(), u0_ref, u_edge.data(), v_edge.data());
+    }
+    for (int h = 0; h < nhinge; h++) {
+      pt(t_edge.data() + 3 * h, t_edge.data() + 3 * (h + 1),
+         u_edge.data() + 3 * h, u_edge.data() + 3 * (h + 1),
+         v_edge.data() + 3 * (h + 1));
+    }
+    mjtNum dpsi_holonomy = 0;
+    if (root_clamped) {
+      mjtNum u_end_ref[3], v_end_ref[3];
+      pt(t_prev_ref, t_edge.data() + 3 * nhinge, u_prev_ref, u_end_ref,
+         v_end_ref);
+      dpsi_holonomy =
+          mju_atan2(mju_dot3(u_end_ref, v_edge.data() + 3 * nhinge),
+                    mju_dot3(u_end_ref, u_edge.data() + 3 * nhinge));
+    }
+    mjtNum theta_hinge = 0;
+    if (twist_jnt >= 0) {
+      int padr = m->jnt_qposadr[twist_jnt];
+      theta_hinge = d->qpos[padr] - m->qpos0[padr];
+    }
+
+    mjtNum chain_energy = 0;
+    if (!any_aniso) {
+      mjtNum inv_kt_sum = 0;
+      for (int h = 0; h < nhinge; h++) {
+        const mjtNum* hinge = b + 1 + kRodHingeSize * h;
+        mjtNum k1 = hinge[4], kb0 = hinge[6], kt = hinge[8];
+        if (kt > 0) inv_kt_sum += 1.0 / kt;
+        mjtNum kb[3];
+        binormal(v_chain[h], v_chain[h + 1], v_chain[h + 2], kb);
+        mjtNum r = mju_norm3(kb);
+        mjtNum rho = mju_sqrt(r * r + kSmooth * kSmooth * kb0 * kb0);
+        chain_energy += k1 * (rho - gam * kb0) * (rho - gam * kb0);
+      }
+      if (twist_jnt >= 0 && inv_kt_sum > 0) {
+        mjtNum kt_eff = 1.0 / inv_kt_sum;
+        mjtNum theta_tot = theta_hinge + dpsi_holonomy;
+        chain_energy += kt_eff * theta_tot * theta_tot;
+      }
+      return chain_energy;
+    }
+
+    std::vector<mjtNum> om_b(2 * nhinge);
+    for (int h = 0; h < nhinge; h++) {
+      mjtNum kb[3];
+      binormal(v_chain[h], v_chain[h + 1], v_chain[h + 2], kb);
+      om_b[2 * h + 0] = mju_dot3(kb, u_edge.data() + 3 * h);
+      om_b[2 * h + 1] = mju_dot3(kb, v_edge.data() + 3 * h);
+    }
+    std::vector<mjtNum> theta(nedge, 0);
+    int e_start = root_clamped ? 1 : 0;
+    int e_end = (twist_jnt >= 0) ? nhinge - 1 : nhinge;
+    int nint = e_end - e_start + 1;
+    if (root_clamped) {
+      theta[nhinge] = (twist_jnt >= 0) ? (theta_hinge + dpsi_holonomy) : 0;
+      for (int e = 1; e < nhinge; e++) {
+        theta[e] = (static_cast<mjtNum>(e) / nhinge) * theta[nhinge];
+      }
+    } else {
+      mjtNum A2 = 0, B2 = 0, A1 = 0, B1 = 0;
+      for (int h = 0; h < nhinge; h++) {
+        const mjtNum* hinge = b + 1 + kRodHingeSize * h;
+        mjtNum k1 = hinge[4], dk = hinge[5], k2 = k1 + dk;
+        mjtNum u = om_b[2 * h + 0], v = om_b[2 * h + 1];
+        mjtNum w1_0 = om0[2 * h + 0], w2_0 = om0[2 * h + 1];
+        A2 += -dk * (u * u - v * v);
+        B2 += -2 * dk * u * v;
+        A1 += -2 * (k1 * w1_0 * u + k2 * w2_0 * v);
+        B1 += -2 * (k1 * w1_0 * v - k2 * w2_0 * u);
+      }
+      mjtNum phi2 = 0.5 * mju_atan2(-B2, -A2);
+      mjtNum phi1 = mju_atan2(-B1, -A1);
+      mjtNum cands[4] = {phi2, static_cast<mjtNum>(phi2 + 0.5 * mjPI), phi1,
+                         static_cast<mjtNum>(phi1 + mjPI)};
+      mjtNum best_E = 0, best_th = 0;
+      for (int c = 0; c < 4; c++) {
+        mjtNum cc = mju_cos(cands[c]), sc = mju_sin(cands[c]);
+        mjtNum c2 = cc * cc - sc * sc, s2 = 2 * cc * sc;
+        mjtNum E = 0.5 * (A2 * c2 + B2 * s2) + A1 * cc + B1 * sc;
+        if (c == 0 || E < best_E) {
+          best_E = E;
+          best_th = cands[c];
+        }
+      }
+      for (int e = 0; e <= nhinge; e++) theta[e] = best_th;
+    }
+    if (nint > 0) {
+      std::vector<mjtNum> diag(nint), dsafe(nint), offd(nint), rhs(nint);
+      std::vector<mjtNum> step(nint);
+      // Thomas elimination, returns false if the matrix is not positive
+      // definite
+      auto solve = [&](std::vector<mjtNum>& dg) {
+        for (int i = 0; i < nint; i++) {
+          step[i] = rhs[i];
+          if (i > 0) {
+            mjtNum w = offd[i - 1] / dg[i - 1];
+            dg[i] -= w * offd[i - 1];
+            step[i] -= w * step[i - 1];
+          }
+          if (dg[i] < mjMINVAL) return false;
+        }
+        step[nint - 1] /= dg[nint - 1];
+        for (int i = nint - 2; i >= 0; i--) {
+          step[i] = (step[i] - offd[i] * step[i + 1]) / dg[i];
+        }
+        return true;
+      };
+      for (int iter = 0; iter < 20; iter++) {
+        mjtNum max_r = 0;
+        for (int i = 0; i < nint; i++) {
+          int e = e_start + i;
+          mjtNum kt_prev = (e > 0) ? b[1 + kRodHingeSize * (e - 1) + 8] : 0;
+          mjtNum kt_curr = (e < nhinge) ? b[1 + kRodHingeSize * e + 8] : 0;
+          mjtNum dth_prev = (e > 0) ? (theta[e] - theta[e - 1]) : 0;
+          mjtNum dth_next = (e < nhinge) ? (theta[e + 1] - theta[e]) : 0;
+          mjtNum grad = 2 * kt_prev * dth_prev - 2 * kt_curr * dth_next;
+          mjtNum hess = 2 * (kt_prev + kt_curr);
+          mjtNum hess_bend = 0, hess_gn = 0;
+          mjtNum ce = mju_cos(theta[e]), se = mju_sin(theta[e]);
+          for (int side = 0; side < 2; side++) {
+            int h = e - 1 + side;
+            if (h < 0 || h >= nhinge) continue;
+            const mjtNum* hinge = b + 1 + kRodHingeSize * h;
+            mjtNum k1 = hinge[4], dk = hinge[5];
+            mjtNum k2 = k1 + dk;
+            mjtNum b1 = om_b[2 * h + 0], b2 = om_b[2 * h + 1];
+            mjtNum om1 = ce * b1 + se * b2;
+            mjtNum om2 = -se * b1 + ce * b2;
+            mjtNum d1 = om1 - om0[2 * h + 0];
+            mjtNum d2 = om2 - om0[2 * h + 1];
+            grad += k1 * d1 * om2 - k2 * d2 * om1;
+            hess_bend +=
+                k1 * (om2 * om2 - d1 * om1) + k2 * (om1 * om1 - d2 * om2);
+            hess_gn += k1 * om2 * om2 + k2 * om1 * om1;
+          }
+          diag[i] = hess + hess_bend;
+          dsafe[i] = hess + (hess_bend > 0 ? hess_bend : hess_gn) +
+                     (root_clamped ? 0 : 1e-9);
+          rhs[i] = -grad;
+          offd[i] = (i < nint - 1) ? -2 * kt_curr : 0;
+          max_r = std::max(max_r, std::abs(grad));
+        }
+        if (max_r < 1e-12) break;
+        if (!solve(diag) && !solve(dsafe)) break;
+        mjtNum max_step = 0;
+        for (int i = 0; i < nint; i++) {
+          max_step = std::max(max_step, std::abs(step[i]));
+        }
+        mjtNum scl = max_step > 0.5 ? 0.5 / max_step : 1;
+        for (int i = 0; i < nint; i++) {
+          theta[e_start + i] += scl * step[i];
+        }
+      }
+    }
+    for (int h = 0; h < nhinge; h++) {
+      const mjtNum* hinge = b + 1 + kRodHingeSize * h;
+      mjtNum k1 = hinge[4], dk = hinge[5], kt = hinge[8];
+      mjtNum k2 = k1 + dk;
+      mjtNum b1 = om_b[2 * h + 0], b2 = om_b[2 * h + 1];
+      for (int side = 0; side < 2; side++) {
+        int e = h + side;
+        mjtNum c = mju_cos(theta[e]), s = mju_sin(theta[e]);
+        mjtNum om1 = c * b1 + s * b2;
+        mjtNum om2 = -s * b1 + c * b2;
+        mjtNum d1 = om1 - om0[2 * h + 0];
+        mjtNum d2 = om2 - om0[2 * h + 1];
+        chain_energy += 0.5 * (k1 * d1 * d1 + k2 * d2 * d2);
+      }
+      mjtNum dtheta = theta[h + 1] - theta[h];
+      chain_energy += kt * dtheta * dtheta;
+    }
+    return chain_energy;
+  }
   mjtNum energy = 0;
   for (int h = 0; h < (int)b[0]; h++) {
     const mjtNum* hinge = b + 1 + kRodHingeSize * h;
@@ -2066,20 +2373,24 @@ mjtNum RodBendingEnergy(const mjModel* m, const mjData* d, int f) {
     mjtNum om[4] = {mju_dot3(kba, u), mju_dot3(kba, v), mju_dot3(kbb, u),
                     mju_dot3(kbb, v)};
 
-    // min over rotations a about the edge of sum_i w_i |om_i - R(a) om0_i|^2,
-    // with the alignment sqrt(c^2 + s^2) smoothed at om = 0
+    // radial bending + dihedral torsion across the shared edge
     mjtNum w0 = hinge[4], w1 = hinge[5];
-    const mjtNum* om0 = hinge + 6;
-    mjtNum q = w0 * (om[0] * om[0] + om[1] * om[1]) +
-               w1 * (om[2] * om[2] + om[3] * om[3]);
-    mjtNum q0 = w0 * (om0[0] * om0[0] + om0[1] * om0[1]) +
-                w1 * (om0[2] * om0[2] + om0[3] * om0[3]);
-    mjtNum c = w0 * (om[0] * om0[0] + om[1] * om0[1]) +
-               w1 * (om[2] * om0[2] + om[3] * om0[3]);
-    mjtNum s = w0 * (om[1] * om0[0] - om[0] * om0[1]) +
-               w1 * (om[3] * om0[2] - om[2] * om0[3]);
-    mjtNum rho = mju_sqrt(c * c + s * s + kSmooth * kSmooth * q0 * q0);
-    energy += q + (2 * gam * gam - 1) * q0 - 2 * gam * rho;
+    mjtNum r0a = hinge[6], r0b = hinge[7], tc = hinge[8], ts = hinge[9];
+    mjtNum kt = mju_sqrt(tc * tc + ts * ts);
+    mjtNum ra = mju_sqrt(om[0] * om[0] + om[1] * om[1]);
+    mjtNum rb = mju_sqrt(om[2] * om[2] + om[3] * om[3]);
+    mjtNum rhoa = mju_sqrt(ra * ra + kSmooth * kSmooth * r0a * r0a);
+    mjtNum rhob = mju_sqrt(rb * rb + kSmooth * kSmooth * r0b * r0b);
+    energy += w0 * (rhoa - gam * r0a) * (rhoa - gam * r0a) +
+              w1 * (rhob - gam * r0b) * (rhob - gam * r0b);
+    if (kt > 0) {
+      mjtNum nta[2] = {gam * om[0] / rhoa, gam * om[1] / rhoa};
+      mjtNum ntb[2] = {gam * om[2] / rhob, gam * om[3] / rhob};
+      mjtNum rna[2] = {(tc * nta[0] - ts * nta[1]) / kt,
+                       (ts * nta[0] + tc * nta[1]) / kt};
+      mjtNum dx = rna[0] - ntb[0], dy = rna[1] - ntb[1];
+      energy += kt * (dx * dx + dy * dy);
+    }
   }
   return energy;
 }
@@ -2378,6 +2689,74 @@ TEST_F(ElasticityTest, RodBendingCurvedReference) {
   EXPECT_NEAR(pair[4], EI / (0.05 + l1), MjTol(1e-10, 1e-5) * pair[4]);
 }
 
+// out-of-plane dihedral twist between adjacent curved hinges is resisted with
+// torsional stiffness kt = GJ / (2 l), where G = E / (2 (1 + poisson))
+TEST_F(ElasticityTest, RodBendingTorsion) {
+  static constexpr char xml_template[] = R"(
+  <mujoco>
+    <option gravity="0 0 0"/>
+    <worldbody>
+      <flexcomp name="zrod" type="direct" dim="1" radius="0.01" mass="1"
+                point="0 1 0  0 0 0  1 0 0  1 1 0">
+        <contact selfcollide="none" contype="0" conaffinity="0"/>
+        <elasticity young="1e7" poisson="%s" %s/>
+      </flexcomp>
+    </worldbody>
+  </mujoco>
+  )";
+  char xml[2048];
+  char error[1024] = {0};
+
+  // circle section with poisson = 0.25: G = E / 2.5, J = pi r^4 / 2, l = 1
+  std::snprintf(xml, sizeof(xml), xml_template, "0.25", "");
+  MjModelPtr m = LoadModelFromString(xml, error, sizeof(error));
+  ASSERT_THAT(m.get(), NotNull()) << error;
+  const mjtNum* b = m->flex_bending + m->flex_bendingadr[0];
+  ASSERT_EQ(b[0], 1);
+  const mjtNum* pair = b + 1;
+  EXPECT_EQ(pair[3], 3);
+
+  const double J_circle = mjPI * std::pow(0.01, 4) / 2;
+  const double kt = (1e7 / (2 * 1.25)) * J_circle / 2.0;
+  // hinges (0,1,2) and (1,2,3) bend in the same direction (+z) in the xy-plane
+  // (dphi0 = 0), so tc = kt, ts = 0
+  EXPECT_NEAR(pair[6], 2.0, MjTol(1e-12, 1e-6));
+  EXPECT_NEAR(pair[7], 2.0, MjTol(1e-12, 1e-6));
+  EXPECT_NEAR(pair[8], kt, MjTol(1e-12, 1e-6) * kt);
+  EXPECT_NEAR(pair[9], 0.0, MjTol(1e-12, 1e-6) * kt);
+
+  // rotate vertex 3 around the shared edge (1, 2) by angle psi: curvature
+  // magnitudes stay at their rest values (2.0), so the energy is purely
+  // torsional: 2 kt (1 - cos(psi))
+  MjDataPtr d = MakeData(m);
+  const double psi = 0.6;
+  d->qpos[3 * 3 + 1] = std::cos(psi) - 1.0;
+  d->qpos[3 * 3 + 2] = std::sin(psi);
+  mj_forward(m.get(), d.get());
+  double expected_energy = 2 * kt * (1 - std::cos(psi));
+  EXPECT_NEAR(RodBendingEnergy(m.get(), d.get(), 0), expected_energy,
+              MjTol(1e-12, 1e-5) * expected_energy);
+  // restoring force on vertex 3 along -z opposes the positive twist
+  EXPECT_LT(d->qfrc_spring[3 * 3 + 2], 0);
+
+  // box section: Saint-Venant torsion constant J (kept as single hinges for the
+  // Bishop-frame tridiagonal twist solve)
+  std::snprintf(xml, sizeof(xml), xml_template, "0.0",
+                R"(section="box" sectionsize="0.02 0.01")");
+  m = LoadModelFromString(xml, error, sizeof(error));
+  ASSERT_THAT(m.get(), NotNull()) << error;
+  b = m->flex_bending + m->flex_bendingadr[0];
+  EXPECT_EQ(b[0], 2);
+  pair = b + 1;
+  EXPECT_EQ(pair[3], -1);
+  const double a = 0.02, c = 0.01;
+  const double J_box =
+      a * c * c * c *
+      (16.0 / 3.0 - 3.36 * (c / a) * (1.0 - std::pow(c / a, 4) / 12.0));
+  const double kt_box = (1e7 / 2.0) * J_box / 2.0;
+  EXPECT_NEAR(pair[8], kt_box, MjTol(1e-12, 1e-6) * kt_box);
+}
+
 // a straight reference can be posed curved through qpos: the bending force
 // straightens it
 TEST_F(ElasticityTest, RodBendingCurvedPose) {
@@ -2551,8 +2930,14 @@ TEST_F(ElasticityTest, RodBendingDamping) {
     EXPECT_LT(mju_dot(d->qfrc_damper, d->qvel, m->nv), 0);
 
     // rigid rotation about an arbitrary axis: no damping (qvel is in body
-    // frame)
+    // frame), with the twist hinge, if any, at rest
     mjtNum omega[3] = {0.3, -0.5, 0.7};
+    std::string twist_name =
+        std::string(m->names + m->name_flexadr[0]) + "_twist";
+    int twist = mj_name2id(m.get(), mjOBJ_JOINT, twist_name.c_str());
+    if (twist >= 0) {
+      d->qvel[m->jnt_dofadr[twist]] = 0;
+    }
     int nvert = m->flex_vertnum[0];
     for (int v = 0; v < nvert; v++) {
       int bid = m->flex_vertbodyid[m->flex_vertadr[0] + v];
@@ -2704,6 +3089,339 @@ TEST_F(ElasticityTest, RodBendingBoxSection) {
   m = LoadModelFromString(xml, error, sizeof(error));
   EXPECT_THAT(m.get(), IsNull());
   EXPECT_THAT(error, HasSubstr("box section requires positive sectionsize"));
+  // box section requires an open chain
+  static constexpr char kCircleBoxXml[] = R"(
+  <mujoco>
+    <worldbody>
+      <flexcomp name="ring" type="circle" count="8 1 1" spacing="0.1 0.1 0.1"
+                radius="0.01" dim="1" mass="1">
+        <elasticity young="1e7" section="box" sectionsize="0.005 0.02"/>
+      </flexcomp>
+    </worldbody>
+  </mujoco>
+  )";
+  m = LoadModelFromString(kCircleBoxXml, error, sizeof(error));
+  EXPECT_THAT(m.get(), IsNull());
+  EXPECT_THAT(
+      error,
+      HasSubstr("1D flex elasticity with box section requires an open chain"));
+}
+
+// verify twist hinge joint, twist-to-writhe coupling, rotating root body b0,
+// and anisotropic box tridiagonal quasistatic twist solve
+TEST_F(ElasticityTest, RodTwistAndAnisotropicBox) {
+  static constexpr char kCircleRodXml[] = R"(
+  <mujoco>
+    <option gravity="0 0 0"/>
+    <worldbody>
+      <body name="turned" euler="15 -25 35">
+        <joint type="hinge" axis="1 0 0"/>
+        <joint type="hinge" axis="0 1 0"/>
+        <joint type="hinge" axis="0 0 1"/>
+        <geom size="0.01"/>
+        <flexcomp name="rod" type="grid" count="7 1 1" spacing="0.1 0.1 0.1"
+                  radius="0.01" dim="1" mass="1">
+          <pin id="0 1"/>
+          <contact selfcollide="none" contype="0" conaffinity="0"/>
+          <elasticity young="1e7" poisson="0.25"/>
+        </flexcomp>
+      </body>
+    </worldbody>
+  </mujoco>
+  )";
+  static constexpr char kBoxRodXml[] = R"(
+  <mujoco>
+    <option gravity="0 0 0"/>
+    <worldbody>
+      <body name="turned" euler="15 -25 35">
+        <joint type="hinge" axis="1 0 0"/>
+        <joint type="hinge" axis="0 1 0"/>
+        <joint type="hinge" axis="0 0 1"/>
+        <geom size="0.01"/>
+        <body name="mount">
+          <flexcomp name="rod" type="grid" count="7 1 1" spacing="0.1 0.1 0.1"
+                    radius="0.01" dim="1" mass="1">
+            <pin id="0 1"/>
+            <contact selfcollide="none" contype="0" conaffinity="0"/>
+            <elasticity young="1e7" poisson="0.25"
+                        section="box" sectionsize="0.005 0.02"/>
+          </flexcomp>
+        </body>
+      </body>
+    </worldbody>
+  </mujoco>
+  )";
+
+  for (const char* xml : {kCircleRodXml, kBoxRodXml}) {
+    char error[1024] = {0};
+    MjModelPtr m = LoadModelFromString(xml, error, sizeof(error));
+    ASSERT_THAT(m.get(), NotNull()) << error;
+    int twist_jnt = mj_name2id(m.get(), mjOBJ_JOINT, "rod_twist");
+    ASSERT_GE(twist_jnt, 0);
+    int twist_dof = m->jnt_dofadr[twist_jnt];
+    int twist_qpos = m->jnt_qposadr[twist_jnt];
+
+    MjDataPtr d = MakeData(m);
+    for (int i = 0; i < m->nq; i++) {
+      d->qpos[i] = (i < 3 ? 0.05 : 0.005) * std::sin(1.7 * i + 0.3);
+    }
+    d->qpos[twist_qpos] = 0.4;
+    mj_forward(m.get(), d.get());
+
+    EXPECT_LT(d->qfrc_spring[twist_dof], 0);
+    std::vector<mjtNum> force(d->qfrc_spring, d->qfrc_spring + m->nv);
+    mjtNum fmax = 0;
+    for (mjtNum fi : force) fmax = std::max(fmax, std::abs(fi));
+    ASSERT_GT(fmax, 0);
+
+    const mjtNum eps = MjEps(1e-6, 1e-3);
+    for (int i = 0; i < m->nv; i++) {
+      mjtNum q = d->qpos[i];
+      d->qpos[i] = q + eps;
+      mj_fwdPosition(m.get(), d.get());
+      mjtNum ep = RodBendingEnergy(m.get(), d.get(), 0);
+      d->qpos[i] = q - eps;
+      mj_fwdPosition(m.get(), d.get());
+      mjtNum em = RodBendingEnergy(m.get(), d.get(), 0);
+      d->qpos[i] = q;
+      EXPECT_NEAR(force[i], -(ep - em) / (2 * eps), MjTol(1e-5, 1e-2) * fmax)
+          << "dof " << i;
+    }
+  }
+
+  // verify anisotropic stiffness ratio (strong vs weak axis = (0.02/0.005)^2 =
+  // 16)
+  static constexpr char kFlatBoxXml[] = R"(
+  <mujoco>
+    <option gravity="0 0 0"/>
+    <worldbody>
+      <flexcomp name="rod" type="grid" count="5 1 1" spacing="0.1 0.1 0.1"
+                radius="0.01" dim="1" mass="1">
+        <pin id="0 1"/>
+        <contact selfcollide="none" contype="0" conaffinity="0"/>
+        <elasticity young="1e7" section="box" sectionsize="0.02 0.005"/>
+      </flexcomp>
+    </worldbody>
+  </mujoco>
+  )";
+  char error[1024] = {0};
+  MjModelPtr m = LoadModelFromString(kFlatBoxXml, error, sizeof(error));
+  ASSERT_THAT(m.get(), NotNull()) << error;
+  MjDataPtr d_weak = MakeData(m);
+  MjDataPtr d_strong = MakeData(m);
+  // displace vertex 2 in z (weak axis) vs y (strong axis)
+  d_weak->qpos[2] = 0.01;
+  d_strong->qpos[1] = 0.01;
+  mj_forward(m.get(), d_weak.get());
+  mj_forward(m.get(), d_strong.get());
+  mjtNum e_weak = RodBendingEnergy(m.get(), d_weak.get(), 0);
+  mjtNum e_strong = RodBendingEnergy(m.get(), d_strong.get(), 0);
+  EXPECT_GT(e_weak, 0);
+  EXPECT_NEAR(e_strong / e_weak, 16.0, MjTol(1e-10, 1e-4));
+
+  // zigzag strong-axis bending, where the exact Hessian of the twist solve is
+  // indefinite: forces stay consistent with the energy
+  MjDataPtr d_bent = MakeData(m);
+  int twist_qpos =
+      m->jnt_qposadr[mj_name2id(m.get(), mjOBJ_JOINT, "rod_twist")];
+  d_bent->qpos[1] = 0.05;
+  d_bent->qpos[2] = 0.01;
+  d_bent->qpos[4] = -0.05;
+  d_bent->qpos[7] = 0.05;
+  d_bent->qpos[twist_qpos] = 0.3;
+  mj_forward(m.get(), d_bent.get());
+  std::vector<mjtNum> force(d_bent->qfrc_spring, d_bent->qfrc_spring + m->nv);
+  mjtNum fmax = 0;
+  for (mjtNum fi : force) fmax = std::max(fmax, std::abs(fi));
+  ASSERT_GT(fmax, 0);
+  const mjtNum eps = MjEps(1e-6, 1e-3);
+  for (int i = 0; i < m->nv; i++) {
+    mjtNum q = d_bent->qpos[i];
+    d_bent->qpos[i] = q + eps;
+    mj_fwdPosition(m.get(), d_bent.get());
+    mjtNum ep = RodBendingEnergy(m.get(), d_bent.get(), 0);
+    d_bent->qpos[i] = q - eps;
+    mj_fwdPosition(m.get(), d_bent.get());
+    mjtNum em = RodBendingEnergy(m.get(), d_bent.get(), 0);
+    d_bent->qpos[i] = q;
+    EXPECT_NEAR(force[i], -(ep - em) / (2 * eps), MjTol(1e-5, 1e-2) * fmax)
+        << "dof " << i;
+  }
+
+  // free and single-vertex-pinned rods have no root twist joint and are SO(3)
+  // rigid-rotation invariant even for anisotropic box cross-sections
+  static constexpr char kFreeBoxXml[] = R"(
+  <mujoco>
+    <option gravity="0 0 0"/>
+    <worldbody>
+      <flexcomp name="rod" type="grid" count="6 1 1" spacing="0.1 0.1 0.1"
+                radius="0.01" dim="1" mass="1">
+        <pin id="0"/>
+        <contact selfcollide="none" contype="0" conaffinity="0"/>
+        <elasticity young="1e7" poisson="0.25"
+                    section="box" sectionsize="0.02 0.005"/>
+      </flexcomp>
+    </worldbody>
+  </mujoco>
+  )";
+  MjModelPtr m_free = LoadModelFromString(kFreeBoxXml, error, sizeof(error));
+  ASSERT_THAT(m_free.get(), NotNull()) << error;
+  EXPECT_EQ(mj_name2id(m_free.get(), mjOBJ_JOINT, "rod_twist"), -1);
+  MjDataPtr d_free = MakeData(m_free);
+  for (int i = 0; i < m_free->nq; i++) {
+    d_free->qpos[i] = 0.02 * std::sin(1.7 * i + 0.3);
+  }
+  mj_forward(m_free.get(), d_free.get());
+  mjtNum e_orig = RodBendingEnergy(m_free.get(), d_free.get(), 0);
+  std::vector<mjtNum> f_orig(d_free->qfrc_spring,
+                             d_free->qfrc_spring + m_free->nv);
+  // rotate all free vertices (1..5) around pinned vertex 0 at origin by an
+  // arbitrary 3D rotation
+  mjtNum axis[3] = {0.4, -0.7, 0.5};
+  mju_normalize3(axis);
+  mjtNum qrot[4], rmat[9];
+  mju_axisAngle2Quat(qrot, axis, 1.23);
+  mju_quat2Mat(rmat, qrot);
+  MjDataPtr d_rot = MakeData(m_free);
+  for (int v = 1; v < 6; v++) {
+    mjtNum rel[3], rot_rel[3], x_rot[3];
+    mju_sub3(rel, d_free->flexvert_xpos + 3 * v, d_free->flexvert_xpos);
+    mju_mulMatVec3(rot_rel, rmat, rel);
+    mju_add3(x_rot, d_free->flexvert_xpos, rot_rel);
+    int b_id = m_free->flex_vertbodyid[v];
+    mju_sub3(d_rot->qpos + 3 * (v - 1), x_rot, m_free->body_pos + 3 * b_id);
+  }
+  mj_forward(m_free.get(), d_rot.get());
+  mjtNum e_rot = RodBendingEnergy(m_free.get(), d_rot.get(), 0);
+  EXPECT_NEAR(e_rot, e_orig, MjTol(1e-9, 1e-4) * e_orig);
+  for (int v = 1; v < 6; v++) {
+    mjtNum f_exp[3];
+    mju_mulMatVec3(f_exp, rmat, f_orig.data() + 3 * (v - 1));
+    for (int j = 0; j < 3; j++) {
+      EXPECT_NEAR(d_rot->qfrc_spring[3 * (v - 1) + j], f_exp[j],
+                  MjTol(1e-6, 1e-2));
+    }
+  }
+}
+
+// a constant torque on the twist hinge of a straight rod twists it by about
+// ctrl / (GJ / L), and the rod holds that twist without overshoot
+TEST_F(ElasticityTest, RodTwistMotorSteadyTwist) {
+  static constexpr char xml[] = R"(
+  <mujoco>
+    <option gravity="0 0 0" integrator="discrete"/>
+    <worldbody>
+      <flexcomp name="rod" type="grid" count="21 1 1" spacing="0.05 0.05 0.05"
+                radius="0.01" dim="1" mass="0.1">
+        <pin id="0 1"/>
+        <edge equality="true"/>
+        <contact selfcollide="none" contype="0" conaffinity="0"/>
+        <elasticity young="1e7" shear="4e6" damping="0.05"/>
+      </flexcomp>
+    </worldbody>
+    <equality>
+      <connect body1="rod_20" anchor="0 0 0"/>
+    </equality>
+    <actuator>
+      <motor joint="rod_twist"/>
+    </actuator>
+  </mujoco>
+  )";
+  char error[1024] = {0};
+  MjModelPtr m = LoadModelFromString(xml, error, sizeof(error));
+  ASSERT_THAT(m.get(), NotNull()) << error;
+  int twist = mj_name2id(m.get(), mjOBJ_JOINT, "rod_twist");
+  ASSERT_GE(twist, 0);
+  int dof = m->jnt_dofadr[twist];
+  int qadr = m->jnt_qposadr[twist];
+  int f = mj_name2id(m.get(), mjOBJ_FLEX, "rod");
+
+  // the twist hinge has the polar inertia and the Rayleigh damping of the rod
+  EXPECT_NEAR(m->body_inertia[3 * m->jnt_bodyid[twist]], 0.1 * 0.01 * 0.01 / 2,
+              1e-12);
+  EXPECT_GT(m->dof_damping[dof], 0);
+  EXPECT_GE(m->flex_plasticadr[f], 0);
+
+  const mjtNum J = mjPI * 1e-8 / 2, L = 1.0, ctrl = 0.05;
+  for (mjtNum sign : {1, -1}) {
+    MjDataPtr d = MakeData(m);
+    d->ctrl[0] = sign * ctrl;
+    mjtNum fmax = 0;
+    for (int i = 0; i < 2000; i++) {
+      mj_step(m.get(), d.get());
+      fmax = std::max(fmax, std::abs(d->qfrc_spring[dof]));
+      ASSERT_TRUE(std::isfinite(d->qpos[qadr]));
+    }
+    EXPECT_NEAR(d->qpos[qadr], sign * ctrl * L / (4e6 * J),
+                0.1 * ctrl * L / (4e6 * J));
+    EXPECT_NEAR(d->qfrc_spring[dof], -sign * ctrl, 1e-3 * ctrl);
+    EXPECT_LT(std::abs(d->qvel[dof]), 1e-3);
+    EXPECT_LT(fmax, 1.05 * ctrl);
+  }
+}
+
+// a twisted belt coils: the geometric twist exceeds pi, and the twist torque
+// stays continuous and settles at the motor torque
+TEST_F(ElasticityTest, RodTwistCoilingBelt) {
+  static constexpr char xml[] = R"(
+  <mujoco>
+    <option timestep="0.001" integrator="discrete">
+      <flag gravity="disable"/>
+    </option>
+    <worldbody>
+      <flexcomp name="belt" type="direct" dim="1" pos="-.5 0 .05" radius=".005"
+                mass=".05"
+                point="0 0 0  .05 0 .05  .1 0 .1  .15 0 .15  .2 0 .2  .25 0 .25
+                       .3 0 .3  .35 0 .35  .4 0 .4  .45 0 .45  .5 0 .5
+                       .55 0 .45  .6 0 .4  .65 0 .35  .7 0 .3  .75 0 .25
+                       .8 0 .2  .85 0 .15  .9 0 .1  .95 0 .05  1 0 0">
+        <contact selfcollide="auto"/>
+        <edge equality="true"/>
+        <elasticity young="1e7" shear="1e8" damping=".05" section="box"
+                    sectionsize="0.02 0.0015"/>
+        <pin id="0 1"/>
+      </flexcomp>
+    </worldbody>
+    <equality>
+      <connect body1="belt_20" anchor="0 0 0"/>
+    </equality>
+    <actuator>
+      <motor joint="belt_twist"/>
+    </actuator>
+  </mujoco>
+  )";
+  char error[1024] = {0};
+  MjModelPtr m = LoadModelFromString(xml, error, sizeof(error));
+  ASSERT_THAT(m.get(), NotNull()) << error;
+  int twist = mj_name2id(m.get(), mjOBJ_JOINT, "belt_twist");
+  int f = mj_name2id(m.get(), mjOBJ_FLEX, "belt");
+  ASSERT_GE(twist, 0);
+  ASSERT_GE(m->flex_plasticadr[f], 0);
+  int dof = m->jnt_dofadr[twist];
+
+  const mjtNum ctrl = 0.2;
+  MjDataPtr d = MakeData(m);
+  d->ctrl[0] = ctrl;
+  mjtNum fmax = 0, fsum = 0;
+  int nsteady = 0;
+  for (int i = 0; i < 3000; i++) {
+    mj_step(m.get(), d.get());
+    for (int j = 0; j < m->nq; j++) {
+      ASSERT_TRUE(std::isfinite(d->qpos[j])) << "step " << i;
+    }
+    if (d->time > 1) {
+      fmax = std::max(fmax, std::abs(d->qfrc_spring[dof]));
+    }
+    if (d->time >= 2) {
+      fsum += d->qfrc_spring[dof];
+      nsteady++;
+    }
+  }
+  EXPECT_GT(std::abs(d->plastic[m->flex_plasticadr[f] + 6]), mjPI);
+  EXPECT_LT(fmax, 1.5 * ctrl);
+  EXPECT_NEAR(d->qfrc_passive[dof], -ctrl, 0.02 * ctrl);
+  EXPECT_NEAR(fsum / nsteady, -ctrl, 0.12 * ctrl);
+  EXPECT_NEAR(d->qfrc_spring[dof], -ctrl, 0.12 * ctrl);
 }
 
 // rigid 1D flexes carry no rod bending, so their reference need not be straight
@@ -2838,6 +3556,11 @@ TEST_F(ElasticityTest, RodBendingMetricCholesky) {
     for (int j = 0; j < d->efm_K_rownnz[i]; j++) {
       lhs[i] +=
           d->efm_K_val[adr + j] * d->qacc_smooth[d->efm_K_colind[adr + j]];
+    }
+
+    // per-dof diagonal: twist hinge stiffness and damping
+    if (d->efm_diag) {
+      lhs[i] += d->efm_diag[i] * d->qacc_smooth[i];
     }
   }
   mjtNum err = 0, norm = mju_norm(rhs.data(), m->nv);

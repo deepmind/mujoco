@@ -23,11 +23,14 @@ from mujoco.mjx.third_party.mujoco_warp._src import passive
 from mujoco.mjx.third_party.mujoco_warp._src import smooth
 from mujoco.mjx.third_party.mujoco_warp._src import support
 from mujoco.mjx.third_party.mujoco_warp._src import util_misc
+from mujoco.mjx.third_party.mujoco_warp._src.passive import _rod_chain_hinge
+from mujoco.mjx.third_party.mujoco_warp._src.passive import _rod_pad44
 from mujoco.mjx.third_party.mujoco_warp._src.passive import build_efm_contact
 from mujoco.mjx.third_party.mujoco_warp._src.passive import ellipsoid_max_moment
 from mujoco.mjx.third_party.mujoco_warp._src.passive import geom_semiaxes
 from mujoco.mjx.third_party.mujoco_warp._src.passive import rod_stencil
 from mujoco.mjx.third_party.mujoco_warp._src.passive import rod_stencil_jacobian
+from mujoco.mjx.third_party.mujoco_warp._src.passive import rod_twist_stiffness
 from mujoco.mjx.third_party.mujoco_warp._src.support import next_act
 from mujoco.mjx.third_party.mujoco_warp._src.types import EFM_CON_MAX_DOF
 from mujoco.mjx.third_party.mujoco_warp._src.types import FLEX_INTERP_MAX_NODES
@@ -1613,6 +1616,31 @@ def _eff_diag_stiff(
 
 
 @wp.kernel
+def _eff_rod_twist_stiff(
+  # Model:
+  opt_timestep: wp.array[float],
+  opt_disableflags: int,
+  jnt_dofadr: wp.array[int],
+  flex_dim: wp.array[int],
+  flex_vertadr: wp.array[int],
+  flex_bendingadr: wp.array[int],
+  flex_vertbodyid: wp.array[int],
+  flex_bending: wp.array[float],
+  # Data out:
+  efm_diag_out: wp.array2d[float],
+):
+  """Adds the torsional stiffness of the twist hinges of 1D rods to the diagonal stiffness h*K."""
+  worldid, flexid = wp.tid()
+  if opt_disableflags & DisableBit.SPRING:
+    return
+  k, dofid = rod_twist_stiffness(
+    jnt_dofadr, flex_dim, flex_vertadr, flex_bendingadr, flex_vertbodyid, flex_bending, flexid
+  )
+  if k > 0.0:
+    efm_diag_out[worldid, dofid] += opt_timestep[worldid % opt_timestep.shape[0]] * k
+
+
+@wp.kernel
 def _eff_diag_damp_shift(
   # Model:
   opt_timestep: wp.array[float],
@@ -2547,11 +2575,20 @@ def _eff_flex_rod_stiff(deterministic: bool = False):
     # Model:
     opt_timestep: wp.array[float],
     opt_disableflags: int,
+    qpos0: wp.array2d[float],
+    body_parentid: wp.array[int],
     body_weldid: wp.array[int],
     body_dofnum: wp.array[int],
     body_dofadr: wp.array[int],
+    body_pos: wp.array2d[wp.vec3],
+    body_quat: wp.array2d[wp.quat],
+    jnt_qposadr: wp.array[int],
+    jnt_dofadr: wp.array[int],
     flex_vertadr: wp.array[int],
+    flex_bendingadr: wp.array[int],
+    flex_plasticadr: wp.array[int],
     flex_vertbodyid: wp.array[int],
+    flex_vert: wp.array[wp.vec3],
     flex_bending: wp.array[float],
     flex_damping: wp.array[float],
     efm_K_rownnz: wp.array[int],
@@ -2560,6 +2597,10 @@ def _eff_flex_rod_stiff(deterministic: bool = False):
     flex_simple: wp.array[bool],
     flex_rodhinge_map: wp.array[wp.vec2i],
     # Data in:
+    qpos_in: wp.array2d[float],
+    plastic_in: wp.array2d[float],
+    xpos_in: wp.array2d[wp.vec3],
+    xquat_in: wp.array2d[wp.quat],
     xmat_in: wp.array2d[wp.mat33],
     flexvert_xpos_in: wp.array2d[wp.vec3],
     # Data out:
@@ -2583,6 +2624,35 @@ def _eff_flex_rod_stiff(deterministic: bool = False):
     ok, verts, J0, J1, J2, J3, _, Wk, Wd = rod_stencil(flex_bending, flexvert_xpos_in, worldid, flex_vertadr[f], adr)
     if not ok:
       return
+    if verts[3] < 0:
+      ok_chain, _g_c, Wk_c, Wd_c, _f0, _f1, _f2, _tb0, _tdof, _tfrc, _st, _sa, _sp = _rod_chain_hinge(
+        qpos0,
+        body_parentid,
+        body_pos,
+        body_quat,
+        jnt_qposadr,
+        jnt_dofadr,
+        flex_vertadr,
+        flex_bendingadr,
+        flex_plasticadr,
+        flex_vertbodyid,
+        flex_vert,
+        flex_bending,
+        qpos_in,
+        plastic_in,
+        xpos_in,
+        xquat_in,
+        xmat_in,
+        flexvert_xpos_in,
+        worldid,
+        f,
+        adr,
+        True,
+        False,
+      )
+      if ok_chain:
+        Wk = _rod_pad44(Wk_c)
+        Wd = _rod_pad44(Wd_c)
     W = s1 * Wk + sd * Wd
     nvert = 3 if verts[3] < 0 else 4
 
@@ -3516,11 +3586,20 @@ def eff_build(m: Model, d: Data):
       inputs=[
         m.opt.timestep,
         m.opt.disableflags,
+        m.qpos0,
+        m.body_parentid,
         m.body_weldid,
         m.body_dofnum,
         m.body_dofadr,
+        m.body_pos,
+        m.body_quat,
+        m.jnt_qposadr,
+        m.jnt_dofadr,
         m.flex_vertadr,
+        m.flex_bendingadr,
+        m.flex_plasticadr,
         m.flex_vertbodyid,
+        m.flex_vert,
         m.flex_bending,
         m.flex_damping,
         m.efm_K_rownnz,
@@ -3528,6 +3607,10 @@ def eff_build(m: Model, d: Data):
         m.efm_K_colind,
         m.flex_simple,
         m.flex_rodhinge_map,
+        d.qpos,
+        d.plastic,
+        d.xpos,
+        d.xquat,
         d.xmat,
         d.flexvert_xpos,
       ],
@@ -3609,6 +3692,23 @@ def eff_shift(m: Model, d: Data):
     ],
     outputs=[d.efm_diag],
   )
+
+  if m.nflexrodhinge:
+    wp.launch(
+      _eff_rod_twist_stiff,
+      dim=(d.nworld, m.nflex),
+      inputs=[
+        m.opt.timestep,
+        m.opt.disableflags,
+        m.jnt_dofadr,
+        m.flex_dim,
+        m.flex_vertadr,
+        m.flex_bendingadr,
+        m.flex_vertbodyid,
+        m.flex_bending,
+      ],
+      outputs=[d.efm_diag],
+    )
 
   wp.launch(
     _eff_diag_damp_shift,

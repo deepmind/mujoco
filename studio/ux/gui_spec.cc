@@ -542,6 +542,7 @@ void ElementSpecGui(mjsElement* element, SpecEditor* editor) {
       FIELD(material, "name of material used for rendering");
       FIELD(young, "Young's modulus");
       FIELD(poisson, "Poisson's ratio");
+      FIELD(shear, "1D torsion shear modulus; 0: young / (2 (1 + poisson))");
       FIELD(damping, "Rayleigh's damping");
       FIELD(thickness, "thickness (2D only)");
       FIELD(stressyield, "yield strain threshold; 0: elastic");

@@ -1,0 +1,138 @@
+<!-- Copyright 2021 DeepMind Technologies Limited
+
+     Licensed under the Apache License, Version 2.0 (the "License");
+     you may not use this file except in compliance with the License.
+     You may obtain a copy of the License at
+
+         http://www.apache.org/licenses/LICENSE-2.0
+
+     Unless required by applicable law or agreed to in writing, software
+     distributed under the License is distributed on an "AS IS" BASIS,
+     WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+     See the License for the specific language governing permissions and
+     limitations under the License.
+-->
+
+<mujoco model="Coil">
+  <include file="scene.xml"/>
+
+  <option integrator="discrete"/>
+
+  <statistic center="0 0 .2" extent="1"/>
+
+  <compiler autolimits="true"/>
+
+  <visual>
+    <global elevation="-30"/>
+  </visual>
+
+  <default>
+    <geom solref="0.01 1" solimp=".95 .99 .0001"/>
+  </default>
+
+  <worldbody>
+    <flexcomp name="free" type="direct" dim="1" pos="-.25 0 .3" radius=".005" mass=".1" rgba=".8 .2 .1 1"
+      point="
+        0.1         0.          0.
+        0.0809017   0.05877853  0.001256637
+        0.0309017   0.09510565  0.002513274
+       -0.0309017   0.09510565  0.003769911
+       -0.0809017   0.05877853  0.005026548
+       -0.1         0.          0.006283185
+       -0.0809017  -0.05877853  0.007539822
+       -0.0309017  -0.09510565  0.008796459
+        0.0309017  -0.09510565  0.010053096
+        0.0809017  -0.05877853  0.011309734
+        0.1        -0.          0.012566371
+        0.0809017   0.05877853  0.01256637
+        0.0309017   0.09510565  0.02513274
+       -0.0309017   0.09510565  0.03769911
+       -0.0809017   0.05877853  0.05026548
+       -0.1         0.          0.06283185
+       -0.0809017  -0.05877853  0.07539822
+       -0.0309017  -0.09510565  0.08796459
+        0.0309017  -0.09510565  0.10053096
+        0.0809017  -0.05877853  0.11309734
+        0.1        -0.          0.12566371
+        0.0809017   0.05877853  0.13823008
+        0.0309017   0.09510565  0.15079645
+       -0.0309017   0.09510565  0.16336282
+       -0.0809017   0.05877853  0.17592919
+       -0.1         0.          0.18849556
+       -0.0809017  -0.05877853  0.20106193
+       -0.0309017  -0.09510565  0.2136283
+        0.0309017  -0.09510565  0.22619467
+        0.0809017  -0.05877853  0.23876104
+        0.1        -0.          0.25132741">
+      <contact selfcollide="auto"/>
+      <edge equality="true"/>
+      <elasticity young="15e8" shear="5e8" damping=".002"/>
+    </flexcomp>
+
+    <flexcomp name="actuated" type="direct" dim="1" pos="0.25 0 .05" radius=".005" mass=".1" rgba=".8 .2 .1 1"
+      point="
+        0.1         0.          0.
+        0.09510565  0.0309017   0.006283185
+        0.0809017   0.05877853  0.012566371
+        0.05877853  0.0809017   0.018849556
+        0.0309017   0.09510565  0.025132741
+        0.          0.1         0.031415927
+       -0.0309017   0.09510565  0.037699112
+       -0.05877853  0.0809017   0.043982297
+       -0.0809017   0.05877853  0.050265482
+       -0.09510565  0.0309017   0.056548668
+       -0.1         0.          0.062831853
+       -0.09510565 -0.0309017   0.069115038
+       -0.0809017  -0.05877853  0.075398224
+       -0.05877853 -0.0809017   0.081681409
+       -0.0309017  -0.09510565  0.087964594
+        0.         -0.1         0.09424778
+        0.0309017  -0.09510565  0.100530965
+        0.05877853 -0.0809017   0.10681415
+        0.0809017  -0.05877853  0.113097336
+        0.09510565 -0.0309017   0.119380521
+        0.1         0.          0.125663706
+        0.09510565  0.0309017   0.131946891
+        0.0809017   0.05877853  0.138230077
+        0.05877853  0.0809017   0.144513262
+        0.0309017   0.09510565  0.150796447
+        0.          0.1         0.157079633
+       -0.0309017   0.09510565  0.163362818
+       -0.05877853  0.0809017   0.169646003
+       -0.0809017   0.05877853  0.175929189
+       -0.09510565  0.0309017   0.182212374
+       -0.1         0.          0.188495559
+       -0.09510565 -0.0309017   0.194778745
+       -0.0809017  -0.05877853  0.20106193
+       -0.05877853 -0.0809017   0.207345115
+       -0.0309017  -0.09510565  0.2136283
+        0.         -0.1         0.219911486
+        0.0309017  -0.09510565  0.226194671
+        0.05877853 -0.0809017   0.232477856
+        0.0809017  -0.05877853  0.238761042
+        0.09510565 -0.0309017   0.245044227
+        0.1         0.          0.251327412">
+      <contact selfcollide="auto"/>
+      <edge equality="true"/>
+      <elasticity young="15e8" shear="5e8" damping=".002"/>
+      <pin id="0 1"/>
+    </flexcomp>
+
+    <body name="slider" pos="0.35 0 0.301327412">
+      <joint name="slide" type="slide" axis="0 0 1" damping="5"/>
+      <geom size=".01"/>
+    </body>
+  </worldbody>
+
+  <equality>
+    <connect name="right_boundary" body1="actuated_40" body2="slider" anchor="0 0 0" solref="0.0002 1"/>
+  </equality>
+
+  <contact>
+    <exclude body1="actuated_40" body2="slider"/>
+  </contact>
+
+  <actuator>
+    <position joint="slide" name="extend" gear="1 0 0 0 0 0" ctrlrange="-.25 1" kp="100"/>
+  </actuator>
+</mujoco>

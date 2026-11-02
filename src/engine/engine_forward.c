@@ -1463,6 +1463,23 @@ static void advanceFinish(const mjModel* m, mjData* d, const mjtNum* qvel) {
     }
   }
 
+  // carry the twist reference of 1D rods to the configuration of this step
+  if (m->nplastic) {
+    int sleep_filter = mjENABLED(mjENBL_SLEEP) && d->ntree_awake < m->ntree;
+    for (int f = 0; f < m->nflex; f++) {
+      if (m->flex_dim[f] != 1 || m->flex_plasticadr[f] < 0) {
+        continue;
+      }
+      if (sleep_filter && mj_sleepState(m, d, mjOBJ_FLEX, f) != mjS_AWAKE) {
+        continue;
+      }
+      mjtNum state[mjROD_STATE_SIZE];
+      if (mj_rodChain(m, d, f, NULL, NULL, NULL, NULL, NULL, state)) {
+        mju_copy(d->plastic + m->flex_plasticadr[f], state, mjROD_STATE_SIZE);
+      }
+    }
+  }
+
   // advance plastic spring references (return mapping)
   if (m->nplastic && !mjDISABLED(mjDSBL_SPRING)) {
     int sleep_filter = mjENABLED(mjENBL_SLEEP) && d->ntree_awake < m->ntree;
@@ -2176,6 +2193,7 @@ void mj_RungeKutta(const mjModel* m, mjData* d, int N) {
     }
   }
   mjtNum *flexvert_xpos0 = NULL, *cdof0 = NULL, *subtree_com0 = NULL;
+  mjtNum *xpos0 = NULL, *xquat0 = NULL, *xmat0 = NULL;
   if (m->nplastic && m->nflexvert) {
     flexvert_xpos0 = mjSTACKALLOC(d, 3 * m->nflexvert, mjtNum);
     mju_copy(flexvert_xpos0, d->flexvert_xpos, 3 * m->nflexvert);
@@ -2186,6 +2204,12 @@ void mj_RungeKutta(const mjModel* m, mjData* d, int N) {
     if (m->nbody) {
       subtree_com0 = mjSTACKALLOC(d, 3 * m->nbody, mjtNum);
       mju_copy(subtree_com0, d->subtree_com, 3 * m->nbody);
+      xpos0 = mjSTACKALLOC(d, 3 * m->nbody, mjtNum);
+      mju_copy(xpos0, d->xpos, 3 * m->nbody);
+      xquat0 = mjSTACKALLOC(d, 4 * m->nbody, mjtNum);
+      mju_copy(xquat0, d->xquat, 4 * m->nbody);
+      xmat0 = mjSTACKALLOC(d, 9 * m->nbody, mjtNum);
+      mju_copy(xmat0, d->xmat, 9 * m->nbody);
     }
   }
 
@@ -2248,6 +2272,9 @@ void mj_RungeKutta(const mjModel* m, mjData* d, int N) {
     }
     if (subtree_com0) {
       mju_copy(d->subtree_com, subtree_com0, 3 * m->nbody);
+      mju_copy(d->xpos, xpos0, 3 * m->nbody);
+      mju_copy(d->xquat, xquat0, 4 * m->nbody);
+      mju_copy(d->xmat, xmat0, 9 * m->nbody);
     }
   }
 

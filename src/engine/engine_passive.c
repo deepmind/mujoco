@@ -578,6 +578,42 @@ static void mj_flexPassiveBend1D(const mjModel* m, mjData* d, int f,
     mj_flexGather(m, d, f, vvel, d->qvel);
   }
 
+  mjtNum* Wd_chain = enbl_damper ? mjSTACKALLOC(d, 9*nhinge, mjtNum) : NULL;
+  if (mj_rodChain(m, d, f, NULL, enbl_spring ? frc : NULL,
+                  enbl_spring ? d->qfrc_spring : NULL, NULL, Wd_chain, NULL)) {
+    if (enbl_damper) {
+      for (int h = 0; h < nhinge; h++) {
+        const mjtNum* hinge = b + 1 + mjROD_HINGE_SIZE*h;
+        int v[3] = {(int)hinge[0], (int)hinge[1], (int)hinge[2]};
+        mjtNum kb[3], J[27], udot[3] = {0}, wd[3] = {0};
+        if (!mj_rodHinge(xpos + 3*v[0], xpos + 3*v[1], xpos + 3*v[2], kb, J)) {
+          continue;
+        }
+        for (int r = 0; r < 3; r++) {
+          for (int i = 0; i < 3; i++) {
+            udot[r] += mju_dot3(J + 9*r + 3*i, vvel + 3*v[i]);
+          }
+        }
+        mju_mulMatVec3(wd, Wd_chain + 9*h, udot);
+        for (int i = 0; i < 3; i++) {
+          for (int c = 0; c < 3; c++) {
+            for (int r = 0; r < 3; r++) {
+              dmp[3*v[i]+c] -= J[9*r + 3*i + c] * wd[r];
+            }
+          }
+        }
+      }
+    }
+    if (enbl_spring) {
+      mj_flexScatter(m, d, f, d->qfrc_spring, frc, 1);
+    }
+    if (enbl_damper) {
+      mj_flexScatter(m, d, f, d->qfrc_damper, dmp, damp);
+    }
+    mj_freeStack(d);
+    return;
+  }
+
   for (int h = 0; h < nhinge; h++) {
     const mjtNum* hinge = b + 1 + mjROD_HINGE_SIZE*h;
     int nvrt = mj_rodHingeVert(hinge);

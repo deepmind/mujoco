@@ -26,7 +26,6 @@
 #include <mujoco/mjsan.h>  // IWYU pragma: keep
 #include <mujoco/mjtype.h>
 #include <mujoco/mjxmacro.h>
-#include "engine/engine_core_constraint.h"
 #include "engine/engine_core_util.h"
 #include "engine/engine_io.h"
 #include "engine/engine_name.h"
@@ -1188,6 +1187,8 @@ void mj_printFormattedModel(const mjModel* m, const char* filename, const char* 
             int cy = m->flex_cellnum[3*j+1];
             int cz = m->flex_cellnum[3*j+2];
             pnum = 3 * 2 * (cy*cz + cx*cz + cx*cy);
+          } else if (m->flex_dim[j] == 1) {
+            pnum = mjROD_STATE_SIZE;
           } else {
             if (m->flex_stiffnessadr[j] >= 0 && m->flex_stiffness[m->flex_stiffnessadr[j]] != 0) {
               pnum += ((m->flex_dim[j] == 2) ? 3 : 6) * m->flex_elemnum[j];

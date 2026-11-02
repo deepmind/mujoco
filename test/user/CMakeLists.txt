@@ -32,7 +32,7 @@ mujoco_test(
   ADDITIONAL_LINK_LIBRARIES compare_model compare_spec
   PROPERTIES
   ENVIRONMENT
-  "MUJOCO_PLUGIN_DIR=$<TARGET_FILE_DIR:elasticity>"
+  "MUJOCO_PLUGIN_DIR=$<TARGET_FILE_DIR:actuator>"
 )
 
 mujoco_test(
@@ -40,7 +40,7 @@ mujoco_test(
   ADDITIONAL_LINK_LIBRARIES compare_model compare_spec
   PROPERTIES
   ENVIRONMENT
-  "MUJOCO_PLUGIN_DIR=$<TARGET_FILE_DIR:elasticity>"
+  "MUJOCO_PLUGIN_DIR=$<TARGET_FILE_DIR:actuator>"
 )
 
 mujoco_test(
@@ -51,8 +51,6 @@ mujoco_test(
   user_mesh_test
   ADDITIONAL_LINK_LIBRARIES absl::str_format
 )
-
-mujoco_test(user_composite_test)
 
 mujoco_test(user_resource_test)
 

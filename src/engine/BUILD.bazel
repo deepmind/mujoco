@@ -70,7 +70,6 @@ cc_library(
     ],
     visibility = [":_api_visibility"],
     deps = [
-        ":engine_core",
         ":engine_core_util",
         ":engine_derivative",  # buildcleaner: keep
         ":engine_derivative_fd",  # buildcleaner: keep

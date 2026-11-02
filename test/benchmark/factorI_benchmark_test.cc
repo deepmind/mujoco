@@ -33,7 +33,7 @@ static const int kNumBenchmarkSteps = 50;
 static void BM_factorI(benchmark::State& state, bool coil) {
   static mjModel* m;
   if (coil) {
-    m = LoadModelFromPath("plugin/elasticity/coil.xml");
+    m = LoadModelFromPath("flex/coil.xml");
   } else {
     m = LoadModelFromPath("humanoid/humanoid100.xml");
   }
@@ -50,10 +50,10 @@ static void BM_factorI(benchmark::State& state, bool coil) {
 
   // benchmark
   while (state.KeepRunningBatch(kNumBenchmarkSteps)) {
-    for (int i=0; i < kNumBenchmarkSteps; i++) {
+    for (int i = 0; i < kNumBenchmarkSteps; i++) {
       mju_copy(d->qLD, M, m->nC);
-      mj_factorI(d->qLD, d->qLDiagInv, m->nv,
-                 m->M_rownnz, m->M_rowadr, m->M_colind, nullptr);
+      mj_factorI(d->qLD, d->qLDiagInv, m->nv, m->M_rownnz, m->M_rowadr,
+                 m->M_colind, nullptr);
     }
   }
 
@@ -64,15 +64,13 @@ static void BM_factorI(benchmark::State& state, bool coil) {
   state.SetItemsProcessed(state.iterations());
 }
 
-void ABSL_ATTRIBUTE_NO_TAIL_CALL
-BM_factorI_COIL_CSR(benchmark::State& state) {
+void ABSL_ATTRIBUTE_NO_TAIL_CALL BM_factorI_COIL_CSR(benchmark::State& state) {
   MujocoErrorTestGuard guard;
   BM_factorI(state, /*coil=*/true);
 }
 BENCHMARK(BM_factorI_COIL_CSR);
 
-void ABSL_ATTRIBUTE_NO_TAIL_CALL
-BM_factorI_H100_CSR(benchmark::State& state) {
+void ABSL_ATTRIBUTE_NO_TAIL_CALL BM_factorI_H100_CSR(benchmark::State& state) {
   MujocoErrorTestGuard guard;
   BM_factorI(state, /*coil=*/false);
 }

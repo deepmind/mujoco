@@ -6,37 +6,6 @@ licenses(["notice"])
 exports_files([".clang-format"])
 
 cc_library(
-    name = "user_composite",
-    srcs = ["user_composite.cc"],
-    hdrs = ["user_composite.h"],
-    conlyopts = ["-std=c11"],
-    copts = [
-        "-I" + MJ_ROOT + "/src",
-        "-fexceptions",
-        "-fvisibility=hidden",
-    ],
-    cxxopts = [
-        "-fvisibility-inlines-hidden",
-        "-std=c++20",
-    ],
-    linkstatic = True,
-    local_defines = [
-        "MUJOCO_DLL_EXPORTS",
-        "_GNU_SOURCE",
-    ],
-    visibility = ["//src:__subpackages__"],
-    deps = [
-        ":user_model",
-        ":user_util",
-        "//:libmujoco_hdrs",
-        "//src/cc:array_safety",
-        "//src/engine:engine_util_blas",
-        "//src/engine:engine_util_errmem",
-        "//src/engine:engine_util_misc",
-    ],
-)
-
-cc_library(
     name = "user_model",
     srcs = [
         "user_api.cc",

@@ -25,6 +25,7 @@ from mujoco.mjx.third_party.mujoco_warp._src.types import FLEX_INTERP_MAX_NODES
 from mujoco.mjx.third_party.mujoco_warp._src.types import FLEX_STIFFNESS_3D
 from mujoco.mjx.third_party.mujoco_warp._src.types import MJ_MINVAL
 from mujoco.mjx.third_party.mujoco_warp._src.types import ROD_HINGE_SIZE
+from mujoco.mjx.third_party.mujoco_warp._src.types import ROD_MAX_EDGES
 from mujoco.mjx.third_party.mujoco_warp._src.types import ContactType
 from mujoco.mjx.third_party.mujoco_warp._src.types import Data
 from mujoco.mjx.third_party.mujoco_warp._src.types import DeterminismType
@@ -1692,56 +1693,167 @@ def _rod_pair(x0: wp.vec3, x1: wp.vec3, x2: wp.vec3, x3: wp.vec3) -> tuple[bool,
 
 
 @wp.func
-def _rod_pair_weights(om: wp.vec4, w0: float, w1: float, om0: wp.vec4) -> tuple[wp.vec4, wp.mat44, wp.mat44]:
+def _rod_pair_weights(om: wp.vec4, w0: float, w1: float, prm: wp.vec4) -> tuple[wp.vec4, wp.mat44, wp.mat44]:
   """Gradient, Hessian, and damping weight of a rod hinge pair in om space.
 
-  The energy is min_a w0 |oma - R(a) om0a|^2 + w1 |omb - R(a) om0b|^2 over rotations R(a) about
-  the shared edge, smoothed at om = 0, with the Hessian projected to PSD. The damping weight
-  excludes the rate of rotation about the edge, so rigid rotations are not damped.
+  The energy is w0 (|oma| - r0a)^2 + w1 (|omb| - r0b)^2 + kt |R(dphi0) nta - ntb|^2, smoothed at
+  om = 0, with the Hessian projected to PSD. The damping weight is orthogonal to rotations about
+  the shared edge, so rigid rotations are not damped.
   """
-  w = wp.vec4(w0, w0, w1, w1)
-  wmax = wp.max(w0, w1)
-  if wmax <= 0.0:
+  r0a = prm[0]
+  r0b = prm[1]
+  tc = prm[2]
+  ts = prm[3]
+  kt = wp.sqrt(tc * tc + ts * ts)
+  if w0 <= 0.0 and w1 <= 0.0 and kt <= 0.0:
     return wp.vec4(0.0), wp.mat44(0.0), wp.mat44(0.0)
 
-  # weights relative to wmax
-  u0 = w0 / wmax
-  u1 = w1 / wmax
-  diag = wp.diag(2.0 * w)
-
-  # damping: 2 diag(w), without the rate of rotation about the shared edge (direction t)
-  t = wp.vec4(-om[1], om[0], -om[3], om[2])
-  ut = wp.vec4(u0 * t[0], u0 * t[1], u1 * t[2], u1 * t[3])
-  tnorm = wp.sqrt(wp.dot(t, ut))
-  Wd = diag
-  if tnorm >= MJ_MINVAL:
-    nt = ut / tnorm
-    Wd = diag - (2.0 * wmax) * wp.outer(nt, nt)
-
-  # straight reference: energy w0 |oma|^2 + w1 |omb|^2
-  r = u0 * (om0[0] * om0[0] + om0[1] * om0[1]) + u1 * (om0[2] * om0[2] + om0[3] * om0[3])
-  if r <= 0.0:
-    return diag * om, diag, Wd
-
-  # weighted reference om0 and om0 rotated by 90 degrees about the edge
-  c = wp.vec4(u0 * om0[0], u0 * om0[1], u1 * om0[2], u1 * om0[3])
-  s = wp.vec4(-u0 * om0[1], u0 * om0[0], -u1 * om0[3], u1 * om0[2])
-
-  # cosine and sine terms of the rotation aligning om0 with om, relative to the reference
-  cs = wp.dot(c, om) / r
-  sn = wp.dot(s, om) / r
-
-  # energy w.om.om - 2 gam wmax r rho, up to a constant, with rho = sqrt(cs^2 + sn^2 + e^2)
   e2 = wp.static(_ROD_SMOOTH * _ROD_SMOOTH)
   gam = wp.static((1.0 + _ROD_SMOOTH * _ROD_SMOOTH) ** 0.5)
-  rho2 = cs * cs + sn * sn + e2
-  rho = wp.sqrt(rho2)
-  g = diag * om - (2.0 * gam * wmax / rho) * (cs * c + sn * s)
 
-  # Hessian with gam / rho clamped to 1, so that it is PSD
-  q = (cs * s - sn * c) / rho
-  scl = 2.0 * wmax * wp.min(1.0, gam / rho) / r
-  Wk = diag - scl * (wp.outer(q, q) + (e2 / rho2) * (wp.outer(c, c) + wp.outer(s, s)))
+  # hinge a: smoothed curvature magnitude and unit binormal
+  ra = wp.sqrt(om[0] * om[0] + om[1] * om[1])
+  na0 = 0.0
+  na1 = 0.0
+  if ra >= MJ_MINVAL:
+    na0 = om[0] / ra
+    na1 = om[1] / ra
+  ca = wp.where(r0a > 0.0, ra / r0a, 0.0)
+  rho2a = ca * ca + e2
+  rhoa = wp.sqrt(rho2a)
+  sa = wp.where(r0a > 0.0, 1.0 - gam / rhoa, 1.0)
+
+  # hinge b: smoothed curvature magnitude and unit binormal
+  rb = wp.sqrt(om[2] * om[2] + om[3] * om[3])
+  nb0 = 0.0
+  nb1 = 0.0
+  if rb >= MJ_MINVAL:
+    nb0 = om[2] / rb
+    nb1 = om[3] / rb
+  cb = wp.where(r0b > 0.0, rb / r0b, 0.0)
+  rho2b = cb * cb + e2
+  rhob = wp.sqrt(rho2b)
+  sb = wp.where(r0b > 0.0, 1.0 - gam / rhob, 1.0)
+
+  # smoothed unit binormals nta = alpa * oma, ntb = alpb * omb and their 2x2 Jacobians Ma, Mb
+  alpa = wp.where(r0a > 0.0, gam / (rhoa * r0a), 0.0)
+  alpb = wp.where(r0b > 0.0, gam / (rhob * r0b), 0.0)
+  nta0 = alpa * om[0]
+  nta1 = alpa * om[1]
+  ntb0 = alpb * om[2]
+  ntb1 = alpb * om[3]
+
+  rad_ma = wp.where(ra >= MJ_MINVAL, e2 / rho2a, 1.0)
+  na_perp0 = wp.where(ra >= MJ_MINVAL, na1 * na1, 1.0)
+  na_perp1 = wp.where(ra >= MJ_MINVAL, na0 * na0, 1.0)
+  Ma00 = alpa * (na_perp0 + rad_ma * na0 * na0)
+  Ma01 = alpa * (rad_ma - 1.0) * na0 * na1
+  Ma11 = alpa * (na_perp1 + rad_ma * na1 * na1)
+
+  rad_mb = wp.where(rb >= MJ_MINVAL, e2 / rho2b, 1.0)
+  nb_perp0 = wp.where(rb >= MJ_MINVAL, nb1 * nb1, 1.0)
+  nb_perp1 = wp.where(rb >= MJ_MINVAL, nb0 * nb0, 1.0)
+  Mb00 = alpb * (nb_perp0 + rad_mb * nb0 * nb0)
+  Mb01 = alpb * (rad_mb - 1.0) * nb0 * nb1
+  Mb11 = alpb * (nb_perp1 + rad_mb * nb1 * nb1)
+
+  # gradient: radial bending + dihedral torsion kt |R(dphi0) nta - ntb|^2
+  tba0 = tc * ntb0 + ts * ntb1
+  tba1 = -ts * ntb0 + tc * ntb1
+  tab0 = tc * nta0 - ts * nta1
+  tab1 = ts * nta0 + tc * nta1
+  da0 = kt * nta0 - tba0
+  da1 = kt * nta1 - tba1
+  db0 = kt * ntb0 - tab0
+  db1 = kt * ntb1 - tab1
+  Mada0 = wp.where(
+    ra >= MJ_MINVAL,
+    alpa * ((-na1 * tba0 + na0 * tba1) * na1 + rad_ma * (na0 * da0 + na1 * da1) * na0),
+    Ma00 * da0 + Ma01 * da1,
+  )
+  Mada1 = wp.where(
+    ra >= MJ_MINVAL,
+    alpa * ((na1 * tba0 - na0 * tba1) * na0 + rad_ma * (na0 * da0 + na1 * da1) * na1),
+    Ma01 * da0 + Ma11 * da1,
+  )
+  Mbdb0 = wp.where(
+    rb >= MJ_MINVAL,
+    alpb * ((-nb1 * tab0 + nb0 * tab1) * nb1 + rad_mb * (nb0 * db0 + nb1 * db1) * nb0),
+    Mb00 * db0 + Mb01 * db1,
+  )
+  Mbdb1 = wp.where(
+    rb >= MJ_MINVAL,
+    alpb * ((nb1 * tab0 - nb0 * tab1) * nb0 + rad_mb * (nb0 * db0 + nb1 * db1) * nb1),
+    Mb01 * db0 + Mb11 * db1,
+  )
+  g = wp.vec4(
+    2.0 * w0 * sa * om[0] + 2.0 * Mada0,
+    2.0 * w0 * sa * om[1] + 2.0 * Mada1,
+    2.0 * w1 * sb * om[2] + 2.0 * Mbdb0,
+    2.0 * w1 * sb * om[3] + 2.0 * Mbdb1,
+  )
+
+  # Hessian: clamped radial bending + Gauss-Newton torsion 2 kt Jr' Jr (PSD, exact at reference)
+  tanga = wp.where(r0a > 0.0, wp.max(0.0, sa), 1.0)
+  rada = wp.where(r0a > 0.0, wp.max(0.0, 1.0 - gam * e2 / (rhoa * rho2a)), 1.0)
+  tangb = wp.where(r0b > 0.0, wp.max(0.0, sb), 1.0)
+  radb = wp.where(r0b > 0.0, wp.max(0.0, 1.0 - gam * e2 / (rhob * rho2b)), 1.0)
+
+  Wka00 = wp.where(r0a > 0.0 and ra < MJ_MINVAL, 0.0, 2.0 * w0 * (tanga * na_perp0 + rada * na0 * na0))
+  Wka01 = wp.where(r0a > 0.0 and ra < MJ_MINVAL, 0.0, 2.0 * w0 * (rada - tanga) * na0 * na1)
+  Wka11 = wp.where(r0a > 0.0 and ra < MJ_MINVAL, 0.0, 2.0 * w0 * (tanga * na_perp1 + rada * na1 * na1))
+
+  Wkb00 = wp.where(r0b > 0.0 and rb < MJ_MINVAL, 0.0, 2.0 * w1 * (tangb * nb_perp0 + radb * nb0 * nb0))
+  Wkb01 = wp.where(r0b > 0.0 and rb < MJ_MINVAL, 0.0, 2.0 * w1 * (radb - tangb) * nb0 * nb1)
+  Wkb11 = wp.where(r0b > 0.0 and rb < MJ_MINVAL, 0.0, 2.0 * w1 * (tangb * nb_perp1 + radb * nb1 * nb1))
+
+  Ma2_00 = Ma00 * Ma00 + Ma01 * Ma01
+  Ma2_01 = Ma00 * Ma01 + Ma01 * Ma11
+  Ma2_11 = Ma01 * Ma01 + Ma11 * Ma11
+
+  Mb2_00 = Mb00 * Mb00 + Mb01 * Mb01
+  Mb2_01 = Mb00 * Mb01 + Mb01 * Mb11
+  Mb2_11 = Mb01 * Mb01 + Mb11 * Mb11
+
+  MaTt00 = Ma00 * tc - Ma01 * ts
+  MaTt01 = Ma00 * ts + Ma01 * tc
+  MaTt10 = Ma01 * tc - Ma11 * ts
+  MaTt11 = Ma01 * ts + Ma11 * tc
+
+  Kab00 = -2.0 * (MaTt00 * Mb00 + MaTt01 * Mb01)
+  Kab01 = -2.0 * (MaTt00 * Mb01 + MaTt01 * Mb11)
+  Kab10 = -2.0 * (MaTt10 * Mb00 + MaTt11 * Mb01)
+  Kab11 = -2.0 * (MaTt10 * Mb01 + MaTt11 * Mb11)
+
+  Wk = wp.mat44(
+    Wka00 + 2.0 * kt * Ma2_00, Wka01 + 2.0 * kt * Ma2_01, Kab00, Kab01,
+    Wka01 + 2.0 * kt * Ma2_01, Wka11 + 2.0 * kt * Ma2_11, Kab10, Kab11,
+    Kab00, Kab10, Wkb00 + 2.0 * kt * Mb2_00, Wkb01 + 2.0 * kt * Mb2_01,
+    Kab01, Kab11, Wkb01 + 2.0 * kt * Mb2_01, Wkb11 + 2.0 * kt * Mb2_11,
+  )
+
+  # damping: radial curvature rates + dihedral twist rate, orthogonal to edge rotations
+  Wda00 = wp.where(ra < MJ_MINVAL, 2.0 * w0, 2.0 * w0 * na0 * na0)
+  Wda01 = wp.where(ra < MJ_MINVAL, 0.0, 2.0 * w0 * na0 * na1)
+  Wda11 = wp.where(ra < MJ_MINVAL, 2.0 * w0, 2.0 * w0 * na1 * na1)
+
+  Wdb00 = wp.where(rb < MJ_MINVAL, 2.0 * w1, 2.0 * w1 * nb0 * nb0)
+  Wdb01 = wp.where(rb < MJ_MINVAL, 0.0, 2.0 * w1 * nb0 * nb1)
+  Wdb11 = wp.where(rb < MJ_MINVAL, 2.0 * w1, 2.0 * w1 * nb1 * nb1)
+
+  qd = wp.vec4(0.0)
+  if ra >= MJ_MINVAL and rb >= MJ_MINVAL and r0a > 0.0 and r0b > 0.0:
+    scla_d = alpa * (cb / rhob)
+    sclb_d = alpb * (ca / rhoa)
+    qd = wp.vec4(scla_d * na1, -scla_d * na0, -sclb_d * nb1, sclb_d * nb0)
+
+  Wd = wp.mat44(
+    Wda00, Wda01, 0.0, 0.0,
+    Wda01, Wda11, 0.0, 0.0,
+    0.0, 0.0, Wdb00, Wdb01,
+    0.0, 0.0, Wdb01, Wdb11,
+  ) + (2.0 * kt) * wp.outer(qd, qd)
+
   return g, Wk, Wd
 
 
@@ -1763,6 +1875,633 @@ def _rod_pad44(a: wp.mat33) -> wp.mat44:
     for j in range(3):
       res[i, j] = a[i, j]
   return res
+
+
+_vec_rod = wp.types.vector(length=ROD_MAX_EDGES, dtype=float)
+
+# largest edge angle update (radians) per Newton iteration of the anisotropic twist solve
+_ROD_MAXSTEP = 0.5
+
+
+@wp.func
+def _rod_body_pose0(
+  # Model:
+  body_parentid: wp.array[int],
+  body_pos: wp.array2d[wp.vec3],
+  body_quat: wp.array2d[wp.quat],
+  # In:
+  worldid: int,
+  b: int,
+) -> tuple[wp.vec3, wp.quat]:
+  pos = wp.vec3(0.0)
+  quat = wp.quat(1.0, 0.0, 0.0, 0.0)
+  p_id = worldid % body_pos.shape[0]
+  q_id = worldid % body_quat.shape[0]
+  cur = b
+  while cur > 0:
+    bquat = body_quat[q_id, cur]
+    pos = math.rot_vec_quat(pos, bquat) + body_pos[p_id, cur]
+    quat = math.mul_quat(bquat, quat)
+    cur = body_parentid[cur]
+  return pos, quat
+
+
+@wp.func
+def _rod_vert_pos0(
+  # Model:
+  body_parentid: wp.array[int],
+  body_pos: wp.array2d[wp.vec3],
+  body_quat: wp.array2d[wp.quat],
+  flex_vertbodyid: wp.array[int],
+  flex_vert: wp.array[wp.vec3],
+  # In:
+  worldid: int,
+  gv: int,
+  b0_pos0: wp.vec3,
+  b0_qrot: wp.quat,
+  b0_xpos: wp.vec3,
+) -> wp.vec3:
+  b = flex_vertbodyid[gv]
+  pos0, quat0 = _rod_body_pose0(body_parentid, body_pos, body_quat, worldid, b)
+  pk = pos0 + math.rot_vec_quat(flex_vert[gv], quat0)
+  return b0_xpos + math.rot_vec_quat(pk - b0_pos0, b0_qrot)
+
+
+@wp.func
+def _rod_tridiag_solve(diag: _vec_rod, offd: _vec_rod, rhs: _vec_rod, n: int) -> tuple[bool, _vec_rod]:
+  """Solves the symmetric tridiagonal system (diag, offd) x = rhs by Thomas elimination.
+
+  Returns False if a pivot is not positive, i.e. if the matrix is not positive definite.
+  """
+  dg = _vec_rod(diag)
+  x = _vec_rod(rhs)
+  for i in range(n):
+    if i > 0:
+      factor = offd[i - 1] / dg[i - 1]
+      dg[i] = dg[i] - factor * offd[i - 1]
+      x[i] = x[i] - factor * x[i - 1]
+    if dg[i] < MJ_MINVAL:
+      return False, x
+  x[n - 1] = x[n - 1] / dg[n - 1]
+  for step in range(1, n):
+    i = n - 1 - step
+    x[i] = (x[i] - offd[i] * x[i + 1]) / dg[i]
+  return True, x
+
+
+@wp.func
+def _rod_parallel_transport(t_from: wp.vec3, t_to: wp.vec3, u_in: wp.vec3) -> tuple[bool, wp.vec3, wp.vec3]:
+  denom = 1.0 + wp.dot(t_from, t_to)
+  if denom < MJ_MINVAL:
+    return False, wp.vec3(0.0), wp.vec3(0.0)
+  u_out = wp.normalize(u_in - (wp.dot(t_to, u_in) / denom) * (t_from + t_to))
+  v_out = wp.cross(t_to, u_out)
+  return True, u_out, v_out
+
+
+@wp.func
+def rod_twist_stiffness(
+  # Model:
+  jnt_dofadr: wp.array[int],
+  flex_dim: wp.array[int],
+  flex_vertadr: wp.array[int],
+  flex_bendingadr: wp.array[int],
+  flex_vertbodyid: wp.array[int],
+  flex_bending: wp.array[float],
+  # In:
+  f: int,
+) -> tuple[float, int]:
+  """Effective torsional stiffness 2 kt_eff of the twist hinge of a 1D rod chain and its dof (0, -1: none)."""
+  if wp.static(ROD_HINGE_SIZE == 4):
+    return 0.0, -1
+  bendingadr = flex_bendingadr[f]
+  if bendingadr < 0 or flex_dim[f] != 1:
+    return 0.0, -1
+  nhinge = int(flex_bending[bendingadr])
+  if nhinge <= 0 or flex_bending[bendingadr + 1 + 7] < 0.0 or flex_bending[bendingadr + 1 + 8] <= 0.0:
+    return 0.0, -1
+
+  # closed-loop chains and chains without a clamped root edge do not have a twist hinge
+  last_adr = bendingadr + 1 + ROD_HINGE_SIZE * (nhinge - 1)
+  v0 = int(flex_bending[bendingadr + 1 + 0])
+  v1 = int(flex_bending[bendingadr + 1 + 1])
+  va = flex_vertadr[f]
+  if (
+    int(flex_bending[last_adr + 1]) == v0
+    or int(flex_bending[last_adr + 2]) == v0
+    or flex_vertbodyid[va + v0] != flex_vertbodyid[va + v1]
+  ):
+    return 0.0, -1
+
+  # same chain conditions as _rod_chain_hinge, series torsional stiffness
+  inv_kt_sum = float(0.0)
+  for h in range(nhinge):
+    h_adr = bendingadr + 1 + ROD_HINGE_SIZE * h
+    if flex_bending[h_adr + 3] >= 0.0 or (flex_bending[h_adr + 6] > 0.0 and flex_bending[h_adr + 5] == 0.0):
+      return 0.0, -1
+    if h > 0:
+      p_adr = h_adr - ROD_HINGE_SIZE
+      if int(flex_bending[h_adr]) != int(flex_bending[p_adr + 1]) or int(flex_bending[h_adr + 1]) != int(
+        flex_bending[p_adr + 2]
+      ):
+        return 0.0, -1
+    if flex_bending[h_adr + 8] > 0.0:
+      inv_kt_sum += 1.0 / flex_bending[h_adr + 8]
+  return 2.0 / inv_kt_sum, jnt_dofadr[int(flex_bending[bendingadr + 1 + 7])]
+
+
+@wp.func
+def _rod_chain_hinge(
+  # Model:
+  qpos0: wp.array2d[float],
+  body_parentid: wp.array[int],
+  body_pos: wp.array2d[wp.vec3],
+  body_quat: wp.array2d[wp.quat],
+  jnt_qposadr: wp.array[int],
+  jnt_dofadr: wp.array[int],
+  flex_vertadr: wp.array[int],
+  flex_bendingadr: wp.array[int],
+  flex_plasticadr: wp.array[int],
+  flex_vertbodyid: wp.array[int],
+  flex_vert: wp.array[wp.vec3],
+  flex_bending: wp.array[float],
+  # Data in:
+  qpos_in: wp.array2d[float],
+  plastic_in: wp.array2d[float],
+  xpos_in: wp.array2d[wp.vec3],
+  xquat_in: wp.array2d[wp.quat],
+  xmat_in: wp.array2d[wp.mat33],
+  flexvert_xpos_in: wp.array2d[wp.vec3],
+  # In:
+  worldid: int,
+  f: int,
+  adr: int,
+  need_weights: bool,
+  need_forces: bool,
+) -> tuple[bool, wp.vec3, wp.mat33, wp.mat33, wp.vec3, wp.vec3, wp.vec3, wp.vec3, int, float, wp.vec3, wp.vec3, float]:
+  """Evaluates a 1D DER rod chain for hinge adr (Bishop frame, twist DOF, anisotropic tridiagonal solve).
+
+  Returns whether the chain is handled, the gradient, Hessian and damping weights of hinge adr in kb space,
+  the forces on its 3 vertices from the Bishop frame, the torque on the root body b0 (on h_target == 0),
+  the twist hinge dof and force, and the updated twist state (tangent and reference director of the last
+  edge in the frame of the body of the first vertex, and the unwrapped geometric twist), see mjROD_STATE_SIZE.
+  """
+  z3 = wp.vec3(0.0)
+  zm = wp.mat33(0.0)
+  if wp.static(ROD_HINGE_SIZE == 4):
+    return False, z3, zm, zm, z3, z3, z3, z3, -1, 0.0, z3, z3, 0.0
+  if need_weights and not need_forces and (flex_bending[adr + 3] >= 0.0 or flex_bending[adr + 5] == 0.0):
+    return False, z3, zm, zm, z3, z3, z3, z3, -1, 0.0, z3, z3, 0.0
+
+  bendingadr = flex_bendingadr[f]
+  if bendingadr < 0:
+    return False, z3, zm, zm, z3, z3, z3, z3, -1, 0.0, z3, z3, 0.0
+  nhinge = int(flex_bending[bendingadr])
+  h_target = (adr - bendingadr - 1) // ROD_HINGE_SIZE
+  if nhinge <= 0 or h_target < 0 or h_target >= nhinge or nhinge + 1 > ROD_MAX_EDGES:
+    return False, z3, zm, zm, z3, z3, z3, z3, -1, 0.0, z3, z3, 0.0
+
+  any_aniso = bool(False)
+  twist_jnt = int(-1)
+  for h in range(nhinge):
+    h_adr = bendingadr + 1 + ROD_HINGE_SIZE * h
+    if flex_bending[h_adr + 3] >= 0.0 or (flex_bending[h_adr + 6] > 0.0 and flex_bending[h_adr + 5] == 0.0):
+      return False, z3, zm, zm, z3, z3, z3, z3, -1, 0.0, z3, z3, 0.0
+    if h > 0:
+      p_adr = bendingadr + 1 + ROD_HINGE_SIZE * (h - 1)
+      if int(flex_bending[h_adr]) != int(flex_bending[p_adr + 1]) or int(flex_bending[h_adr + 1]) != int(
+        flex_bending[p_adr + 2]
+      ):
+        return False, z3, zm, zm, z3, z3, z3, z3, -1, 0.0, z3, z3, 0.0
+    if flex_bending[h_adr + 5] != 0.0:
+      any_aniso = bool(True)
+    if h == 0 and flex_bending[h_adr + 7] >= 0.0 and flex_bending[h_adr + 8] > 0.0:
+      twist_jnt = int(flex_bending[h_adr + 7])
+
+  last_adr = bendingadr + 1 + ROD_HINGE_SIZE * (nhinge - 1)
+  v0_loc = int(flex_bending[bendingadr + 1 + 0])
+  if int(flex_bending[last_adr + 1]) == v0_loc or int(flex_bending[last_adr + 2]) == v0_loc:
+    return False, z3, zm, zm, z3, z3, z3, z3, -1, 0.0, z3, z3, 0.0
+
+  vbase = flex_vertadr[f]
+  v0_0 = vbase + v0_loc
+  v0_1 = vbase + int(flex_bending[bendingadr + 1 + 1])
+  b0 = flex_vertbodyid[v0_0]
+  b1 = flex_vertbodyid[v0_1]
+  root_clamped = b0 == b1
+  if not root_clamped:
+    twist_jnt = -1
+
+  if not any_aniso and (twist_jnt < 0 or (need_weights and not need_forces)):
+    return False, z3, zm, zm, z3, z3, z3, z3, -1, 0.0, z3, z3, 0.0
+
+  b0_pos0, b0_quat0 = _rod_body_pose0(body_parentid, body_pos, body_quat, worldid, b0)
+  b0_qrot = math.mul_quat(xquat_in[worldid, b0], math.quat_inv(b0_quat0))
+  b0_xpos = xpos_in[worldid, b0]
+
+  xpos0_0 = _rod_vert_pos0(
+    body_parentid, body_pos, body_quat, flex_vertbodyid, flex_vert, worldid, v0_0, b0_pos0, b0_qrot, b0_xpos
+  )
+  xpos0_1 = _rod_vert_pos0(
+    body_parentid, body_pos, body_quat, flex_vertbodyid, flex_vert, worldid, v0_1, b0_pos0, b0_qrot, b0_xpos
+  )
+
+  R_b0 = xmat_in[worldid, b0]
+  e0_loc = wp.transpose(R_b0) * (xpos0_1 - xpos0_0)
+  if wp.length(e0_loc) < MJ_MINVAL:
+    return False, z3, zm, zm, z3, z3, z3, z3, -1, 0.0, z3, z3, 0.0
+  frame_loc = math.make_frame(e0_loc)
+  psi0 = flex_bending[bendingadr + 1 + 9]
+  c0 = wp.cos(psi0)
+  s0 = wp.sin(psi0)
+  u_loc = c0 * frame_loc[1] + s0 * frame_loc[2]
+  v_loc = -s0 * frame_loc[1] + c0 * frame_loc[2]
+  t0_ref = R_b0 * frame_loc[0]
+  u0_ref = R_b0 * u_loc
+  v0_ref = R_b0 * v_loc
+
+  om0_0 = _vec_rod()
+  om0_1 = _vec_rod()
+  t_prev_ref = t0_ref
+  u_prev_ref = u0_ref
+  v_prev_ref = v0_ref
+  x0_ref = xpos0_0
+  x1_ref = xpos0_1
+  for h in range(nhinge):
+    h_adr = bendingadr + 1 + ROD_HINGE_SIZE * h
+    v2_ref = vbase + int(flex_bending[h_adr + 2])
+    x2_ref = _rod_vert_pos0(
+      body_parentid, body_pos, body_quat, flex_vertbodyid, flex_vert, worldid, v2_ref, b0_pos0, b0_qrot, b0_xpos
+    )
+    if any_aniso and flex_bending[h_adr + 6] > 0.0:
+      ok_ref, kb_ref, _A0_ref, _A1_ref = _rod_hinge(x0_ref, x1_ref, x2_ref)
+      if ok_ref:
+        om0_0[h] = wp.dot(kb_ref, u_prev_ref)
+        om0_1[h] = wp.dot(kb_ref, v_prev_ref)
+    de_ref = x2_ref - x1_ref
+    le_ref = wp.length(de_ref)
+    if le_ref < MJ_MINVAL:
+      return False, z3, zm, zm, z3, z3, z3, z3, -1, 0.0, z3, z3, 0.0
+    t_next_ref = de_ref / le_ref
+    ok_pt, u_next_ref, v_next_ref = _rod_parallel_transport(t_prev_ref, t_next_ref, u_prev_ref)
+    if not ok_pt:
+      return False, z3, zm, zm, z3, z3, z3, z3, -1, 0.0, z3, z3, 0.0
+    t_prev_ref = t_next_ref
+    u_prev_ref = u_next_ref
+    v_prev_ref = v_next_ref
+    x0_ref = x1_ref
+    x1_ref = x2_ref
+  tH_ref = t_prev_ref
+  uH_ref = u_prev_ref
+
+  x_e0 = flexvert_xpos_in[worldid, v0_0]
+  x_e1 = flexvert_xpos_in[worldid, v0_1]
+  de0 = x_e1 - x_e0
+  l0_def = wp.length(de0)
+  if l0_def < MJ_MINVAL:
+    return False, z3, zm, zm, z3, z3, z3, z3, -1, 0.0, z3, z3, 0.0
+  t0_def = de0 / l0_def
+  ok_pt, u_curr, v_curr = _rod_parallel_transport(t0_ref, t0_def, u0_ref)
+  if not ok_pt:
+    if root_clamped:
+      return False, z3, zm, zm, z3, z3, z3, z3, -1, 0.0, z3, z3, 0.0
+    u_curr = wp.normalize(u0_ref - wp.dot(u0_ref, t0_def) * t0_def)
+    v_curr = wp.cross(t0_def, u_curr)
+
+  om_b0 = _vec_rod()
+  om_b1 = _vec_rod()
+  t_curr = t0_def
+  l_curr = l0_def
+  u_target = z3
+  v_target = z3
+  kb_target = z3
+  l0_target = float(1.0)
+  l1_target = float(1.0)
+  for h in range(nhinge):
+    h_adr = bendingadr + 1 + ROD_HINGE_SIZE * h
+    v_e2 = vbase + int(flex_bending[h_adr + 2])
+    x_e2 = flexvert_xpos_in[worldid, v_e2]
+    de_next = x_e2 - x_e1
+    l_next = wp.length(de_next)
+    if l_next < MJ_MINVAL:
+      return False, z3, zm, zm, z3, z3, z3, z3, -1, 0.0, z3, z3, 0.0
+    t_next = de_next / l_next
+    ok_h, kb_h, _A0_h, _A1_h = _rod_hinge(x_e0, x_e1, x_e2)
+    if not ok_h:
+      return False, z3, zm, zm, z3, z3, z3, z3, -1, 0.0, z3, z3, 0.0
+    if any_aniso:
+      om_b0[h] = wp.dot(kb_h, u_curr)
+      om_b1[h] = wp.dot(kb_h, v_curr)
+    if h == h_target:
+      u_target = u_curr
+      v_target = v_curr
+      kb_target = kb_h
+      l0_target = l_curr
+      l1_target = l_next
+    ok_pt, u_next, v_next = _rod_parallel_transport(t_curr, t_next, u_curr)
+    if not ok_pt:
+      return False, z3, zm, zm, z3, z3, z3, z3, -1, 0.0, z3, z3, 0.0
+    x_e0 = x_e1
+    x_e1 = x_e2
+    t_curr = t_next
+    l_curr = l_next
+    u_curr = u_next
+    v_curr = v_next
+
+  tH_def = t_curr
+  lH_def = l_curr
+  uH_def = u_curr
+  vH_def = v_curr
+  # reference director on the last edge, carried in time from the stored state by parallel transport, in
+  # the frame of body b0; the reference configuration if there is no state
+  tS = z3
+  aS = z3
+  dpsi_holonomy = float(0.0)
+  state_t = z3
+  state_a = z3
+  if root_clamped:
+    tS = tH_ref
+    aS = uH_ref
+    psiS = float(0.0)
+    padr_s = flex_plasticadr[f]
+    if padr_s >= 0:
+      tS_loc = wp.vec3(plastic_in[worldid, padr_s + 0], plastic_in[worldid, padr_s + 1], plastic_in[worldid, padr_s + 2])
+      if wp.dot(tS_loc, tS_loc) > 0.25:
+        tS = R_b0 * tS_loc
+        aS = R_b0 * wp.vec3(
+          plastic_in[worldid, padr_s + 3], plastic_in[worldid, padr_s + 4], plastic_in[worldid, padr_s + 5]
+        )
+        psiS = plastic_in[worldid, padr_s + 6]
+    ok_pt, u_end_ref, _v_end_ref = _rod_parallel_transport(tS, tH_def, aS)
+    if not ok_pt:
+      return False, z3, zm, zm, z3, z3, z3, z3, -1, 0.0, z3, z3, 0.0
+
+    # holonomy, unwrapped to the branch nearest the stored value
+    dpsi_holonomy = wp.atan2(wp.dot(u_end_ref, vH_def), wp.dot(u_end_ref, uH_def))
+    dpsi_holonomy += 2.0 * wp.pi * wp.round((psiS - dpsi_holonomy) / (2.0 * wp.pi))
+    state_t = wp.transpose(R_b0) * tH_def
+    state_a = wp.transpose(R_b0) * u_end_ref
+
+  if not need_weights and not need_forces:
+    return True, z3, zm, zm, z3, z3, z3, z3, -1, 0.0, state_t, state_a, dpsi_holonomy
+
+  theta_hinge = float(0.0)
+  twist_dof_out = int(-1)
+  if twist_jnt >= 0:
+    padr = jnt_qposadr[twist_jnt]
+    q0_id = worldid % qpos0.shape[0]
+    theta_hinge = qpos_in[worldid, padr] - qpos0[q0_id, padr]
+    if h_target == 0:
+      twist_dof_out = jnt_dofadr[twist_jnt]
+
+  g_kb = z3
+  Wk_h = zm
+  Wd_h = zm
+  S_0 = float(0.0)
+  S_h1 = float(0.0)
+  c_end_ref = float(0.0)
+  twist_frc_out = float(0.0)
+
+  if not any_aniso:
+    h_adr = bendingadr + 1 + ROD_HINGE_SIZE * h_target
+    g_kb, Wk_h, Wd_h = _rod_hinge_weights(kb_target, flex_bending[h_adr + 4], flex_bending[h_adr + 6])
+    if twist_jnt >= 0:
+      inv_kt_sum = float(0.0)
+      for h in range(nhinge):
+        kt_h = flex_bending[bendingadr + 1 + ROD_HINGE_SIZE * h + 8]
+        if kt_h > 0.0:
+          inv_kt_sum += 1.0 / kt_h
+      if inv_kt_sum > 0.0:
+        kt_eff = 1.0 / inv_kt_sum
+        theta_tot = theta_hinge + dpsi_holonomy
+        tau = 2.0 * kt_eff * theta_tot
+        if h_target == 0:
+          twist_frc_out = -tau
+        S_0 = -tau
+        S_h1 = -tau
+        c_end_ref = tau
+  else:
+    theta = _vec_rod()
+    if root_clamped:
+      theta_end = (theta_hinge + dpsi_holonomy) if twist_jnt >= 0 else 0.0
+      theta[0] = 0.0
+      theta[nhinge] = theta_end
+      for e in range(1, nhinge):
+        theta[e] = (float(e) / float(nhinge)) * theta_end
+    else:
+      # free root: SO(3)-invariant uniform initial angle minimizing bending energy
+      A2 = float(0.0)
+      B2 = float(0.0)
+      A1 = float(0.0)
+      B1 = float(0.0)
+      for h in range(nhinge):
+        h_adr = bendingadr + 1 + ROD_HINGE_SIZE * h
+        k1 = flex_bending[h_adr + 4]
+        dk = flex_bending[h_adr + 5]
+        k2 = k1 + dk
+        u = om_b0[h]
+        v = om_b1[h]
+        w1_0 = om0_0[h]
+        w2_0 = om0_1[h]
+        A2 += -dk * (u * u - v * v)
+        B2 += -2.0 * dk * u * v
+        A1 += -2.0 * (k1 * w1_0 * u + k2 * w2_0 * v)
+        B1 += -2.0 * (k1 * w1_0 * v - k2 * w2_0 * u)
+      phi2 = 0.5 * wp.atan2(-B2, -A2)
+      phi1 = wp.atan2(-B1, -A1)
+      cand = wp.vec4(phi2, phi2 + 0.5 * wp.pi, phi1, phi1 + wp.pi)
+      theta_init = float(0.0)
+      best_E = float(0.0)
+      for c_idx in range(4):
+        cc = wp.cos(cand[c_idx])
+        sc = wp.sin(cand[c_idx])
+        c2 = cc * cc - sc * sc
+        s2 = 2.0 * cc * sc
+        E_c = 0.5 * (A2 * c2 + B2 * s2) + A1 * cc + B1 * sc
+        if c_idx == 0 or E_c < best_E:
+          best_E = E_c
+          theta_init = cand[c_idx]
+      for e in range(nhinge + 1):
+        theta[e] = theta_init
+
+    e_start = 1 if root_clamped else 0
+    e_end = (nhinge - 1) if twist_jnt >= 0 else nhinge
+    nint = e_end - e_start + 1
+    if nint > 0:
+      diag = _vec_rod()
+      dsafe = _vec_rod()
+      offd = _vec_rod()
+      rhs = _vec_rod()
+      for _iter in range(20):
+        max_r = float(0.0)
+        for i in range(nint):
+          e = e_start + i
+          kt_prev = flex_bending[bendingadr + 1 + ROD_HINGE_SIZE * (e - 1) + 8] if e > 0 else 0.0
+          kt_curr = flex_bending[bendingadr + 1 + ROD_HINGE_SIZE * e + 8] if e < nhinge else 0.0
+
+          grad = float(0.0)
+          if e > 0:
+            grad += 2.0 * kt_prev * (theta[e] - theta[e - 1])
+          if e < nhinge:
+            grad -= 2.0 * kt_curr * (theta[e + 1] - theta[e])
+          hess = 2.0 * (kt_prev + kt_curr)
+
+          # exact bending Hessian and its Gauss-Newton part
+          ce = wp.cos(theta[e])
+          se = wp.sin(theta[e])
+          hess_bend = float(0.0)
+          hess_gn = float(0.0)
+          for side in range(2):
+            h = e - 1 + side
+            if h >= 0 and h < nhinge:
+              h_adr = bendingadr + 1 + ROD_HINGE_SIZE * h
+              k1 = flex_bending[h_adr + 4]
+              k2 = k1 + flex_bending[h_adr + 5]
+              w1 = ce * om_b0[h] + se * om_b1[h]
+              w2 = -se * om_b0[h] + ce * om_b1[h]
+              w1_0 = om0_0[h]
+              w2_0 = om0_1[h]
+              grad += k1 * (w1 - w1_0) * w2 - k2 * (w2 - w2_0) * w1
+              hess_bend += k1 * (w2 * w2 - (w1 - w1_0) * w1) + k2 * (w1 * w1 - (w2 - w2_0) * w2)
+              hess_gn += k1 * w2 * w2 + k2 * w1 * w1
+          diag[i] = hess + hess_bend
+
+          # safeguarded Hessian: diagonally dominant, hence positive definite
+          dsafe[i] = hess + wp.where(hess_bend > 0.0, hess_bend, hess_gn) + (0.0 if root_clamped else 1.0e-9)
+          offd[i] = -2.0 * kt_curr if (i + 1 < nint) else 0.0
+          rhs[i] = -grad
+          max_r = wp.max(max_r, wp.abs(grad))
+
+        if max_r < 1.0e-7:
+          break
+
+        # Newton step, safeguarded where the exact Hessian is not positive definite
+        ok_step, step = _rod_tridiag_solve(diag, offd, rhs, nint)
+        if not ok_step:
+          ok_step, step = _rod_tridiag_solve(dsafe, offd, rhs, nint)
+          if not ok_step:
+            break
+
+        # limit the largest angle update to _ROD_MAXSTEP, preserving the step direction
+        max_step = float(0.0)
+        for i in range(nint):
+          max_step = wp.max(max_step, wp.abs(step[i]))
+        scl = wp.where(max_step > _ROD_MAXSTEP, _ROD_MAXSTEP / max_step, 1.0)
+        for i in range(nint):
+          theta[e_start + i] = theta[e_start + i] + scl * step[i]
+
+    h_adr = bendingadr + 1 + ROD_HINGE_SIZE * h_target
+    k1_t = flex_bending[h_adr + 4]
+    k2_t = k1_t + flex_bending[h_adr + 5]
+    w1_0_t = om0_0[h_target]
+    w2_0_t = om0_1[h_target]
+    for side in range(2):
+      e = h_target + side
+      ce = wp.cos(theta[e])
+      se = wp.sin(theta[e])
+      m1 = ce * u_target + se * v_target
+      m2 = -se * u_target + ce * v_target
+      w1 = ce * om_b0[h_target] + se * om_b1[h_target]
+      w2 = -se * om_b0[h_target] + ce * om_b1[h_target]
+      dw1 = w1 - w1_0_t
+      dw2 = w2 - w2_0_t
+      g_kb += (k1_t * dw1) * m1 + (k2_t * dw2) * m2
+      Wk_h += k1_t * wp.outer(m1, m1) + k2_t * wp.outer(m2, m2)
+
+    r_kb = wp.length(kb_target)
+    if r_kb < MJ_MINVAL:
+      Wd_h = Wk_h
+    else:
+      n_kb = kb_target / r_kb
+      keff2 = wp.dot(n_kb, Wk_h * n_kb)
+      Wd_h = keff2 * wp.outer(n_kb, n_kb)
+
+    if need_forces:
+      for h in range(nhinge):
+        h_a = bendingadr + 1 + ROD_HINGE_SIZE * h
+        k1 = flex_bending[h_a + 4]
+        k2 = k1 + flex_bending[h_a + 5]
+        w1_0 = om0_0[h]
+        w2_0 = om0_1[h]
+        c_psi_h = float(0.0)
+        for side in range(2):
+          e = h + side
+          ce = wp.cos(theta[e])
+          se = wp.sin(theta[e])
+          w1 = ce * om_b0[h] + se * om_b1[h]
+          w2 = -se * om_b0[h] + ce * om_b1[h]
+          dw1 = w1 - w1_0
+          dw2 = w2 - w2_0
+          c_psi_h += k1 * dw1 * w2 - k2 * dw2 * w1
+        S_0 += c_psi_h
+        if h >= h_target + 1:
+          S_h1 += c_psi_h
+
+      if twist_jnt >= 0:
+        h_last = nhinge - 1
+        h_last_adr = bendingadr + 1 + ROD_HINGE_SIZE * h_last
+        k1 = flex_bending[h_last_adr + 4]
+        k2 = k1 + flex_bending[h_last_adr + 5]
+        kt = flex_bending[h_last_adr + 8]
+        ce = wp.cos(theta[nhinge])
+        se = wp.sin(theta[nhinge])
+        w1 = ce * om_b0[h_last] + se * om_b1[h_last]
+        w2 = -se * om_b0[h_last] + ce * om_b1[h_last]
+        dE_dthetaH = k1 * (w1 - om0_0[h_last]) * w2 - k2 * (w2 - om0_1[h_last]) * w1
+        tau_end = 2.0 * kt * (theta[nhinge] - theta[nhinge - 1]) + dE_dthetaH
+        if h_target == 0:
+          twist_frc_out = -tau_end
+        S_0 -= tau_end
+        S_h1 -= tau_end
+        c_end_ref = tau_end
+
+  f_pt0 = z3
+  f_pt1 = z3
+  f_pt2 = z3
+  tau_b0 = z3
+  if need_forces:
+    ge0 = (-S_h1 / (2.0 * l0_target)) * kb_target
+    ge1 = (-S_h1 / (2.0 * l1_target)) * kb_target
+    f_pt0 += ge0
+    f_pt1 += ge1 - ge0
+    f_pt2 -= ge1
+
+    if h_target == 0 and root_clamped:
+      d0 = 1.0 + wp.dot(t0_ref, t0_def)
+      denom0 = l0_def * d0
+      if denom0 >= MJ_MINVAL:
+        g0 = (-S_0 / denom0) * wp.cross(t0_ref, t0_def)
+        f_pt0 += g0
+        f_pt1 -= g0
+      if d0 >= MJ_MINVAL:
+        tau_b0 += (-S_0 / d0) * (t0_ref + t0_def)
+      if c_end_ref != 0.0:
+        dH = 1.0 + wp.dot(tS, tH_def)
+        if dH >= MJ_MINVAL:
+          tau_b0 += (-c_end_ref / dH) * (tS + tH_def)
+
+    if h_target == nhinge - 1 and root_clamped and c_end_ref != 0.0:
+      denomH = lH_def * (1.0 + wp.dot(tS, tH_def))
+      if denomH >= MJ_MINVAL:
+        gH = (-c_end_ref / denomH) * wp.cross(tS, tH_def)
+        f_pt1 += gH
+        f_pt2 -= gH
+
+  return (
+    True,
+    g_kb,
+    Wk_h,
+    Wd_h,
+    f_pt0,
+    f_pt1,
+    f_pt2,
+    tau_b0,
+    twist_dof_out,
+    twist_frc_out,
+    state_t,
+    state_a,
+    dpsi_holonomy,
+  )
 
 
 @wp.func
@@ -2791,19 +3530,33 @@ def _flex_rod_mul(check_skip: bool, nv: int, deterministic: bool = False):
     # Model:
     opt_timestep: wp.array[float],
     opt_disableflags: int,
+    qpos0: wp.array2d[float],
+    body_parentid: wp.array[int],
     body_rootid: wp.array[int],
     body_weldid: wp.array[int],
     body_dofnum: wp.array[int],
     body_dofadr: wp.array[int],
     body_simple: wp.array[int],
+    body_pos: wp.array2d[wp.vec3],
+    body_quat: wp.array2d[wp.quat],
+    jnt_qposadr: wp.array[int],
+    jnt_dofadr: wp.array[int],
     dof_parentid: wp.array[int],
     flex_vertadr: wp.array[int],
+    flex_bendingadr: wp.array[int],
+    flex_plasticadr: wp.array[int],
     flex_vertbodyid: wp.array[int],
+    flex_vert: wp.array[wp.vec3],
     flex_bending: wp.array[float],
     flex_damping: wp.array[float],
     flex_simple: wp.array[bool],
     flex_rodhinge_map: wp.array[wp.vec2i],
     # Data in:
+    qpos_in: wp.array2d[float],
+    plastic_in: wp.array2d[float],
+    xpos_in: wp.array2d[wp.vec3],
+    xquat_in: wp.array2d[wp.quat],
+    xmat_in: wp.array2d[wp.mat33],
     subtree_com_in: wp.array2d[wp.vec3],
     cdof_in: wp.array2d[wp.spatial_vector],
     flexvert_xpos_in: wp.array2d[wp.vec3],
@@ -2844,6 +3597,35 @@ def _flex_rod_mul(check_skip: bool, nv: int, deterministic: bool = False):
     ok, verts, J0, J1, J2, J3, _, Wk, Wd = rod_stencil(flex_bending, flexvert_xpos_in, worldid, flex_vertadr[f], adr)
     if not ok:
       return
+    if verts[3] < 0:
+      ok_chain, _g_c, Wk_c, Wd_c, _f0, _f1, _f2, _tb0, _tdof, _tfrc, _st, _sa, _sp = _rod_chain_hinge(
+        qpos0,
+        body_parentid,
+        body_pos,
+        body_quat,
+        jnt_qposadr,
+        jnt_dofadr,
+        flex_vertadr,
+        flex_bendingadr,
+        flex_plasticadr,
+        flex_vertbodyid,
+        flex_vert,
+        flex_bending,
+        qpos_in,
+        plastic_in,
+        xpos_in,
+        xquat_in,
+        xmat_in,
+        flexvert_xpos_in,
+        worldid,
+        f,
+        adr,
+        True,
+        False,
+      )
+      if ok_chain:
+        Wk = _rod_pad44(Wk_c)
+        Wd = _rod_pad44(Wd_c)
     W = s1 * Wk + sd * Wd
     nvert = 3 if verts[3] < 0 else 4
 
@@ -2913,18 +3695,32 @@ def flex_rod_mul(
     inputs=[
       m.opt.timestep,
       m.opt.disableflags,
+      m.qpos0,
+      m.body_parentid,
       m.body_rootid,
       m.body_weldid,
       m.body_dofnum,
       m.body_dofadr,
       m.body_simple,
+      m.body_pos,
+      m.body_quat,
+      m.jnt_qposadr,
+      m.jnt_dofadr,
       m.dof_parentid,
       m.flex_vertadr,
+      m.flex_bendingadr,
+      m.flex_plasticadr,
       m.flex_vertbodyid,
+      m.flex_vert,
       m.flex_bending,
       m.flex_damping,
       m.flex_simple,
       m.flex_rodhinge_map,
+      d.qpos,
+      d.plastic,
+      d.xpos,
+      d.xquat,
+      d.xmat,
       d.subtree_com,
       d.cdof,
       d.flexvert_xpos,
@@ -3099,24 +3895,38 @@ def _flex_rod_bending(nv: int, deterministic: bool = False):
   module_options = {"enable_backward": False}
   if deterministic:
     module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
-    module_options["deterministic_max_records"] = 4 * nv
+    module_options["deterministic_max_records"] = 4 * nv + 1
 
   @wp.kernel(module="unique", module_options=module_options)
   def kernel(
     # Model:
+    qpos0: wp.array2d[float],
+    body_parentid: wp.array[int],
     body_rootid: wp.array[int],
     body_weldid: wp.array[int],
     body_dofnum: wp.array[int],
     body_dofadr: wp.array[int],
     body_simple: wp.array[int],
+    body_pos: wp.array2d[wp.vec3],
+    body_quat: wp.array2d[wp.quat],
+    jnt_qposadr: wp.array[int],
+    jnt_dofadr: wp.array[int],
     dof_parentid: wp.array[int],
     flex_vertadr: wp.array[int],
+    flex_bendingadr: wp.array[int],
+    flex_plasticadr: wp.array[int],
     flex_vertbodyid: wp.array[int],
+    flex_vert: wp.array[wp.vec3],
     flex_bending: wp.array[float],
     flex_damping: wp.array[float],
     flex_rodhinge_map: wp.array[wp.vec2i],
     # Data in:
+    qpos_in: wp.array2d[float],
     qvel_in: wp.array2d[float],
+    plastic_in: wp.array2d[float],
+    xpos_in: wp.array2d[wp.vec3],
+    xquat_in: wp.array2d[wp.quat],
+    xmat_in: wp.array2d[wp.mat33],
     subtree_com_in: wp.array2d[wp.vec3],
     cdof_in: wp.array2d[wp.spatial_vector],
     flexvert_xpos_in: wp.array2d[wp.vec3],
@@ -3142,6 +3952,41 @@ def _flex_rod_bending(nv: int, deterministic: bool = False):
     ok, verts, J0, J1, J2, J3, g, _, Wd = rod_stencil(flex_bending, flexvert_xpos_in, worldid, flex_vertadr[f], adr)
     if not ok:
       return
+    f_pt0 = wp.vec3(0.0)
+    f_pt1 = wp.vec3(0.0)
+    f_pt2 = wp.vec3(0.0)
+    tau_b0 = wp.vec3(0.0)
+    twist_dof = int(-1)
+    twist_frc = float(0.0)
+    if verts[3] < 0:
+      ok_chain, g_c, _Wk_c, Wd_c, f_pt0, f_pt1, f_pt2, tau_b0, twist_dof, twist_frc, _st, _sa, _sp = _rod_chain_hinge(
+        qpos0,
+        body_parentid,
+        body_pos,
+        body_quat,
+        jnt_qposadr,
+        jnt_dofadr,
+        flex_vertadr,
+        flex_bendingadr,
+        flex_plasticadr,
+        flex_vertbodyid,
+        flex_vert,
+        flex_bending,
+        qpos_in,
+        plastic_in,
+        xpos_in,
+        xquat_in,
+        xmat_in,
+        flexvert_xpos_in,
+        worldid,
+        f,
+        adr,
+        True,
+        has_spring,
+      )
+      if ok_chain:
+        g = wp.vec4(g_c[0], g_c[1], g_c[2], 0.0)
+        Wd = _rod_pad44(Wd_c)
     nvert = 3 if verts[3] < 0 else 4
 
     # damper weight Wd * J * qvel
@@ -3171,6 +4016,13 @@ def _flex_rod_bending(nv: int, deterministic: bool = False):
     for i in range(nvert):
       JT = wp.transpose(rod_stencil_jacobian(J0, J1, J2, J3, i))
       if has_spring:
+        f_pt = wp.vec3(0.0)
+        if i == 0:
+          f_pt = f_pt0
+        elif i == 1:
+          f_pt = f_pt1
+        elif i == 2:
+          f_pt = f_pt2
         flex_scatter_vert(
           body_rootid,
           body_weldid,
@@ -3184,7 +4036,7 @@ def _flex_rod_bending(nv: int, deterministic: bool = False):
           flexvert_xpos_in,
           worldid,
           verts[i],
-          -(JT * g),
+          -(JT * g) + f_pt,
           1.0,
           qfrc_spring_out,
         )
@@ -3206,6 +4058,14 @@ def _flex_rod_bending(nv: int, deterministic: bool = False):
           damping,
           qfrc_damper_out,
         )
+    if has_spring and twist_dof >= 0:
+      wp.atomic_add(qfrc_spring_out, worldid, twist_dof, twist_frc)
+    if has_spring and wp.dot(tau_b0, tau_b0) > 0.0:
+      bw = body_weldid[flex_vertbodyid[verts[0]]]
+      dof_i = body_dofadr[bw] + body_dofnum[bw] - 1
+      while dof_i >= 0:
+        wp.atomic_add(qfrc_spring_out, worldid, dof_i, wp.dot(wp.spatial_top(cdof_in[worldid, dof_i]), tau_b0))
+        dof_i = dof_parentid[dof_i]
 
   return kernel
 
@@ -4273,18 +5133,32 @@ def passive(m: Model, d: Data):
       _flex_rod_bending(m.nv if det_atomics else 0, det_atomics),
       dim=(d.nworld, m.nflexrodhinge),
       inputs=[
+        m.qpos0,
+        m.body_parentid,
         m.body_rootid,
         m.body_weldid,
         m.body_dofnum,
         m.body_dofadr,
         m.body_simple,
+        m.body_pos,
+        m.body_quat,
+        m.jnt_qposadr,
+        m.jnt_dofadr,
         m.dof_parentid,
         m.flex_vertadr,
+        m.flex_bendingadr,
+        m.flex_plasticadr,
         m.flex_vertbodyid,
+        m.flex_vert,
         m.flex_bending,
         m.flex_damping,
         m.flex_rodhinge_map,
+        d.qpos,
         d.qvel,
+        d.plastic,
+        d.xpos,
+        d.xquat,
+        d.xmat,
         d.subtree_com,
         d.cdof,
         d.flexvert_xpos,

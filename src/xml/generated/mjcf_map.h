@@ -24,7 +24,6 @@
 
 #include <mujoco/mjspec.h>
 #include <mujoco/mjtype.h>
-#include "user/user_composite.h"
 #include "user/user_flexcomp.h"
 #include "xml/xml_util.h"
 
@@ -417,40 +416,6 @@ inline constexpr mjMap lrmode_map[] = {
   {"all",         mjLRMODE_ALL},
 };
 inline constexpr int lrmode_sz = 4;
-
-// enum comp
-inline constexpr mjMap comp_map[] = {
-  {"particle",  mjCOMPTYPE_PARTICLE},
-  {"grid",      mjCOMPTYPE_GRID},
-  {"rope",      mjCOMPTYPE_ROPE},
-  {"loop",      mjCOMPTYPE_LOOP},
-  {"cable",     mjCOMPTYPE_CABLE},
-  {"cloth",     mjCOMPTYPE_CLOTH},
-};
-inline constexpr int comp_sz = 6;
-
-// enum jkind
-inline constexpr mjMap jkind_map[] = {
-  {"main",  mjCOMPKIND_JOINT},
-};
-inline constexpr int jkind_sz = 1;
-
-// enum initial
-inline constexpr mjMap initial_map[] = {
-  {"none",  0},
-  {"free",  1},
-  {"ball",  2},
-};
-inline constexpr int initial_sz = 3;
-
-// enum shape
-inline constexpr mjMap shape_map[] = {
-  {"s",       mjCOMPSHAPE_LINE},
-  {"cos(s)",  mjCOMPSHAPE_COS},
-  {"sin(s)",  mjCOMPSHAPE_SIN},
-  {"0",       mjCOMPSHAPE_ZERO},
-};
-inline constexpr int shape_sz = 4;
 
 // enum meshinertia
 inline constexpr mjMap meshinertia_map[] = {

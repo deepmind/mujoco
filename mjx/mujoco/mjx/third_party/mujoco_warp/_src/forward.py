@@ -399,6 +399,71 @@ def _next_time_builder(warn_overflow: int):
 
 
 @wp.kernel
+def _next_rod_twist(
+  # Model:
+  qpos0: wp.array2d[float],
+  body_parentid: wp.array[int],
+  body_pos: wp.array2d[wp.vec3],
+  body_quat: wp.array2d[wp.quat],
+  jnt_qposadr: wp.array[int],
+  jnt_dofadr: wp.array[int],
+  flex_dim: wp.array[int],
+  flex_vertadr: wp.array[int],
+  flex_bendingadr: wp.array[int],
+  flex_plasticadr: wp.array[int],
+  flex_vertbodyid: wp.array[int],
+  flex_vert: wp.array[wp.vec3],
+  flex_bending: wp.array[float],
+  # Data in:
+  qpos_in: wp.array2d[float],
+  plastic_in: wp.array2d[float],
+  xpos_in: wp.array2d[wp.vec3],
+  xquat_in: wp.array2d[wp.quat],
+  xmat_in: wp.array2d[wp.mat33],
+  flexvert_xpos_in: wp.array2d[wp.vec3],
+  # Data out:
+  plastic_out: wp.array2d[float],
+):
+  """Carries the twist reference of 1D rods to the configuration of this step, see mjROD_STATE_SIZE."""
+  worldid, flexid = wp.tid()
+  padr = flex_plasticadr[flexid]
+  bendingadr = flex_bendingadr[flexid]
+  if flex_dim[flexid] != 1 or padr < 0 or bendingadr < 0:
+    return
+  ok, _g, _Wk, _Wd, _f0, _f1, _f2, _tb0, _tdof, _tfrc, state_t, state_a, state_psi = passive._rod_chain_hinge(
+    qpos0,
+    body_parentid,
+    body_pos,
+    body_quat,
+    jnt_qposadr,
+    jnt_dofadr,
+    flex_vertadr,
+    flex_bendingadr,
+    flex_plasticadr,
+    flex_vertbodyid,
+    flex_vert,
+    flex_bending,
+    qpos_in,
+    plastic_in,
+    xpos_in,
+    xquat_in,
+    xmat_in,
+    flexvert_xpos_in,
+    worldid,
+    flexid,
+    bendingadr + 1,
+    False,
+    False,
+  )
+  if not ok:
+    return
+  for i in range(3):
+    plastic_out[worldid, padr + i] = state_t[i]
+    plastic_out[worldid, padr + 3 + i] = state_a[i]
+  plastic_out[worldid, padr + 6] = state_psi
+
+
+@wp.kernel
 def _next_plastic_joint(
   # Model:
   opt_enableflags: int,
@@ -1159,6 +1224,35 @@ def _advance(m: Model, d: Data, qacc: wp.array, qvel: Optional[wp.array] = None)
     outputs=[d.qpos],
   )
 
+  # carry the twist reference of 1D rods to the configuration of this step (flexvert_xpos)
+  if m.nplastic > 0 and m.nflexrodhinge > 0:
+    wp.launch(
+      _next_rod_twist,
+      dim=(d.nworld, m.nflex),
+      inputs=[
+        m.qpos0,
+        m.body_parentid,
+        m.body_pos,
+        m.body_quat,
+        m.jnt_qposadr,
+        m.jnt_dofadr,
+        m.flex_dim,
+        m.flex_vertadr,
+        m.flex_bendingadr,
+        m.flex_plasticadr,
+        m.flex_vertbodyid,
+        m.flex_vert,
+        m.flex_bending,
+        d.qpos,
+        d.plastic,
+        d.xpos,
+        d.xquat,
+        d.xmat,
+        d.flexvert_xpos,
+      ],
+      outputs=[d.plastic],
+    )
+
   # update plastic spring references via return mapping
   if m.nplastic > 0 and not (m.opt.disableflags & DisableBit.SPRING):
     wp.launch(
@@ -1624,12 +1718,20 @@ def rungekutta4(m: Model, d: Data):
 
   if m.nplastic > 0 and m.nflexvert > 0:
     flexvert_xpos_t0 = wp.clone(d.flexvert_xpos)
+    flexnode_xpos_t0 = wp.clone(d.flexnode_xpos) if m.nflexnode > 0 else None
     cdof_t0 = wp.clone(d.cdof)
     subtree_com_t0 = wp.clone(d.subtree_com)
+    xpos_t0 = wp.clone(d.xpos)
+    xquat_t0 = wp.clone(d.xquat)
+    xmat_t0 = wp.clone(d.xmat)
   else:
     flexvert_xpos_t0 = None
+    flexnode_xpos_t0 = None
     cdof_t0 = None
     subtree_com_t0 = None
+    xpos_t0 = None
+    xquat_t0 = None
+    xmat_t0 = None
 
   # stage velocities with the RKMK correction (rates of the rotation vectors of ball and free joints); the first
   # stage has a zero rotation vector, so it needs no correction
@@ -1668,8 +1770,13 @@ def rungekutta4(m: Model, d: Data):
 
   if flexvert_xpos_t0 is not None:
     wp.copy(d.flexvert_xpos, flexvert_xpos_t0)
+    if flexnode_xpos_t0 is not None:
+      wp.copy(d.flexnode_xpos, flexnode_xpos_t0)
     wp.copy(d.cdof, cdof_t0)
     wp.copy(d.subtree_com, subtree_com_t0)
+    wp.copy(d.xpos, xpos_t0)
+    wp.copy(d.xquat, xquat_t0)
+    wp.copy(d.xmat, xmat_t0)
 
   _advance(m, d, qacc_rk, qvel_rk)
   wp.copy(d.qacc_warmstart, qacc_last)

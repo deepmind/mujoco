@@ -2005,6 +2005,9 @@ void mj_flexHessianMul(const mjModel* m, const mjData* d, int f, mjtNum* res,
 // smoothing of curved rod references at zero curvature, relative to the reference curvature
 #define mjROD_SMOOTH ((mjtNum)1e-4)
 
+// largest edge angle update (radians) per Newton iteration of the anisotropic twist solve
+#define mjROD_MAXSTEP ((mjtNum)0.5)
+
 
 // orthonormal axes (u, v) orthogonal to the edge (x1, x2); returns 0 if the edge is degenerate
 static int rodEdgeFrame(const mjtNum x1[3], const mjtNum x2[3], mjtNum u[3], mjtNum v[3]) {
@@ -2148,92 +2151,789 @@ int mj_rodPair(const mjtNum x0[3], const mjtNum x1[3], const mjtNum x2[3], const
 
 // gradient, Hessian, and damping weights of a rod hinge pair in om space
 void mj_rodPairWeights(mjtNum g[4], mjtNum Wk[16], mjtNum Wd[16],
-                       const mjtNum om[4], mjtNum w0, mjtNum w1, const mjtNum om0[4]) {
-  mjtNum w[4] = {w0, w0, w1, w1};
-  mjtNum wmax = mju_max(w0, w1);
-  if (wmax <= 0) {
+                       const mjtNum om[4], mjtNum w0, mjtNum w1, const mjtNum prm[4]) {
+  mjtNum r0a = prm[0], r0b = prm[1], tc = prm[2], ts = prm[3];
+  mjtNum kt = mju_sqrt(tc*tc + ts*ts);
+  if (w0 <= 0 && w1 <= 0 && kt <= 0) {
     if (g) mju_zero(g, 4);
     if (Wk) mju_zero(Wk, 16);
     if (Wd) mju_zero(Wd, 16);
     return;
   }
 
-  // weights relative to wmax
-  mjtNum u0 = w0/wmax, u1 = w1/wmax;
-
-  // damping: 2 diag(w), without the rate of rotation about the shared edge (direction t)
-  if (Wd) {
-    mjtNum t[4] = {-om[1], om[0], -om[3], om[2]};
-    mjtNum ut[4] = {u0*t[0], u0*t[1], u1*t[2], u1*t[3]};
-    mjtNum tnorm = mju_sqrt(t[0]*ut[0] + t[1]*ut[1] + t[2]*ut[2] + t[3]*ut[3]);
-    if (tnorm >= mjMINVAL) {
-      for (int i=0; i < 4; i++) ut[i] /= tnorm;
-    }
-    mjtNum scl = tnorm < mjMINVAL ? 0 : 2*wmax;
-    for (int i=0; i < 4; i++) {
-      for (int j=0; j < 4; j++) {
-        Wd[4*i+j] = (i == j ? 2*w[i] : 0) - scl*ut[i]*ut[j];
-      }
-    }
-  }
-
-  // straight reference: energy sum_i w_i |om_i|^2
-  mjtNum r = u0*(om0[0]*om0[0] + om0[1]*om0[1]) + u1*(om0[2]*om0[2] + om0[3]*om0[3]);
-  if (r <= 0) {
-    if (g) {
-      for (int i=0; i < 4; i++) g[i] = 2*w[i]*om[i];
-    }
-    if (Wk) {
-      for (int i=0; i < 4; i++) {
-        for (int j=0; j < 4; j++) Wk[4*i+j] = (i == j) ? 2*w[i] : 0;
-      }
-    }
-    return;
-  }
-
-  // weighted reference om0 and om0 rotated by 90 degrees about the edge
-  mjtNum c[4] = {u0*om0[0], u0*om0[1], u1*om0[2], u1*om0[3]};
-  mjtNum s[4] = {-u0*om0[1], u0*om0[0], -u1*om0[3], u1*om0[2]};
-
-  // cosine and sine terms of the rotation aligning om0 with om, relative to the reference
-  mjtNum cs = 0, sn = 0;
-  for (int i=0; i < 4; i++) {
-    cs += c[i]*om[i];
-    sn += s[i]*om[i];
-  }
-  cs /= r;
-  sn /= r;
-
-  // energy sum_i w_i |om_i|^2 - 2 gam wmax r rho, up to a constant, where rho = sqrt(cs^2 + sn^2 +
-  // e^2) is the smoothed alignment after the optimal rotation and gam = sqrt(1 + e^2) its reference
-  // value
   mjtNum e2 = mjROD_SMOOTH*mjROD_SMOOTH;
   mjtNum gam = mju_sqrt(1 + e2);
-  mjtNum rho2 = cs*cs + sn*sn + e2;
-  mjtNum rho = mju_sqrt(rho2);
+
+  // hinge a: smoothed curvature magnitude and unit binormal
+  mjtNum ra = mju_sqrt(om[0]*om[0] + om[1]*om[1]);
+  mjtNum na[2] = {0, 0};
+  if (ra >= mjMINVAL) {
+    na[0] = om[0] / ra;
+    na[1] = om[1] / ra;
+  }
+  mjtNum ca = r0a > 0 ? ra / r0a : 0;
+  mjtNum rho2a = ca*ca + e2;
+  mjtNum rhoa = mju_sqrt(rho2a);
+  mjtNum sa = r0a > 0 ? 1 - gam / rhoa : 1;
+
+  // hinge b: smoothed curvature magnitude and unit binormal
+  mjtNum rb = mju_sqrt(om[2]*om[2] + om[3]*om[3]);
+  mjtNum nb[2] = {0, 0};
+  if (rb >= mjMINVAL) {
+    nb[0] = om[2] / rb;
+    nb[1] = om[3] / rb;
+  }
+  mjtNum cb = r0b > 0 ? rb / r0b : 0;
+  mjtNum rho2b = cb*cb + e2;
+  mjtNum rhob = mju_sqrt(rho2b);
+  mjtNum sb = r0b > 0 ? 1 - gam / rhob : 1;
+
+  // smoothed unit binormals nta = alpa * oma, ntb = alpb * omb and their 2x2 Jacobians Ma, Mb
+  mjtNum alpa = r0a > 0 ? gam / (rhoa * r0a) : 0;
+  mjtNum alpb = r0b > 0 ? gam / (rhob * r0b) : 0;
+  mjtNum nta[2] = {alpa * om[0], alpa * om[1]};
+  mjtNum ntb[2] = {alpb * om[2], alpb * om[3]};
+  mjtNum scla = ca * ca / rho2a;
+  mjtNum Ma[4] = {
+    alpa * (1 - scla * na[0] * na[0]),
+    -alpa * scla * na[0] * na[1],
+    -alpa * scla * na[1] * na[0],
+    alpa * (1 - scla * na[1] * na[1])
+  };
+  mjtNum sclb = cb * cb / rho2b;
+  mjtNum Mb[4] = {
+    alpb * (1 - sclb * nb[0] * nb[0]),
+    -alpb * sclb * nb[0] * nb[1],
+    -alpb * sclb * nb[1] * nb[0],
+    alpb * (1 - sclb * nb[1] * nb[1])
+  };
+
+  // gradient: radial bending + dihedral torsion kt |R(dphi0) nta - ntb|^2
   if (g) {
-    mjtNum scl = 2*gam*wmax/rho;
-    for (int i=0; i < 4; i++) {
-      g[i] = 2*w[i]*om[i] - scl*(cs*c[i] + sn*s[i]);
-    }
+    mjtNum da[2] = {
+      kt * nta[0] - (tc * ntb[0] + ts * ntb[1]),
+      kt * nta[1] - (-ts * ntb[0] + tc * ntb[1])
+    };
+    mjtNum db[2] = {
+      kt * ntb[0] - (tc * nta[0] - ts * nta[1]),
+      kt * ntb[1] - (ts * nta[0] + tc * nta[1])
+    };
+    g[0] = 2 * w0 * sa * om[0] + 2 * (Ma[0] * da[0] + Ma[1] * da[1]);
+    g[1] = 2 * w0 * sa * om[1] + 2 * (Ma[2] * da[0] + Ma[3] * da[1]);
+    g[2] = 2 * w1 * sb * om[2] + 2 * (Mb[0] * db[0] + Mb[1] * db[1]);
+    g[3] = 2 * w1 * sb * om[3] + 2 * (Mb[2] * db[0] + Mb[3] * db[1]);
   }
 
-  // Hessian: 2 diag(w) - 2 gam wmax / (r rho) (q q' + e^2 / rho^2 (c c' + s s')), with
-  // q = (cs s - sn c) / rho and gam / rho clamped to 1 so that it is PSD
+  // Hessian: clamped radial bending + Gauss-Newton torsion 2 kt Jr' Jr (PSD, exact at reference)
   if (Wk) {
-    mjtNum q[4];
-    for (int i=0; i < 4; i++) {
-      q[i] = (cs*s[i] - sn*c[i]) / rho;
-    }
-    mjtNum scl = 2*wmax*mju_min(1, gam/rho) / r;
-    mjtNum ratio = e2/rho2;
-    for (int i=0; i < 4; i++) {
-      for (int j=0; j < 4; j++) {
-        mjtNum diag = (i == j) ? 2*w[i] : 0;
-        Wk[4*i+j] = diag - scl*(q[i]*q[j] + ratio*(c[i]*c[j] + s[i]*s[j]));
+    mjtNum tanga = r0a > 0 ? mju_max(0, sa) : 1;
+    mjtNum rada = r0a > 0 ? mju_max(0, 1 - gam * e2 / (rhoa * rho2a)) : 1;
+    mjtNum tangb = r0b > 0 ? mju_max(0, sb) : 1;
+    mjtNum radb = r0b > 0 ? mju_max(0, 1 - gam * e2 / (rhob * rho2b)) : 1;
+
+    // Ma * T' where T = [tc, -ts; ts, tc]
+    mjtNum MaTt[4] = {
+      Ma[0] * tc - Ma[1] * ts,  Ma[0] * ts + Ma[1] * tc,
+      Ma[2] * tc - Ma[3] * ts,  Ma[2] * ts + Ma[3] * tc
+    };
+
+    mju_zero(Wk, 16);
+    for (int i=0; i < 2; i++) {
+      for (int j=0; j < 2; j++) {
+        mjtNum delta = (i == j) ? 1 : 0;
+        mjtNum Wka = (r0a > 0 && ra < mjMINVAL) ? 0 :
+                     2 * w0 * (tanga * (delta - na[i]*na[j]) + rada * na[i]*na[j]);
+        mjtNum Wkb = (r0b > 0 && rb < mjMINVAL) ? 0 :
+                     2 * w1 * (tangb * (delta - nb[i]*nb[j]) + radb * nb[i]*nb[j]);
+        mjtNum Ma2 = Ma[2*i+0] * Ma[0+j] + Ma[2*i+1] * Ma[2+j];
+        mjtNum Mb2 = Mb[2*i+0] * Mb[0+j] + Mb[2*i+1] * Mb[2+j];
+        mjtNum Kab = -2 * (MaTt[2*i+0] * Mb[0+j] + MaTt[2*i+1] * Mb[2+j]);
+
+        Wk[4*i + j]         = Wka + 2 * kt * Ma2;
+        Wk[4*(i+2) + (j+2)] = Wkb + 2 * kt * Mb2;
+        Wk[4*i + (j+2)]     = Kab;
+        Wk[4*(j+2) + i]     = Kab;
       }
     }
   }
+
+  // damping: radial curvature rates + dihedral twist rate, orthogonal to edge rotations
+  if (Wd) {
+    mjtNum qd[4] = {0, 0, 0, 0};
+    if (ra >= mjMINVAL && rb >= mjMINVAL && r0a > 0 && r0b > 0) {
+      mjtNum scla_d = alpa * (cb / rhob);
+      mjtNum sclb_d = alpb * (ca / rhoa);
+      qd[0] = scla_d * na[1];
+      qd[1] = -scla_d * na[0];
+      qd[2] = -sclb_d * nb[1];
+      qd[3] = sclb_d * nb[0];
+    }
+    mju_zero(Wd, 16);
+    for (int i=0; i < 2; i++) {
+      for (int j=0; j < 2; j++) {
+        mjtNum delta = (i == j) ? 1 : 0;
+        Wd[4*i + j]         = ra < mjMINVAL ? 2*w0*delta : 2*w0*na[i]*na[j];
+        Wd[4*(i+2) + (j+2)] = rb < mjMINVAL ? 2*w1*delta : 2*w1*nb[i]*nb[j];
+      }
+    }
+    for (int i=0; i < 4; i++) {
+      for (int j=0; j < 4; j++) {
+        Wd[4*i + j] += 2 * kt * qd[i] * qd[j];
+      }
+    }
+  }
+}
+
+
+// nominal pose of body b at qpos0 (slide/hinge joints at 0)
+static void rodBodyPose0(const mjModel* m, int b, mjtNum pos[3], mjtNum quat[4]) {
+  mju_zero3(pos);
+  quat[0] = 1;
+  quat[1] = quat[2] = quat[3] = 0;
+  for (int cur = b; cur > 0; cur = m->body_parentid[cur]) {
+    mjtNum p[3], q[4];
+    mju_rotVecQuat(p, pos, m->body_quat + 4*cur);
+    mju_add3(pos, p, m->body_pos + 3*cur);
+    mju_mulQuat(q, m->body_quat + 4*cur, quat);
+    mju_copy4(quat, q);
+  }
+}
+
+
+// nominal world position of flex vertex gv at qpos0
+static void rodVertPos0(const mjModel* m, int gv, mjtNum xpos0[3], mjtNum xquat0[4]) {
+  int b = m->flex_vertbodyid[gv];
+  rodBodyPose0(m, b, xpos0, xquat0);
+  mjtNum off[3];
+  mju_rotVecQuat(off, m->flex_vert + 3*gv, xquat0);
+  mju_addTo3(xpos0, off);
+}
+
+
+// parallel-transport unit vector u_in (orthogonal to t_from) to t_to; returns 0 if antipodal
+static int rodParallelTransport(const mjtNum t_from[3], const mjtNum t_to[3],
+                                const mjtNum u_in[3], mjtNum u_out[3], mjtNum v_out[3]) {
+  mjtNum denom = 1 + mju_dot3(t_from, t_to);
+  if (denom < mjMINVAL) {
+    return 0;
+  }
+  mjtNum sum[3];
+  mji_add3(sum, t_from, t_to);
+  mjtNum scale = mju_dot3(t_to, u_in) / denom;
+  mji_addScl3(u_out, u_in, sum, -scale);
+  mju_normalize3(u_out);
+  mji_cross(v_out, t_to, u_out);
+  return 1;
+}
+
+
+// solve the symmetric tridiagonal system (diag, offd) x = rhs by Thomas elimination, overwriting
+// diag; returns 0 if a pivot is not positive, i.e. if the matrix is not positive definite
+static int rodTridiagSolve(mjtNum* x, mjtNum* diag, const mjtNum* offd, const mjtNum* rhs, int n) {
+  for (int i = 0; i < n; i++) {
+    x[i] = rhs[i];
+    if (i > 0) {
+      mjtNum factor = offd[i-1] / diag[i-1];
+      diag[i] -= factor * offd[i-1];
+      x[i] -= factor * x[i-1];
+    }
+    if (diag[i] < mjMINVAL) {
+      return 0;
+    }
+  }
+  x[n-1] /= diag[n-1];
+  for (int i = n-2; i >= 0; i--) {
+    x[i] = (x[i] - offd[i]*x[i+1]) / diag[i];
+  }
+  return 1;
+}
+
+
+// evaluate a 1D DER rod chain of single hinges with Bishop frame, optional twist hinge DOF, and
+// tridiagonal quasistatic twist solve for anisotropic cross-sections; returns 1 if handled
+int mj_rodChain(const mjModel* m, mjData* d, int f, mjtNum* energy_out,
+                mjtNum* frc, mjtNum* qfrc_out,
+                mjtNum* Wk_out, mjtNum* Wd_out, mjtNum* state_out) {
+  int bendingadr = m->flex_bendingadr[f];
+  if (bendingadr < 0) {
+    return 0;
+  }
+  const mjtNum* b = m->flex_bending + bendingadr;
+  int nhinge = (int)b[0];
+  if (nhinge <= 0) {
+    return 0;
+  }
+
+  int any_aniso = 0;
+  int twist_jnt = -1;
+  for (int h = 0; h < nhinge; h++) {
+    const mjtNum* hinge = b + 1 + mjROD_HINGE_SIZE*h;
+    if (hinge[3] >= 0 || (hinge[6] > 0 && hinge[5] == 0)) {
+      return 0;
+    }
+    if (h > 0) {
+      const mjtNum* prev = b + 1 + mjROD_HINGE_SIZE*(h - 1);
+      if ((int)hinge[0] != (int)prev[1] || (int)hinge[1] != (int)prev[2]) {
+        return 0;
+      }
+    }
+    if (hinge[5] != 0) {
+      any_aniso = 1;
+    }
+    if (h == 0 && hinge[7] >= 0 && hinge[8] > 0) {
+      twist_jnt = (int)hinge[7];
+    }
+  }
+
+  // closed-loop chains are not handled by the open-chain Bishop-frame solver
+  const mjtNum* last_hinge = b + 1 + mjROD_HINGE_SIZE*(nhinge - 1);
+  if ((int)last_hinge[1] == (int)b[1 + 0] || (int)last_hinge[2] == (int)b[1 + 0]) {
+    return 0;
+  }
+
+  int nedge = nhinge + 1;
+  int nvert_chain = nhinge + 2;
+  int va = m->flex_vertadr[f];
+  const mjtNum* xpos = d->flexvert_xpos + 3*va;
+  int b0 = m->flex_vertbodyid[va + (int)b[1 + 0]];
+  int b1 = m->flex_vertbodyid[va + (int)b[1 + 1]];
+  int root_clamped = (b0 == b1);
+  if (!root_clamped) {
+    twist_jnt = -1;
+  }
+  if (!any_aniso && twist_jnt < 0) {
+    return 0;
+  }
+
+  mj_markStack(d);
+  int* v_chain = mjSTACKALLOC(d, nvert_chain, int);
+  for (int h = 0; h < nhinge; h++) {
+    v_chain[h] = (int)b[1 + mjROD_HINGE_SIZE*h + 0];
+  }
+  v_chain[nhinge]     = (int)b[1 + mjROD_HINGE_SIZE*(nhinge - 1) + 1];
+  v_chain[nhinge + 1] = (int)b[1 + mjROD_HINGE_SIZE*(nhinge - 1) + 2];
+
+  // reference vertex positions rotated by root body's current orientation
+  mjtNum* xpos0 = mjSTACKALLOC(d, 3*nvert_chain, mjtNum);
+  mjtNum p0_b0[3], q0_b0[4], qneg0[4], qrot[4];
+  rodBodyPose0(m, b0, p0_b0, q0_b0);
+  mju_negQuat(qneg0, q0_b0);
+  mju_mulQuat(qrot, d->xquat + 4*b0, qneg0);
+
+  for (int k = 0; k < nvert_chain; k++) {
+    mjtNum pk[3], qk[4], rel[3], rot_rel[3];
+    rodVertPos0(m, va + v_chain[k], pk, qk);
+    mju_sub3(rel, pk, p0_b0);
+    mju_rotVecQuat(rot_rel, rel, qrot);
+    mju_add3(xpos0 + 3*k, d->xpos + 3*b0, rot_rel);
+  }
+
+  // initial reference frame (t0_ref, u0_ref, v0_ref) on edge 0
+  mjtNum e0_ref[3], frame_loc[9] = {0}, t0_ref[3], u0_ref[3], v0_ref[3];
+  mju_sub3(e0_ref, xpos0 + 3, xpos0);
+  mju_mulMatTVec3(frame_loc, d->xmat + 9*b0, e0_ref);
+  if (mju_normalize3(frame_loc) < mjMINVAL) {
+    mj_freeStack(d);
+    return 0;
+  }
+  mju_makeFrame(frame_loc);
+  mjtNum psi0 = b[1 + 9];
+  mjtNum c0 = mju_cos(psi0), s0 = mju_sin(psi0);
+  mjtNum u_loc[3], v_loc[3];
+  for (int c = 0; c < 3; c++) {
+    u_loc[c] = c0*frame_loc[3 + c] + s0*frame_loc[6 + c];
+    v_loc[c] = -s0*frame_loc[3 + c] + c0*frame_loc[6 + c];
+  }
+  mju_mulMatVec3(t0_ref, d->xmat + 9*b0, frame_loc);
+  mju_mulMatVec3(u0_ref, d->xmat + 9*b0, u_loc);
+  mju_mulMatVec3(v0_ref, d->xmat + 9*b0, v_loc);
+
+  // propagate reference Bishop frame along reference edges to get om0 and (t_ref, u_ref) per edge
+  mjtNum* om0 = mjSTACKALLOC(d, 2*nhinge, mjtNum);
+  mju_zero(om0, 2*nhinge);
+  mjtNum* t_ref = mjSTACKALLOC(d, 3*nedge, mjtNum);
+  mjtNum* u_ref = mjSTACKALLOC(d, 3*nedge, mjtNum);
+  mjtNum v_prev_ref[3];
+  mji_copy3(t_ref, t0_ref);
+  mji_copy3(u_ref, u0_ref);
+  mji_copy3(v_prev_ref, v0_ref);
+  for (int h = 0; h < nhinge; h++) {
+    if (any_aniso && b[1 + mjROD_HINGE_SIZE*h + 6] > 0) {
+      mjtNum kb_ref[3];
+      if (mj_rodHinge(xpos0 + 3*h, xpos0 + 3*(h+1), xpos0 + 3*(h+2), kb_ref, NULL)) {
+        om0[2*h + 0] = mju_dot3(kb_ref, u_ref + 3*h);
+        om0[2*h + 1] = mju_dot3(kb_ref, v_prev_ref);
+      }
+    }
+    mjtNum* t_next_ref = t_ref + 3*(h+1);
+    mju_sub3(t_next_ref, xpos0 + 3*(h+2), xpos0 + 3*(h+1));
+    if (mju_normalize3(t_next_ref) < mjMINVAL ||
+        !rodParallelTransport(t_ref + 3*h, t_next_ref, u_ref + 3*h, u_ref + 3*(h+1), v_prev_ref)) {
+      mj_freeStack(d);
+      return 0;
+    }
+  }
+
+  // deformed edges and Bishop frames
+  mjtNum* t_edge = mjSTACKALLOC(d, 3*nedge, mjtNum);
+  mjtNum* u_edge = mjSTACKALLOC(d, 3*nedge, mjtNum);
+  mjtNum* v_edge = mjSTACKALLOC(d, 3*nedge, mjtNum);
+  mjtNum* l_edge = mjSTACKALLOC(d, nedge, mjtNum);
+  for (int e = 0; e < nedge; e++) {
+    mju_sub3(t_edge + 3*e, xpos + 3*v_chain[e+1], xpos + 3*v_chain[e]);
+    l_edge[e] = mju_normalize3(t_edge + 3*e);
+    if (l_edge[e] < mjMINVAL) {
+      mj_freeStack(d);
+      return 0;
+    }
+  }
+  if (!rodParallelTransport(t0_ref, t_edge, u0_ref, u_edge, v_edge)) {
+    if (root_clamped) {
+      mj_freeStack(d);
+      return 0;
+    }
+    mju_addScl3(u_edge, u0_ref, t_edge, -mju_dot3(u0_ref, t_edge));
+    mju_normalize3(u_edge);
+    mji_cross(v_edge, t_edge, u_edge);
+  }
+  for (int h = 0; h < nhinge; h++) {
+    if (!rodParallelTransport(t_edge + 3*h, t_edge + 3*(h+1),
+                              u_edge + 3*h, u_edge + 3*(h+1), v_edge + 3*(h+1))) {
+      mj_freeStack(d);
+      return 0;
+    }
+  }
+
+  // reference director on the last edge, carried in time from the stored state by parallel
+  // transport, in the frame of body b0; the reference configuration if there is no state
+  mjtNum tS[3] = {0}, aS[3] = {0}, psiS = 0, dpsi_holonomy = 0;
+  if (root_clamped) {
+    const mjtNum* R0 = d->xmat + 9*b0;
+    const mjtNum* state = m->flex_plasticadr[f] >= 0 ? d->plastic + m->flex_plasticadr[f] : NULL;
+    if (state && mju_dot3(state, state) > 0.25) {
+      mju_mulMatVec3(tS, R0, state);
+      mju_mulMatVec3(aS, R0, state + 3);
+      psiS = state[6];
+    } else {
+      mji_copy3(tS, t_ref + 3*nhinge);
+      mji_copy3(aS, u_ref + 3*nhinge);
+    }
+    mjtNum u_end_ref[3], v_end_ref[3];
+    if (!rodParallelTransport(tS, t_edge + 3*nhinge, aS, u_end_ref, v_end_ref)) {
+      mj_freeStack(d);
+      return 0;
+    }
+
+    // holonomy: angle from the reference director to the Bishop frame on the last edge, unwrapped
+    // to the branch nearest the stored value, so that it stays continuous beyond +-pi
+    dpsi_holonomy = mju_atan2(mju_dot3(u_end_ref, v_edge + 3*nhinge),
+                              mju_dot3(u_end_ref, u_edge + 3*nhinge));
+    dpsi_holonomy += 2*mjPI * mju_round((psiS - dpsi_holonomy) / (2*mjPI));
+    if (state_out) {
+      mju_mulMatTVec3(state_out, R0, t_edge + 3*nhinge);
+      mju_mulMatTVec3(state_out + 3, R0, u_end_ref);
+      state_out[6] = dpsi_holonomy;
+    }
+  } else if (state_out) {
+    mju_zero(state_out, mjROD_STATE_SIZE);
+  }
+  if (!energy_out && !frc && !qfrc_out && !Wk_out && !Wd_out) {
+    mj_freeStack(d);
+    return 1;
+  }
+
+  // evaluate hinge curvature binormals and Jacobians
+  mjtNum* kb_all = mjSTACKALLOC(d, 3*nhinge, mjtNum);
+  mjtNum* J_all  = (frc || Wk_out || Wd_out) ? mjSTACKALLOC(d, 27*nhinge, mjtNum) : NULL;
+  for (int h = 0; h < nhinge; h++) {
+    if (!mj_rodHinge(xpos + 3*v_chain[h], xpos + 3*v_chain[h+1], xpos + 3*v_chain[h+2],
+                     kb_all + 3*h, J_all ? J_all + 27*h : NULL)) {
+      mj_freeStack(d);
+      return 0;
+    }
+  }
+
+  mjtNum theta_hinge = 0;
+  if (twist_jnt >= 0) {
+    int padr = m->jnt_qposadr[twist_jnt];
+    theta_hinge = d->qpos[padr] - m->qpos0[padr];
+  }
+
+  mjtNum energy = 0;
+  mjtNum* c_psi = mjSTACKALLOC(d, nedge, mjtNum);
+  mju_zero(c_psi, nedge);
+  mjtNum c_end_ref = 0;
+
+  // Path A: isotropic cross-section (dk == 0) — closed-form twist, no tridiagonal solve
+  if (!any_aniso) {
+    mjtNum inv_kt_sum = 0;
+    for (int h = 0; h < nhinge; h++) {
+      const mjtNum* hinge = b + 1 + mjROD_HINGE_SIZE*h;
+      mjtNum k1 = hinge[4], kb0 = hinge[6], kt = hinge[8];
+      if (kt > 0) {
+        inv_kt_sum += 1.0 / kt;
+      }
+      if (energy_out) {
+        mjtNum r = mju_norm3(kb_all + 3*h);
+        if (kb0 == 0) {
+          energy += k1 * r * r;
+        } else {
+          mjtNum e2 = mjROD_SMOOTH * mjROD_SMOOTH;
+          mjtNum gam = mju_sqrt(1 + e2);
+          mjtNum rho = mju_sqrt(r*r + e2*kb0*kb0);
+          energy += k1 * (rho - gam*kb0) * (rho - gam*kb0);
+        }
+      }
+      mjtNum w[3];
+      mj_rodHingeWeights(frc ? w : NULL, Wk_out ? Wk_out + 9*h : NULL,
+                         Wd_out ? Wd_out + 9*h : NULL, kb_all + 3*h, k1, kb0);
+      if (frc) {
+        const mjtNum* J = J_all + 27*h;
+        for (int i = 0; i < 3; i++) {
+          for (int c = 0; c < 3; c++) {
+            for (int r = 0; r < 3; r++) {
+              frc[3*v_chain[h+i] + c] -= J[9*r + 3*i + c] * w[r];
+            }
+          }
+        }
+      }
+    }
+    if (twist_jnt >= 0 && inv_kt_sum > 0) {
+      mjtNum kt_eff = 1.0 / inv_kt_sum;
+      mjtNum theta_tot = theta_hinge + dpsi_holonomy;
+      mjtNum tau = 2 * kt_eff * theta_tot;
+      energy += kt_eff * theta_tot * theta_tot;
+      if (qfrc_out) {
+        qfrc_out[m->jnt_dofadr[twist_jnt]] -= tau;
+      }
+      c_psi[nhinge] -= tau;
+      c_end_ref = tau;
+    }
+  }
+
+  // Path B: anisotropic cross-section (dk != 0) — tridiagonal quasistatic solve for per-edge theta
+  else {
+    mjtNum* om_b = mjSTACKALLOC(d, 2*nhinge, mjtNum);
+    for (int h = 0; h < nhinge; h++) {
+      om_b[2*h + 0] = mju_dot3(kb_all + 3*h, u_edge + 3*h);
+      om_b[2*h + 1] = mju_dot3(kb_all + 3*h, v_edge + 3*h);
+    }
+
+    mjtNum* theta = mjSTACKALLOC(d, nedge, mjtNum);
+    if (root_clamped) {
+      theta[0] = 0;
+      theta[nhinge] = (twist_jnt >= 0) ? (theta_hinge + dpsi_holonomy) : 0;
+      for (int e = 1; e < nhinge; e++) {
+        theta[e] = ((mjtNum)e / (mjtNum)nhinge) * theta[nhinge];
+      }
+    } else {
+      // free root: SO(3)-invariant uniform initial angle minimizing bending energy
+      mjtNum A2 = 0, B2 = 0, A1 = 0, B1 = 0;
+      for (int h = 0; h < nhinge; h++) {
+        const mjtNum* hinge = b + 1 + mjROD_HINGE_SIZE*h;
+        mjtNum k1 = hinge[4], k2 = k1 + hinge[5], dk = hinge[5];
+        mjtNum u = om_b[2*h + 0], v = om_b[2*h + 1];
+        mjtNum w1_0 = om0[2*h + 0], w2_0 = om0[2*h + 1];
+        A2 += -dk*(u*u - v*v);
+        B2 += -2*dk*u*v;
+        A1 += -2*(k1*w1_0*u + k2*w2_0*v);
+        B1 += -2*(k1*w1_0*v - k2*w2_0*u);
+      }
+      mjtNum phi2 = 0.5 * mju_atan2(-B2, -A2);
+      mjtNum phi1 = mju_atan2(-B1, -A1);
+      mjtNum cand[4] = {phi2, phi2 + 0.5*mjPI, phi1, phi1 + mjPI};
+      mjtNum theta_init = 0, best_E = 0;
+      for (int c_idx = 0; c_idx < 4; c_idx++) {
+        mjtNum cc = mju_cos(cand[c_idx]), sc = mju_sin(cand[c_idx]);
+        mjtNum c2 = cc*cc - sc*sc, s2 = 2*cc*sc;
+        mjtNum E_c = 0.5*(A2*c2 + B2*s2) + A1*cc + B1*sc;
+        if (c_idx == 0 || E_c < best_E) {
+          best_E = E_c;
+          theta_init = cand[c_idx];
+        }
+      }
+      for (int e = 0; e < nedge; e++) {
+        theta[e] = theta_init;
+      }
+    }
+
+    // Thomas tridiagonal Newton solve for unconstrained edge angles theta[e_start .. e_end]
+    int e_start = root_clamped ? 1 : 0;
+    int e_end = (twist_jnt >= 0) ? (nhinge - 1) : nhinge;
+    int nint = e_end - e_start + 1;
+    if (nint > 0) {
+      mjtNum* diag  = mjSTACKALLOC(d, nint, mjtNum);
+      mjtNum* dsafe = mjSTACKALLOC(d, nint, mjtNum);
+      mjtNum* offd  = mjSTACKALLOC(d, nint, mjtNum);
+      mjtNum* rhs   = mjSTACKALLOC(d, nint, mjtNum);
+      mjtNum* step  = mjSTACKALLOC(d, nint, mjtNum);
+      for (int iter = 0; iter < 20; iter++) {
+        mjtNum max_r = 0;
+        for (int i = 0; i < nint; i++) {
+          int e = e_start + i;
+          mjtNum kt_prev = (e > 0) ? b[1 + mjROD_HINGE_SIZE*(e - 1) + 8] : 0;
+          mjtNum kt_curr = (e < nhinge) ? b[1 + mjROD_HINGE_SIZE*e + 8] : 0;
+
+          mjtNum grad = 0;
+          if (e > 0) {
+            grad += 2*kt_prev*(theta[e] - theta[e-1]);
+          }
+          if (e < nhinge) {
+            grad -= 2*kt_curr*(theta[e+1] - theta[e]);
+          }
+          mjtNum hess = 2*(kt_prev + kt_curr);
+
+          // exact bending Hessian and its Gauss-Newton part
+          mjtNum ce = mju_cos(theta[e]), se = mju_sin(theta[e]);
+          mjtNum hess_bend = 0, hess_gn = 0;
+          for (int side = 0; side < 2; side++) {
+            int h = e - 1 + side;
+            if (h < 0 || h >= nhinge) {
+              continue;
+            }
+            const mjtNum* hinge = b + 1 + mjROD_HINGE_SIZE*h;
+            mjtNum k1 = hinge[4], k2 = k1 + hinge[5];
+            mjtNum w1 = ce*om_b[2*h + 0] + se*om_b[2*h + 1];
+            mjtNum w2 = -se*om_b[2*h + 0] + ce*om_b[2*h + 1];
+            mjtNum w1_0 = om0[2*h + 0], w2_0 = om0[2*h + 1];
+            grad += k1*(w1 - w1_0)*w2 - k2*(w2 - w2_0)*w1;
+            hess_bend += k1*(w2*w2 - (w1 - w1_0)*w1) + k2*(w1*w1 - (w2 - w2_0)*w2);
+            hess_gn += k1*w2*w2 + k2*w1*w1;
+          }
+          diag[i]  = hess + hess_bend;
+
+          // safeguarded Hessian: diagonally dominant, hence positive definite
+          dsafe[i] = hess + (hess_bend > 0 ? hess_bend : hess_gn) + (root_clamped ? 0 : 1e-9);
+          offd[i]  = (i + 1 < nint) ? -2*kt_curr : 0;
+          rhs[i]   = -grad;
+          max_r    = mju_max(max_r, mju_abs(grad));
+        }
+        if (max_r < 1e-12) {
+          break;
+        }
+
+        // Newton step, safeguarded where the exact Hessian is not positive definite
+        if (!rodTridiagSolve(step, diag, offd, rhs, nint) &&
+            !rodTridiagSolve(step, dsafe, offd, rhs, nint)) {
+          break;
+        }
+
+        // limit the largest angle update to mjROD_MAXSTEP, preserving the step direction
+        mjtNum max_step = 0;
+        for (int i = 0; i < nint; i++) {
+          max_step = mju_max(max_step, mju_abs(step[i]));
+        }
+        mjtNum scl = max_step > mjROD_MAXSTEP ? mjROD_MAXSTEP / max_step : 1;
+        for (int i = 0; i < nint; i++) {
+          theta[e_start + i] += scl*step[i];
+        }
+      }
+    }
+
+    // evaluate energy, kb-space weights/forces, and Bishop angle derivatives at theta*
+    for (int h = 0; h < nhinge; h++) {
+      const mjtNum* hinge = b + 1 + mjROD_HINGE_SIZE*h;
+      mjtNum k1 = hinge[4], k2 = k1 + hinge[5], kt = hinge[8];
+      mjtNum w1_0 = om0[2*h + 0], w2_0 = om0[2*h + 1];
+      const mjtNum* uh = u_edge + 3*h;
+      const mjtNum* vh = v_edge + 3*h;
+
+      mjtNum g_kb[3] = {0, 0, 0};
+      mjtNum Wk_h[9] = {0};
+      for (int side = 0; side < 2; side++) {
+        int e = h + side;
+        mjtNum ce = mju_cos(theta[e]), se = mju_sin(theta[e]);
+        mjtNum m1[3], m2[3];
+        for (int c = 0; c < 3; c++) {
+          m1[c] = ce*uh[c] + se*vh[c];
+          m2[c] = -se*uh[c] + ce*vh[c];
+        }
+        mjtNum w1 = ce*om_b[2*h + 0] + se*om_b[2*h + 1];
+        mjtNum w2 = -se*om_b[2*h + 0] + ce*om_b[2*h + 1];
+        mjtNum dw1 = w1 - w1_0, dw2 = w2 - w2_0;
+
+        energy += 0.5 * (k1*dw1*dw1 + k2*dw2*dw2);
+        for (int c = 0; c < 3; c++) {
+          g_kb[c] += k1*dw1*m1[c] + k2*dw2*m2[c];
+          for (int d_idx = 0; d_idx < 3; d_idx++) {
+            Wk_h[3*c + d_idx] += k1*m1[c]*m1[d_idx] + k2*m2[c]*m2[d_idx];
+          }
+        }
+        mjtNum dE_dtheta = k1*dw1*w2 - k2*dw2*w1;
+        c_psi[h] += dE_dtheta;
+      }
+
+      mjtNum dtheta = theta[h+1] - theta[h];
+      energy += kt * dtheta * dtheta;
+
+      if (Wk_out) {
+        mju_copy(Wk_out + 9*h, Wk_h, 9);
+      }
+      if (Wd_out) {
+        mjtNum r = mju_norm3(kb_all + 3*h);
+        if (r < mjMINVAL) {
+          mju_copy(Wd_out + 9*h, Wk_h, 9);
+        } else {
+          mjtNum n[3] = {kb_all[3*h+0]/r, kb_all[3*h+1]/r, kb_all[3*h+2]/r};
+          mjtNum Wn[3];
+          mju_mulMatVec3(Wn, Wk_h, n);
+          mjtNum keff2 = mju_dot3(n, Wn);
+          for (int r_i = 0; r_i < 3; r_i++) {
+            for (int c_i = 0; c_i < 3; c_i++) {
+              Wd_out[9*h + 3*r_i + c_i] = keff2 * n[r_i] * n[c_i];
+            }
+          }
+        }
+      }
+      if (frc) {
+        const mjtNum* J = J_all + 27*h;
+        for (int i = 0; i < 3; i++) {
+          for (int c = 0; c < 3; c++) {
+            for (int r = 0; r < 3; r++) {
+              frc[3*v_chain[h+i] + c] -= J[9*r + 3*i + c] * g_kb[r];
+            }
+          }
+        }
+      }
+    }
+
+    if (twist_jnt >= 0) {
+      int h_last = nhinge - 1;
+      const mjtNum* hinge = b + 1 + mjROD_HINGE_SIZE*h_last;
+      mjtNum k1 = hinge[4], k2 = k1 + hinge[5], kt = hinge[8];
+      mjtNum ce = mju_cos(theta[nhinge]), se = mju_sin(theta[nhinge]);
+      mjtNum w1 = ce*om_b[2*h_last + 0] + se*om_b[2*h_last + 1];
+      mjtNum w2 = -se*om_b[2*h_last + 0] + ce*om_b[2*h_last + 1];
+      mjtNum dE_dthetaH = k1*(w1 - om0[2*h_last + 0])*w2 - k2*(w2 - om0[2*h_last + 1])*w1;
+      mjtNum tau_end = 2*kt*(theta[nhinge] - theta[nhinge - 1]) + dE_dthetaH;
+      if (qfrc_out) {
+        qfrc_out[m->jnt_dofadr[twist_jnt]] -= tau_end;
+      }
+      c_psi[nhinge] -= tau_end;
+      c_end_ref = tau_end;
+    }
+  }
+
+  // scatter Bishop frame angle gradients to vertex forces and root body torque
+  if (frc || qfrc_out) {
+    mjtNum* S = mjSTACKALLOC(d, nedge, mjtNum);
+    S[nhinge] = c_psi[nhinge];
+    for (int e = nhinge - 1; e >= 0; e--) {
+      S[e] = S[e + 1] + c_psi[e];
+    }
+
+    if (frc) {
+      mjtNum* g_edge = mjSTACKALLOC(d, 3*nedge, mjtNum);
+      mju_zero(g_edge, 3*nedge);
+
+      // boundary edge 0 parallel transport derivative
+      if (root_clamped) {
+        mjtNum cross0[3];
+        mji_cross(cross0, t0_ref, t_edge);
+        mjtNum denom0 = l_edge[0] * (1 + mju_dot3(t0_ref, t_edge));
+        if (denom0 >= mjMINVAL) {
+          mji_addToScl3(g_edge, cross0, -S[0] / denom0);
+        }
+      }
+
+      // interior hinges parallel transport derivatives
+      for (int h = 0; h < nhinge; h++) {
+        mji_addToScl3(g_edge + 3*h,     kb_all + 3*h, -S[h+1] / (2*l_edge[h]));
+        mji_addToScl3(g_edge + 3*(h+1), kb_all + 3*h, -S[h+1] / (2*l_edge[h+1]));
+      }
+
+      // boundary edge H parallel transport derivative
+      if (root_clamped && c_end_ref != 0) {
+        mjtNum crossH[3];
+        mji_cross(crossH, tS, t_edge + 3*nhinge);
+        mjtNum denomH = l_edge[nhinge] * (1 + mju_dot3(tS, t_edge + 3*nhinge));
+        if (denomH >= mjMINVAL) {
+          mji_addToScl3(g_edge + 3*nhinge, crossH, -c_end_ref / denomH);
+        }
+      }
+
+      for (int e = 0; e < nedge; e++) {
+        mji_addTo3(frc + 3*v_chain[e],     g_edge + 3*e);
+        mji_subFrom3(frc + 3*v_chain[e+1], g_edge + 3*e);
+      }
+    }
+
+    // torque on root body b0 from rotation of reference directors (t0_ref, u0_ref) and (tS, aS)
+    if (qfrc_out && root_clamped) {
+      mjtNum tau_b0[3] = {0, 0, 0};
+      mjtNum d0 = 1 + mju_dot3(t0_ref, t_edge);
+      if (d0 >= mjMINVAL) {
+        mjtNum sum0[3];
+        mju_add3(sum0, t0_ref, t_edge);
+        mji_addToScl3(tau_b0, sum0, -S[0] / d0);
+      }
+      if (c_end_ref != 0) {
+        mjtNum dH = 1 + mju_dot3(tS, t_edge + 3*nhinge);
+        if (dH >= mjMINVAL) {
+          mjtNum sumH[3];
+          mju_add3(sumH, tS, t_edge + 3*nhinge);
+          mji_addToScl3(tau_b0, sumH, -c_end_ref / dH);
+        }
+      }
+      int bw = m->body_weldid[b0];
+      for (int i = m->body_dofadr[bw] + m->body_dofnum[bw] - 1; i >= 0; i = m->dof_parentid[i]) {
+        qfrc_out[i] += mju_dot3(d->cdof + 6*i, tau_b0);
+      }
+    }
+  }
+
+  if (energy_out) {
+    *energy_out = energy;
+  }
+  mj_freeStack(d);
+  return 1;
+}
+
+
+// effective torsional stiffness 2 kt_eff of the twist hinge of a 1D rod chain, 0 if none
+mjtNum mj_rodTwistStiffness(const mjModel* m, int f, int* twist_dof) {
+  if (twist_dof) {
+    *twist_dof = -1;
+  }
+  int bendingadr = m->flex_bendingadr[f];
+  if (bendingadr < 0 || m->flex_dim[f] != 1) {
+    return 0;
+  }
+  const mjtNum* b = m->flex_bending + bendingadr;
+  int nhinge = (int)b[0];
+  if (nhinge <= 0 || b[1 + 7] < 0 || b[1 + 8] <= 0) {
+    return 0;
+  }
+
+  // closed-loop chains and chains without a clamped root edge do not have a twist hinge
+  const mjtNum* last = b + 1 + mjROD_HINGE_SIZE*(nhinge - 1);
+  int va = m->flex_vertadr[f];
+  if ((int)last[1] == (int)b[1 + 0] || (int)last[2] == (int)b[1 + 0] ||
+      m->flex_vertbodyid[va + (int)b[1 + 0]] != m->flex_vertbodyid[va + (int)b[1 + 1]]) {
+    return 0;
+  }
+
+  // same chain conditions as mj_rodChain, series torsional stiffness
+  mjtNum inv_kt_sum = 0;
+  for (int h = 0; h < nhinge; h++) {
+    const mjtNum* hinge = b + 1 + mjROD_HINGE_SIZE*h;
+    if (hinge[3] >= 0 || (hinge[6] > 0 && hinge[5] == 0)) {
+      return 0;
+    }
+    if (h > 0) {
+      const mjtNum* prev = b + 1 + mjROD_HINGE_SIZE*(h - 1);
+      if ((int)hinge[0] != (int)prev[1] || (int)hinge[1] != (int)prev[2]) {
+        return 0;
+      }
+    }
+    if (hinge[8] > 0) {
+      inv_kt_sum += 1 / hinge[8];
+    }
+  }
+  if (twist_dof) {
+    *twist_dof = m->jnt_dofadr[(int)b[1 + 7]];
+  }
+  return 2 / inv_kt_sum;
 }
 
 

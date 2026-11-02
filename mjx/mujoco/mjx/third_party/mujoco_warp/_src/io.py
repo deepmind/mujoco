@@ -1322,7 +1322,20 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
     bendingadr = int(mjm.flex_bendingadr[fi])
     if mjm.flex_dim[fi] != 1 or mjm.flex_interp[fi] != 0 or mjm.flex_rigid[fi] or bendingadr < 0:
       continue
-    for h in range(int(mjm.flex_bending[bendingadr])):
+    nhinge = int(mjm.flex_bending[bendingadr])
+    if types.ROD_HINGE_SIZE == 10 and nhinge + 1 > types.ROD_MAX_EDGES:
+      records = mjm.flex_bending[bendingadr + 1 : bendingadr + 1 + types.ROD_HINGE_SIZE * nhinge].reshape(
+        nhinge, types.ROD_HINGE_SIZE
+      )
+      va = int(mjm.flex_vertadr[fi])
+      root_clamped = mjm.flex_vertbodyid[va + int(records[0, 0])] == mjm.flex_vertbodyid[va + int(records[0, 1])]
+      has_twist = root_clamped and records[0, 7] >= 0 and records[0, 8] > 0
+      has_aniso = bool((records[:, 5] != 0).any())
+      if has_twist or has_aniso:
+        raise NotImplementedError(
+          f"1D rod chain with {nhinge + 1} edges exceeds ROD_MAX_EDGES ({types.ROD_MAX_EDGES})."
+        )
+    for h in range(nhinge):
       flex_rodhinge_map.append((fi, bendingadr + 1 + types.ROD_HINGE_SIZE * h))
   m.nflexrodhinge = len(flex_rodhinge_map)
   m.flex_rodhinge_map = np.array(flex_rodhinge_map, dtype=np.int32).reshape(-1, 2)

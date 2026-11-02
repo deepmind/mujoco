@@ -280,17 +280,6 @@ implement custom actuators, so far only a PID controller. See the `README
 <https://github.com/google-deepmind/mujoco/blob/main/plugin/actuator/README.md>`__ for details.
 
 
-elasticity
-""""""""""
-The plugins in the `elasticity/ <https://github.com/google-deepmind/mujoco/tree/main/plugin/elasticity>`__ directory are
-passive forces based on continuum mechanics for 1-dimensional and 2-dimensional bodies. The 1D model is invariant under
-rotations and captures the large deformation of elastic cables, decoupling twisting and bending strains. The 2D model is
-a suitable for computing the bending stiffness of thin elastic plates (i.e. shells having a flat stress-free
-configuration). In this case, the elastic energy is quadratic and therefore the stiffness matrix is constant. For more
-information, please see the `README
-<https://github.com/google-deepmind/mujoco/blob/main/plugin/elasticity/README.md>`__.
-
-
 sensor
 """"""
 The plugins in the `sensor/ <https://github.com/google-deepmind/mujoco/tree/main/plugin/sensor>`__ directory implement

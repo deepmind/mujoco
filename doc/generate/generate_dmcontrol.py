@@ -86,7 +86,6 @@ CONFLICTS = {
 SINGLETONS = {
     ('body', 'freejoint'), ('body', 'inertial'),
     ('compiler', 'lengthrange'),
-    ('composite', 'geom'), ('composite', 'site'), ('composite', 'skin'),
     ('default', 'adhesion'), ('default', 'camera'), ('default', 'cylinder'),
     ('default', 'damper'), ('default', 'equality'), ('default', 'general'),
     ('default', 'geom'), ('default', 'intvelocity'), ('default', 'joint'),
@@ -122,8 +121,8 @@ NAMESPACE_OVERRIDES = {
 # 'deformable')
 CONTEXT_NAMESPACE = {('deformable', 'skin'): 'deformable'}
 # attributes that are PyMJCF identifiers although the schema types them as
-# plain strings (composite prefixes namescope the generated elements)
-IDENTIFIER_OVERRIDES = {('composite', 'prefix')}
+# plain strings
+IDENTIFIER_OVERRIDES: set[tuple[str, str]] = set()
 # the same grouping applied to reference targets
 REF_NS_MAP = {'instance': 'plugin', 'flex': 'deformable',
               'skin': 'deformable', 'pair': 'contact', 'exclude': 'contact'}

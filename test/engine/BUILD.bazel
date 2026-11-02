@@ -377,7 +377,6 @@ cc_test(
     deps = [
         "//:libmujoco_hdrs",
         "//plugin/actuator:register",
-        "//plugin/elasticity:register",
         "//plugin/sdf:register",
         "//plugin/sensor:register",
         "//src/engine:engine_plugin",
@@ -753,7 +752,6 @@ cc_test(
     ],
     deps = [
         "//:libmujoco_hdrs",
-        "//plugin/elasticity:register",
         "//test:fixture",
         "@googletest//:gtest_main",
     ],

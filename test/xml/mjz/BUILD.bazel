@@ -70,7 +70,6 @@ cc_test(
     deps = [
         "//:libmujoco_hdrs",
         "//plugin/actuator:register",
-        "//plugin/elasticity:register",
         "//plugin/sdf:register",
         "//plugin/sensor:register",
         "//src/xml:xml_numeric_format",

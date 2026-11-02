@@ -83,20 +83,21 @@ TEST_XML_SENSOR = r"""
 
 TEST_XML_PLUGIN = r"""
 <mujoco>
-  <option gravity="0 0 0"/>
   <extension>
-    <plugin plugin="mujoco.elasticity.cable"/>
+    <plugin plugin="mujoco.pid"/>
   </extension>
   <worldbody>
-    <composite type="cable" curve="s" count="41 1 1" size="1" offset="0 0 1" initial="none">
-      <plugin plugin="mujoco.elasticity.cable">
-        <config key="twist" value="1e6"/>
-        <config key="bend" value="1e9"/>
-      </plugin>
-      <joint kind="main" damping="2"/>
-      <geom type="capsule" size=".005" density="1"/>
-    </composite>
+    <body pos="0 0 1">
+      <joint name="j" type="slide" axis="0 0 1"/>
+      <geom size=".1"/>
+    </body>
   </worldbody>
+  <actuator>
+    <plugin plugin="mujoco.pid" joint="j" actdim="1">
+      <config key="kp" value="10"/>
+      <config key="slewmax" value="1"/>
+    </plugin>
+  </actuator>
 </mujoco>
 """
 

@@ -293,6 +293,7 @@ static const mjXDefaultEntry kDefaults_mjsEquality[] = {
 static const mjXDefaultEntry kDefaults_mjsFlex[] = {
   {"young", (int)offsetof(mjsFlex, young), 0, 1, 0, 0, {0}},
   {"poisson", (int)offsetof(mjsFlex, poisson), 0, 1, 0, 0, {0}},
+  {"shear", (int)offsetof(mjsFlex, shear), 0, 1, 0, 0, {0}},
   {"damping", (int)offsetof(mjsFlex, damping), 0, 1, 0, 0, {0}},
   {"thickness", (int)offsetof(mjsFlex, thickness), 0, 1, 1, 0, {-1.0}},
   {"yield", (int)offsetof(mjsFlex, stressyield), 0, 1, 0, 0, {0}},

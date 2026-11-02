@@ -2868,14 +2868,9 @@ TEST_F(XMLReaderTest, ReadsSkinGroups) {
 TEST_F(XMLReaderTest, InvalidSkinGroup) {
   static constexpr char xml[] = R"(
   <mujoco>
-    <worldbody>
-      <body>
-        <composite prefix="B0" type="grid" count="6 6 1">
-          <geom size=".1"/>
-          <skin group="6"/>
-        </composite>
-      </body>
-    </worldbody>
+    <deformable>
+      <skin group="6"/>
+    </deformable>
   </mujoco>
   )";
   std::array<char, 1024> error;
@@ -2883,7 +2878,7 @@ TEST_F(XMLReaderTest, InvalidSkinGroup) {
   EXPECT_THAT(model.get(), IsNull());
   EXPECT_THAT(
       error.data(),
-      HasSubstr("skin group must be between 0 and 5\nElement 'skin', line 7"));
+      HasSubstr("skin group must be between 0 and 5\nElement 'skin', line 4"));
 }
 
 TEST_F(XMLReaderTest, Orthographic) {

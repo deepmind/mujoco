@@ -1077,37 +1077,36 @@ class SpecsTest(absltest.TestCase):
 
   def test_plugin(self):
     spec = mujoco.MjSpec()
-    spec.activate_plugin('mujoco.elasticity.cable')
+    spec.activate_plugin('mujoco.pid')
     plugin = spec.add_plugin(
         name='instance_name',
-        plugin_name='mujoco.elasticity.cable',
+        plugin_name='mujoco.pid',
         active=True,
         info='info'
     )
-    plugin.config = {'twist': '10', 'bend': '1'}
-    self.assertEqual(plugin.config, {'twist': '10', 'bend': '1'})
+    plugin.config = {'kp': '10', 'kd': '1'}
+    self.assertEqual(plugin.config, {'kp': '10', 'kd': '1'})
 
     body = spec.worldbody.add_body()
-    body.plugin = plugin
-    body.plugin.name = 'instance_name'
-    body.plugin.active = True
-
-    geom = body.add_geom()
-    geom.type = mujoco.mjtGeom.mjGEOM_BOX
-    geom.size[0] = 1
-    geom.size[1] = 1
-    geom.size[2] = 1
+    body.add_joint(name='j', type=mujoco.mjtJoint.mjJNT_SLIDE)
+    body.add_geom(size=[1, 1, 1])
+    actuator = spec.add_actuator(
+        target='j', trntype=mujoco.mjtTrn.mjTRN_JOINT
+    )
+    actuator.plugin = plugin
+    actuator.plugin.name = 'instance_name'
+    actuator.plugin.active = True
 
     model = spec.compile()
     self.assertIsNotNone(model)
     self.assertEqual(model.nplugin, 1)
-    self.assertEqual(model.npluginattr, 7)
-    self.assertEqual(model.body_plugin[1], 0)
+    self.assertEqual(model.npluginattr, 8)
+    self.assertEqual(model.actuator_plugin[0], 0)
     attributes = (''.join([chr(i) for i in model.plugin_attr]).split(chr(0)))
-    self.assertEqual(attributes[:2], ['10', '1'])
+    self.assertEqual(attributes[:3], ['10', '', '1'])
 
     copy = spec.copy()  # before assigning the new config
-    wrong_config = {'wrong': '10', 'bend': '1'}
+    wrong_config = {'wrong': '10', 'kd': '1'}
     for s in [spec, copy]:
       s.plugins[0].config = wrong_config
       with self.assertRaisesRegex(
@@ -1226,16 +1225,16 @@ class SpecsTest(absltest.TestCase):
     body.name = 'test_body'
 
     plugin = spec.add_plugin(
-        name='test_instance', plugin_name='mujoco.elasticity.cable', active=True
+        name='test_instance', plugin_name='mujoco.sdf.torus', active=True
     )
-    plugin.config = {'twist': '1e2', 'bend': '4e1'}
+    plugin.config = {'radius1': '1', 'radius2': '0.2'}
 
     # Assignment should copy active flag and names
     body.plugin = plugin
 
     self.assertTrue(body.plugin.active)
     self.assertEqual(body.plugin.name, 'test_instance')
-    self.assertEqual(body.plugin.plugin_name, 'mujoco.elasticity.cable')
+    self.assertEqual(body.plugin.plugin_name, 'mujoco.sdf.torus')
 
   def test_access_option_stat_visual(self):
     spec = mujoco.MjSpec.from_string("""

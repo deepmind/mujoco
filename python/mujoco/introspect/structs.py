@@ -8874,6 +8874,11 @@ STRUCTS: Mapping[str, StructDecl] = dict([
                  doc="Poisson's ratio",
              ),
              StructFieldDecl(
+                 name='shear',
+                 type=ValueType(name='double'),
+                 doc='1D torsion shear modulus; 0: young / (2 (1 + poisson))',
+             ),
+             StructFieldDecl(
                  name='damping',
                  type=ValueType(name='double'),
                  doc="Rayleigh's damping",

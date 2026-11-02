@@ -2144,6 +2144,7 @@ typedef struct mjsFlex_ {          // flex specification
   mjStringVec* material;           // name of material used for rendering
   double young;                    // Young's modulus
   double poisson;                  // Poisson's ratio
+  double shear;                    // 1D torsion shear modulus; 0: young / (2 (1 + poisson))
   double damping;                  // Rayleigh's damping
   double thickness;                // thickness (2D only)
   double stressyield;              // yield strain threshold; 0: elastic

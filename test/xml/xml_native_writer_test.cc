@@ -1422,19 +1422,25 @@ TEST_F(XMLWriterTest, FramesInAlignedBody) {
 
 // a body's plugin is written once, not again inside each of the body's frames
 TEST_F(XMLWriterTest, BodyPluginWrittenOnce) {
+  mjpPlugin plugin;
+  mjp_defaultPlugin(&plugin);
+  plugin.name = "mujoco.test.passive";
+  plugin.capabilityflags |= mjPLUGIN_PASSIVE;
+  plugin.nstate = +[](const mjModel* m, int instance) { return 0; };
+  plugin.compute =
+      +[](const mjModel* m, mjData* d, int instance, int capability_bit) {};
+  mjp_registerPlugin(&plugin);
+
   static constexpr char xml[] = R"(
   <mujoco>
     <extension>
-      <plugin plugin="mujoco.elasticity.cable"/>
+      <plugin plugin="mujoco.test.passive"/>
     </extension>
     <worldbody>
       <body name="body">
         <joint type="ball"/>
         <geom type="capsule" size=".01" fromto="0 0 0 .1 0 0"/>
-        <plugin plugin="mujoco.elasticity.cable">
-          <config key="twist" value="1e6"/>
-          <config key="bend" value="1e6"/>
-        </plugin>
+        <plugin plugin="mujoco.test.passive"/>
         <frame name="frame" pos="0 0 1">
           <site name="site"/>
         </frame>

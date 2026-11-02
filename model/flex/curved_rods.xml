@@ -16,11 +16,10 @@
 <mujoco model="Curved rods">
   <include file="scene.xml"/>
 
-  <!-- 1D flexes with discrete elastic rod bending keep the curved shape in which they are defined:
-       a closed ring and a planar wave dropped on the floor, and an open arc and a straight rod ending
-       in a hook, both pinned at one end. Edge equalities keep the rods inextensible. Without material
-       frames, the rods have no torsional stiffness (see the elasticity documentation), so 3D curves
-       such as coil springs are better modeled with the cable composite. -->
+  <!-- 1D flexes with discrete elastic rod bending and torsion keep the curved shape in which they
+       are defined: a closed ring and a planar wave dropped on the floor, and an open arc and a
+       straight rod ending in a hook, both pinned at one end. Edge equalities keep the rods
+       inextensible; see coil.xml for a 3D helical spring. -->
 
   <option timestep="0.002" integrator="discrete"/>
 

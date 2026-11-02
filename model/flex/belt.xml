@@ -16,24 +16,20 @@
 <mujoco model="Belt">
   <include file="scene.xml"/>
 
-  <extension>
-    <plugin plugin="mujoco.elasticity.cable"/>
-  </extension>
-
   <statistic center="0 0 .2" extent="1"/>
 
   <visual>
     <global elevation="-30"/>
   </visual>
 
-  <option timestep="0.001">
+  <option timestep="0.001" integrator="discrete">
     <flag gravity="disable"/>
   </option>
   <compiler autolimits="true"/>
 
   <worldbody>
-    <composite type="cable" offset="-.5 0 .05" initial="none"
-      vertex="
+    <flexcomp name="belt" type="direct" dim="1" pos="-.5 0 .05" radius=".005" mass=".05" rgba=".8 .2 .1 1"
+      point="
       0.    0.   0.
       0.05  0.   0.05
       0.1   0.   0.1
@@ -55,23 +51,18 @@
       0.9   0.   0.1
       0.95  0.   0.05
       1.0   0.   0.  ">
-      <plugin plugin="mujoco.elasticity.cable">
-        <!--Units are in Pa (SI)-->
-        <config key="twist" value="1e8"/>
-        <config key="bend" value="1e7"/>
-        <config key="vmax" value="0.2"/>
-      </plugin>
-      <joint kind="main" damping="0.1"/>
-      <geom type="box" size="0.03535533906 0.02 0.0015" rgba=".8 .2 .1 1" group="3"/>
-      <skin subgrid="3"/>
-    </composite>
+      <contact selfcollide="auto"/>
+      <edge equality="true"/>
+      <elasticity young="1e7" shear="1e8" damping=".3" section="box" sectionsize="0.02 0.0015"/>
+      <pin id="0 1"/>
+    </flexcomp>
   </worldbody>
 
   <equality>
-    <connect name="right_boundary" body1="B_last" anchor="0.07 0 0"/>
+    <connect name="right_boundary" body1="belt_20" anchor="0 0 0"/>
   </equality>
 
   <actuator>
-    <motor site="S_last" gear="0 0 0 1 0 0" ctrlrange="-.2 .2"/>
+    <motor joint="belt_twist" ctrlrange="-.2 .2"/>
   </actuator>
 </mujoco>

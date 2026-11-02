@@ -240,16 +240,19 @@ void mj_flexHessianMul(const mjModel* m, const mjData* d, int f, mjtNum* res,
 
 // per-record data layout in flex_bending for 1D flexes, after a leading record count; a record is a
 // single hinge (v0, v1, v2) or a pair of adjacent curved hinges (v0, v1, v2) and (v1, v2, v3):
-//   single: [v0, v1, v2, -1, k, 0, kb0, 0, 0, 0], energy k (|kb| - kb0)^2, with kb0 = |kb| in the
-//           reference (0 if straight, then the energy is k |kb|^2)
-//   pair:   [v0, v1, v2, v3, w0, w1, om0[4]], energy min_a sum_i w_i |om_i - R(a) om0_i|^2, with
-//           om the curvature binormals of both hinges in a frame orthogonal to the shared edge
-//           (v1, v2), om0 their reference values and R(a) a rotation about the edge
-// k = EI / (l0 + l1) is the stiffness of each hinge; adjacent curved hinges are paired across every
-// shared edge, splitting the stiffness of each hinge evenly among its pairs (w0, w1). There are no
-// material frames, so the rod has no torsional stiffness: the minimization over the edge rotation
-// lets the bending planes of adjacent hinges rotate relative to each other at no cost in the limit
-// of fine discretization, and only the curvature magnitude is resisted (as for a single hinge).
+//   single: [v0, v1, v2, -1, k1, k2 - k1, kb0, twist_jnt, kt, psi0], energy k (|kb| - kb0)^2, with
+//           kb0 = |kb| in the reference (0 if straight, then the energy is k |kb|^2); k2 - k1 != 0
+//           for anisotropic sections, twist_jnt is the twist hinge of the chain (-1: none; only
+//           read on the first hinge), kt = GJ / (l0 + l1) the torsional stiffness, and psi0 the
+//           angle of the weak bending axis of the first edge (only read on the first hinge)
+//   pair:   [v0, v1, v2, v3, w0, w1, kb0_a, kb0_b, kt cos(dphi0), kt sin(dphi0)], energy
+//           w0 (|om_a| - kb0_a)^2 + w1 (|om_b| - kb0_b)^2 + kt |R(dphi0) n_a - n_b|^2, with
+//           om_a, om_b the curvature binormals of both hinges in a frame orthogonal to the shared
+//           edge (v1, v2), n_a, n_b their smoothed unit directions, and dphi0 the reference
+//           dihedral angle between them about the shared edge
+// k = EI / (l0 + l1) is the bending stiffness of each hinge and kt = GJ / (2 l) is the torsional
+// stiffness of the shared edge; adjacent curved hinges are paired across every shared edge,
+// splitting the bending stiffness of each hinge evenly among its pairs (w0, w1).
 #define mjROD_HINGE_SIZE 10
 
 // number of vertices of a 1D rod bending record: 3 (single hinge) or 4 (hinge pair)
@@ -283,7 +286,25 @@ int mj_rodPair(const mjtNum x0[3], const mjtNum x1[3], const mjtNum x2[3], const
 //   Wd: Rayleigh damping weight, orthogonal to rotations about the shared edge
 // the energy is smoothed at om = 0; each output is optional
 void mj_rodPairWeights(mjtNum g[4], mjtNum Wk[16], mjtNum Wd[16],
-                       const mjtNum om[4], mjtNum w0, mjtNum w1, const mjtNum om0[4]);
+                       const mjtNum om[4], mjtNum w0, mjtNum w1, const mjtNum prm[4]);
+
+// evaluate a 1D DER rod chain of single hinges with Bishop frame, optional twist hinge DOF, and
+// tridiagonal quasistatic twist solve for anisotropic cross-sections; returns 1 if handled
+//   the geometric twist of the chain is measured against a reference director on the last edge,
+//   carried in time by parallel transport in d->plastic + flex_plasticadr[f] (see
+//   mjROD_STATE_SIZE) so that it stays continuous when the chain coils; state_out (optional)
+//   receives the updated state for the current configuration
+MJAPI int mj_rodChain(const mjModel* m, mjData* d, int f, mjtNum* energy_out,
+                      mjtNum* frc, mjtNum* qfrc_out,
+                      mjtNum* Wk_out, mjtNum* Wd_out, mjtNum* state_out);
+
+// size of the twist state of a 1D rod in d->plastic: tangent (3) and reference director (3) of the
+// last edge in the frame of the body of the first vertex, and the unwrapped geometric twist (1);
+// a zero tangent selects the reference configuration
+#define mjROD_STATE_SIZE 7
+
+// effective torsional stiffness 2 kt_eff of the twist hinge of a 1D rod chain, 0 if none
+mjtNum mj_rodTwistStiffness(const mjModel* m, int f, int* twist_dof);
 
 // element-local geometry, quadratic edge response, and stiffness contractions shared by
 // passive forces and both solver paths; keep the helpers visible to the compiler so the

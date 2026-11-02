@@ -73,6 +73,9 @@ def _rod_hinge_size() -> int:
 
 ROD_HINGE_SIZE = _rod_hinge_size()
 
+# maximum number of edges in a 1D DER rod chain with twist or anisotropic cross-section
+ROD_MAX_EDGES = 64
+
 # maximum size (by number of edges) of an horizon in EPA algorithm
 MJ_MAX_EPAHORIZON = 24
 # maximum average number of trianglarfaces EPA can insert at each iteration

@@ -5893,6 +5893,7 @@ EMSCRIPTEN_BINDINGS(mujoco_bindings) {
     .property("section", &MjsFlex::section, &MjsFlex::set_section)
     .property("sectionsize", &MjsFlex::sectionsize)
     .property("selfcollide", &MjsFlex::selfcollide, &MjsFlex::set_selfcollide)
+    .property("shear", &MjsFlex::shear, &MjsFlex::set_shear)
     .property("size", &MjsFlex::size)
     .property("solimp", &MjsFlex::solimp)
     .property("solmix", &MjsFlex::solmix, &MjsFlex::set_solmix)

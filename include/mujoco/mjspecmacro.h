@@ -303,6 +303,7 @@
     X   ( mjStringVec*,   material,      1      ) \
     X   ( double,         young,         1      ) \
     X   ( double,         poisson,       1      ) \
+    X   ( double,         shear,         1      ) \
     X   ( double,         damping,       1      ) \
     X   ( double,         thickness,     1      ) \
     X   ( double,         stressyield,   1      ) \

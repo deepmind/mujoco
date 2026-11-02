@@ -339,13 +339,25 @@ TEST_F(MujocoTest, AttachedSpecDoesNotInheritURI) {
   mj_deleteSpec(child_spec);
 }
 
+static void RegisterPassivePlugin() {
+  mjpPlugin plugin;
+  mjp_defaultPlugin(&plugin);
+  plugin.name = "mujoco.test.passive";
+  plugin.capabilityflags |= mjPLUGIN_PASSIVE;
+  plugin.nstate = +[](const mjModel* m, int instance) { return 0; };
+  plugin.compute =
+      +[](const mjModel* m, mjData* d, int instance, int capability_bit) {};
+  mjp_registerPlugin(&plugin);
+}
+
 TEST_F(MujocoTest, ActivatePlugin) {
+  RegisterPassivePlugin();
   mjSpec* spec = mj_makeSpec();
-  mjs_activatePlugin(spec, "mujoco.elasticity.cable");
+  mjs_activatePlugin(spec, "mujoco.test.passive");
 
   // associate plugin to body
   mjsBody* body = mjs_addBody(mjs_findBody(spec, "world"), 0);
-  mjs_setString(body->plugin.plugin_name, "mujoco.elasticity.cable");
+  mjs_setString(body->plugin.plugin_name, "mujoco.test.passive");
   body->plugin.element = mjs_addPlugin(spec)->element;
   body->plugin.active = true;
   mjsGeom* geom = mjs_addGeom(body, 0);
@@ -930,16 +942,17 @@ TEST_F(MujocoTest, DeleteActuatorBeforeCompileDeletesImplicitPlugin) {
 }
 
 TEST_F(MujocoTest, DeleteBodyDeletesPluginReferencedByPointer) {
+  RegisterPassivePlugin();
   mjSpec* spec = mj_makeSpec();
-  mjs_activatePlugin(spec, "mujoco.elasticity.cable");
+  mjs_activatePlugin(spec, "mujoco.test.passive");
 
   // a named instance that only a body references, through its element
   mjsBody* body = mjs_addBody(mjs_findBody(spec, "world"), 0);
   mjs_addGeom(body, 0)->size[0] = 0.1;
   mjsPlugin* plugin = mjs_addPlugin(spec);
-  mjs_setName(plugin->element, "cable");
-  mjs_setString(plugin->plugin_name, "mujoco.elasticity.cable");
-  mjs_setString(body->plugin.plugin_name, "mujoco.elasticity.cable");
+  mjs_setName(plugin->element, "passive");
+  mjs_setString(plugin->plugin_name, "mujoco.test.passive");
+  mjs_setString(body->plugin.plugin_name, "mujoco.test.passive");
   body->plugin.element = plugin->element;
   body->plugin.active = true;
 
@@ -1078,15 +1091,16 @@ TEST_F(MujocoTest, DeleteBodyKeepsUnreferencedPlugin) {
 }
 
 TEST_F(MujocoTest, BodyToFrameDeletesImplicitPlugin) {
+  RegisterPassivePlugin();
   static constexpr char xml[] = R"(
   <mujoco>
     <extension>
-      <plugin plugin="mujoco.elasticity.cable"/>
+      <plugin plugin="mujoco.test.passive"/>
     </extension>
     <worldbody>
       <body name="body">
         <geom size=".1"/>
-        <plugin plugin="mujoco.elasticity.cable"/>
+        <plugin plugin="mujoco.test.passive"/>
       </body>
     </worldbody>
   </mujoco>)";
@@ -3358,10 +3372,11 @@ TEST_F(MujocoTest, DeleteFrameInertial) {
 }
 
 TEST_F(MujocoTest, DeleteFramePlugin) {
+  RegisterPassivePlugin();
   static constexpr char xml[] = R"(
   <mujoco>
     <extension>
-      <plugin plugin="mujoco.elasticity.cable"/>
+      <plugin plugin="mujoco.test.passive"/>
       <plugin plugin="mujoco.sdf.torus">
         <instance name="torus"/>
       </plugin>
@@ -3380,7 +3395,7 @@ TEST_F(MujocoTest, DeleteFramePlugin) {
         </geom>
         <body>
           <geom size=".1"/>
-          <plugin plugin="mujoco.elasticity.cable"/>
+          <plugin plugin="mujoco.test.passive"/>
         </body>
       </frame>
     </worldbody>

@@ -616,7 +616,6 @@ class mjCBody : public mjCBody_, private mjsBody {
   friend class mjCGeom;
   friend class mjCSite;
   friend class mjCCamera;
-  friend class mjCComposite;
   friend class mjCFrame;
   friend class mjCLight;
   friend class mjCFlex;

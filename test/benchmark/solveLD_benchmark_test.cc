@@ -33,7 +33,7 @@ static const int kNumBenchmarkSteps = 50;
 static void BM_solveLD(benchmark::State& state, bool coil) {
   static mjModel* m;
   if (coil) {
-    m = LoadModelFromPath("plugin/elasticity/coil.xml");
+    m = LoadModelFromPath("flex/coil.xml");
   } else {
     m = LoadModelFromPath("humanoid/humanoid100.xml");
   }
@@ -43,20 +43,20 @@ static void BM_solveLD(benchmark::State& state, bool coil) {
 
   // allocate input and output vectors
   mj_markStack(d);
-  mjtNum *vec = mj_stackAllocNum(d, m->nv);
-  mjtNum *res = mj_stackAllocNum(d, m->nv);
+  mjtNum* vec = mj_stackAllocNum(d, m->nv);
+  mjtNum* res = mj_stackAllocNum(d, m->nv);
 
   // arbitrary input vector
-  for (int i=0; i < m->nv; i++) {
-    vec[i] = 0.2 + 0.3*i;
+  for (int i = 0; i < m->nv; i++) {
+    vec[i] = 0.2 + 0.3 * i;
   }
 
   // benchmark
   while (state.KeepRunningBatch(kNumBenchmarkSteps)) {
-    for (int i=0; i < kNumBenchmarkSteps; i++) {
+    for (int i = 0; i < kNumBenchmarkSteps; i++) {
       mju_copy(res, vec, m->nv);
-      mj_solveLD(res, d->qLD, d->qLDiagInv, m->nv, 1,
-                 m->M_rownnz, m->M_rowadr, m->M_colind, nullptr);
+      mj_solveLD(res, d->qLD, d->qLDiagInv, m->nv, 1, m->M_rownnz, m->M_rowadr,
+                 m->M_colind, nullptr);
     }
   }
 

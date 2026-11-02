@@ -20,7 +20,6 @@ mujoco_ui_binary(
         "@mujoco",
         "@mujoco//:graphics_native",  # buildcleaner: keep
         "@mujoco//plugin/actuator:register",
-        "@mujoco//plugin/elasticity:register",
         "@mujoco//plugin/sdf:register",
         "@mujoco//plugin/sensor:register",
     ],
@@ -37,7 +36,6 @@ cc_binary(
     deps = [
         "@mujoco",
         "@mujoco//plugin/actuator:register",
-        "@mujoco//plugin/elasticity:register",
         "@mujoco//plugin/sdf:register",
         "@mujoco//plugin/sensor:register",
     ],
@@ -66,7 +64,6 @@ cc_binary(
         "@mujoco",
         "@mujoco//:graphics_native",  # buildcleaner: keep
         "@mujoco//plugin/actuator:register",
-        "@mujoco//plugin/elasticity:register",
         "@mujoco//plugin/sdf:register",
         "@mujoco//plugin/sensor:register",
         "@mujoco//src/cc:array_safety",
@@ -81,7 +78,6 @@ cc_binary(
     deps = [
         "@mujoco",
         "@mujoco//plugin/actuator:register",
-        "@mujoco//plugin/elasticity:register",
         "@mujoco//plugin/sdf:register",
         "@mujoco//plugin/sensor:register",
     ],

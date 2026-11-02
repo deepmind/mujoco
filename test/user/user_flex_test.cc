@@ -4987,5 +4987,111 @@ TEST_F(UserFlexTest, FlexcompEnclosingFrame) {
   }
 }
 
+TEST_F(UserFlexTest, Direct1DAutoEdges) {
+  static constexpr char xml[] = R"(
+  <mujoco>
+    <worldbody>
+      <flexcomp name="rod" type="direct" dim="1" mass="0.1" radius="0.01"
+                point="0 0 0  0.1 0 0  0.2 0 0.05  0.3 0.05 0.05">
+        <edge equality="true"/>
+        <elasticity young="1e6" poisson="0.3"/>
+      </flexcomp>
+    </worldbody>
+  </mujoco>
+  )";
+  std::array<char, 1024> error;
+  MjModelPtr m = LoadModelFromString(xml, error.data(), error.size());
+  ASSERT_THAT(m.get(), NotNull()) << error.data();
+  EXPECT_EQ(m->nflex, 1);
+  EXPECT_EQ(m->flex_vertnum[0], 4);
+  EXPECT_EQ(m->flex_elemnum[0], 3);
+  EXPECT_EQ(m->flex_edgenum[0], 3);
+  for (int e = 0; e < 3; ++e) {
+    EXPECT_EQ(m->flex_elem[2 * e + 0], e);
+    EXPECT_EQ(m->flex_elem[2 * e + 1], e + 1);
+  }
+}
+
+// a positive shear modulus overrides G = E / (2 (1 + poisson)) in the 1D rod
+// torsional stiffness kt = G J / (l0 + l1)
+TEST_F(UserFlexTest, RodShearModulus) {
+  static constexpr char xml_template[] = R"(
+  <mujoco>
+    <option gravity="0 0 0"/>
+    <worldbody>
+      <flexcomp name="zrod" type="direct" dim="1" radius="0.01" mass="1"
+                point="0 1 0  0 0 0  1 0 0  1 1 0">
+        <contact selfcollide="none" contype="0" conaffinity="0"/>
+        <elasticity young="1e7" poisson="0.25" %s/>
+      </flexcomp>
+    </worldbody>
+  </mujoco>
+  )";
+  char xml[2048];
+  char error[1024] = {0};
+  const double J = mjPI * std::pow(0.01, 4) / 2;
+
+  // kt is the 9th entry of the single hinge record, after the leading count
+  auto kt_of = [](const mjModel* m) {
+    const mjtNum* b = m->flex_bending + m->flex_bendingadr[0];
+    EXPECT_EQ(b[0], 1);
+    return b[1 + 8];
+  };
+
+  // default: G = E / (2 (1 + poisson)), l0 + l1 = 2
+  std::snprintf(xml, sizeof(xml), xml_template, "");
+  MjModelPtr m = LoadModelFromString(xml, error, sizeof(error));
+  ASSERT_THAT(m.get(), NotNull()) << error;
+  const double kt_default = (1e7 / 2.5) * J / 2;
+  EXPECT_NEAR(kt_of(m.get()), kt_default, MjTol(1e-12, 1e-6) * kt_default);
+
+  // explicit shear modulus
+  std::snprintf(xml, sizeof(xml), xml_template, R"(shear="1e8")");
+  using SpecPtr = std::unique_ptr<mjSpec, decltype(&mj_deleteSpec)>;
+  SpecPtr spec(mj_parseXMLString(xml, nullptr, error, sizeof(error)),
+               mj_deleteSpec);
+  ASSERT_THAT(spec.get(), NotNull()) << error;
+  mjsFlex* flex = mjs_asFlex(mjs_findElement(spec.get(), mjOBJ_FLEX, "zrod"));
+  ASSERT_THAT(flex, NotNull());
+  EXPECT_EQ(flex->shear, 1e8);
+  m.reset(mj_compile(spec.get(), nullptr));
+  ASSERT_THAT(m.get(), NotNull()) << mjs_getError(spec.get());
+  const double kt_shear = 1e8 * J / 2;
+  EXPECT_NEAR(kt_of(m.get()), kt_shear, MjTol(1e-12, 1e-6) * kt_shear);
+  EXPECT_GT(std::abs(kt_of(m.get()) - kt_default), 0.1 * kt_default);
+
+  // XML round-trip preserves the shear modulus
+  std::array<char, 8192> saved;
+  ASSERT_GE(mj_saveXMLString(spec.get(), saved.data(), saved.size(), error,
+                             sizeof(error)),
+            0)
+      << error;
+  EXPECT_THAT(saved.data(), HasSubstr("shear="));
+  MjModelPtr m2 = LoadModelFromString(saved.data(), error, sizeof(error));
+  ASSERT_THAT(m2.get(), NotNull()) << error;
+  EXPECT_NEAR(kt_of(m2.get()), kt_shear, MjTol(1e-12, 1e-6) * kt_shear);
+
+  // negative shear modulus is a compile error
+  std::snprintf(xml, sizeof(xml), xml_template, R"(shear="-1")");
+  m = LoadModelFromString(xml, error, sizeof(error));
+  EXPECT_THAT(m.get(), IsNull());
+  EXPECT_THAT(error, HasSubstr("shear modulus must be non-negative"));
+}
+
+TEST_F(UserFlexTest, CableCoilBeltModels) {
+  for (const char* path :
+       {"flex/cable.xml", "flex/coil.xml", "flex/belt.xml"}) {
+    MjModelPtr m(LoadModelFromPath(path));
+    ASSERT_THAT(m.get(), NotNull()) << path;
+    MjDataPtr d = MakeData(m);
+    for (int i = 0; i < 20; ++i) {
+      mj_step(m.get(), d.get());
+    }
+    for (int i = 0; i < m->nq; ++i) {
+      EXPECT_TRUE(std::isfinite(d->qpos[i])) << path << " qpos[" << i << "]";
+    }
+  }
+}
+
 }  // namespace
 }  // namespace mujoco
