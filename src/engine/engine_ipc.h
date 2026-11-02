@@ -16,7 +16,9 @@
 #define MUJOCO_SRC_ENGINE_ENGINE_IPC_H_
 
 #include <mujoco/mjdata.h>
+#include <mujoco/mjexport.h>
 #include <mujoco/mjmodel.h>
+#include "engine/engine_collision_continuous.h"
 
 #ifdef __cplusplus
 extern "C" {
@@ -27,6 +29,11 @@ extern "C" {
 // method; flex self-contact (vertex-triangle, edge-edge) and flex-vs-geom. Elasticity rides the
 // native efc rows (edge equality) and the effective metric (elastic2d).
 void mj_ipc(const mjModel* m, mjData* d);
+
+// number of distinct pairs among cand and an optional old active set (nold pairs in old, or
+// nold=0/old=NULL for empty old set); allocates from the arena (for testing only)
+MJAPI int mj_ipcCountDistinct(mjData* d, const mjcFlexPair* cand, int ncand,
+                              const mjcFlexPair* old, int nold);
 
 
 #ifdef __cplusplus

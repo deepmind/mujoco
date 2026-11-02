@@ -100,22 +100,71 @@ static mjtNum ipc_muPair(const ipcCon* con, const mjtNum* mass) {
 // cnt -> decay exponent c (AL normal-contact aging): c = cnt>=0 ? cnt : max(-cnt-6, 0).
 static inline int ipc_cntExp(int cnt) { return cnt >= 0 ? cnt : (-cnt - 6 > 0 ? -cnt - 6 : 0); }
 
-// stable per-pair hash for the persistent cnt store: contact type + sorted vertex/feature indices.
-static uint64_t ipc_pairHash(const mjcFlexPair* con) {
-  int id[4];
+// sort two ints ascending in place
+static inline void ipc_sort2(int* a, int* b) {
+  if (*a > *b) {
+    int t = *a;
+    *a = *b;
+    *b = t;
+  }
+}
+
+
+// canonical pair indices: order-independent only within each role, as the roles differ per type
+// (a lone vertex or geom feature vs. the flex points of a triangle or edge), so that permutations
+// of one pair agree while distinct pairs sharing an index multiset do not
+static void ipc_canonIdx(int id[4], const mjcFlexPair* con) {
   for (int k=0; k < 4; k++)
     id[k] = con->idx[k];
-  for (int i=0; i < 3; i++)
-    for (int j=0; j < 3 - i; j++)  // sort idx ascending (order-independent key)
-      if (id[j] > id[j + 1]) {
-        int t = id[j];
-        id[j] = id[j + 1];
-        id[j + 1] = t;
-      }
+  switch (con->type) {
+  case mjcFLEX_VERT_TRI:    // {vertex, triangle}
+  case mjcGEOM_CORNER_TRI:  // {geom corner, triangle}
+    ipc_sort2(id+1, id+2);
+    ipc_sort2(id+2, id+3);
+    ipc_sort2(id+1, id+2);
+    break;
+  case mjcFLEX_EDGE_EDGE:   // {edge, edge}, unordered edges of unordered endpoints
+    ipc_sort2(id+0, id+1);
+    ipc_sort2(id+2, id+3);
+    if (id[0] > id[2] || (id[0] == id[2] && id[1] > id[3])) {
+      int t0 = id[0], t1 = id[1];
+      id[0] = id[2];
+      id[1] = id[3];
+      id[2] = t0;
+      id[3] = t1;
+    }
+    break;
+  case mjcFLEX_VERT_GEOM:   // {vertex}
+    id[1] = id[2] = id[3] = 0;
+    break;
+  case mjcGEOM_EDGE_EDGE:   // {geom edge, flex edge}
+    ipc_sort2(id+1, id+2);
+    id[3] = 0;
+    break;
+  }
+}
+
+
+// per-pair hash for the active-set merge: contact type, geom and canonical indices
+static uint64_t ipc_pairHash(const mjcFlexPair* con) {
+  int id[4];
+  ipc_canonIdx(id, con);
   uint64_t hh = (uint64_t)con->type * 1000003ull + (uint64_t)(con->g + 1);
   for (int k=0; k < 4; k++)
     hh = hh * 1000003ull + (uint64_t)(id[k] + 1);
   return hh;
+}
+
+
+// pair identity: same type, geom and canonical indices
+static int ipc_pairEqual(const mjcFlexPair* a, const mjcFlexPair* b) {
+  if (a->type != b->type || a->g != b->g) {
+    return 0;
+  }
+  int ia[4], ib[4];
+  ipc_canonIdx(ia, a);
+  ipc_canonIdx(ib, b);
+  return ia[0] == ib[0] && ia[1] == ib[1] && ia[2] == ib[2] && ia[3] == ib[3];
 }
 
 
@@ -214,17 +263,18 @@ static void ipc_mergeActiveSet(mjData* d, ipcCon** aset, int* naset, const mjcFl
     }
   }
   const ipcCon* old = *aset;
-  // presence hash over the merged set, open addressing keyed by pairHash (0 = empty; a true hash
-  // of 0 would at worst admit one duplicate), per-call scratch on the mjData stack sized by the
-  // merged-set bound: only the old set and the admitted candidates are inserted
+  // presence hash over the merged set, open addressing keyed by pairHash and verified by
+  // pairEqual (mtab: 1-based index into amerge, 0 = empty), per-call scratch on the mjData stack
+  // sized by the merged-set bound: only the old set and the admitted candidates are inserted
   int cap = 1;
   while (cap < 2 * bound + 16)
     cap <<= 1;
   mj_markStack(d);
   uint64_t* mkey = mjSTACKALLOC(d, cap, uint64_t);
+  int* mtab = mjSTACKALLOC(d, cap, int);
   uint64_t mask = (uint64_t)(cap - 1);
   for (int i=0; i < cap; i++)
-    mkey[i] = 0;
+    mtab[i] = 0;
   int nm = 0;
   // 1) keep existing pairs that still carry load
   for (int c=0; c < *naset; c++) {
@@ -234,23 +284,24 @@ static void ipc_mergeActiveSet(mjData* d, ipcCon** aset, int* naset, const mjcFl
     // reaching zero), and never-engaged pairs age out on their own counter.
     if ((old[c].lam <= 0 && old[c].cnt < -IPC_EVICT) || old[c].cnt > IPC_ASET_AGE) continue;
     uint64_t key = ipc_pairHash(IPC_PAIR(&old[c])), h = key & mask;
-    while (mkey[h] != 0) {
-      if (mkey[h] == key) break;
+    while (mtab[h] != 0) {
+      if (mkey[h] == key && ipc_pairEqual(IPC_PAIR(&amerge[mtab[h]-1]), IPC_PAIR(&old[c]))) break;
       h = (h + 1) & mask;
     }
-    if (mkey[h] == key) continue;
+    if (mtab[h] != 0) continue;
     mkey[h] = key;
     amerge[nm++] = old[c];
+    mtab[h] = nm;
   }
   // 2) add new admitted broad-phase candidates not already present
   for (int c=0; c < ncand; c++) {
     if (!cadmit[c]) continue;
     uint64_t key = ipc_pairHash(IPC_PAIR(&cand[c])), h = key & mask;
-    while (mkey[h] != 0) {
-      if (mkey[h] == key) break;
+    while (mtab[h] != 0) {
+      if (mkey[h] == key && ipc_pairEqual(IPC_PAIR(&amerge[mtab[h]-1]), &cand[c])) break;
       h = (h + 1) & mask;
     }
-    if (mkey[h] == key) continue;  // dedup: pair already in the merged set
+    if (mtab[h] != 0) continue;  // dedup: pair already in the merged set
     ipcCon con = {0};
     con.type = cand[c].type;
     for (int q=0; q < 4; q++) con.idx[q] = cand[c].idx[q];
@@ -264,10 +315,58 @@ static void ipc_mergeActiveSet(mjData* d, ipcCon** aset, int* naset, const mjcFl
     con.cnt = ipc_conAge(&con, conage, pt2vg);
     mkey[h] = key;
     amerge[nm++] = con;
+    mtab[h] = nm;
   }
   *aset = amerge;
   *naset = nm;
   mj_freeStack(d);
+}
+
+
+// number of distinct pairs among cand and an optional old set, as deduplicated by the active-set
+// merge; allocates from the arena, which is not released until the next reset (for testing only)
+int mj_ipcCountDistinct(mjData* d, const mjcFlexPair* cand, int ncand, const mjcFlexPair* old,
+                        int nold) {
+  int npt = 1;
+  for (int c=0; c < ncand; c++) {
+    int vv[4], nvv = mjc_pairVerts(vv, &cand[c]);
+    for (int q=0; q < nvv; q++)
+      if (vv[q] >= npt) npt = vv[q] + 1;
+  }
+  for (int c=0; c < nold; c++) {
+    int vv[4], nvv = mjc_pairVerts(vv, &old[c]);
+    for (int q=0; q < nvv; q++)
+      if (vv[q] >= npt) npt = vv[q] + 1;
+  }
+  mj_markStack(d);
+  int* cadmit = mjSTACKALLOC(d, ncand, int);
+  mjtNum* pal = mjSTACKALLOC(d, npt, mjtNum);
+  int* conage = mjSTACKALLOC(d, npt, int);
+  int* pt2vg = mjSTACKALLOC(d, npt, int);
+  for (int c=0; c < ncand; c++) cadmit[c] = 1;
+  for (int p=0; p < npt; p++) {
+    pal[p] = 0;
+    conage[p] = 0;
+    pt2vg[p] = p;
+  }
+  ipcCon* aset = NULL;
+  int naset = 0;
+  if (old && nold > 0) {
+    aset = mjSTACKALLOC(d, nold, ipcCon);
+    naset = nold;
+    for (int c=0; c < nold; c++) {
+      ipcCon con = {0};
+      con.type = old[c].type;
+      for (int q=0; q < 4; q++) con.idx[q] = old[c].idx[q];
+      con.gi = old[c].g;
+      con.lam = 0;
+      con.cnt = 0;
+      aset[c] = con;
+    }
+  }
+  ipc_mergeActiveSet(d, &aset, &naset, cand, ncand, cadmit, pal, conage, pt2vg);
+  mj_freeStack(d);
+  return naset;
 }
 
 

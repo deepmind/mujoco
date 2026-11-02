@@ -359,6 +359,7 @@ cc_test(
         "//:mujoco",
         "//src/engine:engine_collision_continuous",
         "//src/engine:engine_derivative",
+        "//src/engine:engine_forward",
         "//src/engine:engine_memory",
         "//test:fixture",
         "@googletest//:gtest_main",

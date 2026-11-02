@@ -31,6 +31,7 @@
 
 #include <mujoco/mujoco.h>
 #include <mujoco/mjtype.h>
+#include "src/engine/engine_ipc.h"
 #include "src/engine/engine_memory.h"
 #include "src/engine/engine_metric.h"
 #include "test/fixture.h"
@@ -2755,6 +2756,103 @@ TEST_F(IpcTest, SingleAndMultiThreadedMatch) {
 
   mj_deleteData(dt);
   mj_deleteModel(mt);
+  mj_deleteData(d);
+  mj_deleteModel(m);
+}
+
+// The active-set merge identifies a pair by role-aware canonical indices: a
+// permutation within a role is the same pair, while distinct pairs sharing an
+// index multiset (e.g. geom edge 1 vs flex edge (2,3) and geom edge 2 vs flex
+// edge (1,3)) are kept apart.
+TEST_F(IpcTest, MergeActiveSetDedupsByPairIdentity) {
+  mjModel* m = Load("<mujoco/>");
+  ASSERT_THAT(m, NotNull());
+  mjData* d = mj_makeData(m);
+
+  auto count = [&](mjcFlexPair a, mjcFlexPair b) {
+    mjcFlexPair pairs[2] = {a, b};
+    return mj_ipcCountDistinct(d, pairs, 2, nullptr, 0);
+  };
+
+  // geom edge vs flex edge: {feature, a, b, 0}
+  EXPECT_EQ(count({mjcGEOM_EDGE_EDGE, {1, 2, 3, 0}, 0},
+                  {mjcGEOM_EDGE_EDGE, {2, 1, 3, 0}, 0}),
+            2);
+  EXPECT_EQ(count({mjcGEOM_EDGE_EDGE, {1, 2, 3, 0}, 0},
+                  {mjcGEOM_EDGE_EDGE, {1, 3, 2, 0}, 0}),
+            1);
+  EXPECT_EQ(count({mjcGEOM_EDGE_EDGE, {1, 2, 3, 0}, 0},
+                  {mjcGEOM_EDGE_EDGE, {1, 2, 3, 0}, 1}),
+            2);
+
+  // geom corner vs flex triangle: {feature, A, B, C}
+  EXPECT_EQ(count({mjcGEOM_CORNER_TRI, {0, 1, 2, 3}, 0},
+                  {mjcGEOM_CORNER_TRI, {1, 0, 2, 3}, 0}),
+            2);
+  EXPECT_EQ(count({mjcGEOM_CORNER_TRI, {0, 1, 2, 3}, 0},
+                  {mjcGEOM_CORNER_TRI, {0, 3, 1, 2}, 0}),
+            1);
+
+  // flex vertex vs flex triangle: {v, A, B, C}
+  EXPECT_EQ(count({mjcFLEX_VERT_TRI, {1, 2, 3, 4}, -1},
+                  {mjcFLEX_VERT_TRI, {2, 1, 3, 4}, -1}),
+            2);
+  EXPECT_EQ(count({mjcFLEX_VERT_TRI, {1, 2, 3, 4}, -1},
+                  {mjcFLEX_VERT_TRI, {1, 4, 3, 2}, -1}),
+            1);
+
+  // flex edge vs flex edge: {a1, b1, a2, b2}
+  EXPECT_EQ(count({mjcFLEX_EDGE_EDGE, {1, 2, 3, 4}, -1},
+                  {mjcFLEX_EDGE_EDGE, {1, 3, 2, 4}, -1}),
+            2);
+  EXPECT_EQ(count({mjcFLEX_EDGE_EDGE, {1, 2, 3, 4}, -1},
+                  {mjcFLEX_EDGE_EDGE, {4, 3, 2, 1}, -1}),
+            1);
+
+  // flex vertex vs geom surface: {vertex, 0, 0, 0}; differing idx[1..3]
+  // deduplicate
+  EXPECT_EQ(count({mjcFLEX_VERT_GEOM, {1, 0, 0, 0}, 0},
+                  {mjcFLEX_VERT_GEOM, {1, 2, 3, 4}, 0}),
+            1);
+  EXPECT_EQ(count({mjcFLEX_VERT_GEOM, {1, 0, 0, 0}, 0},
+                  {mjcFLEX_VERT_GEOM, {2, 0, 0, 0}, 0}),
+            2);
+  EXPECT_EQ(count({mjcFLEX_VERT_GEOM, {1, 0, 0, 0}, 0},
+                  {mjcFLEX_VERT_GEOM, {1, 0, 0, 0}, 1}),
+            2);
+
+  // step 1: non-empty old active set deduplication and old vs candidate merge
+  auto merge_count = [&](const std::vector<mjcFlexPair>& old_set,
+                         const std::vector<mjcFlexPair>& cand_set) {
+    return mj_ipcCountDistinct(d, cand_set.data(), cand_set.size(),
+                               old_set.data(), old_set.size());
+  };
+
+  // old set deduplication: permuted copies in old set are dropped in step 1
+  EXPECT_EQ(merge_count({{mjcGEOM_EDGE_EDGE, {1, 2, 3, 0}, 0},
+                         {mjcGEOM_EDGE_EDGE, {1, 3, 2, 0}, 0}},
+                        {}),
+            1);
+
+  // old vs candidate: permuted copy of old pair dropped from candidate set
+  EXPECT_EQ(merge_count({{mjcGEOM_EDGE_EDGE, {1, 2, 3, 0}, 0}},
+                        {{mjcGEOM_EDGE_EDGE, {1, 3, 2, 0}, 0}}),
+            1);
+
+  // old vs candidate: distinct look-alike candidate is kept
+  EXPECT_EQ(merge_count({{mjcGEOM_EDGE_EDGE, {1, 2, 3, 0}, 0}},
+                        {{mjcGEOM_EDGE_EDGE, {2, 1, 3, 0}, 0}}),
+            2);
+
+  // old vs candidate: flex vertex vs geom surface (type 2) differing in
+  // idx[1..3]
+  EXPECT_EQ(merge_count({{mjcFLEX_VERT_GEOM, {1, 0, 0, 0}, 0}},
+                        {{mjcFLEX_VERT_GEOM, {1, 5, 6, 7}, 0}}),
+            1);
+  EXPECT_EQ(merge_count({{mjcFLEX_VERT_GEOM, {1, 0, 0, 0}, 0}},
+                        {{mjcFLEX_VERT_GEOM, {2, 0, 0, 0}, 0}}),
+            2);
+
   mj_deleteData(d);
   mj_deleteModel(m);
 }
