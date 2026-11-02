@@ -914,5 +914,177 @@ TEST_F(JacobianTest, QuadraticFlexContactPreservesNegativeBasisWeights) {
   }
 }
 
+TEST_F(FlexGatherStateTest, GatherScatterCellInterpolated) {
+  static constexpr char xml_simple[] = R"(
+  <mujoco>
+    <worldbody>
+      <flexcomp name="f1" type="grid" count="4 4 3" spacing=".1 .1 .1"
+                dim="3" mass="1" radius="0.01" dof="trilinear" cellcount="2 2 1">
+        <elasticity young="1e4" poisson="0.2"/>
+        <contact selfcollide="none"/>
+      </flexcomp>
+      <flexcomp name="f2" type="grid" count="4 4 3" spacing=".1 .1 .1" pos="1 0 0"
+                dim="3" mass="1" radius="0.01" dof="quadratic" cellcount="1 1 1">
+        <elasticity young="1e4" poisson="0.2"/>
+        <contact selfcollide="none"/>
+      </flexcomp>
+      <flexcomp name="f3" type="grid" count="4 4 4" spacing=".1 .1 .1" pos="2 0 0"
+                dim="3" mass="1" radius="0.01" dof="trilinear" cellcount="2 2 2">
+        <elasticity young="1e4" poisson="0.2" elastic2d="both" thickness="0.01"/>
+        <contact selfcollide="none"/>
+      </flexcomp>
+      <flexcomp name="f4" type="grid" count="4 4 4" spacing=".1 .1 .1" pos="3 0 0"
+                dim="3" mass="1" radius="0.01" dof="quadratic" cellcount="1 1 1">
+        <elasticity young="1e4" poisson="0.2" elastic2d="both" thickness="0.01"/>
+        <contact selfcollide="none"/>
+      </flexcomp>
+    </worldbody>
+  </mujoco>
+  )";
+
+  static constexpr char xml_parent_pinned[] = R"(
+  <mujoco>
+    <worldbody>
+      <body name="parent" pos="0.2 -0.1 0.3" euler="15 25 -10">
+        <freejoint/>
+        <inertial mass="0.5" pos="0 0 0" diaginertia="0.01 0.01 0.01"/>
+        <flexcomp name="f1" type="grid" count="3 3 3" spacing=".1 .1 .1"
+                  dim="3" mass="1" radius="0.01" dof="trilinear" cellcount="2 1 1">
+          <pin id="0"/>
+          <elasticity young="1e4" poisson="0.2"/>
+          <contact selfcollide="none"/>
+        </flexcomp>
+        <flexcomp name="f2" type="grid" count="3 3 3" spacing=".1 .1 .1" pos="0.5 0 0"
+                  dim="3" mass="1" radius="0.01" dof="quadratic" cellcount="1 1 1">
+          <pin id="0"/>
+          <elasticity young="1e4" poisson="0.2"/>
+          <contact selfcollide="none"/>
+        </flexcomp>
+        <flexcomp name="f3" type="grid" count="4 4 4" spacing=".1 .1 .1" pos="1.0 0 0"
+                  dim="3" mass="1" radius="0.01" dof="trilinear" cellcount="2 2 2">
+          <pin id="0"/>
+          <elasticity young="1e4" poisson="0.2" elastic2d="both" thickness="0.01"/>
+          <contact selfcollide="none"/>
+        </flexcomp>
+        <flexcomp name="f4" type="grid" count="4 4 4" spacing=".1 .1 .1" pos="1.5 0 0"
+                  dim="3" mass="1" radius="0.01" dof="quadratic" cellcount="1 1 1">
+          <pin id="0"/>
+          <elasticity young="1e4" poisson="0.2" elastic2d="both" thickness="0.01"/>
+          <contact selfcollide="none"/>
+        </flexcomp>
+      </body>
+    </worldbody>
+  </mujoco>
+  )";
+
+  for (const char* xml : {xml_simple, xml_parent_pinned}) {
+    char error[1024];
+    MjModelPtr m = LoadModelFromString(xml, error, sizeof(error));
+    ASSERT_THAT(m.get(), NotNull()) << error;
+    MjDataPtr d = MakeData(m);
+    mj_forward(m.get(), d.get());
+
+    int nv = m->nv;
+    std::vector<mjtNum> u(nv), f_vert, v_gather, qfrc_scatter(nv);
+    for (int i = 0; i < nv; i++) {
+      u[i] = 0.1 * ((i % 7) - 3);
+    }
+
+    static const mjtNum eps = MjEps(1e-6, 1e-3);
+    std::vector<mjtNum> qpos0(m->nq, 0);
+    mju_copy(qpos0.data(), d->qpos, m->nq);
+
+    for (int f = 0; f < m->nflex; f++) {
+      ASSERT_NE(m->flex_interp[f], 0);
+      int nvert = m->flex_vertnum[f];
+      int vadr = m->flex_vertadr[f];
+      v_gather.assign(3 * nvert, 0);
+      mj_flexGather(m.get(), d.get(), f, v_gather.data(), u.data());
+
+      // Compare gathered vertex velocity against central finite differences of
+      // flexvert_xpos under qpos perturbation along u.
+      mju_copy(d->qpos, qpos0.data(), m->nq);
+      mj_integratePos(m.get(), d->qpos, u.data(), eps);
+      mj_kinematics(m.get(), d.get());
+      mj_flex(m.get(), d.get());
+      std::vector<mjtNum> xpos_plus(d->flexvert_xpos + 3 * vadr,
+                                    d->flexvert_xpos + 3 * (vadr + nvert));
+
+      mju_copy(d->qpos, qpos0.data(), m->nq);
+      mj_integratePos(m.get(), d->qpos, u.data(), -eps);
+      mj_kinematics(m.get(), d.get());
+      mj_flex(m.get(), d.get());
+      std::vector<mjtNum> xpos_minus(d->flexvert_xpos + 3 * vadr,
+                                     d->flexvert_xpos + 3 * (vadr + nvert));
+
+      mju_copy(d->qpos, qpos0.data(), m->nq);
+      mj_forward(m.get(), d.get());
+
+      for (int k = 0; k < 3 * nvert; k++) {
+        mjtNum fd = (xpos_plus[k] - xpos_minus[k]) / (2 * eps);
+        EXPECT_THAT(v_gather[k], MjNear(fd, 1e-6, 2e-3));
+      }
+
+      // Check exact transpose duality <f_vert, J u> == <J^T f_vert, u>.
+      f_vert.resize(3 * nvert);
+      for (int k = 0; k < 3 * nvert; k++) {
+        f_vert[k] = 0.2 * ((k % 11) - 5);
+      }
+      std::fill(qfrc_scatter.begin(), qfrc_scatter.end(), 0);
+      mjtNum scale = 1.5;
+      mj_flexScatter(m.get(), d.get(), f, qfrc_scatter.data(), f_vert.data(),
+                     scale);
+
+      mjtNum dot_vert =
+          scale * mju_dot(f_vert.data(), v_gather.data(), 3 * nvert);
+      mjtNum dot_dof = mju_dot(qfrc_scatter.data(), u.data(), nv);
+      EXPECT_THAT(dot_dof, MjNear(dot_vert, 1e-10, 1e-4));
+    }
+  }
+
+  // Verify that quadratic shell mode (flex_interp == -2, f4 in xml_simple) uses
+  // 27-node quadratic cell interpolation after mju_shellTrackInterior, rather
+  // than piecewise-trilinear sub-cell interpolation: a quadratic displacement
+  // u_x(X) = X^2 on boundary nodes is reproduced exactly at face vertices X =
+  // 1/3 and 2/3.
+  {
+    char error[1024];
+    MjModelPtr m = LoadModelFromString(xml_simple, error, sizeof(error));
+    ASSERT_THAT(m.get(), NotNull()) << error;
+    MjDataPtr d = MakeData(m);
+    mj_forward(m.get(), d.get());
+
+    int f = 3;
+    ASSERT_EQ(m->flex_interp[f], -2);
+    int nadr = m->flex_nodeadr[f];
+    int nodenum = m->flex_nodenum[f];
+    ASSERT_EQ(nodenum, 27);
+
+    std::vector<mjtNum> u(m->nv, 0);
+    for (int i = 0; i < nodenum; i++) {
+      int b = m->flex_nodebodyid[nadr + i];
+      if (b > 0 && m->body_dofnum[b] == 3) {
+        mjtNum X = 0.5 * (i / 9);
+        u[m->body_dofadr[b] + 0] = X * X;
+      }
+    }
+
+    int vadr = m->flex_vertadr[f];
+    int nvert = m->flex_vertnum[f];
+    std::vector<mjtNum> v_gather(3 * nvert, 0);
+    mj_flexGather(m.get(), d.get(), f, v_gather.data(), u.data());
+
+    for (int v = 0; v < nvert; v++) {
+      const mjtNum* c = m->flex_vert0 + 3 * (vadr + v);
+      // On boundary faces z == 0 or z == 1, u_x depends only on X^2 and is
+      // independent of the interior node, so 27-node quadratic interpolation
+      // reproduces X^2 exactly at X = 1/3 and 2/3.
+      if (std::abs(c[2]) < 1e-6 || std::abs(c[2] - 1.0) < 1e-6) {
+        EXPECT_THAT(v_gather[3 * v + 0], MjNear(c[0] * c[0], 1e-12, 1e-5));
+      }
+    }
+  }
+}
+
 }  // namespace
 }  // namespace mujoco

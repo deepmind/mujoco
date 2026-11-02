@@ -2171,6 +2171,72 @@ TEST_F(ShellTFITest, NoInteriorSmallGrid) {
   }
 }
 
+TEST_F(ShellTFITest, CoonsWeightsAndScatterMatchTrackInterior) {
+  constexpr int nx = 5, ny = 4, nz = 6;
+  constexpr int nnode = nx * ny * nz;
+  mjtNum nodexpos[3 * nnode];
+  for (int idx = 0; idx < nnode; idx++) {
+    nodexpos[3 * idx + 0] = 0.7 * (idx % 5) - 0.2 * (idx % 3);
+    nodexpos[3 * idx + 1] = -0.4 * (idx % 7) + 0.1 * idx;
+    nodexpos[3 * idx + 2] = 0.3 * (idx % 11) - 0.5;
+  }
+  mju_shellTrackInterior(nodexpos, nx, ny, nz);
+
+  for (int i = 1; i < nx - 1; i++) {
+    for (int j = 1; j < ny - 1; j++) {
+      for (int k = 1; k < nz - 1; k++) {
+        int nb = 0;
+        int nodes[32];
+        mjtNum weights[32];
+        mju_shellTFIWeights(nx, ny, nz, i, j, k, 1.0, &nb, nodes, weights,
+                            nullptr, 0);
+        EXPECT_EQ(nb, 26);
+        mjtNum wsum = 0;
+        mjtNum recon[3] = {0, 0, 0};
+        for (int m = 0; m < nb; m++) {
+          wsum += weights[m];
+          for (int d = 0; d < 3; d++) {
+            recon[d] += weights[m] * nodexpos[3 * nodes[m] + d];
+          }
+        }
+        EXPECT_NEAR(wsum, 1.0, MjTol(1e-12, 1e-5));
+        int idx = i * ny * nz + j * nz + k;
+        for (int d = 0; d < 3; d++) {
+          EXPECT_NEAR(nodexpos[3 * idx + d], recon[d], MjTol(1e-12, 1e-5));
+        }
+      }
+    }
+  }
+
+  // Check exact transpose duality <f_all, T x_bnd> == <T^T f_all, x_bnd>.
+  mjtNum f_all[3 * nnode], f_scatter[3 * nnode];
+  for (int k = 0; k < 3 * nnode; k++) {
+    f_all[k] = 0.15 * ((k % 13) - 6);
+    f_scatter[k] = f_all[k];
+  }
+  mju_shellScatterInterior(f_scatter, nx, ny, nz);
+
+  mjtNum dot_track = mju_dot(f_all, nodexpos, 3 * nnode);
+  mjtNum dot_scatter = 0;
+  for (int i = 0; i < nx; i++) {
+    for (int j = 0; j < ny; j++) {
+      for (int k = 0; k < nz; k++) {
+        int idx = i * ny * nz + j * nz + k;
+        bool is_boundary = (i == 0 || i == nx - 1 || j == 0 || j == ny - 1 ||
+                            k == 0 || k == nz - 1);
+        if (is_boundary) {
+          dot_scatter += mju_dot3(f_scatter + 3 * idx, nodexpos + 3 * idx);
+        } else {
+          EXPECT_EQ(f_scatter[3 * idx + 0], 0.0);
+          EXPECT_EQ(f_scatter[3 * idx + 1], 0.0);
+          EXPECT_EQ(f_scatter[3 * idx + 2], 0.0);
+        }
+      }
+    }
+  }
+  EXPECT_NEAR(dot_scatter, dot_track, MjTol(1e-11, 1e-4));
+}
+
 TEST_F(UtilMiscTest, Round) {
   // basic rounding
   EXPECT_EQ(mju_round(2.3), 2);

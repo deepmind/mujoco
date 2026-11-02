@@ -156,8 +156,8 @@ MJAPI int mj_flexSimple(const mjModel* m, int f);
 
 // For standard flexes, gather J*vec in world coordinates; scatter adds scale*J'*vec to forces.
 // Requires kinematics and comPos, and current flexvert_xpos for general attachments.
-MJAPI void mj_flexGather(const mjModel* m, const mjData* d, int f, mjtNum* res, const mjtNum* vec);
-MJAPI void mj_flexScatter(const mjModel* m, const mjData* d, int f, mjtNum* res,
+MJAPI void mj_flexGather(const mjModel* m, mjData* d, int f, mjtNum* res, const mjtNum* vec);
+MJAPI void mj_flexScatter(const mjModel* m, mjData* d, int f, mjtNum* res,
                           const mjtNum* vec, mjtNum scale);
 
 // gather global node positions and velocities

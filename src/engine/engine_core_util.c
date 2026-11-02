@@ -1381,54 +1381,147 @@ int mj_flexSimple(const mjModel* m, int f) {
 }
 
 
-// Apply the point Jacobian or its transpose without constructing a matrix. The general
-// path walks the same motion axes as mj_jac, including every ancestor and the vertex offset.
-// Gather overwrites 3*nvert world components; scatter adds to nv generalized components.
-static void flexMap(const mjModel* m, const mjData* d, int f, mjtNum* res,
-                    const mjtNum* vec, mjtNum scale, int transpose) {
-  int vadr = m->flex_vertadr[f];
-  for (int v=0; v < m->flex_vertnum[f]; v++) {
-    int body = m->body_weldid[m->flex_vertbodyid[vadr+v]];
-    if (!transpose) mji_zero3(res + 3*v);
-    if (!m->body_dofnum[body]) continue;
-    int da = m->body_dofadr[body];
-    if (m->body_simple[body] == 2) {
-      // The world-space slide axes are already in cdof, including axis order and signs.
-      for (int j=0; j < m->body_dofnum[body]; j++) {
-        const mjtNum* axis = d->cdof + 6*(da+j)+3;
-        if (transpose) {
-          res[da+j] += scale*mju_dot3(axis, vec + 3*v);
-        } else {
-          mji_addToScl3(res + 3*v, axis, vec[da+j]);
-        }
-      }
-      continue;
-    }
-    mjtNum offset[3];
-    mji_sub3(offset, d->flexvert_xpos + 3*(vadr+v),
-             d->subtree_com + 3*m->body_rootid[body]);
-    for (int i=da + m->body_dofnum[body]-1; i >= 0; i=m->dof_parentid[i]) {
-      mjtNum column[3];
-      mji_cross(column, d->cdof + 6*i, offset);
-      mji_addTo3(column, d->cdof + 6*i+3);
+// map a single world point attached to body (gather: res += J_p * vec; scatter: res += scale * J_p^T * vec)
+static void flexPointMap(const mjModel* m, const mjData* d, int body, const mjtNum point[3],
+                         mjtNum* res, const mjtNum* vec, mjtNum scale, int transpose) {
+  body = m->body_weldid[body];
+  if (!m->body_dofnum[body]) {
+    return;
+  }
+  int da = m->body_dofadr[body];
+  if (m->body_simple[body] == 2) {
+    // The world-space slide axes are already in cdof, including axis order and signs.
+    for (int j=0; j < m->body_dofnum[body]; j++) {
+      const mjtNum* axis = d->cdof + 6*(da+j)+3;
       if (transpose) {
-        res[i] += scale*mju_dot3(column, vec + 3*v);
+        res[da+j] += scale*mju_dot3(axis, vec);
       } else {
-        mji_addToScl3(res + 3*v, column, vec[i]);
+        mji_addToScl3(res, axis, vec[da+j]);
       }
+    }
+    return;
+  }
+  mjtNum offset[3];
+  mji_sub3(offset, point, d->subtree_com + 3*m->body_rootid[body]);
+  for (int i=da + m->body_dofnum[body]-1; i >= 0; i=m->dof_parentid[i]) {
+    mjtNum column[3];
+    mji_cross(column, d->cdof + 6*i, offset);
+    mji_addTo3(column, d->cdof + 6*i+3);
+    if (transpose) {
+      res[i] += scale*mju_dot3(column, vec);
+    } else {
+      mji_addToScl3(res, column, vec[i]);
     }
   }
 }
 
 
+// Apply the point Jacobian or its transpose without constructing a matrix. The general
+// path walks the same motion axes as mj_jac, including every ancestor and the vertex offset.
+// Gather overwrites 3*nvert world components; scatter adds to nv generalized components.
+// For an interpolated flex (flex_interp != 0), the map factors into two stages through the
+// lattice nodes: DOFs <-> boundary/lattice nodes (with interior nodes reconstructed from boundary
+// nodes via Coons TFI when flex_interp < 0) and lattice nodes <-> fine mesh vertices locally
+// within each cell.
+static void flexMap(const mjModel* m, mjData* d, int f, mjtNum* res,
+                    const mjtNum* vec, mjtNum scale, int transpose) {
+  int vadr = m->flex_vertadr[f];
+  int vertnum = m->flex_vertnum[f];
+  int interp = m->flex_interp[f];
+  if (!interp) {
+    for (int v=0; v < vertnum; v++) {
+      if (!transpose) mji_zero3(res + 3*v);
+      flexPointMap(m, d, m->flex_vertbodyid[vadr+v], d->flexvert_xpos + 3*(vadr+v),
+                   transpose ? res : res + 3*v, transpose ? vec + 3*v : vec, scale, transpose);
+    }
+    return;
+  }
+
+  int order = interp < 0 ? -interp : interp;
+  int nadr = m->flex_nodeadr[f];
+  int nodenum = m->flex_nodenum[f];
+  const int* cellnum = m->flex_cellnum + 3*f;
+  int nx = cellnum[0]*order + 1;
+  int ny = cellnum[1]*order + 1;
+  int nz = cellnum[2]*order + 1;
+
+  mj_markStack(d);
+  mjtNum* node_vec = mjSTACKALLOC(d, 3*nodenum, mjtNum);
+  mju_zero(node_vec, 3*nodenum);
+
+  // Stage 1 (gather): DOFs -> lattice nodes -> TFI interior nodes
+  if (!transpose) {
+    for (int i=0; i < nodenum; i++) {
+      int n = nadr + i;
+      int b = m->flex_nodebodyid[n];
+      mjtNum point[3];
+      mji_copy3(point, d->xpos + 3*b);
+      if (!m->flex_centered[f]) {
+        mjtNum noff[3];
+        mji_mulMatVec3(noff, d->xmat + 9*b, m->flex_node + 3*n);
+        mji_addTo3(point, noff);
+      }
+      flexPointMap(m, d, b, point, node_vec + 3*i, vec, 1, 0);
+    }
+    if (interp < 0) {
+      mju_shellTrackInterior(node_vec, nx, ny, nz);
+    }
+  }
+
+  // Stage 2: lattice nodes <-> fine mesh vertices (local per cell)
+  for (int v=0; v < vertnum; v++) {
+    mjtNum local[3];
+    int nodeindices[27];
+    mjtNum basis[27];
+    int npc = mju_cellLookup(m->flex_vert0 + 3*(vadr+v), cellnum, order,
+                             m->flex_vertcell[vadr+v], local, nodeindices);
+    mju_evalBasisArray(basis, local, order);
+    if (!transpose) {
+      mji_zero3(res + 3*v);
+      for (int j=0; j < npc; j++) {
+        mji_addToScl3(res + 3*v, node_vec + 3*nodeindices[j], basis[j]);
+      }
+    } else {
+      for (int j=0; j < npc; j++) {
+        mji_addToScl3(node_vec + 3*nodeindices[j], vec + 3*v, basis[j]);
+      }
+    }
+  }
+
+  // Stage 1^T (scatter): TFI interior nodes -> boundary lattice nodes -> DOFs
+  if (transpose) {
+    if (interp < 0) {
+      mju_shellScatterInterior(node_vec, nx, ny, nz);
+    }
+    for (int i=0; i < nodenum; i++) {
+      if (!node_vec[3*i+0] && !node_vec[3*i+1] && !node_vec[3*i+2]) {
+        continue;
+      }
+      int n = nadr + i;
+      int b = m->flex_nodebodyid[n];
+      mjtNum point[3];
+      mji_copy3(point, d->xpos + 3*b);
+      if (!m->flex_centered[f]) {
+        mjtNum noff[3];
+        mji_mulMatVec3(noff, d->xmat + 9*b, m->flex_node + 3*n);
+        mji_addTo3(point, noff);
+      }
+      flexPointMap(m, d, b, point, res, node_vec + 3*i, scale, 1);
+    }
+  }
+
+  mj_freeStack(d);
+}
+
+
 // Gather an arbitrary generalized vector (including qvel) in world vertex coordinates.
-void mj_flexGather(const mjModel* m, const mjData* d, int f, mjtNum* res, const mjtNum* vec) {
+void mj_flexGather(const mjModel* m, mjData* d, int f, mjtNum* res, const mjtNum* vec) {
   flexMap(m, d, f, res, vec, 1, 0);
 }
 
 
 // Accumulate world vertex forces in generalized coordinates, including pin reactions.
-void mj_flexScatter(const mjModel* m, const mjData* d, int f, mjtNum* res,
+void mj_flexScatter(const mjModel* m, mjData* d, int f, mjtNum* res,
                     const mjtNum* vec, mjtNum scale) {
   flexMap(m, d, f, res, vec, scale, 1);
 }
