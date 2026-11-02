@@ -641,6 +641,21 @@ specified in the model use the defaults listed below. All flag names begin with 
         - [filament default]
         - How close to the corners the vignette is restricted, between 0 and 1.
 
+.. collapse:: Material
+
+   .. list-table::
+      :widths: 32 10 12 46
+      :header-rows: 1
+
+      * - Name (``filament.<name>``)
+        - Type
+        - Default
+        - Description
+      * - ``material.base_color_type``
+        - string
+        - "srgb"
+        - How to interpret the color of a material; "linear" or "srgb".
+
 .. collapse:: Background
 
    .. list-table::

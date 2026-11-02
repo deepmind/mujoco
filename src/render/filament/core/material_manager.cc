@@ -257,6 +257,10 @@ const filament::MaterialInstance* MaterialManager::GetInstance(MaterialKey key) 
   return it->second;
 }
 
+void MaterialManager::SetBaseColorType(filament::RgbaType base_color_type) {
+  base_color_type_ = base_color_type;
+}
+
 void MaterialManager::UpdateMaterialInstance(
     filament::MaterialInstance* instance, const mjrfMaterial& material) {
   if (material.scissor[2] != 0 && material.scissor[3] != 0) {
@@ -266,7 +270,7 @@ void MaterialManager::UpdateMaterialInstance(
 
   const filament::Material* fmaterial = instance->getMaterial();
   if (fmaterial->hasParameter("BaseColorFactor")) {
-    instance->setParameter("BaseColorFactor", filament::RgbaType::sRGB,
+    instance->setParameter("BaseColorFactor", base_color_type_,
                            ReadFloat4(material.color));
   }
   if (fmaterial->hasParameter("HazeColor")) {

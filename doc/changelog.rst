@@ -278,6 +278,8 @@ Filament Rendering
   scaled by the brightness of its diffuse color, which is factored out of the light's color. Lights look the same,
   but the brightest directional light now casts the shadows, rather than an arbitrary one that could differ between
   runs.
+- Added :ref:`filament.material.base_color_type<reFlags>` flag for configuring how the base color material parameter is
+  interpreted.
 
 Rendering
 ^^^^^^^^^
