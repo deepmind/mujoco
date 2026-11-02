@@ -64,8 +64,9 @@ mujoco_test(
   absl::str_format
   PROPERTIES
   ENVIRONMENT
-  "MUJOCO_PLUGIN_DIR=$<TARGET_FILE_DIR:elasticity>"
+  "MUJOCO_PLUGIN_DIR=$<TARGET_FILE_DIR:actuator>"
 )
+add_dependencies(engine_plugin_test actuator sensor sdf_plugin)
 
 mujoco_test(engine_passive_test)
 

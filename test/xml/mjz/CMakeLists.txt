@@ -30,5 +30,6 @@ mujoco_test(
   miniz
   PROPERTIES
   ENVIRONMENT
-  "MUJOCO_PLUGIN_DIR=$<TARGET_FILE_DIR:elasticity>"
+  "MUJOCO_PLUGIN_DIR=$<TARGET_FILE_DIR:actuator>"
 )
+add_dependencies(mjz_encoder_test actuator sensor sdf_plugin)
