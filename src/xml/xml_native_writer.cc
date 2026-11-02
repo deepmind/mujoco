@@ -1560,6 +1560,12 @@ const mjXActuatorEntry* mjXWriter::ShortcutEntry(const mjsActuator* actuator,
   // reload: the class default, the tag's mechanical attributes, then the shortcut
   mjsActuator copy = defact;
   CopyRows(&copy, actuator, entry->rows, entry->n, writingdefaults);
+
+  // a written saturation replaces the class torque limit, as in the reader
+  if (type == mjACTUATOR_DCMOTOR && !std::equal(s->saturation, s->saturation + 3, d->saturation)) {
+    copy.forcelimited  = mjLIMITED_AUTO;
+    copy.forcerange[0] = copy.forcerange[1] = 0;
+  }
   if (mjXSetToShortcut(&copy, type, *s)[0]) { return general; }
   return SameActuator(copy, *actuator) ? entry : general;
 }

@@ -3534,6 +3534,50 @@ TEST_F(AsWrittenTest, SavesGeneralWhenShortcutDoesNotFit) {
   mj_deleteSpec(spec);
 }
 
+// zeros which disable features of a dcmotor default keep the dcmotor tag
+TEST_F(AsWrittenTest, SavesDCMotorZeroOverrides) {
+  static constexpr char xml[] = R"(
+  <mujoco>
+    <default>
+      <dcmotor motorconst="0.5" resistance="2" saturation="1.5"
+               inductance="0.002"/>
+    </default>
+    <worldbody>
+      <body>
+        <joint name="j"/>
+        <geom size="1"/>
+      </body>
+    </worldbody>
+    <actuator>
+      <dcmotor joint="j" saturation="0" inductance="0"/>
+    </actuator>
+  </mujoco>
+  )";
+  mjSpec* spec = ParseAsWritten(xml);
+  ASSERT_THAT(spec, NotNull());
+  mjModel* model = mj_compile(spec, nullptr);
+  ASSERT_THAT(model, NotNull()) << mjs_getError(spec);
+  EXPECT_EQ(model->actuator_forcelimited[0], 0);
+  EXPECT_EQ(model->actuator_actnum[0], 0);
+
+  std::string saved = SaveAndReadXml(spec);
+  EXPECT_THAT(saved, HasSubstr(R"(<dcmotor joint="j" saturation="0")"));
+
+  std::array<char, 1024> error;
+  mjSpec* reloaded =
+      mj_parseXMLString(saved.c_str(), nullptr, error.data(), error.size());
+  ASSERT_THAT(reloaded, NotNull()) << error.data() << "\n" << saved;
+  mjModel* remodel = mj_compile(reloaded, nullptr);
+  ASSERT_THAT(remodel, NotNull()) << mjs_getError(reloaded);
+  std::string field;
+  EXPECT_EQ(CompareModel(model, remodel, field), 0) << field << "\n" << saved;
+
+  mj_deleteModel(remodel);
+  mj_deleteSpec(reloaded);
+  mj_deleteModel(model);
+  mj_deleteSpec(spec);
+}
+
 // a full inertia which the spec gives in a rotated frame, as one which is read
 // from URDF, is saved rotated: MJCF has no orientation beside a full inertia
 TEST_F(AsWrittenTest, SavesFullInertiaOfRotatedFrame) {

@@ -2188,6 +2188,37 @@ TEST_F(ActDimTest, ZeroNotAllowedInStateful) {
   EXPECT_THAT(error.data(), HasSubstr("line 10"));
 }
 
+TEST_F(ActDimTest, DCMotorMustMatchParameters) {
+  static constexpr char xml[] = R"(
+  <mujoco>
+    <worldbody>
+      <body>
+        <geom size="1"/>
+        <joint name="hinge"/>
+      </body>
+    </worldbody>
+    <actuator>
+      <general joint="hinge" dyntype="dcmotor" gaintype="dcmotor"
+               biastype="dcmotor" actearly="true" gainprm="1 1"
+               dynprm="0 0 1 1"/>
+    </actuator>
+  </mujoco>
+  )";
+  std::array<char, 1024> error;
+  // unauthored actdim < 0 is inferred from enabled slots
+  MjModelPtr model = LoadModelFromString(xml, error.data(), error.size());
+  ASSERT_THAT(model.get(), NotNull()) << error.data();
+  EXPECT_EQ(model->na, 1);
+
+  // explicit mismatching actdim >= 0 is rejected
+  std::string bad_xml = xml;
+  bad_xml.replace(bad_xml.find("dynprm="), 0, "actdim=\"2\" ");
+  model = LoadModelFromString(bad_xml.c_str(), error.data(), error.size());
+  ASSERT_THAT(model.get(), IsNull());
+  EXPECT_THAT(error.data(), HasSubstr("DC motor parameters in actuator '' (id "
+                                      "= 0) require actdim 1, got 2"));
+}
+
 // ------------- test nuser_xxx fields -----------------------------------------
 
 using UserDataTest = MujocoTest;

@@ -1008,11 +1008,8 @@ Attribute & Symbol & Units \\
 \caption{Thermal model attributes.}
 \end{table}
 
-\noindent The time constant $t_T$ can be determined by either:
-\begin{itemize}[itemsep=0pt, parsep=0pt, topsep=2pt]
-  \item \atTT{}
-  \item \atRT{} \emph{and} \atTC{}
-\end{itemize}
+\noindent Any two of \atRT{}, \atTC{} and \atTT{} determine the third. If all three
+are given, the capacitance is taken as $C = t_T / R_T$.
 
 \paragraph{Not modeled:}
 Iron losses (\S\ref{sec:thermal_losses}), magnet flux derating (\S\ref{sec:magnet_derating}), and thermal current derating (\S\ref{sec:thermal_derating}). Only copper losses ($i^2 R$) drive the thermal model; $K$ is treated as temperature-independent.
@@ -1165,7 +1162,8 @@ identically zero, so the motor operates with shorted terminals: back-EMF drives
 current through $R$ and brakes the joint (dynamic braking), while cogging
 \eqref{eq:cogging} and LuGre friction (\S\ref{sec:lugre}) act as passive joint
 forces. Setting \texttt{motorconst} to zero decouples the electrical branch,
-leaving pure friction and cogging. This exists because MuJoCo associates auxiliary
+leaving pure friction and cogging ($R$ must still be positive). This exists
+because MuJoCo associates auxiliary
 dynamic states (such as the LuGre bristle) with actuators, not joints: a passive
 \texttt{dcmotor} is the idiomatic way to attach these passive phenomena to a joint.
 Controller gains, slew rate limiting and integral gain require a controller input and are rejected.

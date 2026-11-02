@@ -4362,6 +4362,155 @@ TEST_F(ActuatorParseTest, DCMotorMotorconstGeometricMean) {
   EXPECT_MJTNUM_EQ(model->actuator_gainprm[mjNGAIN + 1], 0.03);
 }
 
+TEST_F(ActuatorParseTest, DCMotorPassiveZeroMotorconst) {
+  static constexpr char xml[] = R"(
+  <mujoco>
+    <worldbody>
+      <body>
+        <geom size="1"/>
+        <joint name="jnt"/>
+      </body>
+    </worldbody>
+    <actuator>
+      <dcmotor joint="jnt" input="none" motorconst="0" resistance="1"
+               lugre="100 1 0.5 0.7 10"/>
+    </actuator>
+  </mujoco>
+  )";
+  std::array<char, 1024> error;
+  MjModelPtr model = LoadModelFromString(xml, error.data(), error.size());
+  ASSERT_THAT(model.get(), NotNull()) << error.data();
+  EXPECT_EQ(model->actuator_gainprm[1], 0);
+  EXPECT_EQ(model->actuator_actnum[0], 1);
+  MjDataPtr data = MakeData(model);
+  mj_step(model.get(), data.get());
+}
+
+TEST_F(ActuatorParseTest, DCMotorNegativeMotorconstError) {
+  static constexpr char xml[] = R"(
+  <mujoco>
+    <worldbody>
+      <body>
+        <geom size="1"/>
+        <joint name="jnt"/>
+      </body>
+    </worldbody>
+    <actuator>
+      <dcmotor joint="jnt" input="none" motorconst="-0.05" resistance="1"/>
+    </actuator>
+  </mujoco>
+  )";
+  std::array<char, 1024> error;
+  MjModelPtr model = LoadModelFromString(xml, error.data(), error.size());
+  ASSERT_THAT(model.get(), IsNull());
+  EXPECT_THAT(error.data(), HasSubstr("motor constants must be non-negative"));
+}
+
+TEST_F(ActuatorParseTest, DCMotorThermalTimeconstPrecedence) {
+  static constexpr char xml[] = R"(
+  <mujoco>
+    <worldbody>
+      <body>
+        <geom size="1"/>
+        <joint name="jnt"/>
+      </body>
+    </worldbody>
+    <actuator>
+      <dcmotor joint="jnt" motorconst="0.05" resistance="2" thermal="2 5 4"/>
+    </actuator>
+  </mujoco>
+  )";
+  std::array<char, 1024> error;
+  MjModelPtr model = LoadModelFromString(xml, error.data(), error.size());
+  ASSERT_THAT(model.get(), NotNull()) << error.data();
+  EXPECT_EQ(model->actuator_actnum[0], 1);
+  EXPECT_MJTNUM_EQ(model->actuator_dynprm[2], 2);  // resistance
+  EXPECT_MJTNUM_EQ(model->actuator_dynprm[3], 2);  // timeconst / resistance
+}
+
+TEST_F(ActuatorParseTest, DCMotorZeroOverridesClass) {
+  static constexpr char xml[] = R"(
+  <mujoco>
+    <default>
+      <dcmotor motorconst="0.05" resistance="2" input="pos"
+               saturation="1.5 0 100" inductance="0.002"
+               controller="1 0 0 0 0 12" thermal="2 5"
+               lugre="100 1 0.5 0.7 10"/>
+    </default>
+    <worldbody>
+      <body>
+        <geom size="1"/>
+        <joint name="jnt"/>
+      </body>
+    </worldbody>
+    <actuator>
+      <dcmotor joint="jnt"/>
+      <dcmotor joint="jnt" saturation="0 0 0" inductance="0"
+               controller="1 0 0 0 0 0" thermal="0 0 0" lugre="0"/>
+      <dcmotor joint="jnt" saturation="0" inductance="0 0.001"/>
+    </actuator>
+  </mujoco>
+  )";
+  std::array<char, 1024> error;
+  MjModelPtr model = LoadModelFromString(xml, error.data(), error.size());
+  ASSERT_THAT(model.get(), NotNull()) << error.data();
+
+  // inherited: torque limit, current, Vmax, thermal and LuGre
+  EXPECT_EQ(model->actuator_forcelimited[0], 1);
+  EXPECT_MJTNUM_EQ(model->actuator_forcerange[1], 1.5);
+  EXPECT_MJTNUM_EQ(model->actuator_dynprm[0], 0.001);
+  EXPECT_MJTNUM_EQ(model->actuator_dynprm[1], 100);
+  EXPECT_MJTNUM_EQ(model->actuator_gainprm[7], 12);
+  EXPECT_EQ(model->actuator_actnum[0], 3);
+
+  // explicit zeros disable the inherited features
+  const mjtNum* dynprm = model->actuator_dynprm + mjNDYN;
+  const mjtNum* gainprm = model->actuator_gainprm + mjNGAIN;
+  const mjtNum* biasprm = model->actuator_biasprm + mjNBIAS;
+  EXPECT_EQ(model->actuator_forcelimited[1], 0);
+  EXPECT_EQ(model->actuator_forcerange[2], 0);
+  EXPECT_EQ(model->actuator_forcerange[3], 0);
+  for (int i = 0; i < 7; i++) EXPECT_EQ(dynprm[i], 0) << i;
+  EXPECT_EQ(gainprm[2], 0);
+  EXPECT_EQ(gainprm[3], 0);
+  EXPECT_EQ(gainprm[7], 0);
+  for (int i = 3; i < 6; i++) EXPECT_EQ(biasprm[i], 0) << i;
+  EXPECT_EQ(model->actuator_actnum[1], 0);
+
+  // a single zero clears the inherited torque limit; the timeconst is explicit
+  EXPECT_EQ(model->actuator_forcelimited[2], 0);
+  EXPECT_MJTNUM_EQ(model->actuator_dynprm[2 * mjNDYN + 0], 0.001);
+  EXPECT_MJTNUM_EQ(model->actuator_dynprm[2 * mjNDYN + 1], 100);
+
+  // activation slots agree with the parameters
+  MjDataPtr data = MakeData(model);
+  mj_step(model.get(), data.get());
+}
+
+TEST_F(ActuatorParseTest, DCMotorZeroInductanceOverridesClass) {
+  static constexpr char xml[] = R"(
+  <mujoco>
+    <default>
+      <dcmotor motorconst="0.05" resistance="2" inductance="0.002"/>
+    </default>
+    <worldbody>
+      <body>
+        <geom size="1"/>
+        <joint name="jnt"/>
+      </body>
+    </worldbody>
+    <actuator>
+      <dcmotor joint="jnt" inductance="0"/>
+    </actuator>
+  </mujoco>
+  )";
+  std::array<char, 1024> error;
+  MjModelPtr model = LoadModelFromString(xml, error.data(), error.size());
+  ASSERT_THAT(model.get(), NotNull()) << error.data();
+  EXPECT_EQ(model->actuator_dynprm[0], 0);
+  EXPECT_EQ(model->actuator_actnum[0], 0);
+}
+
 TEST_F(ActuatorParseTest, ActdimDefaultsPropagate) {
   static constexpr char xml[] = R"(
   <mujoco>

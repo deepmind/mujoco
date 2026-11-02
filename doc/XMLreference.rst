@@ -7106,7 +7106,8 @@ This element has the following custom attributes in addition to the common attri
    :at-val:`Kt` is the torque constant and :at-val:`Ke` the back-EMF constant; they can differ when magnetic saturation
    is present. If both are positive, the effective constant is :math:`K = \sqrt{K_t K_e}` (geometric mean). If only one
    is positive, :math:`K` equals that value. If a datasheet specifies the speed constant :math:`K_v` in rad/(V·s), use
-   :math:`K_e = 1/K_v`. (see `tech note <_static/dcmotor.pdf>`__, Sections 1.1 and 2.1)
+   :math:`K_e = 1/K_v`. Both constants must be non-negative, and :math:`K` must be positive unless
+   :ref:`input<actuator-dcmotor-input>` is "none". (see `tech note <_static/dcmotor.pdf>`__, Sections 1.1 and 2.1)
 
 .. _actuator-dcmotor-nominal:
 
@@ -7130,9 +7131,9 @@ This element has the following custom attributes in addition to the common attri
    Thermal model, defined as :at:`thermal` = ":at-val:`resistance` :at-val:`capacitance` :at-val:`timeconst`
    :at-val:`tempcoef` :at-val:`reftemp` :at-val:`ambient`" (K/W, J/K, s, 1/K, °C, °C). The first three sub-values
    specify the thermal time constant: :at-val:`timeconst` = :at-val:`resistance` :math:`\times` :at-val:`capacitance`.
-   Specify either :at-val:`timeconst` directly, or :at-val:`resistance` and :at-val:`capacitance`; if all three are
-   given, :at-val:`timeconst` takes precedence. If all are 0 (the default), thermal modeling is disabled. Adds one
-   activation variable for winding temperature. (see `tech note <_static/dcmotor.pdf>`__, Sections 1.3 and 2.3)
+   Specify any two of them; if all three are given, :at-val:`capacitance` = :at-val:`timeconst` / :at-val:`resistance`.
+   If all are 0 (the default), thermal modeling is disabled. Adds one activation variable for winding temperature.
+   (see `tech note <_static/dcmotor.pdf>`__, Sections 1.3 and 2.3)
 
 .. _actuator-dcmotor-saturation:
 
@@ -7141,6 +7142,7 @@ This element has the following custom attributes in addition to the common attri
    :at-val:`current_rate`". :at-val:`torque` and :at-val:`current` are alternative specifications of the maximum
    continuous torque: if :at-val:`current` is given, :at-val:`torque` :math:`= K \cdot` :at-val:`current`; if both are
    given, :at-val:`torque` takes precedence. Sets :at:`forcerange` to [:math:`-\tau_{\max},\, \tau_{\max}`].
+   An authored :at:`saturation` clears any inherited :at:`forcerange` before applying these limits.
    :at-val:`current_rate` sets the maximum rate of change of current :math:`(di/dt)_{\max}` (requires
    :ref:`inductance<actuator-dcmotor-inductance>`). A value of 0 (the default) for any sub-value disables the respective
    limit. (see `tech note <_static/dcmotor.pdf>`__, Section 2)
@@ -7175,7 +7177,8 @@ This element has the following custom attributes in addition to the common attri
    The keyword "none" selects the empty signature: the actuator has no control inputs and is purely
    passive, useful for modeling :ref:`friction<actuator-dcmotor-lugre>` and :ref:`cogging<actuator-dcmotor-cogging>`
    as passive joint forces. The terminal voltage is zero, so back-EMF drives current through the (shorted) motor and
-   brakes the joint; setting :ref:`motorconst<actuator-dcmotor-motorconst>` to zero disables the electrical branch.
+   brakes the joint; setting :ref:`motorconst<actuator-dcmotor-motorconst>` to zero disables the electrical branch
+   (:ref:`resistance<actuator-dcmotor-resistance>` must still be positive).
    (see `tech note <_static/dcmotor.pdf>`__, Section 2.5)
 
 .. _actuator-dcmotor-controller:

@@ -2022,6 +2022,8 @@ const char* mjs_setToDCMotor(mjsActuator* actuator,
   double tau0   = nominal ? nominal[1] : 0;        // stall torque
   double omega0 = nominal ? nominal[2] : 0;        // no-load speed
 
+  if (Kt < 0 || Ke < 0) return "DC motor: motor constants must be non-negative";
+
   // derive Ke from nominal: omega0 = vn*Ke / (Ke^2 + R*B)
   if (vn > 0 && Ke <= 0 && omega0 > 0) {
     // viscous damping (linear)
@@ -2049,7 +2051,8 @@ const char* mjs_setToDCMotor(mjsActuator* actuator,
   // derive R from nominal: tau0 = K*vn/R
   if (R == 0 && vn > 0 && tau0 > 0 && K > 0) { R = K * vn / tau0; }
 
-  if (K <= 0) return "DC motor: motor constant K must be positive";
+  // K = 0 decouples the electrical branch of a passive motor
+  if (K <= 0 && ctrlspec != mjINPUT_NONE) return "DC motor: motor constant K must be positive";
   if (R <= 0) return "DC motor: resistance R must be positive";
 
   // set types
@@ -2080,6 +2083,7 @@ const char* mjs_setToDCMotor(mjsActuator* actuator,
   if (saturation && (saturation[0] > 0 || saturation[1] > 0)) {
     double tau_max = saturation[0];
     if (tau_max == 0 && saturation[1] > 0) {
+      if (K <= 0) return "DC motor: current limit requires a positive motor constant";
       tau_max = K * saturation[1];  // tau_max = K * i_max
     }
     actuator->forcerange[0] = -tau_max;
@@ -2128,7 +2132,8 @@ const char* mjs_setToDCMotor(mjsActuator* actuator,
     double T0    = thermal[4];  // reference temperature
     double Ta    = thermal[5];  // ambient temperature
 
-    if (tth > 0 && RT > 0 && C == 0) {
+    // any two of RT, C, tth; tth takes precedence over C
+    if (tth > 0 && RT > 0) {
       C = tth / RT;
     } else if (tth > 0 && C > 0 && RT == 0) {
       RT = tth / C;

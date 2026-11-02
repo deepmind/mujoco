@@ -8839,8 +8839,26 @@ void mjCActuator::Compile(void) {
     }
   }
 
+  // DC motor: one activation per enabled state, as in mj_dcmotorSlots
+  if (dyntype == mjDYN_DCMOTOR && !plugin.active) {
+    int nslot =
+        (dynprm[7] > 0) + (gainprm[5] > 0) + (dynprm[2] > 0) + (dynprm[5] > 0) + (dynprm[0] > 0);
+    if (actdim < 0) {
+      actdim = nslot;
+    } else if (actdim != nslot) {
+      char msg[200];
+      mju::sprintf_arr(msg,
+                       "DC motor parameters in actuator '%s' (id = %d) require actdim %d, got %d",
+                       name.c_str(),
+                       id,
+                       nslot,
+                       actdim);
+      throw mjCError(this, "%s", msg);
+    }
+  }
+
   // set actdim to 1 if it is unset and type is standard one-activation dyntype
-  if (actdim < 0) { actdim = (dyntype != mjDYN_NONE && dyntype != mjDYN_DCMOTOR); }
+  if (actdim < 0) { actdim = (dyntype != mjDYN_NONE); }
 
   // DC motor always uses actearly
   if (dyntype == mjDYN_DCMOTOR && !actearly) {

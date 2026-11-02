@@ -1348,8 +1348,15 @@ void mjXReader::OneActuator(XMLElement* elem, mjsActuator* actuator, const mjsDe
         ReadAttr(elem, "motorconst", 2, s.motorconst, text, false, false);
         ReadAttr(elem, "resistance", 1, &s.resistance, text);
         ReadAttr(elem, "nominal", 3, s.nominal, text, false, false);
-        ReadAttr(elem, "saturation", 3, s.saturation, text, false, false);
-        ReadAttr(elem, "inductance", 2, s.inductance, text, false, false);
+        // authored saturation replaces the inherited torque limit
+        if (ReadAttr(elem, "saturation", 3, s.saturation, text, false, false)) {
+          actuator->forcelimited  = mjLIMITED_AUTO;
+          actuator->forcerange[0] = actuator->forcerange[1] = 0;
+        }
+        // L and timeconst are alternatives: an authored L alone replaces the inherited timeconst
+        if (ReadAttr(elem, "inductance", 2, s.inductance, text, false, false) == 1) {
+          s.inductance[1] = 0;
+        }
         ReadAttr(elem, "cogging", 3, s.cogging, text, false, false);
         ReadAttr(elem, "controller", 6, s.controller, text, false, false);
         ReadAttr(elem, "thermal", 6, s.thermal, text, false, false);

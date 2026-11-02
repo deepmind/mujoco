@@ -503,6 +503,59 @@ TEST_F(MujocoTest, SetToDCMotorLuGre) {
   mj_deleteSpec(spec);
 }
 
+TEST_F(MujocoTest, SetToDCMotorPassiveZeroMotorconst) {
+  mjSpec* spec = mj_makeSpec();
+  mjsActuator* actuator = mjs_addActuator(spec, 0);
+
+  // a passive motor can have no electrical branch
+  double motorconst[2] = {0, 0};
+  const char* err =
+      mjs_setToDCMotor(actuator, motorconst, 2.0, nullptr, nullptr, nullptr,
+                       nullptr, nullptr, nullptr, nullptr, mjINPUT_NONE);
+  EXPECT_STREQ(err, "");
+  EXPECT_EQ(actuator->gainprm[1], 0);
+
+  // a driven motor needs a positive motor constant
+  err = mjs_setToDCMotor(actuator, motorconst, 2.0, nullptr, nullptr, nullptr,
+                         nullptr, nullptr, nullptr, nullptr, 0);
+  EXPECT_THAT(err, HasSubstr("motor constant K must be positive"));
+
+  // negative motor constants are rejected
+  double negative[2] = {0.05, -0.05};
+  err = mjs_setToDCMotor(actuator, negative, 2.0, nullptr, nullptr, nullptr,
+                         nullptr, nullptr, nullptr, nullptr, mjINPUT_NONE);
+  EXPECT_THAT(err, HasSubstr("motor constants must be non-negative"));
+
+  // a current limit on a passive motor with zero motor constant is rejected
+  double saturation[3] = {0, 2.0, 0};
+  err =
+      mjs_setToDCMotor(actuator, motorconst, 2.0, nullptr, saturation, nullptr,
+                       nullptr, nullptr, nullptr, nullptr, mjINPUT_NONE);
+  EXPECT_THAT(err,
+              HasSubstr("current limit requires a positive motor constant"));
+
+  mj_deleteSpec(spec);
+}
+
+TEST_F(MujocoTest, SetToDCMotorThermalTimeconst) {
+  mjSpec* spec = mj_makeSpec();
+  mjsActuator* actuator = mjs_addActuator(spec, 0);
+
+  // with all three given, the capacitance is timeconst / resistance
+  double motorconst[2] = {0.05, 0.05};
+  double thermal[6] = {2.0, 5.0, 4.0, 0, 0, 25.0};
+  const char* err =
+      mjs_setToDCMotor(actuator, motorconst, 2.0, nullptr, nullptr, nullptr,
+                       nullptr, nullptr, thermal, nullptr, 0);
+  EXPECT_STREQ(err, "");
+  EXPECT_EQ(actuator->dynprm[2], 2.0);   // resistance
+  EXPECT_EQ(actuator->dynprm[3], 2.0);   // capacitance
+  EXPECT_EQ(actuator->dynprm[4], 25.0);  // ambient
+  EXPECT_EQ(actuator->actdim, 1);
+
+  mj_deleteSpec(spec);
+}
+
 TEST_F(MujocoTest, SetToIntVelocityReportsErrors) {
   mjSpec* spec = mj_makeSpec();
   mjsActuator* actuator = mjs_addActuator(spec, 0);
@@ -10371,6 +10424,7 @@ TEST_F(MujocoTest, DCMotorActdimDefaultStatelessBeforeCompile) {
   mjsActuator* act1 = mjs_addActuator(spec, nullptr);
   act1->trntype = mjTRN_JOINT;
   act1->dyntype = mjDYN_DCMOTOR;
+  act1->dynprm[0] = 0;
   act1->actearly = 1;
   act1->actdim = -1;
   mjs_setString(act1->target, "j1");

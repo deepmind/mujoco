@@ -295,6 +295,12 @@ Bug fixes
   ``qpos_spring``. Previously their cached poses could be left at ``qpos_spring``. It also no longer overwrites
   ``cam_xpos``, ``cam_xmat``, ``light_xpos`` and ``light_xdir`` in :ref:`mjData`, which left static cameras and lights
   with tracking or targeting at their fixed-mode poses.
+- Fixed :ref:`dcmotor<actuator-dcmotor>` parameter handling: allow zero :ref:`motorconst<actuator-dcmotor-motorconst>`
+  for ``input="none"``, reject negative constants (e.g. ``motorconst="-a b"`` is now rejected instead of silently
+  using ``K = b``), replace capacitance when an inconsistent :ref:`thermal<actuator-dcmotor-thermal>` triple is given,
+  clear inherited :ref:`forcerange<actuator-general-forcerange>` when :ref:`saturation<actuator-dcmotor-saturation>`
+  is authored, let zero ``saturation`` or ``inductance`` clear class defaults, and validate
+  :ref:`actdim<actuator-general-actdim>` at compile time.
 - Fixed a bug where tendon actuators saturated by :ref:`actuatorfrcrange<tendon-spatial-actuatorfrcrange>` still
   contributed to implicit actuator derivatives.
 - Fixed several MJCF XML loading and saving bugs:
