@@ -2970,7 +2970,9 @@ bool mjCBody::InertiaFromGeom(void) {
     // compute principal axes of inertia
     mjuu_copyvec(fullinertia, toti, 6);
     const char* errq = mjuu_fullInertia(iquat, inertia, fullinertia);
-    if (errq) { throw mjCError(this, "error '%s' in alternative for principal axes", errq); }
+    if (errq && (compiler->boundinertia <= 0 || inertia[2] < -mjEPS * std::max(1.0, inertia[0]))) {
+      throw mjCError(this, "error '%s' in alternative for principal axes", errq);
+    }
   }
   return sz > 0;
 }
@@ -3393,7 +3395,13 @@ void mjCBody::Compile(void) {
 
     // decompose rotated tensor into principal axes
     const char* err = mjuu_fullInertia(iquat, inertia, fullinertia_body);
-    if (err) { throw mjCError(this, "error '%s' in fullinertia", err); }
+
+    // small principal moments: bounded below with diagonal inertia, if boundinertia is set
+    if (err && (id == 0 ||
+                compiler->boundinertia <= 0 ||
+                inertia[2] < -mjEPS * std::max(1.0, inertia[0]))) {
+      throw mjCError(this, "error '%s' in fullinertia", err);
+    }
   }
 
   if (ialt.type != mjORIENTATION_QUAT) {
@@ -6988,7 +6996,7 @@ void mjCPair::Compile(void) {
     // reference
     if (!mjuu_defined(solref[0])) {
       // standard: mix
-      if (solref[0] > 0) {
+      if (geom1->solref[0] > 0 && geom2->solref[0] > 0) {
         for (int i = 0; i < mjNREF; i++) {
           solref[i] = mix * geom1->solref[i] + (1 - mix) * geom2->solref[i];
         }
@@ -7298,12 +7306,16 @@ void mjCEquality::ApplyGauge(bool inverse) {
     }
     const mjCGauge mean = mjCGauge::Mean(g1, g2);
     width               = mean.Shape(1);
-    if (body && type == mjEQ_CONNECT) {
-      g1.Point(data);
-      width = g1.Shape(1);
-    } else if (body) {
-      g2.Point(data);
-      g1.Point(data + 3);
+    if (type == mjEQ_CONNECT) {
+      if (body) {
+        g1.Point(data);
+        width = g1.Shape(1);
+      }
+    } else {
+      if (body) {
+        g2.Point(data);
+        g1.Point(data + 3);
+      }
       data[10] *= mean.Shape(1);
     }
   } else if (type == mjEQ_JOINT || type == mjEQ_TENDON) {
@@ -8281,6 +8293,16 @@ void mjCActuator::ResolveReferences(const mjCModel* m) {
 }
 
 
+// factor of the coordinate: the stretch along a slide, or that of a length
+double mjCActuator::CoordinateFactor(const mjCGauge& g) const {
+  if (!linear_) { return 1; }
+  const bool      tojoint = trntype == mjTRN_JOINT || trntype == mjTRN_JOINTINPARENT;
+  const mjCJoint* joint   = tojoint ? static_cast<const mjCJoint*>(ptarget) : nullptr;
+  const bool      slide   = joint && joint->spec.type == mjJNT_SLIDE;
+  return slide ? g.Stretch(joint->spec.axis) : g.Shape(1);
+}
+
+
 // scale the compiled copy by the gauge of the transmission target, or back. Q is the coordinate of
 // the transmission, L^q, and G the generalized force, M L^(2-q) T^-2; gains and biases are force
 // class whatever their dimension, and a control follows its declared input
@@ -8325,8 +8347,7 @@ void mjCActuator::ApplyGauge(bool inverse) {
   if (g.IsIdentity()) { return; }
 
   // factor of the coordinate: the stretch along a slide, or that of a length
-  const bool   slide = joint && joint->spec.type == mjJNT_SLIDE;
-  const double fq    = !linear_ ? 1 : (slide ? g.Stretch(joint->spec.axis) : g.Shape(1));
+  const double fq = CoordinateFactor(g);
 
   // factors of the inputs which are declared, packed in the order pos, vel, ff, voltage, and of
   // the activation
@@ -8425,8 +8446,12 @@ void mjCActuator::ApplyGauge(bool inverse) {
     if (biasprm[2] < 0) { biasprm[2] *= g.Force(2, 1); }
   }
 
-  // dc motor under geometry: only position and velocity inputs change
+  // dc motor under geometry: only position and velocity quantities change
   else if (gaintype == mjGAIN_DCMOTOR) {
+    if (ctrlspec_ & (mjINPUT_POS | mjINPUT_VEL)) { dynprm[7] *= fq; }
+    dynprm[8]   *= fq;
+    biasprm[1]  /= fq;
+    biasprm[5]  *= fq;
     velrange[0] *= fq;
     velrange[1] *= fq;
     packinputs(fq, fq, 1, 1);
@@ -9273,7 +9298,7 @@ void mjCSensor::ApplyGauge(bool inverse) {
       const mjCActuator* actuator = static_cast<const mjCActuator*>(obj);
       g                           = actuator->gauge_;
       q                           = actuator->linear_;
-      fq                          = q ? g.Shape(1) : 1;
+      fq                          = actuator->CoordinateFactor(g);
       break;
     }
     case mjOBJ_BODY:
@@ -9283,7 +9308,11 @@ void mjCSensor::ApplyGauge(bool inverse) {
     default:
       g = obj->Gauge();
   }
-  if ((type == mjSENS_GEOMDIST || type == mjSENS_GEOMFROMTO) && ref) {
+  if ((type == mjSENS_GEOMDIST ||
+       type == mjSENS_GEOMNORMAL ||
+       type == mjSENS_GEOMFROMTO ||
+       (type == mjSENS_INSIDESITE && intprm[0])) &&
+      ref) {
     bool body = reftype == mjOBJ_BODY || reftype == mjOBJ_XBODY;
     g         = mjCGauge::Mean(g, body ? ref->ContentGauge() : ref->Gauge());
   }
@@ -9315,6 +9344,9 @@ void mjCSensor::ApplyGauge(bool inverse) {
     case mjSENS_SUBTREELINVEL:
       f = g.Shape(1);
       break;
+    case mjSENS_INSIDESITE:
+      if (intprm[0]) { f = g.Shape(1); }
+      break;
     case mjSENS_JOINTPOS:
     case mjSENS_JOINTVEL:
     case mjSENS_TENDONPOS:
@@ -9337,8 +9369,12 @@ void mjCSensor::ApplyGauge(bool inverse) {
     default:
       break;
   }
-  if (inverse) { f = 1 / f; }
-  cutoff *= f;
+  double f_cutoff = (type == mjSENS_GEOMNORMAL) ? g.Shape(1) : f;
+  if (inverse) {
+    f        = 1 / f;
+    f_cutoff = 1 / f_cutoff;
+  }
+  cutoff *= f_cutoff;
   noise  *= f;
 }
 

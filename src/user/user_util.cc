@@ -864,13 +864,13 @@ const char* mjuu_fullInertia(double quat[4], double inertia[3], const double ful
 
   mjuu_eig3(eigval, eigvec, quattmp, full);
 
-  // check mimimal eigenvalue
-  if (eigval[2] < mjEPS) { return "inertia must have positive eigenvalues"; }
-
-  // copy
+  // copy, also on error so that callers can bound the inertia
   if (quat) { mjuu_copyvec(quat, quattmp, 4); }
 
   if (inertia) { mjuu_copyvec(inertia, eigval, 3); }
+
+  // check minimal eigenvalue
+  if (eigval[2] < mjEPS) { return "inertia must have positive eigenvalues"; }
 
   return nullptr;
 }

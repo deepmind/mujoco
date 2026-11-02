@@ -433,10 +433,17 @@ void mjXWriter::WriteSpecInertial(XMLElement* elem, const mjCBody* body) {
         WriteAttr(inertial, "mass", 1, &given.mass);
         WriteAttr(inertial, "fullinertia", 6, rotated);
       } else {
-        const char* err = mjuu_fullInertia(quat, diag, rotated);
+        const char*        err      = mjuu_fullInertia(quat, diag, rotated);
+        const mjsCompiler* compiler = body->compiler ? body->compiler : &model->spec.compiler;
         if (err) {
-          string message = "fullinertia of '" + body->name + "' cannot be saved: " + err;
-          throw mjXError(0, "%s", message.c_str());
+          if (compiler->boundinertia > 0 && diag[2] >= -mjEPS * std::max(1.0, diag[0])) {
+            diag[0] = std::max(diag[0], compiler->boundinertia);
+            diag[1] = std::max(diag[1], compiler->boundinertia);
+            diag[2] = std::max(diag[2], compiler->boundinertia);
+          } else {
+            string message = "fullinertia of '" + body->name + "' cannot be saved: " + err;
+            throw mjXError(0, "%s", message.c_str());
+          }
         }
         WriteAttr(inertial, "quat", 4, quat, unitq);
         WriteAttr(inertial, "mass", 1, &given.mass);

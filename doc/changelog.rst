@@ -293,6 +293,10 @@ Python bindings
 
 Bug fixes
 ^^^^^^^^^
+- :ref:`fullinertia<body-inertial-fullinertia>` and inertias inferred from geoms which are not positive definite are
+  now bounded by :ref:`boundinertia<compiler-boundinertia>` when it is positive. Previously they gave a compile error.
+- Contact pairs created with an undefined ``mjsPair.solref`` now mix the ``solref`` of their geoms using ``solmix``
+  when both are positive, like contacts not defined by pairs. Previously they always took the element-wise minimum.
 - :ref:`mj_setConst` now wakes all :ref:`sleeping<siSleep>` trees, since it recomputes their kinematics at ``qpos0`` and
   ``qpos_spring``. Previously their cached poses could be left at ``qpos_spring``. It also no longer overwrites
   ``cam_xpos``, ``cam_xmat``, ``light_xpos`` and ``light_xdir`` in :ref:`mjData`, which left static cameras and lights

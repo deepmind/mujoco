@@ -3292,6 +3292,116 @@ TEST_F(UserObjectsTest, ZeroMass) {
   EXPECT_THAT(model.get(), NotNull()) << error;
 }
 
+TEST_F(UserObjectsTest, FullInertiaBoundInertia) {
+  static constexpr char xml[] = R"(
+  <mujoco>
+    <compiler boundinertia="0.01"/>
+    <worldbody>
+      <body>
+        <freejoint/>
+        <inertial mass="1" pos="0 0 0" fullinertia="1 1 0 0 0 0"/>
+      </body>
+    </worldbody>
+  </mujoco>
+  )";
+
+  // singular fullinertia is bounded by boundinertia
+  char error[1024];
+  MjModelPtr m = LoadModelFromString(xml, error, sizeof(error));
+  ASSERT_THAT(m.get(), NotNull()) << error;
+  EXPECT_THAT(AsVector(m->body_inertia + 3, 3),
+              Pointwise(MjNear(1e-12, 1e-6), {1.0, 1.0, 0.01}));
+
+  // without boundinertia: error
+  string bad_xml = xml;
+  bad_xml.replace(bad_xml.find("0.01"), 4, "0");
+  m = LoadModelFromString(bad_xml.c_str(), error, sizeof(error));
+  ASSERT_THAT(m.get(), IsNull());
+  EXPECT_THAT(error, HasSubstr("inertia must have positive eigenvalues"));
+
+  // clearly negative fullinertia: error even with boundinertia
+  static constexpr char neg_xml[] = R"(
+  <mujoco>
+    <compiler boundinertia="0.01"/>
+    <worldbody>
+      <body>
+        <freejoint/>
+        <inertial mass="1" pos="0 0 0" fullinertia="-1 -1 -1 0 0 0"/>
+      </body>
+    </worldbody>
+  </mujoco>
+  )";
+  m = LoadModelFromString(neg_xml, error, sizeof(error));
+  ASSERT_THAT(m.get(), IsNull());
+  EXPECT_THAT(error, HasSubstr("inertia must have positive eigenvalues"));
+}
+
+TEST_F(UserObjectsTest, GeomInferredInertiaBoundInertia) {
+  static constexpr char xml[] = R"(
+  <mujoco>
+    <compiler boundinertia="0.01"/>
+    <worldbody>
+      <body>
+        <freejoint/>
+        <geom type="sphere" size="1e-7" density="2.38732414637843e20" pos="0 0 1"/>
+        <geom type="sphere" size="1e-7" density="2.38732414637843e20" pos="0 0 -1"/>
+      </body>
+    </worldbody>
+  </mujoco>
+  )";
+
+  // singular geom-inferred inertia is bounded by boundinertia
+  char error[1024];
+  MjModelPtr m = LoadModelFromString(xml, error, sizeof(error));
+  ASSERT_THAT(m.get(), NotNull()) << error;
+  EXPECT_THAT(AsVector(m->body_inertia + 3, 3),
+              Pointwise(MjNear(1e-12, 1e-6), {2.0, 2.0, 0.01}));
+
+  // without boundinertia: error
+  string bad_xml = xml;
+  bad_xml.replace(bad_xml.find("0.01"), 4, "0");
+  m = LoadModelFromString(bad_xml.c_str(), error, sizeof(error));
+  ASSERT_THAT(m.get(), IsNull());
+  EXPECT_THAT(error, HasSubstr("inertia must have positive eigenvalues"));
+}
+
+TEST_F(UserObjectsTest, PairUndefinedSolrefFromGeoms) {
+  static constexpr char xml[] = R"(
+  <mujoco>
+    <worldbody>
+      <geom name="g1" size="1" solref="0.02 1"/>
+      <geom name="g2" size="1" solref="0.06 2"/>
+      <geom name="d1" size="1" solref="-1000 -10"/>
+      <geom name="d2" size="1" solref="-2000 -5"/>
+    </worldbody>
+    <contact>
+      <pair geom1="g1" geom2="g2"/>
+      <pair geom1="d1" geom2="d2"/>
+      <pair geom1="g1" geom2="d1"/>
+    </contact>
+  </mujoco>
+  )";
+  std::array<char, 1024> error;
+  mjSpec* spec = mj_parseXMLString(xml, nullptr, error.data(), error.size());
+  ASSERT_THAT(spec, NotNull()) << error.data();
+
+  // mark pair solref as undefined, inherit from geoms
+  for (mjsElement* el = mjs_firstElement(spec, mjOBJ_PAIR); el;
+       el = mjs_nextElement(spec, el)) {
+    mjs_asPair(el)->solref[0] = NAN;
+  }
+  mjModel* m = mj_compile(spec, nullptr);
+  ASSERT_THAT(m, NotNull()) << mjs_getError(spec);
+  ASSERT_EQ(m->npair, 3);
+
+  // standard: mix (equal solmix), direct or mixed: element-wise min
+  EXPECT_THAT(AsVector(m->pair_solref, 6),
+              Pointwise(MjNear(1e-12, 1e-6),
+                        {0.04, 1.5, -2000.0, -10.0, -1000.0, -10.0}));
+  mj_deleteModel(m);
+  mj_deleteSpec(spec);
+}
+
 // ------------- test Octree SDF computation -----------------------------------
 
 using OctreeSDFTest = MujocoTest;

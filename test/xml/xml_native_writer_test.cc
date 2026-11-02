@@ -3626,6 +3626,47 @@ TEST_F(AsWrittenTest, SavesFullInertiaOfRotatedFrame) {
   }
 }
 
+// a singular fullinertia with positive boundinertia can be saved canonically
+TEST_F(AsWrittenTest, SavesSingularFullInertiaWithBoundInertia) {
+  static constexpr char xml[] = R"(
+  <mujoco>
+    <compiler boundinertia="0.01"/>
+    <worldbody>
+      <body name="body">
+        <inertial pos="0 0 0.1" mass="2" fullinertia="1 1 0 0 0 0"/>
+        <geom size="1"/>
+      </body>
+    </worldbody>
+  </mujoco>
+  )";
+  for (bool canonical : {false, true}) {
+    mjSpec* spec = ParseAsWritten(xml, canonical);
+    ASSERT_THAT(spec, NotNull());
+    mjModel* model = mj_compile(spec, nullptr);
+    ASSERT_THAT(model, NotNull()) << mjs_getError(spec);
+    std::string saved = SaveAndReadXml(spec);
+    if (canonical) {
+      EXPECT_THAT(saved, HasSubstr("diaginertia=")) << saved;
+    } else {
+      EXPECT_THAT(saved, HasSubstr("fullinertia=")) << saved;
+    }
+
+    std::array<char, 1024> error;
+    mjSpec* reloaded =
+        mj_parseXMLString(saved.c_str(), nullptr, error.data(), error.size());
+    ASSERT_THAT(reloaded, NotNull()) << error.data() << "\n" << saved;
+    mjModel* remodel = mj_compile(reloaded, nullptr);
+    ASSERT_THAT(remodel, NotNull()) << mjs_getError(reloaded);
+    std::string field;
+    EXPECT_EQ(CompareModel(model, remodel, field), 0) << field;
+
+    mj_deleteModel(remodel);
+    mj_deleteSpec(reloaded);
+    mj_deleteModel(model);
+    mj_deleteSpec(spec);
+  }
+}
+
 // the vectors which a keyframe has are saved, also those which are what the
 // model has without them; a keyframe which has none is saved without any, also
 // once the spec is compiled. A vector which was the reference configuration

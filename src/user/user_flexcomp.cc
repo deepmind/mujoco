@@ -2637,6 +2637,8 @@ void mjCFlex::ApplyGauge() {
   const double fl  = g.Shape(1);
   radius          *= fl;
   thickness       *= fl;
+  sectionsize[0]  *= fl;
+  sectionsize[1]  *= fl;
   margin          *= fl;
   gap             *= fl;
   solimp[2]       *= fl;

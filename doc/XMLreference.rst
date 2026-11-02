@@ -2448,7 +2448,8 @@ axes of inertia of the body. Thus the inertia matrix is diagonal in this frame.
    Full inertia matrix M. Since M is 3-by-3 and symmetric, it is specified using only 6 numbers in the following order:
    M(1,1), M(2,2), M(3,3), M(1,2), M(1,3), M(2,3). The compiler computes the eigenvalue decomposition of M and sets the
    frame orientation and diagonal inertia accordingly. If non-positive eigenvalues are encountered (i.e., if M is not
-   positive definite) a compile error is generated.
+   positive definite) a compile error is generated, unless :ref:`boundinertia<compiler-boundinertia>` is positive, in
+   which case the eigenvalues are bounded below by it.
 
 
 .. _body-joint:
