@@ -63,6 +63,13 @@ MJAPI void mju_quatIntegrate(mjtNum quat[4], const mjtNum vel[3], mjtNum scale);
 // compute quaternion performing rotation from z-axis to given vector
 MJAPI void mju_quatZ2Vec(mjtNum quat[4], const mjtNum vec[3]);
 
+// eigenvalue decomposition of symmetric 3x3 matrix
+MJAPI int mju_eig3(mjtNum eigval[3], mjtNum eigvec[9], mjtNum quat[4], const mjtNum mat[9]);
+
+// same as mju_eig3, stop when off-diagonal elements are below reltol times the largest element
+MJAPI int mju_eig3Tol(mjtNum eigval[3], mjtNum eigvec[9], mjtNum quat[4], const mjtNum mat[9],
+                      mjtNum reltol);
+
 // extract 3D rotation from an arbitrary 3x3 matrix by refining the input quaternion
 // returns the number of iterations required to converge
 MJAPI int mju_mat2Rot(mjtNum quat[4], const mjtNum mat[9]);

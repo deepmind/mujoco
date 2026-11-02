@@ -323,6 +323,123 @@ void mju_quatZ2Vec(mjtNum quat[4], const mjtNum vec[3]) {
 }
 
 
+// off-diagonal tolerance and eigenvalue swap threshold, relative to max element
+#ifdef mjUSESINGLE
+static const mjtNum eigTOL = 2e-6f;
+static const mjtNum eigEPS = 1e-5f;
+#else
+static const mjtNum eigTOL = 4e-15;
+static const mjtNum eigEPS = 1e-12;
+#endif
+
+
+// eigenvalue decomposition of symmetric 3x3 matrix, using eigTOL; returns number of iterations
+int mju_eig3(mjtNum eigval[3], mjtNum eigvec[9], mjtNum quat[4], const mjtNum mat[9]) {
+  return mju_eig3Tol(eigval, eigvec, quat, mat, eigTOL);
+}
+
+
+// same as mju_eig3, stop when off-diagonal elements are below reltol times the largest element
+int mju_eig3Tol(mjtNum eigval[3], mjtNum eigvec[9], mjtNum quat[4], const mjtNum mat[9],
+                mjtNum reltol) {
+  mjtNum D[9], tmp[9];
+  mjtNum tau, t;
+  int iter, rk, ck, rotk;
+
+  // off-diagonal tolerance: no smaller than the roundoff level of D, about 16 epsilons
+  mjtNum scale = 0;
+  for (int i=0; i < 9; i++) {
+    mjtNum abs_elem = mju_abs(mat[i]);
+    if (abs_elem > scale) {
+      scale = abs_elem;
+    }
+  }
+  mjtNum eff_reltol = reltol > eigTOL ? reltol : eigTOL;
+  mjtNum tol = scale * eff_reltol;
+
+  // initialize with unit quaternion
+  quat[0] = 1;
+  quat[1] = quat[2] = quat[3] = 0;
+
+  // Jacobi iteration
+  for (iter=0; iter < 500; iter++) {
+    // make quaternion matrix eigvec, compute D = eigvec'*mat*eigvec
+    mju_quat2Mat(eigvec, quat);
+    mji_mulMatTMat3(tmp, eigvec, mat);
+    mji_mulMatMat3(D, tmp, eigvec);
+
+    // assign eigenvalues
+    eigval[0] = D[0];
+    eigval[1] = D[4];
+    eigval[2] = D[8];
+
+    // find max off-diagonal element, set indices
+    if (mju_abs(D[1]) > mju_abs(D[2]) && mju_abs(D[1]) > mju_abs(D[5])) {
+      rk = 0;     // row
+      ck = 1;     // column
+      rotk = 2;   // rotation axis
+    } else if (mju_abs(D[2]) > mju_abs(D[5])) {
+      rk = 0;
+      ck = 2;
+      rotk = 1;
+    } else {
+      rk = 1;
+      ck = 2;
+      rotk = 0;
+    }
+
+    // terminate if max off-diagonal element too small
+    if (mju_abs(D[3*rk+ck]) <= tol) {
+      break;
+    }
+
+    // 2x2 symmetric Schur decomposition: t = tan(angle)
+    tau = (D[4*ck]-D[4*rk])/(2*D[3*rk+ck]);
+    if (tau >= 0) {
+      t = 1.0/(tau + mju_sqrt(1 + tau*tau));
+    } else {
+      t = -1.0/(-tau + mju_sqrt(1 + tau*tau));
+    }
+
+    // express rotation as quaternion, using h = tan(angle/2): accurate for small angles
+    mjtNum h = t/(1 + mju_sqrt(1 + t*t));
+    tmp[0] = 1/mju_sqrt(1 + h*h);
+    tmp[1] = tmp[2] = tmp[3] = 0;
+    tmp[rotk+1] = (rotk == 1 ? h : -h) * tmp[0];
+
+    // accumulate quaternion rotation
+    mju_mulQuat(quat, quat, tmp);
+    mju_normalize4(quat);
+  }
+
+  // sort eigenvalues in decreasing order (bubble sort: 0, 1, 0)
+  mjtNum eps = scale * eigEPS;
+  for (int j=0; j < 3; j++) {
+    int j1 = j%2;       // lead index
+
+    // only swap if the eigenvalues are different
+    if (eigval[j1]+eps < eigval[j1+1]) {
+      // swap eigenvalues
+      t = eigval[j1];
+      eigval[j1] = eigval[j1+1];
+      eigval[j1+1] = t;
+
+      // rotate quaternion
+      tmp[0] = 0.707106781186548;  // = cos(pi/4) = sin(pi/4)
+      tmp[1] = tmp[2] = tmp[3] = 0;
+      tmp[(j1+2)%3+1] = tmp[0];
+      mju_mulQuat(quat, quat, tmp);
+      mju_normalize4(quat);
+    }
+  }
+
+  // recompute eigvec
+  mju_quat2Mat(eigvec, quat);
+
+  return iter;
+}
+
+
 // extract 3D rotation from an arbitrary 3x3 matrix
 #ifdef mjUSESINGLE
 static const mjtNum rotEPS = 1e-6f;
@@ -336,6 +453,7 @@ int mju_mat2Rot(mjtNum quat[4], const mjtNum mat[9]) {
   // pp. 55-60. 2016.
 
   int iter;
+  mju_normalize4(quat);
   mjtNum col1_mat[3] = {mat[0], mat[3], mat[6]};
   mjtNum col2_mat[3] = {mat[1], mat[4], mat[7]};
   mjtNum col3_mat[3] = {mat[2], mat[5], mat[8]};
@@ -351,12 +469,50 @@ int mju_mat2Rot(mjtNum quat[4], const mjtNum mat[9]) {
     mji_cross(vec3, col3_rot, col3_mat);
     mji_add3(omega, vec1, vec2);
     mji_addTo3(omega, vec3);
-    mju_scl3(omega, omega, 1.0 / (mju_abs(mju_dot3(col1_rot, col1_mat) +
-                                          mju_dot3(col2_rot, col2_mat) +
-                                          mju_dot3(col3_rot, col3_mat)) + mjMINVAL));
+    mjtNum dot[3] = {mju_dot3(col1_rot, col1_mat),
+                     mju_dot3(col2_rot, col2_mat),
+                     mju_dot3(col3_rot, col3_mat)};
+    mjtNum trace = dot[0] + dot[1] + dot[2];
+    mju_scl3(omega, omega, 1.0 / (mju_abs(trace) + mjMINVAL));
     mjtNum w = mju_normalize3(omega);
     if (w < rotEPS) {
-      break;
+      mjtNum A[9], sym[9];
+      mji_mulMatTMat3(A, rot, mat);
+      sym[0] = A[0];
+      sym[1] = 0.5 * (A[1] + A[3]);
+      sym[2] = 0.5 * (A[2] + A[6]);
+      sym[3] = sym[1];
+      sym[4] = A[4];
+      sym[5] = 0.5 * (A[5] + A[7]);
+      sym[6] = sym[2];
+      sym[7] = sym[5];
+      sym[8] = A[8];
+
+      // fast path: T = tr(S)*I - S is strictly positive definite iff rotation maximizes tr(R'*M)
+      mjtNum T00 = sym[4] + sym[8], T11 = sym[0] + sym[8], T22 = sym[0] + sym[4];
+      mjtNum detT = T00 * (T11 * T22 - sym[5] * sym[5]) - sym[1] * sym[1] * T22 -
+                    sym[2] * sym[2] * T11 - 2 * sym[1] * sym[2] * sym[5];
+      mjtNum scale = mju_abs(sym[0]) + mju_abs(sym[4]) + mju_abs(sym[8]) + mjMINVAL;
+      mjtNum tol = rotEPS * scale, tol2 = tol * scale, tol3 = tol2 * scale;
+      if (T00 > tol && (T00 * T11 - sym[1] * sym[1]) > tol2 && detT > tol3) {
+        break;
+      }
+
+      mjtNum eigval[3], eigvec[9], qtmp[4];
+      mju_eig3(eigval, eigvec, qtmp, sym);
+      if (eigval[0] <= trace + rotEPS * (mju_abs(eigval[0]) + mju_abs(trace) + mjMINVAL)) {
+        break;
+      }
+
+      // stationary point (minimum or saddle): flip 180 degrees about rot * top eigenvector, which
+      // strictly increases the trace
+      mjtNum v_max[3] = {eigvec[0], eigvec[3], eigvec[6]};
+      mjtNum axis[3];
+      mji_mulMatVec3(axis, rot, v_max);
+      mjtNum qflip[4] = {0, axis[0], axis[1], axis[2]};
+      mju_mulQuat(quat, qflip, quat);
+      mju_normalize4(quat);
+      continue;
     }
     mjtNum qrot[4];
     mji_axisAngle2Quat(qrot, omega, w);

@@ -244,12 +244,70 @@ TEST_F(Mat2RotTest, SpecialCases) {
   mjtNum quat[4] = {1, 0, 0, 0};
   EXPECT_EQ(mju_mat2Rot(quat, eye), 0);
   EXPECT_THAT(quat, Pointwise(MjNear(1e-8, 1e-8), {1, 0, 0, 0}));
+  mjtNum unnorm_quat[4] = {2, 0, 0, 0};
+  EXPECT_EQ(mju_mat2Rot(unnorm_quat, eye), 0);
+  EXPECT_THAT(unnorm_quat, Pointwise(MjNear(1e-8, 1e-8), {1, 0, 0, 0}));
+  EXPECT_NEAR(mju_norm(unnorm_quat, 4), 1, MjTol(1e-12, 1e-6));
   mjtNum zero[9] = {0, 0, 0, 0, 0, 0, 0, 0, 0};
   EXPECT_EQ(mju_mat2Rot(quat, zero), 0);
   EXPECT_THAT(quat, Pointwise(MjNear(1e-8, 1e-4), {1, 0, 0, 0}));
   mjtNum ones[9] = {1, 1, 1, 1, 1, 1, 1, 1, 1};
   EXPECT_EQ(mju_mat2Rot(quat, ones), 0);
   EXPECT_THAT(quat, Pointwise(MjNear(1e-8, 1e-4), {1, 0, 0, 0}));
+}
+
+TEST_F(Mat2RotTest, StretchedHalfTurn) {
+  // mat = diag(2.5, -1, -1): trace is 0.5 > 0 from identity, but polar rotation
+  // is 180 deg about x
+  mjtNum mat[9] = {2.5, 0, 0, 0, -1, 0, 0, 0, -1};
+  mjtNum quat[4] = {1, 0, 0, 0};
+  EXPECT_LT(mju_mat2Rot(quat, mat), 100);
+  mjtNum target[4] = {0, 1, 0, 0};
+  mjtNum res[9], exp_mat[9];
+  mju_quat2Mat(res, quat);
+  mju_quat2Mat(exp_mat, target);
+  EXPECT_THAT(res, Pointwise(MjNear(1e-8, 1e-5), exp_mat));
+  EXPECT_NEAR(mju_norm(quat, 4), 1, MjTol(1e-12, 1e-6));
+
+  // rotated off-axis: R * diag(2.5, -1, -1) * R^T
+  mjtNum rot[9], rot_T[9], tmp[9], rot_mat[9];
+  mjtNum qrot[4] = {0.5, 0.5, 0.5, 0.5};
+  mju_normalize4(qrot);
+  mju_quat2Mat(rot, qrot);
+  mji_mulMatMat3(tmp, rot, mat);
+  mji_transpose3(rot_T, rot);
+  mji_mulMatMat3(rot_mat, tmp, rot_T);
+
+  mjtNum exp_rot_mat[9];
+  mji_mulMatMat3(tmp, rot, exp_mat);
+  mji_mulMatMat3(exp_rot_mat, tmp, rot_T);
+
+  mjtNum quat_off[4] = {1, 0, 0, 0};
+  EXPECT_LT(mju_mat2Rot(quat_off, rot_mat), 100);
+  mjtNum res_off[9];
+  mju_quat2Mat(res_off, quat_off);
+  EXPECT_THAT(res_off, Pointwise(MjNear(1e-8, 1e-5), exp_rot_mat));
+  EXPECT_NEAR(mju_norm(quat_off, 4), 1, MjTol(1e-12, 1e-6));
+}
+
+TEST_F(Mat2RotTest, HalfTurnFromIdentity) {
+  // 180-degree rotations about x, y, z and a diagonal axis: the initial
+  // identity is a stationary point with negative trace
+  const mjtNum s = 1 / mju_sqrt(3);
+  const mjtNum axes[4][3] = {{1, 0, 0}, {0, 1, 0}, {0, 0, 1}, {s, s, s}};
+  for (const mjtNum* axis : axes) {
+    mjtNum target[4] = {0, axis[0], axis[1], axis[2]};
+    mjtNum mat[9];
+    mju_quat2Mat(mat, target);
+
+    // unnormalized initial quaternion
+    mjtNum quat[4] = {2, 0, 0, 0};
+    EXPECT_LT(mju_mat2Rot(quat, mat), 100);
+    mjtNum res[9];
+    mju_quat2Mat(res, quat);
+    EXPECT_THAT(res, Pointwise(MjNear(1e-8, 1e-5), mat));
+    EXPECT_NEAR(mju_norm(quat, 4), 1, MjTol(1e-12, 1e-6));
+  }
 }
 
 using DerivExpmapTest = MujocoTest;

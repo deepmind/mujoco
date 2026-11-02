@@ -99,9 +99,6 @@ MJAPI int mju_cellLookup(const mjtNum coord[3], const int cellnum[3], int order,
 MJAPI void mju_interpolate3D(mjtNum res[3], const mjtNum x[3], const mjtNum* coeff, int order,
                              const int* nodeindices);
 
-// polar rotation of a 3x3 matrix (warm-started Muller iteration)
-void mju_flexPolarRotation(mjtNum quat[4], const mjtNum mat[9]);
-
 // gather cell-local quantities and optionally compute rotation
 MJAPI void mju_flexGatherCellState(int order, int cy, int cz, int ci, int cj, int ck,
                                    const mjtNum* xpos_g, const mjtNum* vel_g,

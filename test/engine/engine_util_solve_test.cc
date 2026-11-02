@@ -29,6 +29,7 @@
 #include <mujoco/mujoco.h>
 #include "src/engine/engine_util_blas.h"
 #include "src/engine/engine_util_misc.h"
+#include "src/engine/engine_util_spatial.h"
 #include "src/engine/engine_util_sparse.h"
 #include "test/fixture.h"
 

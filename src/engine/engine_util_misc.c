@@ -724,31 +724,6 @@ void mju_interpolate3D(mjtNum res[3], const mjtNum x[3], const mjtNum* coeff, in
 }
 
 
-// polar rotation of a 3x3 matrix; for large rotations (non-positive trace), warm-start from the
-// Gram-Schmidt rotation of the first two columns so that the iteration does not stall at the
-// identity saddle point (e.g. 180 degree rotations)
-void mju_flexPolarRotation(mjtNum quat[4], const mjtNum mat[9]) {
-  quat[0] = 1;
-  quat[1] = 0;
-  quat[2] = 0;
-  quat[3] = 0;
-  mjtNum c0[3] = {mat[0], mat[3], mat[6]};
-  mjtNum c1[3] = {mat[1], mat[4], mat[7]};
-  if (mat[0] + mat[4] + mat[8] <= 0 && mju_normalize3(c0) > mjMINVAL) {
-    mju_addToScl3(c1, c0, -mju_dot3(c0, c1));
-    if (mju_normalize3(c1) > mjMINVAL) {
-      mjtNum c2[3];
-      mju_cross(c2, c0, c1);
-      mjtNum rot[9] = {c0[0], c1[0], c2[0],
-                       c0[1], c1[1], c2[1],
-                       c0[2], c1[2], c2[2]};
-      mju_mat2Quat(quat, rot);
-    }
-  }
-  mju_mat2Rot(quat, mat);
-}
-
-
 static void flexInterpRotation(int order, const mjtNum* xpos_c,
                                const mjtNum dref[3], const mjtNum local[3],
                                mjtNum* quat) {
@@ -772,7 +747,8 @@ static void flexInterpRotation(int order, const mjtNum* xpos_c,
   }
 
   // find rotation
-  mju_flexPolarRotation(quat, mat);
+  mju_unit4(quat);
+  mju_mat2Rot(quat, mat);
   mju_negQuat(quat, quat);
 }
 
@@ -857,7 +833,8 @@ void mju_flexInterpRotation2D(int order, const mjtNum* xpos_f, int npe,
   }
 
   // extract rotation via polar decomposition
-  mju_flexPolarRotation(quat, mat);
+  mju_unit4(quat);
+  mju_mat2Rot(quat, mat);
   mju_negQuat(quat, quat);
 }
 
@@ -968,7 +945,8 @@ void mju_flexGatherFaceState(int order, int cx, int cy, int cz,
         mat[1*3 + col] = vecs[col][1];
         mat[2*3 + col] = vecs[col][2];
       }
-      mju_flexPolarRotation(quat, mat);
+      mju_unit4(quat);
+      mju_mat2Rot(quat, mat);
       mju_negQuat(quat, quat);
     } else {
       mjtNum p[2] = {.5, .5};

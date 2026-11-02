@@ -224,6 +224,8 @@ Engine
   a single relative tangential velocity arrow per active frictional contact.
 - Added ``xiquat``, ``geom_xquat``, and ``site_xquat`` to :ref:`mjData`, storing the Cartesian quaternion orientations
   of body inertias, geoms, and sites alongside ``ximat``, ``geom_xmat``, and ``site_xmat``.
+- ``mju_mat2Rot`` now normalizes the input quaternion and escapes 180-degree stationary points (saddles and minima)
+  that do not maximize :math:`\operatorname{tr}(R^\top M)`.
 
 Compiler
 ^^^^^^^^

@@ -143,13 +143,6 @@ void mju_solveLUSparse(mjtNum *res, const mjtNum *LU, const mjtNum* vec, int n,
 // solve 3x3 linear system A*x = b using Gaussian elimination
 void mju_solve3(mjtNum x[3], const mjtNum A[9], const mjtNum b[3]);
 
-// eigenvalue decomposition of symmetric 3x3 matrix
-MJAPI int mju_eig3(mjtNum eigval[3], mjtNum eigvec[9], mjtNum quat[4], const mjtNum mat[9]);
-
-// same as mju_eig3, stop when off-diagonal elements are below reltol times the largest element
-MJAPI int mju_eig3Tol(mjtNum eigval[3], mjtNum eigvec[9], mjtNum quat[4], const mjtNum mat[9],
-                      mjtNum reltol);
-
 // solve QCQP in 2 dimensions:
 //  min  0.5*x'*A*x + x'*b  s.t.  sum (xi/di)^2 <= r^2
 // return 0 if unconstrained, 1 if constrained

@@ -691,6 +691,7 @@ cc_test(
         "//src/engine:engine_util_misc",
         "//src/engine:engine_util_solve",
         "//src/engine:engine_util_sparse",
+        "//src/engine:engine_util_spatial",
         "//test:fixture",
         "@googletest//:gtest_main",
     ],

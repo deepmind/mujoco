@@ -476,3 +476,88 @@ def lu_solve_6x6(
       x[i] -= A_in[i, j] * x[j]
     x[i] /= A_in[i, i]
   return x
+
+
+@wp.func
+def eig3(
+  # In:
+  A_in: wp.mat33,
+) -> tuple[wp.vec3, wp.mat33]:
+  """Eigenvalue decomposition of a symmetric 3x3 matrix.
+
+  Returns eigenvalues sorted in descending order and eigenvectors as columns of the rotation matrix.
+  """
+  scale = float(0.0)
+  for row in range(3):
+    for col in range(3):
+      scale = wp.max(scale, wp.abs(A_in[row, col]))
+
+  V = wp.mat33(
+    1.0, 0.0, 0.0,
+    0.0, 1.0, 0.0,
+    0.0, 0.0, 1.0,
+  )
+  if scale == 0.0:
+    return wp.vec3(0.0, 0.0, 0.0), V
+
+  tol = scale * 2.0e-6
+  for _iter in range(12):
+    D = wp.transpose(V) @ A_in @ V
+    d01 = wp.abs(D[0, 1])
+    d02 = wp.abs(D[0, 2])
+    d12 = wp.abs(D[1, 2])
+    p = int(0)
+    q = int(1)
+    max_od = d01
+    if d02 > max_od:
+      p = int(0)
+      q = int(2)
+      max_od = d02
+    if d12 > max_od:
+      p = int(1)
+      q = int(2)
+      max_od = d12
+    if max_od <= tol:
+      break
+
+    Dpq = D[p, q]
+    tau = (D[q, q] - D[p, p]) / (2.0 * Dpq)
+    t = 1.0 / (tau + wp.sqrt(1.0 + tau * tau)) if tau >= 0.0 else -1.0 / (-tau + wp.sqrt(1.0 + tau * tau))
+    cos_t = 1.0 / wp.sqrt(1.0 + t * t)
+    sin_t = t * cos_t
+    for i in range(3):
+      vip = V[i, p]
+      viq = V[i, q]
+      V[i, p] = cos_t * vip - sin_t * viq
+      V[i, q] = sin_t * vip + cos_t * viq
+
+  D = wp.transpose(V) @ A_in @ V
+  eigval = wp.vec3(D[0, 0], D[1, 1], D[2, 2])
+
+  # Sort eigenvalues descending (bubble sort)
+  if eigval[0] < eigval[1]:
+    t_val = eigval[0]
+    eigval[0] = eigval[1]
+    eigval[1] = t_val
+    for i in range(3):
+      tmp_v = V[i, 0]
+      V[i, 0] = V[i, 1]
+      V[i, 1] = tmp_v
+  if eigval[1] < eigval[2]:
+    t_val = eigval[1]
+    eigval[1] = eigval[2]
+    eigval[2] = t_val
+    for i in range(3):
+      tmp_v = V[i, 1]
+      V[i, 1] = V[i, 2]
+      V[i, 2] = tmp_v
+  if eigval[0] < eigval[1]:
+    t_val = eigval[0]
+    eigval[0] = eigval[1]
+    eigval[1] = t_val
+    for i in range(3):
+      tmp_v = V[i, 0]
+      V[i, 0] = V[i, 1]
+      V[i, 1] = tmp_v
+
+  return eigval, V

@@ -812,7 +812,8 @@ void mj_instantiateEquality(const mjModel* m, mjData* d) {
           mat[1*3 + col] = vecs[col][1];
           mat[2*3 + col] = vecs[col][2];
         }
-        mju_flexPolarRotation(elem_quat, mat);
+        mju_unit4(elem_quat);
+        mju_mat2Rot(elem_quat, mat);
         mju_negQuat(elem_quat, elem_quat);
       } else {
         mjtNum center[3] = {0.5, 0.5, 0.5};
@@ -827,7 +828,8 @@ void mj_instantiateEquality(const mjModel* m, mjData* d) {
             mat[2*3 + col] *= inv;
           }
         }
-        mju_flexPolarRotation(elem_quat, mat);
+        mju_unit4(elem_quat);
+        mju_mat2Rot(elem_quat, mat);
         mju_negQuat(elem_quat, elem_quat);
       }
 

@@ -17,6 +17,7 @@ from typing import Optional, Tuple
 
 import warp as wp
 
+from mujoco.mjx.third_party.mujoco_warp._src import math
 from mujoco.mjx.third_party.mujoco_warp._src.collision_primitive_core import tri_weights
 from mujoco.mjx.third_party.mujoco_warp._src.math import motion_cross
 from mujoco.mjx.third_party.mujoco_warp._src.types import MJ_MAXVAL
@@ -68,23 +69,7 @@ def next_act(
 
 @wp.func
 def mat33_to_quat_polar(F: wp.mat33) -> wp.quat:
-  # for large rotations (non-positive trace), warm start from the Gram-Schmidt rotation of the first
-  # two columns so that the iteration does not stall at the identity saddle point (e.g. 180 degree
-  # rotations)
   cell_quat = wp.quat(0.0, 0.0, 0.0, 1.0)
-  c0 = wp.vec3(F[0, 0], F[1, 0], F[2, 0])
-  c1 = wp.vec3(F[0, 1], F[1, 1], F[2, 1])
-  n0 = wp.length(c0)
-  if F[0, 0] + F[1, 1] + F[2, 2] <= 0.0 and n0 > MJ_MINVAL:
-    c0 = c0 / n0
-    c1 = c1 - wp.dot(c0, c1) * c0
-    n1 = wp.length(c1)
-    if n1 > MJ_MINVAL:
-      c1 = c1 / n1
-      c2 = wp.cross(c0, c1)
-      cell_quat = wp.normalize(
-        wp.quat_from_matrix(wp.mat33(c0[0], c1[0], c2[0], c0[1], c1[1], c2[1], c0[2], c1[2], c2[2]))
-      )
   for _iter in range(50):
     rot = wp.quat_to_matrix(cell_quat)
     rot_t = wp.transpose(rot)
@@ -97,12 +82,45 @@ def mat33_to_quat_polar(F: wp.mat33) -> wp.quat:
     col3_mat = F_t[2]
 
     omega = wp.cross(col1_rot, col1_mat) + wp.cross(col2_rot, col2_mat) + wp.cross(col3_rot, col3_mat)
-    denom = wp.abs(wp.dot(col1_rot, col1_mat) + wp.dot(col2_rot, col2_mat) + wp.dot(col3_rot, col3_mat)) + 1.0e-10
+    trace = wp.dot(col1_rot, col1_mat) + wp.dot(col2_rot, col2_mat) + wp.dot(col3_rot, col3_mat)
+    denom = wp.abs(trace) + 1.0e-10
     omega = omega / denom
 
     w = wp.length(omega)
     if w < 1.0e-6:
-      break
+      R_t_F = rot_t @ F
+      sym = 0.5 * (R_t_F + wp.transpose(R_t_F))
+
+      # fast path: T = tr(S)*I - S is strictly positive definite iff rotation maximizes tr(R'*M)
+      T00 = sym[1, 1] + sym[2, 2]
+      T11 = sym[0, 0] + sym[2, 2]
+      T22 = sym[0, 0] + sym[1, 1]
+      detT = (
+        T00 * (T11 * T22 - sym[1, 2] * sym[1, 2])
+        - sym[0, 1] * sym[0, 1] * T22
+        - sym[0, 2] * sym[0, 2] * T11
+        - 2.0 * sym[0, 1] * sym[0, 2] * sym[1, 2]
+      )
+      scale = wp.abs(sym[0, 0]) + wp.abs(sym[1, 1]) + wp.abs(sym[2, 2]) + MJ_MINVAL
+      tol = 1.0e-6 * scale
+      tol2 = tol * scale
+      tol3 = tol2 * scale
+      if T00 > tol and (T00 * T11 - sym[0, 1] * sym[0, 1]) > tol2 and detT > tol3:
+        break
+
+      eigval, eigvec = math.eig3(sym)
+      lambda_max = eigval[0]
+      tol = 1.0e-6 * (wp.abs(lambda_max) + wp.abs(trace) + MJ_MINVAL)
+      if lambda_max <= trace + tol:
+        break
+
+      # stationary point (minimum or saddle): flip 180 degrees about rot * top eigenvector, which
+      # strictly increases the trace
+      v_max = eigvec[:, 0]
+      axis = wp.normalize(rot @ v_max)
+      qflip = wp.quat(axis[0], axis[1], axis[2], 0.0)
+      cell_quat = wp.normalize(qflip * cell_quat)
+      continue
 
     axis = omega / w
     half_w = 0.5 * w
