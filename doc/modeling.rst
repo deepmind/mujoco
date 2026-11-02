@@ -703,17 +703,18 @@ Force clamping at actuator output with :ref:`forcerange<actuator-general-forcera
   usually also require control range clamping to avoid hitting joint limits.
 
 Force clamping at joint input with :ref:`joint/actuatorfrcrange<body-joint-actuatorfrcrange>`:
-  This joint attribute clamps input forces from all actuators acting on the joint, after passing through the
-  :ref:`transmission<geTransmission>`. Clamping actuator forces at the joint is equivalent to clamping them at the
-  actuator if the transmission is trivial (there is a one-to-one relationship between the actuator and the joint).
-  However, in situations where multiple actuators act on one joint or one actuator acts on multiple joints---yet the
-  actual torque is applied by a single physical actuator at the joint---it is desirable to clamp the forces at the joint
-  itself. Below are three examples where it is desirable to clamp actuator forces at the joint, rather than the
-  actuator:
+  This joint attribute clamps the total force from all actuators acting on the joint, after passing through the
+  :ref:`transmission<geTransmission>`. It dates from when every actuator had a single input, so that modeling one
+  physical actuator with several commands (e.g., a position servo plus a velocity servo, or a motor plus velocity
+  feedback) required stacking actuators on the joint and clamping their sum. Prefer a single multi-input actuator
+  instead: a :ref:`pid<actuator-pid>` or :ref:`dcmotor<actuator-dcmotor>` with the required subset of ``pos``, ``vel``
+  and ``ff`` :ref:`inputs<actuator-pid-input>`, its output bounded by :ref:`forcerange<actuator-general-forcerange>`.
+  This keeps the limit on the actuator that produces the force, and the :ref:`actuatorfrc<sensor-actuatorfrc>` sensor
+  reports the force actually applied.
 
-  - In `this example model
-    <https://github.com/google-deepmind/mujoco/blob/main/test/engine/testdata/actuation/joint_force_clamp.xml>`__ ,
-    two actuators, a :ref:`motor<actuator-motor>` and a :ref:`damper<actuator-damper>`, act on a single joint.
+  Joint clamping remains useful when the transmission combines actuator forces across joints, yet each joint is
+  driven by a single torque-limited motor:
+
   - In `this example model <https://github.com/google-deepmind/mujoco/blob/main/model/car/car.xml>`__ (similar to a "Dubin's
     Car"), two actuators act on two wheels via a :ref:`fixed tendon<tendon-fixed>` transmission in order to apply
     symmetric (roll forward/back) and antisymmetric (turn right/left) torques.
@@ -727,9 +728,11 @@ Force clamping at joint input with :ref:`joint/actuatorfrcrange<body-joint-actua
   The standard :ref:`actuatorfrc<sensor-actuatorfrc>` sensor will continue to report the pre-clamped actuator force.
 
 Force clamping at tendon input with :ref:`tendon/actuatorfrcrange<tendon-spatial-actuatorfrcrange>`:
-  This tendon attribute clamps input forces from all actuators acting on the tendon.
+  This tendon attribute clamps input forces from all actuators acting on the tendon. The same considerations as for
+  joints apply: prefer a single multi-input actuator over clamping the sum of several.
 
-The clamping options above are non-exclusive and can be combined as required.
+The clamping options above are non-exclusive and can be combined as required. A saturated :at:`forcerange` or tendon
+:at:`actuatorfrcrange` contributes no implicit damping, since the clamped force does not depend on velocity.
 
 .. _CLengthRange:
 
@@ -2044,10 +2047,13 @@ Model parameters
 
 **Actuator gains and force limits** (:ref:`position <actuator-position>`, :ref:`forcerange <actuator-general-forcerange>`):
    See :ref:`Shortcuts <CActShortcuts>`. A :el:`position` actuator defaults to ``kv="0"`` and unlimited force. Pair
-   ``dampratio="1"`` (or :at:`kv`) with ``implicitfast`` and bound output via :at:`forcerange` or joint
-   :ref:`actuatorfrcrange <body-joint-actuatorfrcrange>` so large setpoint steps do not inject excessive contact
-   impulses. Keep :at:`ctrlrange` within joint :at:`range` so servos do not fight joint limits, except on grippers
-   where extending slightly past pad contact lets a closed command generate grip force on thin objects.
+   ``dampratio="1"`` (or :at:`kv`) with ``implicitfast`` and bound output via :at:`forcerange` so large setpoint steps
+   do not inject excessive contact impulses; for combined position, velocity or feedforward commands, use a single
+   :ref:`pid <actuator-pid>` rather than stacking actuators and clamping their sum at the joint (see
+   :ref:`Force limits <CForceRange>`). While :at:`forcerange` is saturated the actuator adds no implicit damping, so a
+   single step can accelerate a light link by up to ``h * forcerange / M``; give such joints some :at:`armature` or use
+   a smaller timestep. Keep :at:`ctrlrange` within joint :at:`range` so servos do not fight joint limits, except on
+   grippers where extending slightly past pad contact lets a closed command generate grip force on thin objects.
 
 **Masses and inertias** (:ref:`inertial <body-inertial>`, :ref:`mass <body-geom-mass>`, :ref:`density <body-geom-density>`: ``"1000"``):
    When :el:`inertial` and geom :at:`mass` are omitted, MuJoCo infers mass and inertia from geom volume assuming water

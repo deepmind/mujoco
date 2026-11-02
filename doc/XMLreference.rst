@@ -2577,10 +2577,11 @@ rotations as unit quaternions.
 .. _body-joint-actuatorfrcrange:
 
 :at:`actuatorfrcrange`: :at-val:`real(2), "0 0"`
-   Range for clamping total actuator forces acting on this joint. See :ref:`CForceRange` for details. It is available
-   only for scalar joints (hinge and slider) and ignored for ball and free joints. |br| The compiler expects the first
-   value to be smaller than the second value. |br| Setting this attribute without specifying :at:`actuatorfrclimited`
-   is an error if :at:`compiler-autolimits` is "false".
+   Range for clamping total actuator forces acting on this joint. See :ref:`CForceRange` for details; to limit several
+   commands of one physical actuator, prefer a single multi-input actuator such as :ref:`pid<actuator-pid>` with
+   :ref:`forcerange<actuator-general-forcerange>`. It is available only for scalar joints (hinge and slider) and ignored
+   for ball and free joints. |br| The compiler expects the first value to be smaller than the second value. |br| Setting
+   this attribute without specifying :at:`actuatorfrclimited` is an error if :at:`compiler-autolimits` is "false".
 
 .. _body-joint-actuatorfrclimited:
 
@@ -5304,9 +5305,11 @@ length X, as in the clip on the right of `this example model
 .. _tendon-spatial-actuatorfrcrange:
 
 :at:`actuatorfrcrange`: :at-val:`real(2), "0 0"`
-   Range for clamping total actuator forces acting on this tendon. See :ref:`CForceRange` for details. The compiler
-   expects the lower bound to be nonpositive and the upper bound to be nonnegative. |br| Setting this attribute without
-   specifying :at:`actuatorfrclimited` is an error if :at:`compiler-autolimits` is "false".
+   Range for clamping total actuator forces acting on this tendon. See :ref:`CForceRange` for details; to limit several
+   commands of one physical actuator, prefer a single multi-input actuator such as :ref:`pid<actuator-pid>` with
+   :ref:`forcerange<actuator-general-forcerange>`. The compiler expects the lower bound to be nonpositive and the upper
+   bound to be nonnegative. |br| Setting this attribute without specifying :at:`actuatorfrclimited` is an error if
+   :at:`compiler-autolimits` is "false".
 
 .. _tendon-spatial-solreflimit:
 
