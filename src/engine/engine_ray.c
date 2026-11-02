@@ -30,6 +30,9 @@
 #include "engine/engine_util_misc.h"
 #include "engine/engine_util_spatial.h"
 
+// azimuth rounding guard for the corner-derived culling bounds in mju_multiRayPrepare
+#define mjAZIMUTH_EPSILON 1e-9
+
 
 
 //---------------------------- utility functions ---------------------------------------------------
@@ -1433,8 +1436,13 @@ void mju_multiRayPrepare(const mjModel* m, const mjData* d, const mjtNum pnt[3],
         AABB[3] = mju_max(AABB[3], elevation);
       }
 
-      // add distance-dependent angular margin to account for edge/face curvature
-      // margin = atan(max_half_size / dist) bounds the angular deviation of face centers
+      // add distance-dependent angular margin to the elevation bounds only
+      // margin = atan(max_half_size / dist) bounds the angular deviation of face centers;
+      // elevation can peak between corners along an edge, but azimuth depends only on the
+      // horizontal offset from pnt and is exact on the corners of the horizontal projection
+      // (when pnt is inside that projection the seam fallback below widens to the full range).
+      // Widening the azimuth bounds by the largest half-size made planar scans among tall,
+      // thin geoms several times slower without changing any hit results.
       mjtNum max_half = mju_max(aabb[3], mju_max(aabb[4], aabb[5]));
       mjtNum center[3];
       mju_mulMatVec3(center, xmat, aabb);
@@ -1442,11 +1450,14 @@ void mju_multiRayPrepare(const mjModel* m, const mjData* d, const mjtNum pnt[3],
       mjtNum dist = mju_dist3(pnt, center);
       if (dist > mjMINVAL) {
         mjtNum margin = mju_atan2(max_half, dist);
-        AABB[0] -= margin;
         AABB[1] -= margin;
-        AABB[2] += margin;
         AABB[3] += margin;
       }
+
+      // the corner-derived azimuth bounds are exact up to floating-point rounding; add a tiny
+      // epsilon so grazing rays whose azimuth coincides with a corner are not culled by rounding
+      AABB[0] -= mjAZIMUTH_EPSILON;
+      AABB[2] += mjAZIMUTH_EPSILON;
 
       // azimuth crosses discontinuity, fall back to no angular culling
       if (AABB[2]-AABB[0] > mjPI) {
