@@ -1697,6 +1697,10 @@ void mj_tendonArmature(const mjModel* m, mjData* d) {
 
       // M[i,:] += armature * ten_J[i] * ten_J
       int i = J_colind[j];
+      // TODO: wake trees coupled by two-tree armature tendons in mj_wakeTendon
+      if (sleep_filter && mj_sleepState(m, d, mjOBJ_DOF, i) == mjS_ASLEEP) {
+        continue;
+      }
       int M_adr = M_rowadr[i];
       mju_addToSclSparseInc(d->M + M_adr, ten_J,
                             M_rownnz[i], M_colind + M_adr,
@@ -2092,6 +2096,7 @@ void mj_comVel(const mjModel* m, mjData* d) {
 void mj_subtreeVel(const mjModel* m, mjData* d) {
   int sleep_filter = mjENABLED(mjENBL_SLEEP) && d->nbody_awake < m->nbody;
   int nbody = sleep_filter ? d->nbody_awake : m->nbody;
+  int nparent = sleep_filter ? d->nparent_awake : m->nbody;
 
   mj_markStack(d);
   mjtNum* body_vel = mjSTACKALLOC(d, 6*m->nbody, mjtNum);
@@ -2130,23 +2135,29 @@ void mj_subtreeVel(const mjModel* m, mjData* d) {
   }
 
   // subtree angular momentum
-  for (int b=nbody-1; b > 0; b--) {
-    int i = sleep_filter ? d->body_awake_ind[b] : b;
+  for (int b=nparent-1; b >= 0; b--) {
+    int i = sleep_filter ? d->parent_awake_ind[b] : b;
+    if (!i) continue;
 
     int parent = m->body_parentid[i];
-
-    // momentum wrt body i
     mjtNum dx[3], dv[3], dp[3], dL[3];
-    mju_sub3(dx, d->xipos+3*i, d->subtree_com+3*i);
-    mju_sub3(dv, body_vel+6*i+3, d->subtree_linvel+3*i);
-    mju_scl3(dp, dv, m->body_mass[i]);
-    mji_cross(dL, dx, dp);
 
-    // add to subtree i
-    mji_addTo3(d->subtree_angmom+3*i, dL);
+    if (sleep_filter && d->body_awake[i] == mjS_ASLEEP) {
+      mju_zero3(d->subtree_linvel+3*i);
+      mju_zero3(d->subtree_angmom+3*i);
+    } else {
+      // momentum wrt body i
+      mju_sub3(dx, d->xipos+3*i, d->subtree_com+3*i);
+      mju_sub3(dv, body_vel+6*i+3, d->subtree_linvel+3*i);
+      mju_scl3(dp, dv, m->body_mass[i]);
+      mji_cross(dL, dx, dp);
 
-    // add to parent
-    mji_addTo3(d->subtree_angmom+3*parent, d->subtree_angmom+3*i);
+      // add to subtree i
+      mji_addTo3(d->subtree_angmom+3*i, dL);
+
+      // add to parent
+      mji_addTo3(d->subtree_angmom+3*parent, d->subtree_angmom+3*i);
+    }
 
     // momentum wrt parent
     mju_sub3(dx, d->subtree_com+3*i, d->subtree_com+3*parent);
@@ -2169,9 +2180,10 @@ void mj_subtreeVel(const mjModel* m, mjData* d) {
 
 // RNE: compute M(qpos)*qacc + C(qpos,qvel); flg_acc=0 removes inertial term
 void mj_rne(const mjModel* m, mjData* d, int flg_acc, mjtNum* result) {
-  int sleep_filter = mjENABLED(mjENBL_SLEEP) && d->nbody_awake < m->nbody;
+  // filter sleeping bodies only for qfrc_bias; caller buffers require all DOFs
+  int sleep_filter = (result == d->qfrc_bias) &&
+                     mjENABLED(mjENBL_SLEEP) && d->nbody_awake < m->nbody;
   int nbody = sleep_filter ? d->nbody_awake : m->nbody;
-  int nparent = sleep_filter ? d->nparent_awake : m->nbody;
   int nv = sleep_filter ? d->nv_awake : m->nv;
 
   mj_markStack(d);
@@ -2214,8 +2226,8 @@ void mj_rne(const mjModel* m, mjData* d, int flg_acc, mjtNum* result) {
   mju_zero(loc_cfrc_body, 6);
 
   // backward pass over bodies: accumulate cfrc_body from children
-  for (int b=nparent-1; b > 0; b--) {
-    int i = sleep_filter ? d->parent_awake_ind[b] : b;
+  for (int b=nbody-1; b > 0; b--) {
+    int i = sleep_filter ? d->body_awake_ind[b] : b;
     int j = m->body_parentid[i];
 
     if (j) {
@@ -2569,13 +2581,14 @@ void mj_rnePostConstraint(const mjModel* m, mjData* d) {
 
 // add bias force due to tendon armature
 void mj_tendonBias(const mjModel* m, mjData* d, mjtNum* qfrc) {
-  int sleep_filter = mjENABLED(mjENBL_SLEEP) && d->ntree_awake < m->ntree;
+  int sleep = mjENABLED(mjENBL_SLEEP) && d->ntree_awake < m->ntree;
+  int sleep_filter = (qfrc == d->qfrc_bias) && sleep;
   int ntendon = m->ntendon;
 
   // add bias term due to tendon armature
   for (int i=0; i < ntendon; i++) {
     // skip sleeping tendon
-    if (sleep_filter && mj_sleepState(m, d, mjOBJ_TENDON, i) == mjS_ASLEEP) {
+    if (sleep && mj_sleepState(m, d, mjOBJ_TENDON, i) == mjS_ASLEEP) {
       continue;
     }
 
@@ -2599,7 +2612,11 @@ void mj_tendonBias(const mjModel* m, mjData* d, mjtNum* qfrc) {
       const int* colind = m->ten_J_colind + adr;
       const mjtNum* ten_J = d->ten_J + adr;
       for (int j=0; j < nnz; j++) {
-        qfrc[colind[j]] += coef * ten_J[j];
+        int dof = colind[j];
+        if (sleep_filter && mj_sleepState(m, d, mjOBJ_DOF, dof) == mjS_ASLEEP) {
+          continue;
+        }
+        qfrc[dof] += coef * ten_J[j];
       }
     }
   }

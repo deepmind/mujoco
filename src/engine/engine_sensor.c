@@ -1596,8 +1596,8 @@ void mj_sensorPos(const mjModel* m, mjData* d) {
     mjtSensor type = (mjtSensor) m->sensor_type[i];
 
     // skip sleeping sensor without history
-    if (sleep_filter && mj_sleepState(m, d, mjOBJ_SENSOR, i) == mjS_ASLEEP &&
-        m->sensor_history[2*i] == 0) {
+    if (sleep_filter && m->sensor_history[2*i] == 0 &&
+        mj_sleepState(m, d, mjOBJ_SENSOR, i) == mjS_ASLEEP) {
       continue;
     }
 
@@ -1650,8 +1650,8 @@ void mj_sensorVel(const mjModel* m, mjData* d) {
     }
 
     // skip sleeping sensor without history
-    if (sleep_filter && mj_sleepState(m, d, mjOBJ_SENSOR, i) == mjS_ASLEEP &&
-        m->sensor_history[2*i] == 0) {
+    if (sleep_filter && m->sensor_history[2*i] == 0 &&
+        mj_sleepState(m, d, mjOBJ_SENSOR, i) == mjS_ASLEEP) {
       continue;
     }
 
@@ -1700,8 +1700,8 @@ void mj_sensorAcc(const mjModel* m, mjData* d) {
   // process sensors matching stage
   for (int i=0; i < m->nsensor; i++) {
     // skip sleeping sensor without history
-    if (sleep_filter && mj_sleepState(m, d, mjOBJ_SENSOR, i) == mjS_ASLEEP &&
-        m->sensor_history[2*i] == 0) {
+    if (sleep_filter && m->sensor_history[2*i] == 0 &&
+        mj_sleepState(m, d, mjOBJ_SENSOR, i) == mjS_ASLEEP) {
       continue;
     }
 

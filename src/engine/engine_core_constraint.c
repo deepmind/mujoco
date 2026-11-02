@@ -1239,6 +1239,11 @@ static int mj_instantiateFriction(const mjModel* m, mjData* d, int count_only, i
   // find frictional tendons
   for (int i=0; i < m->ntendon; i++) {
     if (m->tendon_frictionloss[i] > 0) {
+      // sleeping tendon: skip
+      if (sleep_filter && mj_sleepState(m, d, mjOBJ_TENDON, i) == mjS_ASLEEP) {
+        continue;
+      }
+
       if (count_only) {
         nf += mj_addConstraintCount(m, 1, m->ten_J_rownnz[i]);
         if (nnz) *nnz += m->ten_J_rownnz[i];
@@ -1399,6 +1404,11 @@ static int mj_instantiateLimit(const mjModel* m, mjData* d, int count_only, int*
   // find tendon limits
   for (int i=0; i < m->ntendon; i++) {
     if (!m->tendon_limited[i]) {
+      continue;
+    }
+
+    // sleeping tendon: skip
+    if (sleep_filter && mj_sleepState(m, d, mjOBJ_TENDON, i) == mjS_ASLEEP) {
       continue;
     }
 

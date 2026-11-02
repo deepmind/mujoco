@@ -1094,6 +1094,72 @@ TEST_F(CoreConstraintTest, ContactSharedDofJacobian) {
   EXPECT_EQ(data->efc_J_rownnz[0], 2);
 }
 
+// Tendon friction and limit constraints skip sleeping trees.
+TEST_F(CoreConstraintTest, SleepingTendonFrictionAndLimit) {
+  static constexpr char xml[] = R"(
+  <mujoco>
+    <option>
+      <flag sleep="enable"/>
+    </option>
+    <worldbody>
+      <site name="s0" pos="0 0 0"/>
+      <site name="s0_b" pos="2 0 0"/>
+      <body name="body1" pos="0 0 0.2" sleep="init">
+        <joint name="jnt1" type="slide" axis="0 0 1"/>
+        <geom size=".1" contype="0" conaffinity="0"/>
+        <site name="s1" pos="0 0 0"/>
+      </body>
+      <body name="body2" pos="2 0 0.2">
+        <joint name="jnt2" type="slide" axis="0 0 1"/>
+        <geom size=".1" contype="0" conaffinity="0"/>
+        <site name="s2" pos="0 0 0"/>
+      </body>
+    </worldbody>
+    <tendon>
+      <spatial name="ten_friction" frictionloss="1">
+        <site site="s0"/>
+        <site site="s1"/>
+      </spatial>
+      <spatial name="ten_limit" range="0.5 1.0">
+        <site site="s0"/>
+        <site site="s1"/>
+      </spatial>
+      <spatial name="ten_awake_friction" frictionloss="1">
+        <site site="s0_b"/>
+        <site site="s2"/>
+      </spatial>
+      <spatial name="ten_awake_limit" range="0.5 1.0">
+        <site site="s0_b"/>
+        <site site="s2"/>
+      </spatial>
+    </tendon>
+  </mujoco>
+  )";
+  char error[1024];
+  MjModelPtr model = LoadModelFromString(xml, error, sizeof(error));
+  ASSERT_THAT(model.get(), NotNull()) << error;
+
+  for (mjtJacobian jac : {mjJAC_DENSE, mjJAC_SPARSE}) {
+    model->opt.jacobian = jac;
+    MjDataPtr data = MakeData(model);
+
+    ASSERT_EQ(model->ntree, 2);
+    ASSERT_EQ(data->ntree_awake, 1);
+    ASSERT_EQ(data->tree_awake[0], 0);
+    ASSERT_EQ(data->tree_awake[1], 1);
+
+    mj_forward(model.get(), data.get());
+
+    // Sleeping tendons skip friction and limit; awake tendons instantiate both.
+    EXPECT_EQ(data->nf, 1);
+    EXPECT_EQ(data->nl, 1);
+    EXPECT_EQ(data->tendon_efcadr[0], -1);
+    EXPECT_EQ(data->tendon_efcadr[1], -1);
+    EXPECT_GE(data->tendon_efcadr[2], 0);
+    EXPECT_GE(data->tendon_efcadr[3], 0);
+  }
+}
+
 static const char* const kJdotvConnect2dPath =
     "engine/testdata/core_constraint/jdotv_connect_2d.xml";
 static const char* const kJdotvConnect3dPath =

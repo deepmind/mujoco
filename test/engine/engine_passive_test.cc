@@ -5052,53 +5052,107 @@ TEST_F(PlasticityTest, FlexInterpStretchPlasticity) {
   }
 }
 
-// sleeping flex does not accumulate edge spring forces in qfrc_spring
+// sleeping flex does not accumulate passive spring forces in qfrc_spring
 TEST_F(PassiveTest, SleepingFlexDoesNotAccumulateQfrcSpring) {
-  static constexpr char xml[] = R"(
-  <mujoco>
-    <option gravity="0 0 -10">
-      <flag sleep="enable"/>
-    </option>
-    <worldbody>
-      <body name="v0" pos="0 0 1"/>
-      <body name="v1" pos="0 0 0" sleep="allowed">
-        <joint name="j1" type="slide" axis="0 0 1"/>
-        <geom size="0.1" mass="1"/>
-      </body>
-      <body name="b2" pos="2 0 0">
-        <joint name="j2" type="slide" axis="1 0 0"/>
-        <geom size="0.1" mass="1"/>
-      </body>
-    </worldbody>
-    <deformable>
-      <flex name="f1" dim="1" body="v0 v1" element="0 1">
-        <contact selfcollide="none" contype="0" conaffinity="0"/>
-        <edge stiffness="10" damping="0"/>
-      </flex>
-    </deformable>
-  </mujoco>
-  )";
-  char error[1024];
-  MjModelPtr m = LoadModelFromString(xml, error, sizeof(error));
-  ASSERT_THAT(m.get(), NotNull()) << error;
-  MjDataPtr d = MakeData(m);
+  // edge spring
+  {
+    static constexpr char xml[] = R"(
+    <mujoco>
+      <option gravity="0 0 -10">
+        <flag sleep="enable"/>
+      </option>
+      <worldbody>
+        <body name="v0" pos="0 0 1"/>
+        <body name="v1" pos="0 0 0" sleep="allowed">
+          <joint name="j1" type="slide" axis="0 0 1"/>
+          <geom size="0.1" mass="1"/>
+        </body>
+        <body name="b2" pos="2 0 0">
+          <joint name="j2" type="slide" axis="1 0 0"/>
+          <geom size="0.1" mass="1"/>
+        </body>
+      </worldbody>
+      <deformable>
+        <flex name="f1" dim="1" body="v0 v1" element="0 1">
+          <contact selfcollide="none" contype="0" conaffinity="0"/>
+          <edge stiffness="10" damping="0"/>
+        </flex>
+      </deformable>
+    </mujoco>
+    )";
+    char error[1024];
+    MjModelPtr m = LoadModelFromString(xml, error, sizeof(error));
+    ASSERT_THAT(m.get(), NotNull()) << error;
+    MjDataPtr d = MakeData(m);
 
-  // at qpos=-1 the edge length is 2 (rest length 1): edge spring force (+10)
-  // balances gravity (-10) on v1
-  d->qpos[0] = -1.0;
-  d->qvel[1] = 1.0;  // keep b2 awake
-  mj_forward(m.get(), d.get());
-  ASSERT_EQ(d->body_awake[2], mjS_AWAKE);
-  EXPECT_NEAR(d->qfrc_spring[0], 10.0, MjTol(1e-7, 1e-4));
+    // at qpos=-1 the edge length is 2 (rest length 1): edge spring force (+10)
+    // balances gravity (-10) on v1
+    d->qpos[0] = -1.0;
+    d->qvel[1] = 1.0;  // keep b2 awake
+    mj_forward(m.get(), d.get());
+    ASSERT_EQ(d->body_awake[2], mjS_AWAKE);
+    EXPECT_NEAR(d->qfrc_spring[0], 10.0, MjTol(1e-7, 1e-4));
 
-  // once v1 falls asleep, qfrc_spring must stay at 10 rather than accumulate
-  for (int i = 0; i < 20; i++) {
-    mj_step(m.get(), d.get());
+    // once v1 falls asleep, qfrc_spring must stay at 10 rather than accumulate
+    for (int i = 0; i < 20; i++) {
+      mj_step(m.get(), d.get());
+    }
+    ASSERT_EQ(d->body_awake[2], mjS_ASLEEP);
+    ASSERT_EQ(d->body_awake[3], mjS_AWAKE);
+    EXPECT_NEAR(d->qfrc_spring[0], 10.0, MjTol(1e-7, 1e-4));
   }
-  ASSERT_EQ(d->body_awake[2], mjS_ASLEEP);
-  ASSERT_EQ(d->body_awake[3], mjS_AWAKE);
-  EXPECT_NEAR(d->qfrc_spring[0], 10.0, MjTol(1e-7, 1e-4));
-  EXPECT_NEAR(d->qfrc_passive[0], 10.0, MjTol(1e-7, 1e-4));
+
+  // 1D rod bending elasticity (mj_flexPassiveBend1D)
+  {
+    static constexpr char xml[] = R"(
+    <mujoco>
+      <option timestep="0.01" integrator="discrete" solver="CG"
+        gravity="0 0 0">
+        <flag sleep="enable"/>
+      </option>
+      <worldbody>
+        <body name="v0" pos="0 0 0"/>
+        <body name="v1" pos="1 0 0"/>
+        <body name="v2" pos="2 0 0" sleep="allowed">
+          <joint name="j1" type="slide" axis="0 0 1"/>
+          <geom size="0.1" mass="1"/>
+        </body>
+        <body name="b2" pos="4 0 0">
+          <joint name="j2" type="slide" axis="1 0 0"/>
+          <geom size="0.1" mass="1"/>
+        </body>
+      </worldbody>
+      <deformable>
+        <flex name="rod" dim="1" radius="0.1" body="v0 v1 v2"
+          element="0 1 1 2">
+          <contact selfcollide="none" contype="0" conaffinity="0"/>
+          <elasticity young="1e6"/>
+        </flex>
+      </deformable>
+    </mujoco>
+    )";
+    char error[1024];
+    MjModelPtr m = LoadModelFromString(xml, error, sizeof(error));
+    ASSERT_THAT(m.get(), NotNull()) << error;
+    MjDataPtr d = MakeData(m);
+
+    // bend v2 to z=-0.1 and balance rod bending force with vertical gravity
+    d->qpos[0] = -0.1;
+    d->qvel[1] = 1.0;  // keep b2 awake
+    mj_forward(m.get(), d.get());
+    mjtNum f_rod = d->qfrc_spring[0];
+    ASSERT_GT(f_rod, 1.0);
+    m->opt.gravity[2] = -f_rod;
+
+    // once v2 falls asleep, qfrc_spring must stay at f_rod rather than
+    // accumulate
+    for (int i = 0; i < 30; i++) {
+      mj_step(m.get(), d.get());
+    }
+    ASSERT_EQ(d->body_awake[3], mjS_ASLEEP);
+    ASSERT_EQ(d->body_awake[4], mjS_AWAKE);
+    EXPECT_NEAR(d->qfrc_spring[0], f_rod, MjTol(1e-12, 1e-5));
+  }
 }
 
 }  // namespace

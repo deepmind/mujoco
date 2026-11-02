@@ -653,6 +653,11 @@ static inline void mj_sleepTrees(const mjModel* m, mjData* d, const int* tree, i
     int num = m->tree_dofnum[current];
     mju_zero(d->qvel+adr, num);
     mju_zero(d->qacc+adr, num);
+    mju_zero(d->cdof_dot+6*adr, 6*num);
+
+    int badr = m->tree_bodyadr[current];
+    int bnum = m->tree_bodynum[current];
+    mju_zero(d->cvel+6*badr, 6*bnum);
   }
 
 #ifndef MJ_DISABLE_DEBUG_TRACING

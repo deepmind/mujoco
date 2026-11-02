@@ -1822,6 +1822,9 @@ void mj_resetDataKeyframe(const mjModel* m, mjData* d, int key) {
   // copy keyframe data if key is valid
   if (key >= 0 && key < m->nkey) {
     d->time = m->key_time[key];
+
+    // sleep='init' trees with displaced key_qpos or nonzero key_qvel are left for
+    // mj_kinematics and mj_wake to wake on the next forward pass
     mju_copy(d->qpos, m->key_qpos+key*m->nq, m->nq);
     mju_copy(d->qvel, m->key_qvel+key*m->nv, m->nv);
     mju_copy(d->act,  m->key_act+ key*m->na, m->na);
