@@ -3022,18 +3022,22 @@ static void mj_solPrimal(const mjModel* m, mjData* d, int island, int maxiter, i
   // Mgrad = M \ grad: the CG preconditioned gradient, also the convergence certificate
   PrimalUpdateMgrad(&ctx, /*flg_Newton=*/0);
 
-  // convergence certificate: the cost is strongly convex in the M-norm, bounding the
-  // suboptimality by the duality gap at the current constraint forces:
+  // convergence certificate: when !ctx.flg_metric the cost is strongly convex in the M-norm,
+  // bounding suboptimality by duality gap at current constraint forces:
   //   cost(qacc) - cost* <= 0.5 * grad'*M^-1*grad
-  // if already below tolerance (e.g. good warmstart), skip the Hessian and the main loop
+  // under discrete metric Mgrad = P^-1 grad where P does not bound Hessian, so gap bound
+  // only holds when !ctx.flg_metric. if below tolerance (e.g. good warmstart), skip main loop
   int flg_gap = mju_max(0, 0.5*scale*mju_dot(ctx.grad, ctx.Mgrad, nv)) < m->opt.tolerance;
 
   // the gap bounds the *cost* suboptimality; on stiff constraints this permits force
   // errors of order sqrt(2*gap*stiffness). Newton solutions are characteristically
   // force-accurate, so Newton zero-iteration exits also require the gradient criterion;
-  // CG solutions are characteristically cost-accurate and exit on the gap alone
+  // CG solutions are characteristically cost-accurate and exit on the gap alone;
+  // under discrete metric, gating on ctx.flg_metric is deliberately conservative:
+  // preconditioner P != Mtilde when off-diagonal terms couple, so zero-iteration exits
+  // also require the gradient criterion (remaining sound when P is diagonal)
   int flg_gradient = scale*mju_norm(ctx.grad, nv) < m->opt.tolerance;
-  int flg_certificate = flg_gap && (!flg_Newton || flg_gradient);
+  int flg_certificate = flg_gap && (!(flg_Newton || ctx.flg_metric) || flg_gradient);
   int flg_done = flg_certificate;
 
   // Newton: compute and factorize Hessian, Mgrad = H \ grad
@@ -3048,8 +3052,9 @@ static void mj_solPrimal(const mjModel* m, mjData* d, int island, int maxiter, i
                  mju_max(0, 0.5*scale*mju_dot(ctx.grad, ctx.Mgrad, nv)) < m->opt.tolerance;
     } else {
       // arena exhausted during Hessian/Cholesky setup: fall back to CG
+      // (conservative discrete metric gate: P != Mtilde with off-diagonal coupling)
       flg_Newton = 0;
-      flg_done = flg_gap;
+      flg_done = flg_gap && (!ctx.flg_metric || flg_gradient);
       if (!flg_done) {
         // PrimalAllocate unconditionally carves cholupd[nv], cholscratch[nv] (sparse) /
         // L[nv*nv] (dense), and LTJ[6*nv] (elliptic) when flg_Newton is set; reuse them
