@@ -1272,14 +1272,13 @@ void mj_objectAcceleration(const mjModel* m, const mjData* d,
     mjERROR("invalid object type %d", objtype);
   }
 
-  // dof-less body (static or mocap): quick return
-  if (m->body_dofnum[m->body_weldid[bodyid]] == 0) {
-    mju_zero(res, 6);
-    return;
-  }
-
   // transform com-based acceleration to local frame
   mju_transformSpatial(res, d->cacc+6*bodyid, 0, pos, d->subtree_com+3*m->body_rootid[bodyid], rot);
+
+  // dof-less body (static or mocap): zero velocity, quick return
+  if (m->body_dofnum[m->body_weldid[bodyid]] == 0) {
+    return;
+  }
 
   // transform com-based velocity to local frame
   mjtNum vel[6];

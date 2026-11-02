@@ -2046,6 +2046,62 @@ TEST_F(SensorTest, AccelerometerAfterStep1) {
   EXPECT_NEAR(data->sensordata[2], 9.81, 1e-2);
 }
 
+// accelerometer and framelinacc on static and mocap bodies read gravity
+TEST_F(SensorTest, AccelerometerStaticAndMocap) {
+  constexpr char xml[] = R"(
+  <mujoco>
+    <option>
+      <flag sleep="enable"/>
+    </option>
+    <worldbody>
+      <site name="world"/>
+      <body name="static" pos="1 2 3">
+        <geom size="0.1"/>
+        <site name="static" euler="90 0 0"/>
+        <camera name="static" euler="90 0 0"/>
+      </body>
+      <body name="mocap" mocap="true" pos="-1 0 2">
+        <geom size="0.1"/>
+        <site name="mocap"/>
+      </body>
+      <body pos="0 0 5" sleep="init">
+        <freejoint/>
+        <geom size="0.1"/>
+      </body>
+    </worldbody>
+    <sensor>
+      <accelerometer site="world"/>
+      <accelerometer site="static"/>
+      <accelerometer site="mocap"/>
+      <framelinacc objtype="body" objname="static"/>
+      <frameangacc objtype="body" objname="mocap"/>
+    </sensor>
+  </mujoco>
+  )";
+  MjModelPtr model = LoadModelFromString(xml);
+  ASSERT_THAT(model, NotNull());
+  MjDataPtr data = MakeData(model);
+  mj_forward(model.get(), data.get());
+  EXPECT_LT(data->nbody_awake, model->nbody);
+
+  std::vector<mjtNum> expected = {
+      0, 0,    9.81,  // accelerometer: world
+      0, 9.81, 0,     // accelerometer: static site rotated +90 deg about x
+      0, 0,    9.81,  // accelerometer: mocap
+      0, 0,    9.81,  // framelinacc: static
+      0, 0,    0,     // frameangacc: mocap
+  };
+  EXPECT_THAT(AsVector(data->sensordata, 15),
+              Pointwise(MjNear(1e-12, 1e-5), expected));
+
+  mjtNum acc[6];
+  int cam_id = mj_name2id(model.get(), mjOBJ_CAMERA, "static");
+  mj_objectAcceleration(model.get(), data.get(), mjOBJ_CAMERA, cam_id, acc, 1);
+  EXPECT_THAT(
+      AsVector(acc, 6),
+      Pointwise(MjNear(1e-12, 1e-5), std::vector<mjtNum>{0, 0, 0, 0, 9.81, 0}));
+}
+
 // Test tactile sensor reads non-zero values when contacts occur
 TEST_F(SensorTest, TactileSkipTangents) {
   constexpr char xml[] = R"(

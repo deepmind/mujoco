@@ -320,6 +320,9 @@ Bug fixes
 - Legacy ``.msh`` meshes with mirrored :ref:`scale<asset-mesh-scale>` no longer double-flip face winding (which
   inverted faces), and ``.msh`` files without vertex normals no longer populate empty face normals or reject custom
   normals on recompilation.
+- :ref:`accelerometer<sensor-accelerometer>` and :ref:`framelinacc<sensor-framelinacc>` sensors and
+  :ref:`mj_objectAcceleration` on static and mocap bodies now report the gravitational proper acceleration, like a
+  dynamic body at rest. Previously they returned zero, a regression introduced in 3.3.7.
 
 Documentation
 ^^^^^^^^^^^^^
