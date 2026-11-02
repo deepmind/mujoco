@@ -67,12 +67,15 @@ def create_inverse_context(m: types.Model, d: types.Data) -> InverseContext:
 def _create_solver_context(
   m: types.Model,
   d: types.Data,
+  inplace_cholesky: bool = False,
 ) -> SolverContext:
   """Create a SolverContext with allocated workspace arrays.
 
   Args:
     m: Model.
     d: Data.
+    inplace_cholesky: If True, alias hfactor to h for non-incremental Newton
+      solves where blocked Cholesky overwrites h in-place each iteration.
 
   Returns:
     SolverContext with allocated arrays.
@@ -89,6 +92,19 @@ def _create_solver_context(
   alloc_solve_ld_scratch = (
     alloc_mgrad and d.qLD.shape[1] > m.qLD_block_total and bool(m.opt.deterministic & types.DeterminismType.ATOMICS)
   )
+
+  h = wp.empty((nworld, nv_pad, nv_pad), dtype=float) if alloc_h else wp.empty((nworld, 0, 0), dtype=float)
+  if alloc_hfactor:
+    # Non-incremental Newton rebuilds the upper triangle of h every iteration,
+    # and blocked Cholesky loads each upper-triangular tile before storing U.
+    if inplace_cholesky and not alloc_incremental:
+      if nv_pad <= nv and not (0 < d.nvmax < nv_pad):
+        raise ValueError(f"inplace_cholesky requires an augmented padding column (nv={nv}, nv_pad={nv_pad})")
+      hfactor = h
+    else:
+      hfactor = wp.empty((nworld, nv_pad, nv_pad), dtype=float)
+  else:
+    hfactor = wp.empty((nworld, 0, 0), dtype=float)
 
   return SolverContext(
     Jaref=wp.empty((nworld, njmax), dtype=float),
@@ -110,8 +126,8 @@ def _create_solver_context(
     prev_grad=wp.empty((nworld, nv), dtype=float) if alloc_mgrad else wp.empty((nworld, 0), dtype=float),
     prev_Mgrad=wp.empty((nworld, nv), dtype=float) if alloc_mgrad else wp.empty((nworld, 0), dtype=float),
     beta=wp.empty((nworld,), dtype=float) if alloc_mgrad else wp.empty((0,), dtype=float),
-    h=wp.empty((nworld, nv_pad, nv_pad), dtype=float) if alloc_h else wp.empty((nworld, 0, 0), dtype=float),
-    hfactor=wp.empty((nworld, nv_pad, nv_pad), dtype=float) if alloc_hfactor else wp.empty((nworld, 0, 0), dtype=float),
+    h=h,
+    hfactor=hfactor,
     quad_changed_ids=wp.empty((nworld, njmax), dtype=int) if alloc_incremental else wp.empty((nworld, 0), dtype=int),
     quad_changed_count=wp.empty((nworld,), dtype=int) if alloc_incremental else wp.empty((0,), dtype=int),
     state_changed_count=wp.empty((nworld,), dtype=int) if alloc_incremental else wp.empty((0,), dtype=int),
@@ -3089,6 +3105,8 @@ def _cholesky_factorize_solve(
     )
   else:
     if skip_unchanged:
+      if ctx.hfactor.ptr == ctx.h.ptr:
+        raise ValueError("skip_unchanged requires separate h and hfactor buffers")
       wp.launch_tiled(
         _update_gradient_cholesky_blocked_skip_unchanged(types.TILE_SIZE_JTDAJ_DENSE, m.nv_pad, m.nv, skip_noflip),
         dim=d.nworld,
@@ -4089,7 +4107,7 @@ def solve(m: types.Model, d: types.Data):
     wp.copy(d.qacc, d.qacc_smooth)
     d.solver_niter.fill_(0)
   else:
-    ctx = _create_solver_context(m, d)
+    ctx = _create_solver_context(m, d, inplace_cholesky=True)
     _solve(m, d, ctx)
     if m.opt.noslip_iterations > 0:
       noslip(m, d)
@@ -4500,7 +4518,7 @@ def solve_compact(m: types.Model, d: types.Data):
     efc=efc2,
   )
 
-  sctx = _create_solver_context(m2, d2)
+  sctx = _create_solver_context(m2, d2, inplace_cholesky=True)
   # compact kernels read the full-coordinate sparse structures (M, J) through
   # the compaction maps instead of dense products on gathered blocks
   sctx.compact_m_full = m
