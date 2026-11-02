@@ -2209,6 +2209,335 @@ TEST_F(DerivativeTest, DCMotorThermalDerivative) {
               Pointwise(MjNear(1e-7, 3e-3), analytic));
 }
 
+// verify hot resistance and cogging torque in DC motor length derivatives
+TEST_F(DerivativeTest, DCMotorLenDerivThermalAndCogging) {
+  static constexpr char kXml[] = R"(
+  <mujoco>
+    <option integrator="discrete" timestep="0.002"/>
+    <worldbody>
+      <body>
+        <joint name="stateless" type="slide"/>
+        <geom type="sphere" size="0.1" mass="1"/>
+      </body>
+      <body>
+        <joint name="stateful" type="slide"/>
+        <geom type="sphere" size="0.1" mass="1"/>
+      </body>
+    </worldbody>
+    <actuator>
+      <dcmotor joint="stateless" motorconst="1" resistance="1"
+               input="pos" controller="30 0 0" cogging="1.5 2 0.3"
+               thermal="1 1 0 0.004 25 25"/>
+      <dcmotor joint="stateful" motorconst="1" resistance="1"
+               inductance="0 0.002" input="pos" controller="30 0 0"
+               cogging="1.5 2 0.3" thermal="1 1 0 0.004 25 25"/>
+    </actuator>
+  </mujoco>
+  )";
+
+  char error[1024];
+  MjModelPtr m = LoadModelFromString(kXml, error, sizeof(error));
+  ASSERT_THAT(m.get(), NotNull()) << error;
+  MjDataPtr d = MakeData(m);
+
+  // 250-degree rise doubles winding resistance (R = 2 * R0)
+  d->act[m->actuator_actadr[0]] = 250;
+  d->act[m->actuator_actadr[1]] = 250;
+  d->qpos[0] = 0.2;
+  d->qpos[1] = 0.2;
+  d->ctrl[0] = 0.5;
+  d->ctrl[1] = 0.5;
+  mj_forward(m.get(), d.get());
+
+  // under discrete integrator, efm_ak = -h * mjd_actuatorLenDeriv when
+  // stabilizing (< 0)
+  ASSERT_EQ(d->nefmA, 2);
+  mjtNum eps = MjTol(1e-6, 1e-3);
+  for (int t = 0; t < 2; t++) {
+    int i = d->efm_aid[t];
+    mjtNum len_deriv_analytic = -d->efm_ak[t] / m->opt.timestep;
+
+    MjDataPtr dp = MakeData(m), dm = MakeData(m);
+    mj_copyData(dp.get(), m.get(), d.get());
+    mj_copyData(dm.get(), m.get(), d.get());
+    dp->qpos[i] += eps;
+    dm->qpos[i] -= eps;
+    mj_forward(m.get(), dp.get());
+    mj_forward(m.get(), dm.get());
+    mjtNum len_deriv_fd =
+        (dp->actuator_force[i] - dm->actuator_force[i]) / (2 * eps);
+
+    EXPECT_NEAR(len_deriv_analytic, len_deriv_fd, MjTol(1e-6, 1e-2));
+  }
+}
+
+// verify DC motor force clamping checks pre-mechanical electrical force
+TEST_F(DerivativeTest, DCMotorForceClampVsLuGreAndCogging) {
+  static constexpr char kXml[] = R"(
+  <mujoco>
+    <option integrator="discrete" timestep="0.002"/>
+    <worldbody>
+      <body>
+        <joint name="j" type="slide"/>
+        <geom type="sphere" size="0.1" mass="1"/>
+      </body>
+    </worldbody>
+    <actuator>
+      <dcmotor joint="j" motorconst="1" resistance="1"
+               input="pos vel" controller="20 0 4" saturation="2 0"
+               cogging="0.5 3 0" lugre="100 2 5 6 0.1"/>
+    </actuator>
+  </mujoco>
+  )";
+
+  char error[1024];
+  MjModelPtr m = LoadModelFromString(kXml, error, sizeof(error));
+  ASSERT_THAT(m.get(), NotNull()) << error;
+  MjDataPtr d = MakeData(m);
+
+  // Case 1: electrical force unsaturated (~1.0), LuGre pushes total force > 2.0
+  mj_resetData(m.get(), d.get());
+  d->ctrl[0] = 0.05;   // kp*0.05 = 1.0 inside [-2, 2]
+  d->act[0] = -0.025;  // -sigma0*z = +2.5 => total actuator_force > 2.0
+  mj_forward(m.get(), d.get());
+  ASSERT_GT(d->actuator_force[0], 2.0);
+
+  mju_zero(d->qDeriv, m->nD);
+  mjd_smooth_vel(m.get(), d.get(), /*flg_bias=*/1);
+  mjtNum vel_analytic_1 = d->qDeriv[0];
+  mju_zero(d->qDeriv, m->nD);
+  mjd_smooth_velFD(m.get(), d.get(), MjTol(1e-7, 1e-3));
+  EXPECT_NEAR(vel_analytic_1, d->qDeriv[0], MjTol(1e-6, 1e-2));
+
+  // Case 2: electrical force saturated (> 2.0), LuGre pulls total force inside
+  // (-2, 2)
+  mj_resetData(m.get(), d.get());
+  d->qpos[0] = 0.9;  // cos(3*0.9) < 0 so cogging stiffness is stabilizing
+  d->ctrl[0] = 1.1;  // kp*(1.1 - 0.9) = 4.0 > 2.0 (clamped at 2.0)
+  d->act[0] =
+      0.015;  // -sigma0*z = -1.5 => total actuator_force ~ 0.5 inside [-2, 2]
+  mj_forward(m.get(), d.get());
+  ASSERT_LT(mju_abs(d->actuator_force[0]), 2.0);
+
+  // electrical velocity derivative is 0, only LuGre -sigma1 = -2.0 remains
+  mju_zero(d->qDeriv, m->nD);
+  mjd_smooth_vel(m.get(), d.get(), /*flg_bias=*/1);
+  mjtNum vel_analytic_2 = d->qDeriv[0];
+  mju_zero(d->qDeriv, m->nD);
+  mjd_smooth_velFD(m.get(), d.get(), MjTol(1e-7, 1e-3));
+  EXPECT_NEAR(vel_analytic_2, d->qDeriv[0], MjTol(1e-6, 1e-2));
+
+  // electrical length derivative is 0, only cogging derivative remains in
+  // efm_ak
+  ASSERT_EQ(d->nefmA, 1);
+  mjtNum eps = MjTol(1e-6, 1e-3);
+  MjDataPtr dp = MakeData(m), dm = MakeData(m);
+  mj_copyData(dp.get(), m.get(), d.get());
+  mj_copyData(dm.get(), m.get(), d.get());
+  dp->qpos[0] += eps;
+  dm->qpos[0] -= eps;
+  mj_forward(m.get(), dp.get());
+  mj_forward(m.get(), dm.get());
+  mjtNum len_fd = (dp->actuator_force[0] - dm->actuator_force[0]) / (2 * eps);
+  EXPECT_NEAR(-d->efm_ak[0] / m->opt.timestep, len_fd, MjTol(1e-6, 1e-2));
+}
+
+// verify DC motor + co-acting tendon actuator under tendon actuatorfrcrange
+TEST_F(DerivativeTest, DCMotorTendonActFrcClampVsLuGreAndCogging) {
+  static constexpr char kXml[] = R"(
+  <mujoco>
+    <option integrator="discrete" timestep="0.002"/>
+    <worldbody>
+      <body>
+        <joint name="j" type="slide"/>
+        <geom type="sphere" size="0.1" mass="1"/>
+      </body>
+    </worldbody>
+    <tendon>
+      <fixed name="t" actuatorfrclimited="true" actuatorfrcrange="-2 2">
+        <joint joint="j" coef="1"/>
+      </fixed>
+    </tendon>
+    <actuator>
+      <dcmotor tendon="t" motorconst="1" resistance="1"
+               input="pos vel" controller="20 0 4"
+               cogging="0.5 3 0" lugre="100 2 5 6 0.1"/>
+      <position tendon="t" kp="4" kv="1"/>
+    </actuator>
+  </mujoco>
+  )";
+
+  char error[1024];
+  MjModelPtr m = LoadModelFromString(kXml, error, sizeof(error));
+  ASSERT_THAT(m.get(), NotNull()) << error;
+  MjDataPtr d = MakeData(m);
+
+  // Case 1: pre-mechanical sum (1.0 + 0.2 = 1.2) inside [-2, 2], LuGre pushes
+  // raw actuator_force sum > 2.0
+  mj_resetData(m.get(), d.get());
+  d->qpos[0] = 0.9;
+  d->ctrl[0] = 0.95;   // dcmotor pos target -> f_elec = 1.0
+  d->ctrl[2] = 0.95;   // position target -> f_pos = 0.2
+  d->act[0] = -0.025;  // -sigma0*z = +2.5 => raw sum > 3.7 > 2.0
+  mj_forward(m.get(), d.get());
+  ASSERT_GT(d->actuator_force[0] + d->actuator_force[1], 2.0);
+  EXPECT_EQ(d->nefmA, 2);
+
+  mju_zero(d->qDeriv, m->nD);
+  mjd_smooth_vel(m.get(), d.get(), /*flg_bias=*/1);
+  mjtNum vel_analytic_1 = d->qDeriv[0];
+  mju_zero(d->qDeriv, m->nD);
+  mjd_smooth_velFD(m.get(), d.get(), MjTol(1e-7, 1e-3));
+  EXPECT_NEAR(vel_analytic_1, d->qDeriv[0], MjTol(1e-6, 1e-2));
+
+  // Case 2: pre-mechanical sum (4.0 + 0.4 = 4.4) clamped to 2.0, LuGre pulls
+  // raw actuator_force sum inside (-2, 2)
+  mj_resetData(m.get(), d.get());
+  d->qpos[0] = 0.9;
+  d->ctrl[0] = 1.1;   // dcmotor pos target -> f_elec = 4.0
+  d->ctrl[2] = 1.0;   // position target -> f_pos = 0.4
+  d->act[0] = 0.015;  // -sigma0*z = -1.5 => raw sum ~ 0.71 inside (-2, 2)
+  mj_forward(m.get(), d.get());
+  ASSERT_LT(mju_abs(d->actuator_force[0] + d->actuator_force[1]), 2.0);
+
+  // electrical and position derivatives vanish; only LuGre -sigma1 remains
+  mju_zero(d->qDeriv, m->nD);
+  mjd_smooth_vel(m.get(), d.get(), /*flg_bias=*/1);
+  mjtNum vel_analytic_2 = d->qDeriv[0];
+  mju_zero(d->qDeriv, m->nD);
+  mjd_smooth_velFD(m.get(), d.get(), MjTol(1e-7, 1e-3));
+  EXPECT_NEAR(vel_analytic_2, d->qDeriv[0], MjTol(1e-6, 1e-2));
+
+  // only dcmotor cogging derivative remains in efm_ak
+  ASSERT_EQ(d->nefmA, 1);
+  EXPECT_EQ(d->efm_aid[0], 0);
+  mjtNum eps = MjTol(1e-6, 1e-3);
+  MjDataPtr dp = MakeData(m), dm = MakeData(m);
+  mj_copyData(dp.get(), m.get(), d.get());
+  mj_copyData(dm.get(), m.get(), d.get());
+  dp->qpos[0] += eps;
+  dm->qpos[0] -= eps;
+  mj_forward(m.get(), dp.get());
+  mj_forward(m.get(), dm.get());
+  mjtNum len_fd = (dp->qfrc_actuator[0] - dm->qfrc_actuator[0]) / (2 * eps);
+  EXPECT_NEAR(-d->efm_ak[0] / m->opt.timestep, len_fd, MjTol(1e-6, 1e-2));
+}
+
+// verify DC motor derivatives with delayed ctrl and slew rate limiting in
+// dcmotorInputs
+TEST_F(DerivativeTest, DCMotorInputsDelayedCtrlAndSlew) {
+  static constexpr char kXml[] = R"(
+  <mujoco>
+    <option integrator="discrete" timestep="0.005"/>
+    <worldbody>
+      <body>
+        <joint name="j" type="slide"/>
+        <geom type="sphere" size="0.1" mass="1"/>
+      </body>
+    </worldbody>
+    <actuator>
+      <dcmotor joint="j" delay="0.01" nsample="3" interp="linear"
+               input="pos vel" controller="20 0 5 10 0 0"
+               motorconst="1" resistance="1"/>
+    </actuator>
+  </mujoco>
+  )";
+
+  char error[1024];
+  MjModelPtr m = LoadModelFromString(kXml, error, sizeof(error));
+  ASSERT_THAT(m.get(), NotNull()) << error;
+  MjDataPtr d = MakeData(m);
+
+  // step forward so history buffer is populated
+  d->ctrl[0] = 0.5;
+  for (int step = 0; step < 5; ++step) {
+    mj_step(m.get(), d.get());
+  }
+
+  // verify smooth_vel matches FD
+  mju_zero(d->qDeriv, m->nD);
+  mjd_smooth_vel(m.get(), d.get(), /*flg_bias=*/1);
+  mjtNum vel_analytic = d->qDeriv[0];
+
+  mju_zero(d->qDeriv, m->nD);
+  mjd_smooth_velFD(m.get(), d.get(), MjTol(1e-7, 1e-3));
+  EXPECT_NEAR(vel_analytic, d->qDeriv[0], MjTol(1e-6, 1e-2));
+
+  // verify length derivative in efm_ak matches FD
+  ASSERT_EQ(d->nefmA, 1);
+  mjtNum eps = MjTol(1e-6, 1e-3);
+  MjDataPtr dp = MakeData(m), dm = MakeData(m);
+  mj_copyData(dp.get(), m.get(), d.get());
+  mj_copyData(dm.get(), m.get(), d.get());
+  dp->qpos[0] += eps;
+  dm->qpos[0] -= eps;
+  mj_forward(m.get(), dp.get());
+  mj_forward(m.get(), dm.get());
+  mjtNum len_fd = (dp->qfrc_actuator[0] - dm->qfrc_actuator[0]) / (2 * eps);
+  EXPECT_NEAR(-d->efm_ak[0] / m->opt.timestep, len_fd, MjTol(1e-6, 1e-2));
+}
+
+// verify DC motor derivatives under Vmax controller saturation and dimax
+// current-rate limit
+TEST_F(DerivativeTest, DCMotorVoltageAndCurrentRateSaturation) {
+  static constexpr char kXml[] = R"(
+  <mujoco>
+    <option integrator="discrete" timestep="0.002"/>
+    <worldbody>
+      <body>
+        <joint name="stateless_vmax" type="slide"/>
+        <geom type="sphere" size="0.1" mass="1"/>
+      </body>
+      <body>
+        <joint name="stateful_vmax" type="slide"/>
+        <geom type="sphere" size="0.1" mass="1"/>
+      </body>
+      <body>
+        <joint name="stateful_dimax" type="slide"/>
+        <geom type="sphere" size="0.1" mass="1"/>
+      </body>
+    </worldbody>
+    <actuator>
+      <dcmotor joint="stateless_vmax" motorconst="2" resistance="1"
+               input="pos vel" controller="20 0 6 0 0 3"/>
+      <dcmotor joint="stateful_vmax" motorconst="2" resistance="1"
+               inductance="0 0.005" input="pos vel" controller="20 0 6 0 0 3"/>
+      <dcmotor joint="stateful_dimax" motorconst="2" resistance="1"
+               inductance="0 0.005" saturation="0 0 5"
+               input="pos vel" controller="20 0 6"/>
+    </actuator>
+  </mujoco>
+  )";
+
+  char error[1024];
+  MjModelPtr m = LoadModelFromString(kXml, error, sizeof(error));
+  ASSERT_THAT(m.get(), NotNull()) << error;
+  MjDataPtr d = MakeData(m);
+
+  // large position error saturates Vmax on actuators 0 & 1 and dimax on
+  // actuator 2
+  d->ctrl[0] = 2.0;
+  d->ctrl[2] = 2.0;
+  d->ctrl[4] = 2.0;
+  mj_forward(m.get(), d.get());
+
+  // compare smooth_vel against FD across all 3 DOFs
+  mju_zero(d->qDeriv, m->nD);
+  mjd_smooth_vel(m.get(), d.get(), /*flg_bias=*/1);
+  vector<mjtNum> analytic = AsVector(d->qDeriv, m->nD);
+
+  mju_zero(d->qDeriv, m->nD);
+  mjd_smooth_velFD(m.get(), d.get(), MjTol(1e-6, 1e-3));
+  EXPECT_THAT(AsVector(d->qDeriv, m->nD),
+              Pointwise(MjNear(1e-6, 1e-2), analytic));
+
+  // all 3 length derivatives are zero under Vmax / dimax saturation (efm_ak ==
+  // 0)
+  for (int t = 0; t < d->nefmA; t++) {
+    EXPECT_MJTNUM_EQ(d->efm_ak[t], 0);
+  }
+}
+
 // Utility: Rotate flex grid
 void RotateFlexGrid(mjModel* model, mjData* data, const char* flex_name,
                     double angle) {

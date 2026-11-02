@@ -2570,6 +2570,179 @@ int mjd_flexStiff_assemble(const mjModel* m, mjData* d, int* rownnz, int* rowadr
 
 
 
+// unpack effective DC motor control inputs [pos, vel, ff, voltage] after delay, clamp, and slew
+static void dcmotorInputs(const mjModel* m, const mjData* d, int i, mjtNum u4[4]) {
+  int ctrlnum = m->actuator_ctrlnum[i];
+  mjtNum u[4] = {0};
+  if (ctrlnum > 0) {
+    int uadr = m->actuator_ctrladr[i];
+    if (m->actuator_delay[i]) {
+      const mjtNum* ptr = mj_readCtrl(m, d, i, d->time, u, -1);
+      if (ptr) {
+        mju_copy(u, ptr, ctrlnum);
+      }
+    } else {
+      mju_copy(u, d->ctrl + uadr, ctrlnum);
+    }
+    if (!mjDISABLED(mjDSBL_CLAMPCTRL)) {
+      for (int k=0; k < ctrlnum; k++) {
+        if (m->actuator_ctrllimited[uadr+k]) {
+          u[k] = mju_clip(u[k], m->actuator_ctrlrange[2*(uadr+k)],
+                          m->actuator_ctrlrange[2*(uadr+k)+1]);
+        }
+      }
+    }
+    mjtNum slew_s = m->actuator_dynprm[mjNDYN*i + 7];
+    if (slew_s > 0 && m->actuator_actadr[i] >= 0) {
+      mjtNum u_prev = d->act[m->actuator_actadr[i]];
+      mjtNum slew = slew_s * m->opt.timestep;
+      u[0] = mju_clip(u[0], u_prev - slew, u_prev + slew);
+    }
+  }
+  int spec = m->actuator_ctrlspec[i];
+  int adr = 0;
+  u4[0] = (spec & mjINPUT_POS)     ? u[adr++] : 0;
+  u4[1] = (spec & mjINPUT_VEL)     ? u[adr++] : 0;
+  u4[2] = (spec & mjINPUT_FF)      ? u[adr++] : 0;
+  u4[3] = (spec & mjINPUT_VOLTAGE) ? u[adr]   : 0;
+}
+
+
+// compute DC motor terminal voltage, optionally reporting Vmax controller saturation
+static mjtNum dcmotorVoltage(const mjModel* m, const mjData* d, int i, int* v_clamped) {
+  mjtNum u4[4];
+  dcmotorInputs(m, d, i, u4);
+  if (v_clamped) {
+    *v_clamped = 0;
+  }
+  int spec = m->actuator_ctrlspec[i];
+  mjtNum voltage = 0;
+  if (m->actuator_ctrlnum[i] > 0 && (spec & (mjINPUT_POS | mjINPUT_VEL | mjINPUT_FF))) {
+    const mjtNum* dynprm = m->actuator_dynprm + mjNDYN*i;
+    const mjtNum* gainprm = m->actuator_gainprm + mjNGAIN*i;
+    mjDCMotorSlots slots = mj_dcmotorSlots(dynprm, gainprm);
+    int oadr = m->actuator_outadr[i];
+    mjtNum x_I = (slots.integral >= 0) ? d->act[m->actuator_actadr[i] + slots.integral] : 0;
+    mjtNum torque = gainprm[4]*(u4[0] - d->actuator_length[oadr]) +
+                    gainprm[6]*(u4[1] - d->actuator_velocity[oadr]) +
+                    gainprm[5]*x_I + u4[2];
+    voltage = gainprm[0]/gainprm[1] * torque + gainprm[1]*d->actuator_velocity[oadr];
+    mjtNum Vmax = gainprm[7];
+    if (Vmax > 0 && mju_abs(voltage) >= Vmax) {
+      if (v_clamped) {
+        *v_clamped = 1;
+      }
+      voltage = mju_clip(voltage, -Vmax, Vmax);
+    }
+  }
+  return voltage + u4[3];
+}
+
+
+// post-scaling pre-mechanical force of DC motor i (for tendon actfrcrange sum)
+static mjtNum dcmotorPreMechForce(const mjModel* m, const mjData* d, int i) {
+  int oadr = m->actuator_outadr[i];
+  const mjtNum* biasprm = m->actuator_biasprm + mjNBIAS*i;
+  const mjtNum* dynprm = m->actuator_dynprm + mjNDYN*i;
+  mjtNum f = d->actuator_force[oadr];
+
+  // mechanical forces are not added to disabled, plugin, or sleeping actuators (mj_fwdActuation)
+  if (mj_actuatorDisabled(m, i) || m->actuator_plugin[i] >= 0 ||
+      (mjENABLED(mjENBL_SLEEP) && mj_sleepState(m, d, mjOBJ_ACTUATOR, i) == mjS_ASLEEP)) {
+    return f;
+  }
+  if (biasprm[0] != 0) {
+    f -= biasprm[0] * mju_sin(biasprm[1]*d->actuator_length[oadr] + biasprm[2]);
+  }
+  if (dynprm[5] > 0) {
+    mjDCMotorSlots slots = mj_dcmotorSlots(dynprm, m->actuator_gainprm + mjNGAIN*i);
+    int adr = m->actuator_actadr[i] + slots.bristle;
+    f += dynprm[5]*d->act[adr] + dynprm[6]*d->act_dot[adr];
+  }
+  return f;
+}
+
+
+// return 1 if tendon total actuator force is clamped by actfrcrange
+static int tendonActFrcClamped(const mjModel* m, const mjData* d, int tendon_id) {
+  if (!m->tendon_actfrclimited[tendon_id]) {
+    return 0;
+  }
+  const mjtNum* range = m->tendon_actfrcrange + 2*tendon_id;
+  mjtNum tendon_force = 0;
+  for (int j=0; j < m->nactuator; j++) {
+    if (m->actuator_trntype[j] == mjTRN_TENDON && m->actuator_trnid[2*j] == tendon_id) {
+      tendon_force += (m->actuator_biastype[j] == mjBIAS_DCMOTOR)
+                      ? dcmotorPreMechForce(m, d, j)
+                      : d->actuator_force[m->actuator_outadr[j]];
+    }
+  }
+
+  // relative tolerance for rounding in proportional force scaling (mj_fwdActuation)
+#ifdef mjUSESINGLE
+  const mjtNum tol = 1e-5f;
+#else
+  const mjtNum tol = 1e-10;
+#endif
+  return tendon_force <= range[0] + tol*mju_abs(range[0]) ||
+         tendon_force >= range[1] - tol*mju_abs(range[1]);
+}
+
+
+// DC motor saturation flags: 1 electrical force clamped, 2 Vmax saturated, 4 dimax clamped
+static int dcmotorSaturation(const mjModel* m, const mjData* d, int i) {
+  int flags = 0;
+  int v_clamped = 0;
+  mjtNum V = dcmotorVoltage(m, d, i, &v_clamped);
+  if (v_clamped) {
+    flags |= 2;
+  }
+
+  // pre-clamp electrical force (before tendon/actuator force clamping and mechanics)
+  const mjtNum* dynprm = m->actuator_dynprm + mjNDYN*i;
+  const mjtNum* gainprm = m->actuator_gainprm + mjNGAIN*i;
+  mjtNum K = gainprm[1];
+  mjtNum f_elec;
+  if (dynprm[0] > 0) {
+    int act_adr = m->actuator_actadr[i] + m->actuator_actnum[i] - 1;
+    mjtNum act = m->actuator_actearly[i]
+                 ? mj_nextActivation(m, d, i, act_adr, d->act_dot[act_adr])
+                 : d->act[act_adr];
+    f_elec = K * act;
+  } else {
+    int oadr = m->actuator_outadr[i];
+    mjtNum R = mj_dcmotorResistance(m, d, i);
+    f_elec = (K / R) * (V - K * d->actuator_velocity[oadr]);
+  }
+
+  if (m->actuator_forcelimited[i]) {
+    const mjtNum* range = m->actuator_forcerange + 2*i;
+    if (f_elec <= range[0] || f_elec >= range[1]) {
+      flags |= 1;
+    }
+  }
+  if ((flags & 1) == 0 && m->actuator_trntype[i] == mjTRN_TENDON &&
+      tendonActFrcClamped(m, d, m->actuator_trnid[2*i])) {
+    flags |= 1;
+  }
+
+  if (dynprm[0] > 0 && dynprm[1] > 0) {
+    int act_last = m->actuator_actadr[i] + m->actuator_actnum[i] - 1;
+    if (mju_abs(d->act_dot[act_last]) >= dynprm[1]) {
+      flags |= 4;
+    }
+  }
+
+  return flags;
+}
+
+
+// return 1 if DC motor i's electrical force is clamped by forcerange or tendon actfrcrange
+static int dcmotorElecClamped(const mjModel* m, const mjData* d, int i) {
+  return (dcmotorSaturation(m, d, i) & 1) != 0;
+}
+
+
 // per-actuator skip conditions shared by the qDeriv and discrete-metric assemblers:
 // disabled, sleeping, or force-clamped actuators contribute no derivative
 int mjd_actuatorDerivSkip(const mjModel* m, const mjData* d, int i, int sleep_filter) {
@@ -2583,47 +2756,36 @@ int mjd_actuatorDerivSkip(const mjModel* m, const mjData* d, int i, int sleep_fi
     return 1;
   }
 
-  // skip if force is clamped by forcerange
-  if (m->actuator_forcelimited[i]) {
-    int oadr = m->actuator_outadr[i];
-    const mjtNum* range = m->actuator_forcerange + 2*i;
-
-    // SO3: force is norm-clamped (approximation: saturated force still varies tangentially)
-    if (m->actuator_gaintype[i] == mjGAIN_SO3) {
-      if (mju_norm3(d->actuator_force + oadr) >= range[1]) {
-        return 1;
-      }
-    } else {
-      mjtNum force = d->actuator_force[oadr];
-      if (force <= range[0] || force >= range[1]) {
-        return 1;
-      }
+  // DC motor: mechanical forces (cogging, LuGre) bypass electrical force clamping
+  if (m->actuator_biastype[i] == mjBIAS_DCMOTOR) {
+    int has_mech = (m->actuator_biasprm[mjNBIAS*i] != 0 ||
+                    m->actuator_dynprm[mjNDYN*i + 6] > 0);
+    if (!has_mech && dcmotorElecClamped(m, d, i)) {
+      return 1;
     }
-  }
+  } else {
+    // skip if force is clamped by forcerange
+    if (m->actuator_forcelimited[i]) {
+      int oadr = m->actuator_outadr[i];
+      const mjtNum* range = m->actuator_forcerange + 2*i;
 
-  // skip if tendon total actuator force is clamped by actfrcrange
-  if (m->actuator_trntype[i] == mjTRN_TENDON) {
-    int tendon_id = m->actuator_trnid[2*i];
-    if (m->tendon_actfrclimited[tendon_id]) {
-      const mjtNum* range = m->tendon_actfrcrange + 2*tendon_id;
-      mjtNum tendon_force = 0;
-      for (int j=0; j < m->nactuator; j++) {
-        if (m->actuator_trntype[j] == mjTRN_TENDON &&
-            m->actuator_trnid[2*j] == tendon_id) {
-          tendon_force += d->actuator_force[m->actuator_outadr[j]];
+      // SO3: force is norm-clamped (approximation: saturated force still varies tangentially)
+      if (m->actuator_gaintype[i] == mjGAIN_SO3) {
+        if (mju_norm3(d->actuator_force + oadr) >= range[1]) {
+          return 1;
+        }
+      } else {
+        mjtNum force = d->actuator_force[oadr];
+        if (force <= range[0] || force >= range[1]) {
+          return 1;
         }
       }
+    }
 
-      // relative tolerance for rounding in proportional force scaling (mj_fwdActuation)
-#ifdef mjUSESINGLE
-      const mjtNum tol = 1e-5f;
-#else
-      const mjtNum tol = 1e-10;
-#endif
-      if (tendon_force <= range[0] + tol*mju_abs(range[0]) ||
-          tendon_force >= range[1] - tol*mju_abs(range[1])) {
-        return 1;
-      }
+    // skip if tendon total actuator force is clamped by actfrcrange
+    if (m->actuator_trntype[i] == mjTRN_TENDON &&
+        tendonActFrcClamped(m, d, m->actuator_trnid[2*i])) {
+      return 1;
     }
   }
 
@@ -2677,6 +2839,17 @@ mjtNum mjd_actuatorLenDeriv(const mjModel* m, const mjData* d, int i) {
                                   m->actuator_biasprm + mjNBIAS*i);
   }
 
+  // DC motor cogging torque (mechanical, added after force clamping)
+  else if (m->actuator_biastype[i] == mjBIAS_DCMOTOR) {
+    const mjtNum* biasprm = m->actuator_biasprm + mjNBIAS*i;
+    mjtNum A = biasprm[0];
+    if (A != 0) {
+      mjtNum Np = biasprm[1];
+      mjtNum phi = biasprm[2];
+      bias_len = A * Np * mju_cos(Np * d->actuator_length[oadr] + phi);
+    }
+  }
+
   // affine gain
   if (m->actuator_gaintype[i] == mjGAIN_AFFINE) {
     gain_len = (m->actuator_gainprm + mjNGAIN*i)[1];
@@ -2693,31 +2866,37 @@ mjtNum mjd_actuatorLenDeriv(const mjModel* m, const mjData* d, int i) {
 
   // DC motor controller position loop
   else if (m->actuator_gaintype[i] == mjGAIN_DCMOTOR) {
-    const mjtNum* dynprm = m->actuator_dynprm + mjNDYN*i;
-    const mjtNum* gainprm = m->actuator_gainprm + mjNGAIN*i;
-    mjtNum te = dynprm[0];
+    int sat = dcmotorSaturation(m, d, i);
+    if ((sat & 1) == 0) {
+      const mjtNum* dynprm = m->actuator_dynprm + mjNDYN*i;
+      const mjtNum* gainprm = m->actuator_gainprm + mjNGAIN*i;
+      mjtNum te = dynprm[0];
 
-    // controller length derivative dV/dl: torque-space kp through the tau->V map; Vmax
-    // clipping and the O(h*ki) integral-state chain are ignored, matching the velocity
-    // derivative's treatment of the saturations
-    mjtNum dVdl = 0;
-    if (m->actuator_ctrlspec[i] & (mjINPUT_POS | mjINPUT_VEL | mjINPUT_FF)) {
-      mjtNum R = mju_max(mjMINVAL, gainprm[0]);
-      mjtNum K = gainprm[1];  // K > 0 on this path, enforced by the compiler
-      dVdl = -gainprm[4]*R/K;
-    }
+      int v_clamped = (sat & 2) != 0;
 
-    if (te > 0) {
-      // stateful current with actearly: d(K*next_act)/d(length) through act_dot
-      mjtNum R = mju_max(mjMINVAL, gainprm[0]);
-      mjtNum K = gainprm[1];
-      mjtNum s = 1 - mju_exp(-m->opt.timestep / te);
-      bias_len += K * dVdl * s / R;
-    } else if (dVdl != 0) {
-      // stateless: K/R * dVdl = -kp exactly, the motor parameters cancel
-      mjtNum R = mju_max(mjMINVAL, gainprm[0]);
-      mjtNum K = gainprm[1];
-      bias_len += K * dVdl / R;
+      // controller length derivative dV/dl: torque-space kp through the tau->V map using
+      // nameplate resistance; zeroed under Vmax saturation, O(h*ki) integral chain ignored
+      mjtNum dVdl = 0;
+      if (!v_clamped && (m->actuator_ctrlspec[i] & (mjINPUT_POS | mjINPUT_VEL | mjINPUT_FF))) {
+        mjtNum R0 = mju_max(mjMINVAL, gainprm[0]);
+        mjtNum K = gainprm[1];  // K > 0 on this path, enforced by the compiler
+        dVdl = -gainprm[4]*R0/K;
+      }
+
+      if (te > 0) {
+        if (m->actuator_actearly[i] && dVdl != 0 && (sat & 4) == 0) {
+          // stateful current with actearly: d(K*next_act)/d(length) through act_dot
+          mjtNum R = mj_dcmotorResistance(m, d, i);
+          mjtNum K = gainprm[1];
+          mjtNum s = 1 - mju_exp(-m->opt.timestep / te);
+          bias_len += K * dVdl * s / R;
+        }
+      } else if (dVdl != 0) {
+        // stateless: K/R * dVdl = -kp * R0 / R
+        mjtNum R = mj_dcmotorResistance(m, d, i);
+        mjtNum K = gainprm[1];
+        bias_len += K * dVdl / R;
+      }
     }
   }
 
@@ -2734,6 +2913,11 @@ mjtNum mjd_actuatorLenDeriv(const mjModel* m, const mjData* d, int i) {
 mjtNum mjd_actuatorVelDeriv(const mjModel* m, const mjData* d, int i) {
   int oadr = m->actuator_outadr[i];
   mjtNum bias_vel = 0, gain_vel = 0;
+  int sat_dc = 0;
+  if (m->actuator_biastype[i] == mjBIAS_DCMOTOR ||
+      m->actuator_gaintype[i] == mjGAIN_DCMOTOR) {
+    sat_dc = dcmotorSaturation(m, d, i);
+  }
 
   // affine bias
   if (m->actuator_biastype[i] == mjBIAS_AFFINE) {
@@ -2750,7 +2934,7 @@ mjtNum mjd_actuatorVelDeriv(const mjModel* m, const mjData* d, int i) {
   else if (m->actuator_biastype[i] == mjBIAS_DCMOTOR) {
     const mjtNum* dynprm = m->actuator_dynprm + mjNDYN*i;
     const mjtNum* gainprm = m->actuator_gainprm + mjNGAIN*i;
-    if (dynprm[0] <= 0) {
+    if (dynprm[0] <= 0 && (sat_dc & 1) == 0) {
       mjtNum R = mj_dcmotorResistance(m, d, i);
       mjtNum K = gainprm[1];
       bias_vel -= K * K / R;
@@ -2778,28 +2962,34 @@ mjtNum mjd_actuatorVelDeriv(const mjModel* m, const mjData* d, int i) {
     const mjtNum* gainprm = m->actuator_gainprm + mjNGAIN*i;
     mjtNum te = dynprm[0];
 
-    // controller velocity derivative dV/dw: torque-space kd through the tau->V map using
-    // nameplate resistance, plus back-EMF compensation K, which cancels the physical -K^2/R
-    // back-EMF bias term so net damping is -kd*R0/R; Vmax clipping is ignored here
-    mjtNum dVdw = 0;
-    if (m->actuator_ctrlspec[i] & (mjINPUT_POS | mjINPUT_VEL | mjINPUT_FF)) {
-      mjtNum R0 = mju_max(mjMINVAL, gainprm[0]);
-      mjtNum K = gainprm[1];  // K > 0 on this path, enforced by the compiler
-      dVdw = -gainprm[6]*R0/K + K;
-    }
+    if ((sat_dc & 1) == 0) {
+      int v_clamped = (sat_dc & 2) != 0;
 
-    if (te > 0) {
-      // stateful current with actearly: d(K*next_act)/dω
-      // includes both back-EMF (-K) and controller (dVdw) through act_dot
-      mjtNum R = mj_dcmotorResistance(m, d, i);
-      mjtNum K = gainprm[1];
-      mjtNum s = 1 - mju_exp(-m->opt.timestep / te);
-      bias_vel += K * (dVdw - K) * s / R;
-    } else if (dVdw != 0) {
-      // stateless: controller terms only (back-EMF handled in bias block)
-      mjtNum R = mj_dcmotorResistance(m, d, i);
-      mjtNum K = gainprm[1];
-      bias_vel += K * dVdw / R;
+      // controller velocity derivative dV/dw: torque-space kd through the tau->V map using
+      // nameplate resistance, plus back-EMF compensation K, which cancels the physical -K^2/R
+      // back-EMF bias term so net damping is -kd*R0/R; zeroed under Vmax saturation
+      mjtNum dVdw = 0;
+      if (!v_clamped && (m->actuator_ctrlspec[i] & (mjINPUT_POS | mjINPUT_VEL | mjINPUT_FF))) {
+        mjtNum R0 = mju_max(mjMINVAL, gainprm[0]);
+        mjtNum K = gainprm[1];  // K > 0 on this path, enforced by the compiler
+        dVdw = -gainprm[6]*R0/K + K;
+      }
+
+      if (te > 0) {
+        if (m->actuator_actearly[i] && (sat_dc & 4) == 0) {
+          // stateful current with actearly: d(K*next_act)/dω
+          // includes both back-EMF (-K) and controller (dVdw) through act_dot
+          mjtNum R = mj_dcmotorResistance(m, d, i);
+          mjtNum K = gainprm[1];
+          mjtNum s = 1 - mju_exp(-m->opt.timestep / te);
+          bias_vel += K * (dVdw - K) * s / R;
+        }
+      } else if (dVdw != 0) {
+        // stateless: controller terms only (back-EMF handled in bias block)
+        mjtNum R = mj_dcmotorResistance(m, d, i);
+        mjtNum K = gainprm[1];
+        bias_vel += K * dVdw / R;
+      }
     }
 
     // LuGre: force includes -sigma1*z_dot, z_dot = a*z + v

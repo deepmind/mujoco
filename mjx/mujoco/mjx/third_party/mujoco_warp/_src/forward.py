@@ -2698,6 +2698,7 @@ def fwd_velocity(m: Model, d: Data):
 def _actuator_force(
   # Model:
   na: int,
+  ntendon: int,
   opt_timestep: wp.array[float],
   jnt_type: wp.array[int],
   actuator_trntype: wp.array[int],
@@ -2899,10 +2900,6 @@ def _actuator_force(
             ctrl_act = wp.clamp(ctrl_act, -Imax, Imax)
         else:  # temperature or slew or default
           ctrl_act = act + act_dot * opt_timestep[worldid % opt_timestep.shape[0]]
-
-        if actuator_actlimited[uid]:
-          actrange = actuator_actrange[worldid % actuator_actrange.shape[0], uid]
-          ctrl_act = wp.clamp(ctrl_act, actrange[0], actrange[1])
       else:
         ctrl_act = next_act(
           opt_timestep[worldid % opt_timestep.shape[0]],
@@ -3001,28 +2998,29 @@ def _actuator_force(
 
   force = gain * ctrl_act + bias
 
-  if actuator_forcelimited[uid]:
-    forcerange = actuator_forcerange[worldid % actuator_forcerange.shape[0], uid]
-    force = wp.clamp(force, forcerange[0], forcerange[1])
+  if not (ntendon > 0 and trntype == TrnType.TENDON):
+    if actuator_forcelimited[uid]:
+      forcerange = actuator_forcerange[worldid % actuator_forcerange.shape[0], uid]
+      force = wp.clamp(force, forcerange[0], forcerange[1])
 
-  # add DC motor mechanical forces (not subject to current limits)
-  if biastype == BiasType.DCMOTOR:
-    # cogging torque
-    A = biasprm[0]
-    if A != 0.0:
-      Np = biasprm[1]
-      phi = biasprm[2]
-      force += A * wp.sin(Np * length + phi)
+    # add DC motor mechanical forces (not subject to current limits)
+    if biastype == BiasType.DCMOTOR:
+      # cogging torque
+      A = biasprm[0]
+      if A != 0.0:
+        Np = biasprm[1]
+        phi = biasprm[2]
+        force += A * wp.sin(Np * length + phi)
 
-    # LuGre friction
-    sigma0 = dynprm[5]
-    if sigma0 > 0.0:
-      sigma1 = dynprm[6]
-      slots = util_misc.dcmotor_slots(dynprm, gainprm)
-      adr = act_first + slots[3]  # slots[3] is bristle
-      z = act_in[worldid, adr]
-      z_dot = act_dot_out[worldid, adr]
-      force -= sigma0 * z + sigma1 * z_dot
+      # LuGre friction
+      sigma0 = dynprm[5]
+      if na and act_first >= 0 and sigma0 > 0.0:
+        sigma1 = dynprm[6]
+        slots = util_misc.dcmotor_slots(dynprm, gainprm)
+        adr = act_first + slots[3]  # slots[3] is bristle
+        z = act_in[worldid, adr]
+        z_dot = act_dot_out[worldid, adr]
+        force -= sigma0 * z + sigma1 * z_dot
 
   actuator_force_out[worldid, uid] = force
 
@@ -3059,7 +3057,19 @@ def _tendon_actuator_force_clamp(
   tendon_actfrclimited: wp.array[bool],
   tendon_actfrcrange: wp.array2d[wp.vec2],
   actuator_trntype: wp.array[int],
+  actuator_biastype: wp.array[int],
+  actuator_actadr: wp.array[int],
   actuator_trnid: wp.array[wp.vec2i],
+  actuator_dynprm: wp.array2d[vec10],
+  actuator_gainprm: wp.array2d[vec10],
+  actuator_biasprm: wp.array2d[vec10],
+  actuator_forcelimited: wp.array[bool],
+  actuator_forcerange: wp.array2d[wp.vec2],
+  # Data in:
+  act_in: wp.array2d[float],
+  act_dot_in: wp.array2d[float],
+  actuator_length_in: wp.array2d[float],
+  actuator_force_in: wp.array2d[float],
   # In:
   ten_actfrc_in: wp.array2d[float],
   # Data out:
@@ -3067,16 +3077,44 @@ def _tendon_actuator_force_clamp(
 ):
   worldid, actid = wp.tid()
 
-  if actuator_trntype[actid] == TrnType.TENDON:
-    tenid = actuator_trnid[actid][0]
-    if tendon_actfrclimited[tenid]:
-      ten_actfrc = ten_actfrc_in[worldid, tenid]
-      actfrcrange = tendon_actfrcrange[worldid % tendon_actfrcrange.shape[0], tenid]
+  if actuator_trntype[actid] != TrnType.TENDON:
+    return
 
+  tenid = actuator_trnid[actid][0]
+  ten_limited = tendon_actfrclimited[tenid]
+  frc_limited = actuator_forcelimited[actid]
+  is_dcmotor = actuator_biastype[actid] == BiasType.DCMOTOR
+  if not ten_limited and not frc_limited and not is_dcmotor:
+    return
+
+  force = actuator_force_in[worldid, actid]
+  if ten_limited:
+    ten_actfrc = ten_actfrc_in[worldid, tenid]
+    if ten_actfrc != 0.0:
+      actfrcrange = tendon_actfrcrange[worldid % tendon_actfrcrange.shape[0], tenid]
       if ten_actfrc < actfrcrange[0]:
-        actuator_force_out[worldid, actid] *= actfrcrange[0] / ten_actfrc
+        force *= actfrcrange[0] / ten_actfrc
       elif ten_actfrc > actfrcrange[1]:
-        actuator_force_out[worldid, actid] *= actfrcrange[1] / ten_actfrc
+        force *= actfrcrange[1] / ten_actfrc
+
+  if frc_limited:
+    forcerange = actuator_forcerange[worldid % actuator_forcerange.shape[0], actid]
+    force = wp.clamp(force, forcerange[0], forcerange[1])
+
+  # add DC motor mechanical forces (not subject to current or tendon force limits)
+  if is_dcmotor:
+    force += util_misc.dcmotor_mech_force(
+      act_in,
+      act_dot_in,
+      worldid,
+      actuator_actadr[actid],
+      actuator_length_in[worldid, actid],
+      actuator_dynprm[worldid % actuator_dynprm.shape[0], actid],
+      actuator_gainprm[worldid % actuator_gainprm.shape[0], actid],
+      actuator_biasprm[worldid % actuator_biasprm.shape[0], actid],
+    )
+
+  actuator_force_out[worldid, actid] = force
 
 
 @cache_kernel
@@ -3164,6 +3202,7 @@ def fwd_actuation(m: Model, d: Data):
       dim=(d.nworld, m.nactuator),
       inputs=[
         m.na,
+        m.ntendon,
         m.opt.timestep,
         m.jnt_type,
         m.actuator_trntype,
@@ -3219,7 +3258,24 @@ def fwd_actuation(m: Model, d: Data):
       wp.launch(
         _tendon_actuator_force_clamp,
         dim=(d.nworld, m.nactuator),
-        inputs=[m.tendon_actfrclimited, m.tendon_actfrcrange, m.actuator_trntype, m.actuator_trnid, ten_actfrc],
+        inputs=[
+          m.tendon_actfrclimited,
+          m.tendon_actfrcrange,
+          m.actuator_trntype,
+          m.actuator_biastype,
+          m.actuator_actadr,
+          m.actuator_trnid,
+          m.actuator_dynprm,
+          m.actuator_gainprm,
+          m.actuator_biasprm,
+          m.actuator_forcelimited,
+          m.actuator_forcerange,
+          d.act,
+          d.act_dot,
+          d.actuator_length,
+          d.actuator_force,
+          ten_actfrc,
+        ],
         outputs=[d.actuator_force],
       )
 

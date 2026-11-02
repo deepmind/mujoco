@@ -809,6 +809,38 @@ def dcmotor_resistance(
 
 
 @wp.func
+def dcmotor_mech_force(
+  # Data in:
+  act_in: wp.array2d[float],
+  act_dot_in: wp.array2d[float],
+  # In:
+  worldid: int,
+  actadr: int,
+  length: float,
+  dynprm: types.vec10,
+  gainprm: types.vec10,
+  biasprm: types.vec10,
+) -> float:
+  """Compute DC motor mechanical force (cogging torque and LuGre friction)."""
+  mech = 0.0
+
+  # cogging torque
+  A = biasprm[0]
+  if A != 0.0:
+    mech += A * wp.sin(biasprm[1] * length + biasprm[2])
+
+  # LuGre friction
+  sigma0 = dynprm[5]
+  if actadr >= 0 and sigma0 > 0.0:
+    sigma1 = dynprm[6]
+    slots = dcmotor_slots(dynprm, gainprm)
+    adr = actadr + slots[3]
+    mech -= sigma0 * act_in[worldid, adr] + sigma1 * act_dot_in[worldid, adr]
+
+  return mech
+
+
+@wp.func
 def lugre_stribeck(velocity: float, F_C: float, F_S: float, v_S: float) -> float:
   ratio = velocity / wp.max(MJ_MINVAL, v_S)
   return F_C + (F_S - F_C) * wp.exp(-ratio * ratio)
