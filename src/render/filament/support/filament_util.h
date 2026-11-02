@@ -19,6 +19,7 @@
 #include <functional>
 #include <string>
 #include <string_view>
+#include <type_traits>
 
 #include <math/mat3.h>
 #include <math/mat4.h>
@@ -121,8 +122,11 @@ filament::math::float4 CalculateOrientation(const filament::math::float3& p1,
                                             const filament::math::float3& p3);
 
 // Reads a value with the given name from the mjModel's data sections. The
-// default_value is returned if the named element is not found.
+// default_value is returned if the named element is not found. Supported types
+// are: bool, enums, arithmetic types (int, float, etc.), filament math types,
+// and strings (const char* or string_view).
 template <typename T>
+  requires(!std::is_pointer_v<T> || std::is_same_v<T, const char*>)
 T ReadElement(const mjModel* model, const char* name, T default_value = T()) {
   constexpr bool is_string =
       std::is_same_v<T, const char*> || std::is_same_v<T, std::string_view>;
@@ -163,6 +167,22 @@ T ReadElement(const mjModel* model, const char* name, T default_value = T()) {
     return static_cast<T>(*ptr != 0);
   }
   return default_value;
+}
+
+// ReadElement overload for reading C-style arrays. The array is left unchanged
+// if the named element is not found.
+template <typename T, int N>
+void ReadElement(const mjModel* model, const char* name, T (&arr)[N]) {
+  const int id = mj_name2id(model, mjOBJ_NUMERIC, name);
+  if (id >= 0) {
+    if (model->numeric_size[id] != N) {
+      mju_error("Invalid numeric size.");
+    }
+    const mjtNum* ptr = model->numeric_data + model->numeric_adr[id];
+    for (int i = 0; i < N; ++i) {
+      arr[i] = static_cast<T>(ptr[i]);
+    }
+  }
 }
 
 // Returns the full path to a filament asset based on its file name.
