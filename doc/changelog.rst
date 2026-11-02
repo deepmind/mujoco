@@ -312,6 +312,10 @@ Bug fixes
   :ref:`actdim<actuator-general-actdim>` at compile time.
 - Fixed a bug where tendon actuators saturated by :ref:`actuatorfrcrange<tendon-spatial-actuatorfrcrange>` still
   contributed to implicit actuator derivatives.
+- Actuators saturated by joint :ref:`actuatorfrcrange<body-joint-actuatorfrcrange>` now also skip implicit actuator
+  derivatives, changing integration under ``implicit``, ``implicitfast``, and ``discrete``. Because actuators on
+  saturated joints no longer contribute implicit damping, models with light links and no armature may need joint
+  armature or a smaller timestep.
 - Fixed several MJCF XML loading and saving bugs:
 
   - :ref:`include<include>` no longer double-prefixes the model directory on nested or relative paths.

@@ -2789,6 +2789,19 @@ int mjd_actuatorDerivSkip(const mjModel* m, const mjData* d, int i, int sleep_fi
     }
   }
 
+  // skip if joint total actuator force is clamped by actfrcrange
+  // (keeping tendon/site actuator contributions on this dof is an approximation)
+  if (m->actuator_trntype[i] == mjTRN_JOINT || m->actuator_trntype[i] == mjTRN_JOINTINPARENT) {
+    int jnt_id = m->actuator_trnid[2*i];
+    if (m->jnt_actfrclimited[jnt_id]) {
+      const mjtNum* range = m->jnt_actfrcrange + 2*jnt_id;
+      mjtNum jnt_force = d->qfrc_actuator[m->jnt_dofadr[jnt_id]];
+      if (jnt_force <= range[0] || jnt_force >= range[1]) {
+        return 1;
+      }
+    }
+  }
+
   return 0;
 }
 

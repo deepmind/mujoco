@@ -55,6 +55,31 @@ wp.set_module_options({"enable_backward": False, "default_grid_stride": False})
 
 
 @wp.func
+def _jnt_actfrc_clamped(
+  # Model:
+  jnt_dofadr: wp.array[int],
+  jnt_actfrclimited: wp.array[bool],
+  jnt_actfrcrange: wp.array2d[wp.vec2],
+  actuator_trntype: wp.array[int],
+  actuator_trnid: wp.array[wp.vec2i],
+  # Data in:
+  qfrc_actuator_in: wp.array2d[float],
+  # In:
+  worldid: int,
+  actid: int,
+) -> bool:
+  trntype = actuator_trntype[actid]
+  if trntype == TrnType.JOINT or trntype == TrnType.JOINTINPARENT:
+    jntid = actuator_trnid[actid][0]
+    if jnt_actfrclimited[jntid]:
+      jnt_force = qfrc_actuator_in[worldid, jnt_dofadr[jntid]]
+      actfrcrange = jnt_actfrcrange[worldid % jnt_actfrcrange.shape[0], jntid]
+      if jnt_force <= actfrcrange[0] or jnt_force >= actfrcrange[1]:
+        return True
+  return False
+
+
+@wp.func
 def _tendon_actfrc_clamped(
   # Model:
   tendon_actfrclimited: wp.array[bool],
@@ -236,6 +261,9 @@ def _qderiv_actuator_passive_vel(
   # Model:
   opt_timestep: wp.array[float],
   opt_disableflags: int,
+  jnt_dofadr: wp.array[int],
+  jnt_actfrclimited: wp.array[bool],
+  jnt_actfrcrange: wp.array2d[wp.vec2],
   tendon_actfrclimited: wp.array[bool],
   tendon_actfrcrange: wp.array2d[wp.vec2],
   actuator_trntype: wp.array[int],
@@ -267,6 +295,7 @@ def _qderiv_actuator_passive_vel(
   actuator_length_in: wp.array2d[float],
   actuator_velocity_in: wp.array2d[float],
   actuator_force_in: wp.array2d[float],
+  qfrc_actuator_in: wp.array2d[float],
   # Out:
   vel_out: wp.array2d[float],
 ):
@@ -403,6 +432,21 @@ def _qderiv_actuator_passive_vel(
       worldid,
       actid,
     )
+  ):
+    vel_out[worldid, actid] = 0.0
+    return
+
+  # skip if joint total actuator force is clamped by actfrcrange
+  # (keeping tendon/site actuator contributions on this dof is an approximation)
+  if _jnt_actfrc_clamped(
+    jnt_dofadr,
+    jnt_actfrclimited,
+    jnt_actfrcrange,
+    actuator_trntype,
+    actuator_trnid,
+    qfrc_actuator_in,
+    worldid,
+    actid,
   ):
     vel_out[worldid, actid] = 0.0
     return
@@ -1536,6 +1580,9 @@ def deriv_smooth_vel(m: Model, d: Data, out: wp.array2d[float]):
         inputs=[
           m.opt.timestep,
           m.opt.disableflags,
+          m.jnt_dofadr,
+          m.jnt_actfrclimited,
+          m.jnt_actfrcrange,
           m.tendon_actfrclimited,
           m.tendon_actfrcrange,
           m.actuator_trntype,
@@ -1566,6 +1613,7 @@ def deriv_smooth_vel(m: Model, d: Data, out: wp.array2d[float]):
           d.actuator_length,
           d.actuator_velocity,
           d.actuator_force,
+          d.qfrc_actuator,
         ],
         outputs=[vel],
       )
@@ -1993,6 +2041,9 @@ def _eff_actuator_actuation(nv: int, deterministic: bool = False):
     # Model:
     opt_timestep: wp.array[float],
     opt_disableflags: int,
+    jnt_dofadr: wp.array[int],
+    jnt_actfrclimited: wp.array[bool],
+    jnt_actfrcrange: wp.array2d[wp.vec2],
     tendon_actfrclimited: wp.array[bool],
     tendon_actfrcrange: wp.array2d[wp.vec2],
     actuator_trntype: wp.array[int],
@@ -2028,6 +2079,7 @@ def _eff_actuator_actuation(nv: int, deterministic: bool = False):
     actuator_moment_in: wp.array2d[float],
     actuator_velocity_in: wp.array2d[float],
     actuator_force_in: wp.array2d[float],
+    qfrc_actuator_in: wp.array2d[float],
     # Data out:
     efm_ca_out: wp.array2d[float],
     efm_as_out: wp.array2d[float],
@@ -2219,6 +2271,21 @@ def _eff_actuator_actuation(nv: int, deterministic: bool = False):
         worldid,
         actid,
       )
+    ):
+      efm_as_out[worldid, actid] = 0.0
+      return
+
+    # skip if joint total actuator force is clamped by actfrcrange
+    # (keeping tendon/site actuator contributions on this dof is an approximation)
+    if _jnt_actfrc_clamped(
+      jnt_dofadr,
+      jnt_actfrclimited,
+      jnt_actfrcrange,
+      actuator_trntype,
+      actuator_trnid,
+      qfrc_actuator_in,
+      worldid,
+      actid,
     ):
       efm_as_out[worldid, actid] = 0.0
       return
@@ -4152,6 +4219,9 @@ def eff_actuation(m: Model, d: Data):
     inputs=[
       m.opt.timestep,
       m.opt.disableflags,
+      m.jnt_dofadr,
+      m.jnt_actfrclimited,
+      m.jnt_actfrcrange,
       m.tendon_actfrclimited,
       m.tendon_actfrcrange,
       m.actuator_trntype,
@@ -4186,6 +4256,7 @@ def eff_actuation(m: Model, d: Data):
       d.actuator_moment,
       d.actuator_velocity,
       d.actuator_force,
+      d.qfrc_actuator,
     ],
     outputs=[d.efm_ca, d.efm_as],
   )

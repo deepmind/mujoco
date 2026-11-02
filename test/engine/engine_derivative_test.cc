@@ -1927,6 +1927,177 @@ TEST_F(DerivativeTest, ForcerangeClampedAfterSO3) {
               Pointwise(MjNear(1e-7, 3e-3), qDerivAnalytic));
 }
 
+// Validate that mjd_actuatorDerivSkip skips joint and jointinparent actuators
+// saturated by joint actuatorfrcrange (both without and with actuatorgravcomp)
+// across implicitfast, implicit, and discrete integrators.
+TEST_F(DerivativeTest, JointActfrcrangeSaturation) {
+  static constexpr char kXml[] = R"(
+  <mujoco>
+    <option timestep="0.01" gravity="0 0 -10"/>
+    <worldbody>
+      <body>
+        <joint name="j0" type="hinge" axis="0 1 0" damping="1.5"/>
+        <geom type="sphere" pos="0.5 0 0" size="0.05" mass="1"/>
+        <body name="b1" pos="0.5 0 0" gravcomp="1">
+          <joint name="j1" type="hinge" axis="0 1 0" damping="2"
+                 actuatorgravcomp="true"
+                 actuatorfrclimited="true" actuatorfrcrange="-12 12"/>
+          <geom type="sphere" pos="1 0 0" size="0.05" mass="1"/>
+        </body>
+      </body>
+    </worldbody>
+    <actuator>
+      <position joint="j0" kp="20" kv="3"/>
+      <position joint="j1" kp="500" kv="50" forcerange="-20 20"/>
+      <general jointinparent="j1" biastype="affine" gainprm="100"
+        biasprm="0 -100 -10"/>
+    </actuator>
+  </mujoco>
+  )";
+
+  char error[1024];
+  MjModelPtr model = LoadModelFromString(kXml, error, sizeof(error));
+  ASSERT_THAT(model.get(), NotNull()) << error;
+  mjModel* m = model.get();
+
+  const int j1_id = mj_name2id(m, mjOBJ_JOINT, "j1");
+  const int b1_id = mj_name2id(m, mjOBJ_BODY, "b1");
+  ASSERT_GT(j1_id, 0);
+  const int dof1 = m->jnt_dofadr[j1_id];
+  const int diag1 = m->D_rowadr[dof1] + m->D_diag[dof1];
+
+  for (bool use_actgravcomp : {false, true}) {
+    SCOPED_TRACE(use_actgravcomp ? "with_actgravcomp" : "without_actgravcomp");
+    m->body_gravcomp[b1_id] = use_actgravcomp ? 1.0 : 0.0;
+    m->jnt_actgravcomp[j1_id] = use_actgravcomp ? 1 : 0;
+
+    // At qpos = 0, qvel = {0.2, -0.1}:
+    // - without actgravcomp: qfrc_gravcomp[1] = 0
+    // - with actgravcomp:    qfrc_gravcomp[1] = -10
+    // Actuators 1 & 2 contribute 500*u1 + 5 + 100*u2 + 1 = 500*u1 + 100*u2 + 6.
+    struct Case {
+      const char* name;
+      mjtNum ctrl1;
+      mjtNum ctrl2;
+      bool clamped;
+      mjtNum expected_jnt_frc;
+    };
+    const Case cases[] = {
+        // Unsaturated:
+        // without gravcomp: 0 + 6 = 6 in (-12, 12)
+        // with gravcomp:    5 + 1 + 6 - 10 = 2 in (-12, 12)
+        {"unsaturated", use_actgravcomp ? mjtNum(0.01) : mjtNum(0.0),
+         use_actgravcomp ? mjtNum(0.01) : mjtNum(0.0), false,
+         use_actgravcomp ? mjtNum(2.0) : mjtNum(6.0)},
+        // Upper-saturated (individual actuator 1 force <= 19, inside [-20,
+        // 20]):
+        // without gravcomp: 10 + 3 + 6 = 19 -> clamped to +12
+        // with gravcomp:    14 + 5 = 19 on act1, 5 + 1 = 6 on act2 => 25 - 10 =
+        // 15 -> +12
+        {"upper_clamped", use_actgravcomp ? mjtNum(0.028) : mjtNum(0.02),
+         use_actgravcomp ? mjtNum(0.05) : mjtNum(0.03), true, mjtNum(12.0)},
+        // Lower-saturated (individual actuator 1 force >= -10, inside [-20,
+        // 20]):
+        // without gravcomp: -15 - 5 + 6 = -14 -> clamped to -12
+        // with gravcomp:    -10 + 5 = -5 on act1, -1 + 1 = 0 on act2 => -5 - 10
+        // = -15 -> -12
+        {"lower_clamped", use_actgravcomp ? mjtNum(-0.02) : mjtNum(-0.03),
+         use_actgravcomp ? mjtNum(-0.01) : mjtNum(-0.05), true, mjtNum(-12.0)},
+    };
+
+    for (const Case& c : cases) {
+      SCOPED_TRACE(c.name);
+      for (mjtIntegrator integ :
+           {mjINT_IMPLICITFAST, mjINT_IMPLICIT, mjINT_DISCRETE}) {
+        SCOPED_TRACE(integ);
+        m->opt.integrator = integ;
+
+        MjDataPtr data = MakeData(model);
+        mjData* d = data.get();
+        d->qvel[0] = 0.2;
+        d->qvel[1] = -0.1;
+        d->ctrl[0] = 0.1;
+        d->ctrl[1] = c.ctrl1;
+        d->ctrl[2] = c.ctrl2;
+        mj_forward(m, d);
+
+        // Individual actuator 1 must NOT be clamped by its own [-20, 20] range
+        ASSERT_GT(d->actuator_force[1], -19.5);
+        ASSERT_LT(d->actuator_force[1], 19.5);
+        EXPECT_NEAR(d->qfrc_actuator[dof1], c.expected_jnt_frc,
+                    MjTol(1e-10, 1e-4));
+
+        if (integ == mjINT_DISCRETE) {
+          EXPECT_EQ(d->nefmA, c.clamped ? 1 : 3);
+        }
+
+        // Compare mjd_smooth_vel against mjd_smooth_velFD and mjd_passive_velFD
+        mjtNum eps = MjEps(1e-7, 1e-3);
+        int flg_bias = (integ == mjINT_IMPLICIT) ? 1 : 0;
+        mju_zero(d->qDeriv, m->nD);
+        mjd_smooth_vel(m, d, flg_bias);
+        vector<mjtNum> qDerivAnalytic = AsVector(d->qDeriv, m->nD);
+
+        if (flg_bias) {
+          mju_zero(d->qDeriv, m->nD);
+          mjd_smooth_velFD(m, d, eps);
+          EXPECT_THAT(AsVector(d->qDeriv, m->nD),
+                      Pointwise(MjNear(1e-6, 1e-2), qDerivAnalytic));
+        } else {
+          // Compare passive-only FD on dof1 diagonal: when clamped, actuator
+          // velocity derivative (-60) is dropped so qDeriv[diag1] equals
+          // passive
+          mju_zero(d->qDeriv, m->nD);
+          mjd_passive_velFD(m, d, eps);
+          mjtNum expected_diag1 =
+              d->qDeriv[diag1] + (c.clamped ? mjtNum(0) : mjtNum(-60));
+          EXPECT_NEAR(qDerivAnalytic[diag1], expected_diag1, MjTol(1e-6, 1e-2));
+        }
+
+        // When saturated, transition Jacobians A and B across all 3 integrators
+        // must match a constant-torque reference model (no phantom kp/kv).
+        if (c.clamped) {
+          mj_forward(m, d);
+          const int ndx = 2 * m->nv;
+          vector<mjtNum> A(ndx * ndx), B(ndx * m->nu);
+          mjd_transitionFD(m, d, MjEps(1e-6, 1e-3), /*flg_centered=*/1,
+                           A.data(), B.data(), nullptr, nullptr);
+
+          // Control columns for saturated joint actuators must vanish
+          for (int row = 0; row < ndx; ++row) {
+            EXPECT_NEAR(B[row * m->nu + 1], 0.0, MjTol(1e-9, 1e-4));
+            EXPECT_NEAR(B[row * m->nu + 2], 0.0, MjTol(1e-9, 1e-4));
+          }
+
+          // Build constant-torque reference model with j1 actuators zeroed
+          MjModelPtr ref_model =
+              LoadModelFromString(kXml, error, sizeof(error));
+          mjModel* m_ref = ref_model.get();
+          m_ref->opt.integrator = integ;
+          m_ref->body_gravcomp[b1_id] = m->body_gravcomp[b1_id];
+          m_ref->jnt_actgravcomp[j1_id] = m->jnt_actgravcomp[j1_id];
+          m_ref->jnt_actfrcrange[2 * j1_id] = c.expected_jnt_frc;
+          m_ref->jnt_actfrcrange[2 * j1_id + 1] = c.expected_jnt_frc;
+          mju_zero(m_ref->actuator_gainprm + mjNGAIN * 1, mjNGAIN * 2);
+          mju_zero(m_ref->actuator_biasprm + mjNBIAS * 1, mjNBIAS * 2);
+
+          MjDataPtr ref_data = MakeData(ref_model);
+          mjData* d_ref = ref_data.get();
+          d_ref->qvel[0] = 0.2;
+          d_ref->qvel[1] = -0.1;
+          d_ref->ctrl[0] = 0.1;
+          mj_forward(m_ref, d_ref);
+
+          vector<mjtNum> A_ref(ndx * ndx);
+          mjd_transitionFD(m_ref, d_ref, MjEps(1e-6, 1e-3), /*flg_centered=*/1,
+                           A_ref.data(), nullptr, nullptr, nullptr);
+          EXPECT_THAT(A, Pointwise(MjNear(1e-6, 5e-3), A_ref));
+        }
+      }
+    }
+  }
+}
+
 TEST_F(DerivativeTest, NonlinearDampingDerivative) {
   static constexpr char xml[] = R"(
   <mujoco>
@@ -2421,6 +2592,92 @@ TEST_F(DerivativeTest, DCMotorTendonActFrcClampVsLuGreAndCogging) {
   mj_forward(m.get(), dm.get());
   mjtNum len_fd = (dp->qfrc_actuator[0] - dm->qfrc_actuator[0]) / (2 * eps);
   EXPECT_NEAR(-d->efm_ak[0] / m->opt.timestep, len_fd, MjTol(1e-6, 1e-2));
+}
+
+// verify DC motor with LuGre and cogging under joint actuatorfrcrange
+TEST_F(DerivativeTest, DCMotorJointActFrcClampVsLuGreAndCogging) {
+  static constexpr char kXml[] = R"(
+  <mujoco>
+    <option integrator="discrete" timestep="0.002"/>
+    <worldbody>
+      <body>
+        <joint name="j" type="slide" actuatorfrclimited="true" actuatorfrcrange="-2 2"/>
+        <geom type="sphere" size="0.1" mass="1"/>
+      </body>
+    </worldbody>
+    <actuator>
+      <dcmotor joint="j" motorconst="1" resistance="1"
+               input="pos vel" controller="20 0 4"
+               cogging="0.5 3 0" lugre="100 2 5 6 0.1"/>
+      <position joint="j" kp="4" kv="1"/>
+    </actuator>
+  </mujoco>
+  )";
+
+  char error[1024];
+  MjModelPtr m = LoadModelFromString(kXml, error, sizeof(error));
+  ASSERT_THAT(m.get(), NotNull()) << error;
+  MjDataPtr d = MakeData(m);
+
+  // Case 1: Unclamped - actuator forces inside [-2, 2], derivatives active and
+  // match FD
+  mj_resetData(m.get(), d.get());
+  d->qpos[0] = 0.9;
+  d->ctrl[0] = 0.95;  // dcmotor pos target -> f_elec = 1.0
+  d->ctrl[2] = 0.95;  // position target -> f_pos = 0.2
+  d->act[0] = 0.005;  // small LuGre bristle deflection
+  mj_forward(m.get(), d.get());
+  ASSERT_LT(mju_abs(d->qfrc_actuator[0]), 2.0);
+  EXPECT_EQ(d->nefmA, 2);
+
+  mju_zero(d->qDeriv, m->nD);
+  mjd_smooth_vel(m.get(), d.get(), /*flg_bias=*/1);
+  mjtNum vel_analytic_1 = d->qDeriv[0];
+  EXPECT_NE(vel_analytic_1, 0.0);
+  mju_zero(d->qDeriv, m->nD);
+  mjd_smooth_velFD(m.get(), d.get(), MjTol(1e-7, 1e-3));
+  EXPECT_NEAR(vel_analytic_1, d->qDeriv[0], MjTol(1e-6, 1e-2));
+
+  // Case 2: Clamped - total joint actuator force clamped to 2.0.
+  // Joint clamping zeroes ALL derivatives (electrical, position, LuGre, and
+  // cogging).
+  mj_resetData(m.get(), d.get());
+  d->qpos[0] = 0.9;
+  d->ctrl[0] = 1.1;  // dcmotor pos target -> f_elec = 4.0
+  d->ctrl[2] = 1.0;  // position target -> f_pos = 0.4
+  d->act[0] = 0.005;
+  mj_forward(m.get(), d.get());
+  EXPECT_DOUBLE_EQ(d->qfrc_actuator[0], 2.0);
+
+  // Analytical velocity derivative vanishes completely
+  mju_zero(d->qDeriv, m->nD);
+  mjd_smooth_vel(m.get(), d.get(), /*flg_bias=*/1);
+  EXPECT_DOUBLE_EQ(d->qDeriv[0], 0.0);
+
+  // Finite difference derivative also vanishes because joint remains clamped
+  mju_zero(d->qDeriv, m->nD);
+  mjd_smooth_velFD(m.get(), d.get(), MjTol(1e-7, 1e-3));
+  EXPECT_NEAR(d->qDeriv[0], 0.0, MjTol(1e-6, 1e-2));
+
+  // No active actuators in efm_aid under discrete integrator (all clamped)
+  EXPECT_EQ(d->nefmA, 0);
+
+  // verify control sensitivity B vanishes across integrators
+  for (mjtIntegrator integ :
+       {mjINT_IMPLICITFAST, mjINT_IMPLICIT, mjINT_DISCRETE}) {
+    m->opt.integrator = integ;
+    mj_forward(m.get(), d.get());
+    const int ndx = 2 * m->nv + m->na;
+    std::vector<mjtNum> A(ndx * ndx), B(ndx * m->nu);
+    mjd_transitionFD(m.get(), d.get(), MjTol(1e-6, 1e-3), /*flg_centered=*/1,
+                     A.data(), B.data(), nullptr, nullptr);
+    // Control columns for saturated joint actuators must vanish
+    for (int row = 0; row < ndx; ++row) {
+      for (int u = 0; u < m->nu; ++u) {
+        EXPECT_NEAR(B[row * m->nu + u], 0.0, MjTol(1e-8, 1e-4));
+      }
+    }
+  }
 }
 
 // verify DC motor derivatives with delayed ctrl and slew rate limiting in
