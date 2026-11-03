@@ -1494,6 +1494,11 @@ unmodified. This extension is also needed to specify mesh directories. Also note
 :ref:`strippath<compiler-strippath>`, :ref:`angle<compiler-angle>`, :ref:`fusestatic<compiler-fusestatic>` and
 :ref:`discardvisual<compiler-discardvisual>` have different default values for URDF and MJCF.
 
+URDF specifies effort limits on joints and has no actuator model, so a joint's ``<limit effort="...">`` becomes its
+:ref:`actuatorfrcrange<body-joint-actuatorfrcrange>`. When adding actuators to the converted MJCF, either keep this
+joint-level clamp or move the limit to the actuators' :ref:`forcerange<actuator-general-forcerange>` (see
+:ref:`CForceRange`).
+
 Note that the while MJCF models are checked against a custom XML schema by the parser, URDF models are not. Even the
 MuJoCo-specific elements embedded in the URDF file are not checked. As a result, mis-typed attribute names are
 silently ignored, which can result in major confusion if the typo remains unnoticed.
