@@ -3,4 +3,6 @@ recursive-include mujoco *.h *.cc *.cc.inc *.cpp *.inl *.html *.mm CMakeLists.tx
 recursive-include mujoco/mjpython mjpython.* Info.plist
 recursive-include mujoco/studio/web *.html
 recursive-include mujoco/studio/web/dist *
+prune mujoco/simulate/build*
+prune mujoco/simulate/cmake-build*
 prune mujoco/studio/web/dist/assets

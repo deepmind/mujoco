@@ -27,13 +27,21 @@ if [[ "$(uname)" == CYGWIN* || "$(uname)" == MINGW* ]]; then
 else
   readonly tmp_dir="$(mktemp -d)"
 fi
+trap 'rm -rf "${tmp_dir}"' EXIT
 
 python -m pip install --no-build-isolation \
     --index-url "${PYPI_INDEX_URL:-https://pypi.org/simple/}" \
     --upgrade --require-hashes \
     -r ${package_dir}/make_sdist_requirements.txt
 pushd ${tmp_dir}
-cp -r "${package_dir}"/* .
+for item in "${package_dir}"/*; do
+  if [[ -d "${item}" ]]; then
+    case "${item##*/}" in
+      build*|cmake-build*|dist) continue ;;
+    esac
+  fi
+  cp -r "${item}" .
+done
 
 # Generate header files.
 old_pythonpath="${PYTHONPATH}"
@@ -59,8 +67,16 @@ cp "${package_dir}"/../LICENSE .
 mkdir -p mujoco/cmake
 cp -r "${package_dir}"/../cmake/* mujoco/cmake
 
-# Copy over Simulate source code.
-cp -r "${package_dir}"/../simulate mujoco
+# Copy over Simulate source code (excluding local build trees).
+mkdir -p mujoco/simulate
+for item in "${package_dir}"/../simulate/*; do
+  if [[ -d "${item}" ]]; then
+    case "${item##*/}" in
+      build*|cmake-build*) continue ;;
+    esac
+  fi
+  cp -r "${item}" mujoco/simulate/
+done
 
 python -m build --no-isolation . --sdist
 tar -tf dist/mujoco-*.tar.gz

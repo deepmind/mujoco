@@ -44,8 +44,10 @@ include-package-data = false
 [tool.setuptools.packages.find]
 include = ["mujoco*"]
 exclude = [
+    "mujoco.cmake*",
     "mujoco.codegen",
     "mujoco.mjpython",
+    "mujoco.simulate*",
 ]
 
 [tool.setuptools.package-data]
