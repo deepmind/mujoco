@@ -1252,5 +1252,51 @@ TEST_F(SupportTest, GeomDistanceWitnessAtExactDistmax) {
   EXPECT_THAT(fromto, Pointwise(MjNear(1e-12, 1e-5), {0, 0, 0, 1, 0, 0}));
 }
 
+TEST_F(SupportTest, ActuatorDisabledMacroGroupBounds) {
+  static constexpr char kXml[] = R"(
+  <mujoco>
+    <worldbody>
+      <body>
+        <joint name="jnt" type="hinge"/>
+        <geom type="sphere" size="0.1"/>
+      </body>
+    </worldbody>
+    <actuator>
+      <motor joint="jnt"/>
+    </actuator>
+  </mujoco>
+  )";
+  MjModelPtr model = LoadModelFromString(kXml);
+  ASSERT_THAT(model.get(), NotNull());
+  mjModel* m = model.get();
+  int idx = 0;
+
+  // All bits set: out-of-range groups (< 0 or > 30) evaluate to 0 without UB,
+  // valid groups [0, 30] evaluate to 1.
+  m->opt.disableactuator = ~0;
+  for (int group : {-100, -1, 31, 100}) {
+    m->actuator_group[0] = group;
+    EXPECT_EQ(mj_actuatorDisabled(m, 0), 0) << "group=" << group;
+    EXPECT_EQ(mjACTUATORDISABLED(idx + 0), mj_actuatorDisabled(m, 0))
+        << "group=" << group;
+  }
+  for (int group : {0, 15, 30}) {
+    m->actuator_group[0] = group;
+    EXPECT_EQ(mj_actuatorDisabled(m, 0), 1) << "group=" << group;
+    EXPECT_EQ(mjACTUATORDISABLED(idx + 0), mj_actuatorDisabled(m, 0))
+        << "group=" << group;
+  }
+
+  // Selective bitmask parity between macro and function.
+  m->opt.disableactuator = 1 << 30;
+  m->actuator_group[0] = 0;
+  EXPECT_EQ(mjACTUATORDISABLED(0), 0);
+  EXPECT_EQ(mjACTUATORDISABLED(0), mj_actuatorDisabled(m, 0));
+
+  m->actuator_group[0] = 30;
+  EXPECT_EQ(mjACTUATORDISABLED(0), 1);
+  EXPECT_EQ(mjACTUATORDISABLED(0), mj_actuatorDisabled(m, 0));
+}
+
 }  // namespace
 }  // namespace mujoco

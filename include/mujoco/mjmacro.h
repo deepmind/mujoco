@@ -24,7 +24,9 @@
 #define mjENABLED(x)  (m->opt.enableflags & (x))
 
 // is actuator disabled
-#define mjACTUATORDISABLED(i) (m->opt.disableactuator & (1 << m->actuator_group[i]))
+#define mjACTUATORDISABLED(i)                                           \
+  (((m->actuator_group[(i)] >= 0) && (m->actuator_group[(i)] <= 30)     \
+    && (m->opt.disableactuator & (1 << m->actuator_group[(i)]))) ? 1 : 0)
 
 // annotation for functions that accept printf-like variadic arguments
 #ifndef mjPRINTFLIKE
