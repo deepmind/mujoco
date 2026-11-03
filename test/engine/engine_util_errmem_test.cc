@@ -14,16 +14,21 @@
 
 // Tests for engine/engine_util_errmem.c.
 
+#include "src/engine/engine_util_errmem.h"
+
+#include <sys/stat.h>
+
 #include <csetjmp>
 #include <cstdio>
 #include <cstring>
+#include <filesystem>  // NOLINT
 #include <string>
+#include <system_error>  // NOLINT
 #include <vector>
 
 #include <gtest/gtest.h>
 #include <mujoco/mujoco.h>
 #include "src/engine/engine_crossplatform.h"  // IWYU pragma: keep
-#include "src/engine/engine_util_errmem.h"
 
 extern "C" {
 MJAPI mjfLogHandler _mjPRIVATE_setTlsLogHandler(mjfLogHandler handler);
@@ -616,6 +621,88 @@ TEST(InitFromEnvEdgeTest, WhitespaceHandling) {
   unsetenv("MUJOCO_LOG_TOPICS");
   mju_clearHandlers();
   mju_setLogConfig(orig);
+}
+
+TEST(MjuFopenTest, AsciiPath) {
+  std::filesystem::path filepath =
+      std::filesystem::path(::testing::TempDir()) / "mju_fopen_ascii_test.txt";
+  const char* content = "hello mujoco";
+
+  // write
+  FILE* fp = mju_fopen(filepath.string().c_str(), "w");
+  ASSERT_NE(fp, nullptr);
+  fputs(content, fp);
+  fclose(fp);
+
+  // read back
+  fp = mju_fopen(filepath.string().c_str(), "r");
+  ASSERT_NE(fp, nullptr);
+  char buf[64] = {0};
+  fgets(buf, sizeof(buf), fp);
+  fclose(fp);
+
+  EXPECT_STREQ(buf, content);
+
+  struct stat file_stat;
+  EXPECT_EQ(mju_stat(filepath.string().c_str(), &file_stat), 0);
+
+  std::filesystem::remove(filepath);
+}
+
+TEST(MjuFopenTest, NonexistentFileReturnsNull) {
+  std::filesystem::path filepath = std::filesystem::path(::testing::TempDir()) /
+                                   "mju_fopen_nonexistent_12345.txt";
+  // make sure it doesn't exist
+  std::filesystem::remove(filepath);
+
+  FILE* fp = mju_fopen(filepath.string().c_str(), "r");
+  EXPECT_EQ(fp, nullptr);
+
+  struct stat file_stat;
+  EXPECT_NE(mju_stat(filepath.string().c_str(), &file_stat), 0);
+}
+
+// helper: get UTF-8 string from a filesystem path
+static std::string PathToUtf8(const std::filesystem::path& p) {
+  auto u8str = p.u8string();
+  return std::string(reinterpret_cast<const char*>(u8str.data()), u8str.size());
+}
+
+TEST(MjuFopenTest, Utf8Path) {
+  // create a temp directory with non-ASCII characters (Japanese)
+  std::filesystem::path utf8_dir =
+      std::filesystem::path(::testing::TempDir()) / u8"mju_fopen_テスト";
+
+  std::error_code ec;
+  std::filesystem::create_directories(utf8_dir, ec);
+  if (ec) {
+    GTEST_SKIP() << "Could not create directory with UTF-8 name: "
+                 << ec.message();
+  }
+
+  std::filesystem::path filepath = utf8_dir / u8"テスト_file.txt";
+  std::string filepath_u8 = PathToUtf8(filepath);
+  const char* content = "utf8 content test";
+
+  // write using mju_fopen
+  FILE* fp = mju_fopen(filepath_u8.c_str(), "w");
+  ASSERT_NE(fp, nullptr) << "mju_fopen failed to create file with UTF-8 path";
+  fputs(content, fp);
+  fclose(fp);
+
+  // read back using mju_fopen
+  fp = mju_fopen(filepath_u8.c_str(), "r");
+  ASSERT_NE(fp, nullptr) << "mju_fopen failed to open existing UTF-8 path";
+  char buf[64] = {0};
+  fgets(buf, sizeof(buf), fp);
+  fclose(fp);
+
+  EXPECT_STREQ(buf, content);
+
+  struct stat file_stat;
+  EXPECT_EQ(mju_stat(filepath_u8.c_str(), &file_stat), 0);
+
+  std::filesystem::remove_all(utf8_dir);
 }
 
 }  // namespace

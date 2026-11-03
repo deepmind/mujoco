@@ -19,6 +19,7 @@
 #include <stdlib.h>
 #include <stdarg.h>
 #include <string.h>
+#include <sys/stat.h>
 #include <time.h>
 
 #if defined(_WIN32)
@@ -38,6 +39,60 @@
 
 // forward declaration for active log handler dispatch
 static void mju_defaultLogHandler(const mjLogMessage* msg);
+
+
+//------------------------- UTF-8 file operations --------------------------------------------------
+
+#ifdef _WIN32
+// convert UTF-8 string to newly allocated wide string; caller must free
+static wchar_t* utf8ToWide(const char* str) {
+  if (!str) {
+    return NULL;
+  }
+  int wlen = MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, str, -1, NULL, 0);
+  if (wlen == 0) {
+    return NULL;
+  }
+  wchar_t* wstr = (wchar_t*)malloc(wlen * sizeof(wchar_t));
+  if (!wstr) {
+    return NULL;
+  }
+  MultiByteToWideChar(CP_UTF8, MB_ERR_INVALID_CHARS, str, -1, wstr, wlen);
+  return wstr;
+}
+#endif
+
+
+// open file with UTF-8 filename support
+FILE* mju_fopen(const char* filename, const char* mode) {
+#ifdef _WIN32
+  wchar_t* wfilename = utf8ToWide(filename);
+  wchar_t* wmode = utf8ToWide(mode);
+  FILE* fp = (wfilename && wmode) ? _wfopen(wfilename, wmode) : NULL;
+  free(wfilename);
+  free(wmode);
+  return fp;
+#else
+  return fopen(filename, mode);
+#endif
+}
+
+
+// stat file with UTF-8 filename support
+int mju_stat(const char* filename, struct stat* file_stat) {
+#if defined(_WIN32) && !defined(__MINGW32__)
+  wchar_t* wfilename = utf8ToWide(filename);
+  if (!wfilename) {
+    return -1;
+  }
+  struct _stat* wfile_stat = (struct _stat*)file_stat;
+  int result = _wstat(wfilename, wfile_stat);
+  free(wfilename);
+  return result;
+#else
+  return stat(filename, file_stat);
+#endif
+}
 
 
 //------------------------------ malloc and free ---------------------------------------------------
@@ -283,7 +338,7 @@ static void mju_defaultLogHandler(const mjLogMessage* msg) {
   }
 
   if (cfg->logto_file && cfg->logfile[0]) {
-    FILE* fp = fopen(cfg->logfile, "a+t");
+    FILE* fp = mju_fopen(cfg->logfile, "a+t");
     if (fp) {
       mju_fprint_message(fp, timestr, msg);
       fclose(fp);
@@ -369,7 +424,7 @@ void mju_writeLog(const char* type, const char* msg) {
   char timestr[64];
   mju_localTimeStr(timestr, sizeof(timestr));
 
-  FILE* fp = fopen("MUJOCO_LOG.TXT", "a+t");
+  FILE* fp = mju_fopen("MUJOCO_LOG.TXT", "a+t");
   if (fp) {
     fprintf(fp, "%s\n%s: %s\n\n", timestr, type, msg);
     fclose(fp);

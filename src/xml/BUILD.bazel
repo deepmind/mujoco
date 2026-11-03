@@ -82,8 +82,8 @@ cc_library(
         ":xml_util",
         "//:libmujoco_hdrs",
         "//src/engine:engine_io",
+        "//src/engine:engine_util_errmem",
         "//src/user:user_resource",
-        "//src/user:user_vfs",
     ],
 )
 

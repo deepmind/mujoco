@@ -133,6 +133,7 @@ cc_library(
     deps = [
         "//:libmujoco_hdrs",
         "//src/engine:engine_crossplatform",
+        "//src/engine:engine_util_errmem",
     ],
 )
 
@@ -221,6 +222,7 @@ cc_library(
     deps = [
         ":user_util",
         "//:libmujoco_hdrs",
+        "//src/engine:engine_util_errmem",
         "//src/engine:engine_util_misc",
     ],
 )

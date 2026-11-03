@@ -19,6 +19,7 @@
 #include <stddef.h>
 #include <stdio.h>
 #include <string.h>
+#include <sys/stat.h>
 
 #include <mujoco/mjexport.h>
 #include <mujoco/mjmacro.h>
@@ -35,6 +36,15 @@ extern "C" {
     #define mjPRINTFLIKE(n, m)
   #endif  // __GNUC__
 #endif  // mjPRINTFLIKE
+
+
+//------------------------------ file operations ---------------------------------------------------
+
+// open file with UTF-8 filename support (uses _wfopen on Windows)
+MJAPI FILE* mju_fopen(const char* filename, const char* mode);
+
+// stat file with UTF-8 filename support (uses _wstat on Windows)
+MJAPI int mju_stat(const char* filename, struct stat* file_stat);
 
 
 //------------------------------ malloc and free ---------------------------------------------------

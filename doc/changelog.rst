@@ -364,6 +364,8 @@ Bug fixes
   depth values and segment ID colors whenever post-processing was enabled, as it always is through the ``mjr_``
   compatibility API. That API also now colors geoms by ``segid + 1``, like :ref:`mjRND_IDCOLOR<mjtRndFlag>` in the
   classic renderer, so a geom with ``segid`` 0 no longer renders as background.
+- File paths on Windows are now interpreted as UTF-8 rather than the active ANSI code page, fixing loading and saving
+  files when the path contains non-ASCII UTF-8 characters (:issue:`3139`). Contribution by :github:user:`mar-yan24`.
 
 Documentation
 ^^^^^^^^^^^^^
