@@ -24,11 +24,11 @@ Significant new features
   <computation/speculative>` to prevent fast-moving convex geoms from tunneling through thin obstacles within a single
   timestep. On the right, one step of conservative advancement between two rotating boxes.
 
-.. container:: custom-clear
+  .. container:: custom-clear
 
-   .. raw:: html
+     .. raw:: html
 
-      <div style="clear: both;"></div>
+        <div style="clear: both;"></div>
 
 - Added elasto-plasticity, with stateful plastic deformation stored in ``mjData.plastic`` (``mjSTATE_PLASTIC``):
 
@@ -52,48 +52,6 @@ Significant new features
    .. raw:: html
 
       <div style="clear: both;"></div>
-
-General
-^^^^^^^
-.. admonition:: Breaking API changes
-   :class: attention
-
-   - Flexes now support per-element visual materials: ``mjModel.flex_matid`` is now ``(nflexelem x 1)`` instead of
-     ``(nflex x 1)``, and the ``material`` attribute on :ref:`flex<deformable-flex>` and :ref:`flexcomp<body-flexcomp>`
-     (``mjsFlex.material``) is now ``mjStringVec`` rather than ``mjString`` (accepting either a single material name
-     broadcast to all elements or one material name per element).
-
-     **Migration:** Index ``mjModel.flex_matid`` by element ``m->flex_elemadr[f] + e`` rather than by flex ``f``. In C,
-     set ``mjsFlex.material`` with ``mjs_setStringVec`` (or ``mjs_appendString``) instead of ``mjs_setString``; in
-     Python, assign a list of material names (e.g. ``flex.material = ['mat']``).
-
-   - Removed ``flexvert`` equality constraints (``<equality><flexvert>`` and ``<edge equality="vert"/>`` in
-     :ref:`flexcomp<body-flexcomp>`), along with the associated :ref:`mjModel` fields (``nJfv``, ``flex_vertedgeadr``,
-     ``flex_vertedgenum``, ``flex_vertedge``, ``flex_vertmetric``, ``flexvert_J_rownnz``, ``flexvert_J_rowadr``,
-     ``flexvert_J_colind``) and :ref:`mjData` fields (``flexvert_length``, ``flexvert_J``). ``mjEQ_FLEXVERT`` is
-     retained as an unsupported placeholder in :ref:`mjtEq` and causes an error if used.
-
-     **Migration:** Use continuum :ref:`elasticity<flex-elasticity>` with ``integrator="discrete"`` or
-     :ref:`edge equality<flexcomp-edge-equality>` for 2D cloth models.
-
-   - Unpinned :ref:`flexcomp<body-flexcomp>` models (with **full**, **trilinear**, or **quadratic**
-     :ref:`dofs<body-flexcomp-dof>`) now fail to compile if their parent or ancestor body has joints when no active
-     vertices or nodes are :ref:`pinned<flexcomp-pin>` to it.
-
-     **Migration:** Remove joints from the parent/ancestor body of an unpinned flex, or pin at least one vertex/node to
-     the parent body with :ref:`pin<flexcomp-pin>`.
-
-   - Records of 1D flexes in ``mjModel.flex_bending`` grow from 4 to 10 values, to store curved reference
-     configurations and pairs of adjacent bent vertices. Previously, each record was ``[v_prev, v, v_next, k]``.
-
-     **Migration:** Read 1D records with stride 10. A record whose fourth value is negative is a single hinge
-     ``[v0, v1, v2, -1, k, 0, |kb0|, 0, 0, 0]``; otherwise it is a hinge pair ``[v0, v1, v2, v3, w0, w1, om0[4]]``.
-
-- Added a :ref:`castshadow<body-geom-castshadow>` attribute to :ref:`geom<body-geom>` (``mjsGeom.castshadow``,
-  ``mjModel.geom_castshadow``, ``mjvGeom.castshadow``; default ``true``) to disable shadow casting per geom in both the
-  classic OpenGL and Filament renderers.
-- Added ``mjModel.tendon_type`` with values from the new :ref:`mjtTendon` enum, distinguishing fixed and spatial
-  tendons. Previously, the type was implied by whether the first path element was a joint.
 
 Engine
 ^^^^^^
@@ -137,6 +95,25 @@ Engine
      `two-link arm <https://github.com/google-deepmind/mujoco/blob/main/model/tendon_arm/arm26.xml>`__ were moved from
      directly below the joints to 45 degrees below the arm, which reproduces the previous tendon lengths exactly.
 
+- The ``RK4`` :ref:`integrator<option-integrator>` is now fourth-order accurate for the orientations of ball and free
+  joints. Previously, the angular velocities of the Runge-Kutta stages were combined without the Runge-Kutta-Munthe-Kaas
+  correction, so orientations converged only at second order. This changes the simulation of models with ball or free
+  joints that use ``RK4``.
+- Added ``surfacevel[3]`` to :ref:`mjContact`, storing the relative :ref:`surface velocity<body-geom-surfacevel>`
+  (``geom[1]`` minus ``geom[0]``) in the contact frame ``(tangent1, tangent2, spin)``. Collision detection populates it
+  from ``geom_surfacevel`` when ``mjModel.flg_surfacevel`` is set, and external contact generators can write it
+  directly (setting ``flg_surfacevel = 1`` if no geom specifies ``surfacevel``). Contact-point visualization now draws
+  a single relative tangential velocity arrow per active frictional contact.
+- Added ``xiquat``, ``geom_xquat``, and ``site_xquat`` to :ref:`mjData`, storing the Cartesian quaternion orientations
+  of body inertias, geoms, and sites alongside ``ximat``, ``geom_xmat``, and ``site_xmat``.
+- Added ``mjModel.tendon_type`` with values from the new :ref:`mjtTendon` enum, distinguishing fixed and spatial
+  tendons. Previously, the type was implied by whether the first path element was a joint.
+
+Deformables
+^^^^^^^^^^^
+.. admonition:: Breaking changes
+   :class: attention
+
    - Removed the ``cable`` plugin (``plugin/elasticity``) and the ``composite`` element, which are superseded by 1D
      :ref:`flexcomp<body-flexcomp>` with :ref:`elasticity<flex-elasticity>`.
 
@@ -161,8 +138,33 @@ Engine
      - Body names ``B_first`` / ``B_<i>`` / ``B_last``: unpinned vertices create bodies ``<name>_<i>`` (pinned vertices
        attach directly to the parent body), plus ``<name>_twist`` when ``<pin id="0 1"/>`` is used.
 
-   - 1D rod bending :ref:`elasticity<flex-elasticity>` (``dim="1"`` with positive ``young``) is no longer supported under
-     ``implicit`` and ``implicitfast``, matching 2D and 3D flex elasticity.
+   - Fixed the elastic constants of non-interpolated :ref:`flexes<deformable-flex>` (**full** and **radial**
+     :ref:`dofs<body-flexcomp-dof>`), which now match :ref:`young<flex-elasticity-young>`,
+     :ref:`poisson<flex-elasticity-poisson>` and :ref:`thickness<flex-elasticity-thickness>` as documented, and the
+     interpolated flexes:
+
+     - 3D Saint Venant-Kirchhoff stretching used twice the first Lamé parameter :math:`\lambda`.
+     - 2D stretching used a quarter of the shear modulus :math:`\mu` and half of the 3D :math:`\lambda`, instead of
+       :math:`\mu` and the plane-stress :math:`\lambda^* = E \nu / (1 - \nu^2)`.
+     - 2D bending used :math:`\tfrac{3}{4}(1-\nu) D` instead of the plate bending rigidity
+       :math:`D = E t^3 / (12 (1 - \nu^2))`.
+
+     Models with these flexes become stiffer, except 3D models with zero Poisson's ratio, which are unchanged.
+
+     **Migration:** To keep the previous behavior, use these parameters:
+
+     - 3D: :math:`\nu' = 2\nu / (1 + 2\nu)` and :math:`E' = E (1 + \nu') / (1 + \nu)`.
+     - 2D bending only (``elastic2d="bend"``): :math:`E' = \tfrac{3}{4}(1 - \nu) E`.
+     - 2D stretching (``elastic2d="stretch"`` or ``"both"``): :math:`\nu' = 2\nu`, which is exact for
+       :math:`\nu < 1/4` (so that :math:`\nu' < 1/2`). Then:
+
+       - ``"stretch"``: :math:`E' = E (1 + 2\nu) / (4 (1 + \nu))`.
+       - ``"both"``: :math:`t' = t \sqrt{3 (1 - 2\nu)}` and :math:`E' = E t (1 + 2\nu) / (4 (1 + \nu) t')`.
+
+     The flex models in ``model/flex`` were remapped in this way, so their behavior is unchanged.
+
+   - 1D rod bending :ref:`elasticity<flex-elasticity>` (``dim="1"`` with positive ``young``) is no longer supported
+     under ``implicit`` and ``implicitfast``, matching 2D and 3D flex elasticity.
 
      **Migration:** Use ``integrator="discrete"`` for implicit integration, or ``integrator="Euler"`` with a small
      timestep for explicit integration.
@@ -173,77 +175,61 @@ Engine
      **Migration:** Use :ref:`elasticity<flex-elasticity>` (or :ref:`edge equality<flexcomp-edge-equality>`), or use
      ``Euler``/``RK4``/``implicitfast``.
 
-- Flex improvements:
+   - Unpinned :ref:`flexcomp<body-flexcomp>` models (with **full**, **trilinear**, or **quadratic**
+     :ref:`dofs<body-flexcomp-dof>`) now fail to compile if their parent or ancestor body has joints when no active
+     vertices or nodes are :ref:`pinned<flexcomp-pin>` to it.
 
-  - .. admonition:: Breaking change
-       :class: attention
+     **Migration:** Remove joints from the parent/ancestor body of an unpinned flex, or pin at least one vertex/node to
+     the parent body with :ref:`pin<flexcomp-pin>`.
 
-       Fixed the elastic constants of non-interpolated :ref:`flexes<deformable-flex>` (**full** and **radial**
-       :ref:`dofs<body-flexcomp-dof>`), which now match :ref:`young<flex-elasticity-young>`,
-       :ref:`poisson<flex-elasticity-poisson>` and :ref:`thickness<flex-elasticity-thickness>` as documented, and the
-       interpolated flexes:
+   - Removed ``flexvert`` equality constraints (``<equality><flexvert>`` and ``<edge equality="vert"/>`` in
+     :ref:`flexcomp<body-flexcomp>`), along with the associated :ref:`mjModel` fields (``nJfv``, ``flex_vertedgeadr``,
+     ``flex_vertedgenum``, ``flex_vertedge``, ``flex_vertmetric``, ``flexvert_J_rownnz``, ``flexvert_J_rowadr``,
+     ``flexvert_J_colind``) and :ref:`mjData` fields (``flexvert_length``, ``flexvert_J``). ``mjEQ_FLEXVERT`` is
+     retained as an unsupported placeholder in :ref:`mjtEq` and causes an error if used.
 
-       - 3D Saint Venant-Kirchhoff stretching used twice the first Lamé parameter :math:`\lambda`.
-       - 2D stretching used a quarter of the shear modulus :math:`\mu` and half of the 3D :math:`\lambda`, instead of
-         :math:`\mu` and the plane-stress :math:`\lambda^* = E \nu / (1 - \nu^2)`.
-       - 2D bending used :math:`\tfrac{3}{4}(1-\nu) D` instead of the plate bending rigidity
-         :math:`D = E t^3 / (12 (1 - \nu^2))`.
+     **Migration:** Use continuum :ref:`elasticity<flex-elasticity>` with ``integrator="discrete"`` or
+     :ref:`edge equality<flexcomp-edge-equality>` for 2D cloth models.
 
-       Models with these flexes become stiffer, except 3D models with zero Poisson's ratio, which are unchanged.
+   - Flexes now support per-element visual materials: ``mjModel.flex_matid`` is now ``(nflexelem x 1)`` instead of
+     ``(nflex x 1)``, and the ``material`` attribute on :ref:`flex<deformable-flex>` and :ref:`flexcomp<body-flexcomp>`
+     (``mjsFlex.material``) is now ``mjStringVec`` rather than ``mjString`` (accepting either a single material name
+     broadcast to all elements or one material name per element).
 
-       **Migration:** To keep the previous behavior, use these parameters:
+     **Migration:** Index ``mjModel.flex_matid`` by element ``m->flex_elemadr[f] + e`` rather than by flex ``f``. In C,
+     set ``mjsFlex.material`` with ``mjs_setStringVec`` (or ``mjs_appendString``) instead of ``mjs_setString``; in
+     Python, assign a list of material names (e.g. ``flex.material = ['mat']``).
 
-       - 3D: :math:`\nu' = 2\nu / (1 + 2\nu)` and :math:`E' = E (1 + \nu') / (1 + \nu)`.
-       - 2D bending only (``elastic2d="bend"``): :math:`E' = \tfrac{3}{4}(1 - \nu) E`.
-       - 2D stretching (``elastic2d="stretch"`` or ``"both"``): :math:`\nu' = 2\nu`, which is exact for
-         :math:`\nu < 1/4` (so that :math:`\nu' < 1/2`). Then:
+   - Records of 1D flexes in ``mjModel.flex_bending`` grow from 4 to 10 values, to store curved reference
+     configurations and pairs of adjacent bent vertices. Previously, each record was ``[v_prev, v, v_next, k]``.
 
-         - ``"stretch"``: :math:`E' = E (1 + 2\nu) / (4 (1 + \nu))`.
-         - ``"both"``: :math:`t' = t \sqrt{3 (1 - 2\nu)}` and :math:`E' = E t (1 + 2\nu) / (4 (1 + \nu) t')`.
+     **Migration:** Read 1D records with stride 10. A record whose fourth value is negative is a single hinge
+     ``[v0, v1, v2, -1, k, 0, |kb0|, 0, 0, 0]``; otherwise it is a hinge pair ``[v0, v1, v2, v3, w0, w1, om0[4]]``.
 
-       The flex models in ``model/flex`` were remapped in this way, so their behavior is unchanged.
-
-  - Volumetric interpolated flexes (**trilinear** or **quadratic** :ref:`dofs<body-flexcomp-dof>` with ``elastic2d="none"``)
-    now integrate cell stiffness and lump nodal masses over the mesh volume using Finite Cell Method (FCM) subcell
-    quadrature instead of treating every non-empty grid cell as a full cube. This changes the stiffness and nodal mass
-    distribution of volumetric interpolated flexes whose mesh does not fill its bounding box, as well as the nodal mass
-    distribution of multi-cell **trilinear** flexes.
-  - Interpolated flexes (**trilinear** or **quadratic** :ref:`dofs<body-flexcomp-dof>`) now support
-    :ref:`passive<flex-contact-passive>` contact.
-  - Contacts with flex elements now distribute the contact to the element vertices with the barycentric coordinates of the
-    point on the element closest to the contact. Previously the vertex weights were inversely proportional to the
-    distances from the contact, which do not interpolate the contact point: the contact Jacobian measured the velocity of
-    a different material point, and the contact force exerted a spurious torque on the element. This changes the
-    simulation of models with flex contacts.
-  - Fixed contact Jacobians of quadratic flexes, which dropped nodes with negative basis weights.
-  - Flex :ref:`edge damping<flex-edge-damping>` is now integrated explicitly under ``implicit`` and ``implicitfast``
-    (previously it also damped rigid translation).
-  - 1D rod bending :ref:`elasticity<flex-elasticity>` now supports curved reference configurations and torsional
-    stiffness: vertices bent by more than :math:`10^{-4}` rad in ``qpos0`` keep their reference curvature and dihedral
-    twist angle, so that rods such as rings, arcs, and coil springs are at rest in their compiled shape. Previously,
-    such models failed to compile. The new :ref:`shear<flex-elasticity-shear>` attribute optionally overrides the
-    shear modulus used for torsion. Open elastic 1D flexcomps with a clamped root edge get a ``<name>_twist`` hinge
-    joint that holds the material frame of the last edge, with the polar inertia and Rayleigh torsional damping of the
-    rod; the geometric twist is carried in time in the plastic state, so the twist energy stays continuous when the rod
-    coils. Box sections solve the twist of the interior edges quasistatically. See the
-    :ref:`documentation<flex-elasticity>`.
-
-- Improved numerical stability of sphere and cylinder :ref:`spatial tendon<tendon-spatial>` :ref:`geom<spatial-geom>`
-  wrapping at wrap onset. Thanks to :github:user:`M-Colley` for reporting and analyzing the issue in
-  :doc:`MJWarp <mjwarp/index>` issue `1772 <https://github.com/google-deepmind/mujoco_warp/issues/1772>`__.
-- The ``RK4`` :ref:`integrator<option-integrator>` is now fourth-order accurate for the orientations of ball and free
-  joints. Previously, the angular velocities of the Runge-Kutta stages were combined without the Runge-Kutta-Munthe-Kaas
-  correction, so orientations converged only at second order. This changes the simulation of models with ball or free
-  joints that use ``RK4``.
-- Added ``surfacevel[3]`` to :ref:`mjContact`, storing the relative :ref:`surface velocity<body-geom-surfacevel>`
-  (``geom[1]`` minus ``geom[0]``) in the contact frame ``(tangent1, tangent2, spin)``. Collision detection populates it
-  from ``geom_surfacevel`` when ``mjModel.flg_surfacevel`` is set, and external contact generators can write it
-  directly (setting ``flg_surfacevel = 1`` if no geom specifies ``surfacevel``). Contact-point visualization now draws
-  a single relative tangential velocity arrow per active frictional contact.
-- Added ``xiquat``, ``geom_xquat``, and ``site_xquat`` to :ref:`mjData`, storing the Cartesian quaternion orientations
-  of body inertias, geoms, and sites alongside ``ximat``, ``geom_xmat``, and ``site_xmat``.
-- ``mju_mat2Rot`` now normalizes the input quaternion and escapes 180-degree stationary points (saddles and minima)
-  that do not maximize :math:`\operatorname{tr}(R^\top M)`.
+- 1D rod bending :ref:`elasticity<flex-elasticity>` now supports curved reference configurations and torsional
+  stiffness: vertices bent by more than :math:`10^{-4}` rad in ``qpos0`` keep their reference curvature and dihedral
+  twist angle, so that rods such as rings, arcs, and coil springs are at rest in their compiled shape. Previously,
+  such models failed to compile. The new :ref:`shear<flex-elasticity-shear>` attribute optionally overrides the
+  shear modulus used for torsion. Open elastic 1D flexcomps with a clamped root edge get a ``<name>_twist`` hinge
+  joint that holds the material frame of the last edge, with the polar inertia and Rayleigh torsional damping of the
+  rod; the geometric twist is carried in time in the plastic state, so the twist energy stays continuous when the rod
+  coils. Box sections solve the twist of the interior edges quasistatically. See the
+  :ref:`documentation<flex-elasticity>`.
+- Volumetric interpolated flexes (**trilinear** or **quadratic** :ref:`dofs<body-flexcomp-dof>` with
+  ``elastic2d="none"``) now integrate cell stiffness and lump nodal masses over the mesh volume using Finite Cell Method
+  (FCM) subcell quadrature instead of treating every non-empty grid cell as a full cube. This changes the stiffness and
+  nodal mass distribution of volumetric interpolated flexes whose mesh does not fill its bounding box, as well as the
+  nodal mass distribution of multi-cell **trilinear** flexes.
+- Contacts with flex elements now distribute the contact to the element vertices with the barycentric coordinates of the
+  point on the element closest to the contact. Previously the vertex weights were inversely proportional to the
+  distances from the contact, which do not interpolate the contact point: the contact Jacobian measured the velocity of
+  a different material point, and the contact force exerted a spurious torque on the element. This changes the
+  simulation of models with flex contacts.
+- Interpolated flexes (**trilinear** or **quadratic** :ref:`dofs<body-flexcomp-dof>`) now support
+  :ref:`passive<flex-contact-passive>` contact.
+- Flex :ref:`edge damping<flex-edge-damping>` is now integrated explicitly under ``implicit`` and ``implicitfast``
+  (previously it also damped rigid translation).
+- Fixed contact Jacobians of quadratic flexes, which dropped nodes with negative basis weights.
 
 Compiler
 ^^^^^^^^
@@ -255,54 +241,46 @@ Compiler
 
      **Migration:** Remove redundant ``<include>`` elements referencing the same file.
 
-   - :ref:`Height fields<asset-hfield>` with :ref:`nrow<asset-hfield-nrow>` or :ref:`ncol<asset-hfield-ncol>` less than
-     2 are now rejected at compile time.
+   - The compiler now rejects the following invalid models, which previously loaded:
 
-     **Migration:** Ensure height fields have ``nrow >= 2`` and ``ncol >= 2``.
+     - :ref:`Height fields<asset-hfield>` with :ref:`nrow<asset-hfield-nrow>` or :ref:`ncol<asset-hfield-ncol>` less
+       than 2.
+     - :ref:`Fixed tendons<tendon-fixed>` referencing ``ball``/``free`` or duplicate joints, or with negative
+       :ref:`armature<tendon-fixed-armature>`.
+     - :ref:`Spatial tendon<tendon-spatial>` :ref:`pulleys<spatial-pulley>` with non-positive
+       :ref:`divisor<spatial-pulley-divisor>`.
+     - :ref:`camprojection<sensor-camprojection>` or camera-attached :ref:`rangefinder<sensor-rangefinder>` sensors
+       referencing an invalid camera or a camera with non-positive :ref:`resolution<body-camera-resolution>`.
+     - :ref:`Skins<deformable-skin>` with out-of-range face vertex indices.
+     - :ref:`mjs_makeMesh` ``mjMESH_BUILTIN_CONE`` calls with fewer than 3 edges or ``radius`` outside ``[0, 1]``.
 
-   - :ref:`Fixed tendons<tendon-fixed>` referencing ``ball``/``free`` or duplicate joints or with negative
-     :ref:`armature<tendon-fixed-armature>`, :ref:`spatial tendon<tendon-spatial>`
-     :ref:`pulleys<spatial-pulley>` with non-positive :ref:`divisor<spatial-pulley-divisor>`, and
-     :ref:`camprojection<sensor-camprojection>` or camera-attached :ref:`rangefinder<sensor-rangefinder>` sensors
-     referencing an invalid camera or a camera with non-positive :ref:`resolution<body-camera-resolution>` are now
-     rejected at compile time.
+     **Migration:** Ensure height fields have ``nrow >= 2`` and ``ncol >= 2``, fixed tendons wrap distinct ``slide``
+     or ``hinge`` joints with non-negative armature, pulley divisors are positive, cameras referenced by
+     ``camprojection`` or ``rangefinder`` sensors have positive resolution, skin face indices are in ``[0, nvert)``,
+     and cone meshes have at least 3 edges and a radius in ``[0, 1]``.
 
-     **Migration:** Ensure fixed tendons wrap distinct ``slide`` or ``hinge`` joints with non-negative armature,
-     pulley divisors are positive, and cameras referenced by ``camprojection`` or ``rangefinder`` sensors have
-     positive resolution.
-
-   - :ref:`Skins<deformable-skin>` with out-of-range face vertex indices and :ref:`mjs_makeMesh`
-     ``mjMESH_BUILTIN_CONE`` calls with fewer than 3 edges or ``radius`` outside ``[0, 1]`` are now rejected at
-     compile time.
-
-     **Migration:** Ensure skin face indices are in ``[0, nvert)`` and cone mesh parameters specify at least 3 edges
-     and a radius in ``[0, 1]``.
-
-- :ref:`default/tendon<default-tendon>` in MJCF now accepts :ref:`armature<tendon-fixed-armature>`,
-  :ref:`actuatorfrclimited<tendon-spatial-actuatorfrclimited>`, and
-  :ref:`actuatorfrcrange<tendon-spatial-actuatorfrcrange>` (previously emitted when saving XML, which then failed
-  schema validation on reload).
+- :ref:`fullinertia<body-inertial-fullinertia>` and inertias inferred from geoms which are not positive definite are
+  now bounded by :ref:`boundinertia<compiler-boundinertia>` when it is positive. Previously they gave a compile error.
 - :ref:`mj_encode` now supports binary MJB output for :ref:`mjSpec` via the ``model/vnd.mujoco.mjb`` content type.
-
-Filament Rendering
-^^^^^^^^^^^^^^^^^^
-- Added horizon haze and skybox visibility support: infinite planes are centered beneath the camera and blend smoothly
-  into the skybox horizon according to :ref:`visual/map/haze<visual-map-haze>` and
-  :ref:`visual/rgba/haze<visual-rgba-haze>`, toggled per view via ``haze`` and ``skybox`` on :ref:`mjrfRenderRequest`
-  (:ref:`mjRND_HAZE<mjtRndFlag>` and :ref:`mjRND_SKYBOX<mjtRndFlag>`).
-- Added :ref:`mjrf_flush` (``mjrf.Context.flush`` in Python) to flush pending operations to the rendering backend and
-  invoke any completed callbacks.
-- Added :ref:`mjrf_setRenderableCastShadow` (``mjrf.Renderable.set_cast_shadow`` in Python) to dynamically toggle
-  whether a renderable casts shadows.
-- When no light specifies an :ref:`intensity<body-light-intensity>`, the fallback intensity given to each light is now
-  scaled by the brightness of its diffuse color, which is factored out of the light's color. Lights look the same,
-  but the brightest directional light now casts the shadows, rather than an arbitrary one that could differ between
-  runs.
-- Added :ref:`filament.material.base_color_type<reFlags>` flag for configuring how the base color material parameter is
-  interpreted.
 
 Rendering
 ^^^^^^^^^
+- Added a :ref:`castshadow<body-geom-castshadow>` attribute to :ref:`geom<body-geom>` (``mjsGeom.castshadow``,
+  ``mjModel.geom_castshadow``, ``mjvGeom.castshadow``; default ``true``) to disable shadow casting per geom in both the
+  classic OpenGL and Filament renderers, and :ref:`mjrf_setRenderableCastShadow` (``mjrf.Renderable.set_cast_shadow``
+  in Python) to toggle shadow casting of Filament renderables dynamically.
+- Added horizon haze and skybox visibility support to Filament rendering: infinite planes are centered beneath the
+  camera and blend smoothly into the skybox horizon according to :ref:`visual/map/haze<visual-map-haze>` and
+  :ref:`visual/rgba/haze<visual-rgba-haze>`, toggled per view via ``haze`` and ``skybox`` on :ref:`mjrfRenderRequest`
+  (:ref:`mjRND_HAZE<mjtRndFlag>` and :ref:`mjRND_SKYBOX<mjtRndFlag>`).
+- When no light specifies an :ref:`intensity<body-light-intensity>`, the fallback intensity given to each light in
+  Filament rendering is now scaled by the brightness of its diffuse color, which is factored out of the light's color.
+  Lights look the same, but the brightest directional light now casts the shadows, rather than an arbitrary one that
+  could differ between runs.
+- Added :ref:`filament.material.base_color_type<reFlags>` flag for configuring how the base color material parameter is
+  interpreted.
+- Added :ref:`mjrf_flush` (``mjrf.Context.flush`` in Python) to flush pending operations to the rendering backend and
+  invoke any completed callbacks.
 - Added :ref:`mjRND_POST_PROCESSING<mjtRndFlag>` rendering flag.
 
 Python bindings
@@ -311,61 +289,72 @@ Python bindings
 
 Bug fixes
 ^^^^^^^^^
-- :ref:`fullinertia<body-inertial-fullinertia>` and inertias inferred from geoms which are not positive definite are
-  now bounded by :ref:`boundinertia<compiler-boundinertia>` when it is positive. Previously they gave a compile error.
-- Contact pairs created with an undefined ``mjsPair.solref`` now mix the ``solref`` of their geoms using ``solmix``
-  when both are positive, like contacts not defined by pairs. Previously they always took the element-wise minimum.
+- :ref:`accelerometer<sensor-accelerometer>` and :ref:`framelinacc<sensor-framelinacc>` sensors and
+  :ref:`mj_objectAcceleration` on static and mocap bodies now report the gravitational proper acceleration, like a
+  dynamic body at rest. Previously they returned zero, a regression introduced in 3.3.7.
+- Actuators saturated by joint or tendon actuator force limits (:ref:`joint<body-joint-actuatorfrcrange>` and
+  :ref:`tendon<tendon-spatial-actuatorfrcrange>` :at:`actuatorfrcrange`) no longer contribute implicit actuator
+  derivatives, changing integration under ``implicit``, ``implicitfast``, and ``discrete``. Because saturated actuators
+  no longer contribute implicit damping, models with light links and no armature may need joint armature or a smaller
+  timestep.
+- Fixed :ref:`sleep<siSleep>` filtering bugs in history sensors (:at:`nsample`, :at:`delay`, :at:`interval`),
+  :ref:`mj_energyPos`, flex passive forces, tendon limit and frictionloss constraints, two-tree tendon
+  :ref:`armature<tendon-fixed-armature>` and bias, :ref:`mj_subtreeVel`, and caller-supplied :ref:`mj_rne` buffers.
 - :ref:`mj_setConst` now wakes all :ref:`sleeping<siSleep>` trees, since it recomputes their kinematics at ``qpos0`` and
   ``qpos_spring``. Previously their cached poses could be left at ``qpos_spring``. It also no longer overwrites
   ``cam_xpos``, ``cam_xmat``, ``light_xpos`` and ``light_xdir`` in :ref:`mjData`, which left static cameras and lights
   with tracking or targeting at their fixed-mode poses.
-- Fixed :ref:`sleep<siSleep>` filtering bugs in history sensors (:at:`nsample`, :at:`delay`, :at:`interval`),
-  :ref:`mj_energyPos`, flex passive forces, tendon limit and frictionloss constraints, two-tree tendon
-  :ref:`armature<tendon-fixed-armature>` and bias, :ref:`mj_subtreeVel`, and caller-supplied :ref:`mj_rne` buffers.
-- Fixed :ref:`dcmotor<actuator-dcmotor>` parameter handling: allow zero :ref:`motorconst<actuator-dcmotor-motorconst>`
-  for ``input="none"``, reject negative constants (e.g. ``motorconst="-a b"`` is now rejected instead of silently
-  using ``K = b``), replace capacitance when an inconsistent :ref:`thermal<actuator-dcmotor-thermal>` triple is given,
-  clear inherited :ref:`forcerange<actuator-general-forcerange>` when :ref:`saturation<actuator-dcmotor-saturation>`
-  is authored, let zero ``saturation`` or ``inductance`` clear class defaults, and validate
-  :ref:`actdim<actuator-general-actdim>` at compile time.
-- Fixed a bug where tendon actuators saturated by :ref:`actuatorfrcrange<tendon-spatial-actuatorfrcrange>` still
-  contributed to implicit actuator derivatives.
-- Actuators saturated by joint :ref:`actuatorfrcrange<body-joint-actuatorfrcrange>` now also skip implicit actuator
-  derivatives, changing integration under ``implicit``, ``implicitfast``, and ``discrete``. Because actuators on
-  saturated joints no longer contribute implicit damping, models with light links and no armature may need joint
-  armature or a smaller timestep.
-- Fixed several MJCF XML loading and saving bugs:
-
-  - :ref:`include<include>` no longer double-prefixes the model directory on nested or relative paths.
-  - Loading MJCF now applies enclosing :ref:`frame<frame>` transforms to :ref:`flexcomp<body-flexcomp>`, and allows
-    explicit :at:`range` or :ref:`inheritrange<actuator-position-inheritrange>` attributes on actuator shortcuts to
-    override conflicting defaults.
-  - Saving MJCF (:ref:`mj_saveLastXML`, :ref:`mj_saveXML`, :ref:`mj_saveXMLString`) now preserves
-    :ref:`texture<asset-texture>` :ref:`nchannel<asset-texture-nchannel>` and clamps emitted
-    :ref:`gridlayout<asset-texture-gridlayout>` to ``gridsize`` (while loading resets ``gridlayout`` when an authored
-    ``gridsize`` differs from the inherited default), compares material :ref:`layer<material-layer>` textures, camera
-    :ref:`sensorsize<body-camera-sensorsize>`, and light :ref:`texture<body-light-texture>` against default classes, and
-    writes all attributes on plugin-backed meshes and :at:`reftype`/:at:`refname` on plugin sensors.
-- :ref:`mj_ray` now scales SDF hit distances by ``1 / ||vec||`` for non-unit ray vectors, and ``mju_rayTriangle``
-  rejects triangle intersections behind the ray origin.
-- :ref:`mj_resetData`, :ref:`mj_copyData`, and :ref:`mj_recompile` now preserve the destination :ref:`mjData` thread
-  pool instead of dropping and leaking it.
-- :ref:`mjs_delete` (``MjSpec.delete`` in Python) now removes deleted default classes from the class lookup map
-  instead of leaving dangling pointers; :ref:`mj_copyBack` (``MjSpec.copy_back`` in Python) preserves material
-  ``metallic``, ``roughness``, and ``texuniform`` attributes; :ref:`mjs_findChild` no longer matches a non-world body
-  against itself; and :ref:`mjs_setToMuscle` accepts ``NULL`` ``timeconst`` and ``range`` pointers.
-- Legacy ``.msh`` meshes with mirrored :ref:`scale<asset-mesh-scale>` no longer double-flip face winding (which
-  inverted faces), and ``.msh`` files without vertex normals no longer populate empty face normals or reject custom
-  normals on recompilation.
-- :ref:`accelerometer<sensor-accelerometer>` and :ref:`framelinacc<sensor-framelinacc>` sensors and
-  :ref:`mj_objectAcceleration` on static and mocap bodies now report the gravitational proper acceleration, like a
-  dynamic body at rest. Previously they returned zero, a regression introduced in 3.3.7.
+- Contact pairs created with an undefined ``mjsPair.solref`` now mix the ``solref`` of their geoms using ``solmix``
+  when both are positive, like contacts not defined by pairs. Previously they always took the element-wise minimum.
 - Filament depth and segmentation renders no longer apply post-processing (tone mapping, dithering), which corrupted
   depth values and segment ID colors whenever post-processing was enabled, as it always is through the ``mjr_``
   compatibility API. That API also now colors geoms by ``segid + 1``, like :ref:`mjRND_IDCOLOR<mjtRndFlag>` in the
   classic renderer, so a geom with ``segid`` 0 no longer renders as background.
 - File paths on Windows are now interpreted as UTF-8 rather than the active ANSI code page, fixing loading and saving
   files when the path contains non-ASCII UTF-8 characters (:issue:`3139`). Contribution by :github:user:`mar-yan24`.
+- Fixed :ref:`dcmotor<actuator-dcmotor>` parameter handling: allow zero :ref:`motorconst<actuator-dcmotor-motorconst>`
+  for ``input="none"``, reject negative constants (e.g. ``motorconst="-a b"`` is now rejected instead of silently
+  using ``K = b``), replace capacitance when an inconsistent :ref:`thermal<actuator-dcmotor-thermal>` triple is given,
+  clear inherited :ref:`forcerange<actuator-general-forcerange>` when :ref:`saturation<actuator-dcmotor-saturation>`
+  is authored, let zero ``saturation`` or ``inductance`` clear class defaults, and validate
+  :ref:`actdim<actuator-general-actdim>` at compile time.
+- Improved numerical stability of sphere and cylinder :ref:`spatial tendon<tendon-spatial>` :ref:`geom<spatial-geom>`
+  wrapping at wrap onset. Thanks to :github:user:`M-Colley` for reporting and analyzing the issue in
+  :doc:`MJWarp <mjwarp/index>` issue `1772 <https://github.com/google-deepmind/mujoco_warp/issues/1772>`__.
+- :ref:`mj_ray` now scales SDF hit distances by ``1 / ||vec||`` for non-unit ray vectors, and ``mju_rayTriangle``
+  rejects triangle intersections behind the ray origin.
+- :ref:`mj_resetData`, :ref:`mj_copyData`, and :ref:`mj_recompile` now preserve the destination :ref:`mjData` thread
+  pool instead of dropping and leaking it.
+- ``mju_mat2Rot`` now normalizes the input quaternion and escapes 180-degree stationary points (saddles and minima)
+  that do not maximize :math:`\operatorname{tr}(R^\top M)`.
+- Fixed several bugs when editing or copying an :ref:`mjSpec`:
+
+  - :ref:`mjs_delete` (``MjSpec.delete`` in Python) now removes deleted default classes from the class lookup map
+    instead of leaving dangling pointers.
+  - :ref:`mj_copyBack` (``MjSpec.copy_back`` in Python) preserves material ``metallic``, ``roughness``, and
+    ``texuniform`` attributes.
+  - :ref:`mjs_findChild` no longer matches a non-world body against itself.
+  - :ref:`mjs_setToMuscle` accepts ``NULL`` ``timeconst`` and ``range`` pointers.
+
+- Fixed several MJCF XML loading and saving bugs:
+
+  - :ref:`include<include>` no longer double-prefixes the model directory on nested or relative paths.
+  - Loading MJCF now applies enclosing :ref:`frame<frame>` transforms to :ref:`flexcomp<body-flexcomp>`, and allows
+    explicit :at:`range` or :ref:`inheritrange<actuator-position-inheritrange>` attributes on actuator shortcuts to
+    override conflicting defaults.
+  - :ref:`default/tendon<default-tendon>` now accepts :ref:`armature<tendon-fixed-armature>`,
+    :ref:`actuatorfrclimited<tendon-spatial-actuatorfrclimited>`, and
+    :ref:`actuatorfrcrange<tendon-spatial-actuatorfrcrange>`, which were previously emitted when saving XML and then
+    failed schema validation on reload.
+  - Saving MJCF (:ref:`mj_saveLastXML`, :ref:`mj_saveXML`, :ref:`mj_saveXMLString`) now preserves
+    :ref:`texture<asset-texture>` :ref:`nchannel<asset-texture-nchannel>` and clamps emitted
+    :ref:`gridlayout<asset-texture-gridlayout>` to ``gridsize`` (while loading resets ``gridlayout`` when an authored
+    ``gridsize`` differs from the inherited default), compares material :ref:`layer<material-layer>` textures, camera
+    :ref:`sensorsize<body-camera-sensorsize>`, and light :ref:`texture<body-light-texture>` against default classes, and
+    writes all attributes on plugin-backed meshes and :at:`reftype`/:at:`refname` on plugin sensors.
+- Legacy ``.msh`` meshes with mirrored :ref:`scale<asset-mesh-scale>` no longer double-flip face winding (which
+  inverted faces), and ``.msh`` files without vertex normals no longer populate empty face normals or reject custom
+  normals on recompilation.
 
 Documentation
 ^^^^^^^^^^^^^
