@@ -1,5 +1,5 @@
 diff --git a/CMakeLists.txt b/CMakeLists.txt
-index b558f82..cf36093 100644
+index c02e80d..a15cef3 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
 @@ -11,12 +11,7 @@ cmake_minimum_required(VERSION 3.22.1)
@@ -16,7 +16,7 @@ index b558f82..cf36093 100644
  
  # ==================================================================================================
  # Toolchain configuration
-@@ -271,57 +266,59 @@ if (WIN32)
+@@ -302,59 +297,61 @@ if (WIN32)
      # __declspec(dllexport) in front of each functions).
      set(CMAKE_WINDOWS_EXPORT_ALL_SYMBOLS ON)
  
@@ -35,16 +35,43 @@ index b558f82..cf36093 100644
 -            $<$<CONFIG:Release>:/MD>
 -        )
 -    endif()
--
--    # TODO: Figure out why pdb generation messes with incremental compilaton.
++    if (MSVC)
++        # The CMAKE_CXX_FLAGS vars can be overriden by some Visual Studio generators, so we use an alternative
++        # global method here:
++        if (${USE_STATIC_CRT})
++            add_compile_options(
++                $<$<CONFIG:>:/MT>
++                $<$<CONFIG:Debug>:/MTd>
++                $<$<CONFIG:Release>:/MT>
++            )
++        else()
++            add_compile_options(
++                $<$<CONFIG:>:/MD>
++                $<$<CONFIG:Debug>:/MDd>
++                $<$<CONFIG:Release>:/MD>
++            )
++        endif()
+ 
+-    # TODO: Figure out why pdb generation messes with incremental compilation.
 -    # IN RELEASE_WITH_DEBUG_INFO, generate debug info in .obj, no in pdb.
 -    set(CMAKE_CXX_FLAGS_RELWITHDEBINFO "${CMAKE_CXX_FLAGS_RELWITHDEBINFO} /Z7")
 -    set(CMAKE_C_FLAGS_RELWITHDEBINFO "${CMAKE_C_FLAGS_RELWITHDEBINFO} /Z7")
--
--    # In RELEASE, also generate PDBs.
--    set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} /Zi")
--    set(CMAKE_C_FLAGS_RELEASE "${CMAKE_C_FLAGS_RELEASE} /Zi")
--
++        # TODO: Figure out why pdb generation messes with incremental compilation.
++        # IN RELEASE_WITH_DEBUG_INFO, generate debug info in .obj, no in pdb.
++        set(CMAKE_CXX_FLAGS_RELWITHDEBINFO "${CMAKE_CXX_FLAGS_RELWITHDEBINFO} /Z7")
++        set(CMAKE_C_FLAGS_RELWITHDEBINFO "${CMAKE_C_FLAGS_RELWITHDEBINFO} /Z7")
+ 
+-    if (NOT CCACHE_PROGRAM)
+-        # In RELEASE, also generate PDBs, except when ccache is enabled as /Zi is unsupported.
+-        set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} /Zi")
+-        set(CMAKE_C_FLAGS_RELEASE "${CMAKE_C_FLAGS_RELEASE} /Zi")
+-    endif()
++        if (NOT CCACHE_PROGRAM)
++            # In RELEASE, also generate PDBs, except when ccache is enabled as /Zi is unsupported.
++            set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} /Zi")
++            set(CMAKE_C_FLAGS_RELEASE "${CMAKE_C_FLAGS_RELEASE} /Zi")
++        endif()
+ 
 -    # In DEBUG, avoid generating a PDB file which seems to mess with incremental compilation.
 -    # Instead generate debug info directly inside obj files.
 -    set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} /Z7")
@@ -56,15 +83,7 @@ index b558f82..cf36093 100644
 -            CMAKE_SHARED_LINKER_FLAGS_DEBUG
 -            CMAKE_EXE_LINKER_FLAGS_DEBUG
 -            CMAKE_MODULE_LINKER_FLAGS_DEBUG
-+    if (MSVC)
-+        # The CMAKE_CXX_FLAGS vars can be overriden by some Visual Studio generators, so we use an alternative
-+        # global method here:
-+        if (${USE_STATIC_CRT})
-+            add_compile_options(
-+                $<$<CONFIG:>:/MT>
-+                $<$<CONFIG:Debug>:/MTd>
-+                $<$<CONFIG:Release>:/MT>
-             )
+-        )
 -        foreach(LinkerFlag ${LinkerFlags})
 -            # The /debug flag outputs .pdb files, which we don't need on CI.
 -            string(REPLACE "/debug" "" ${LinkerFlag} ${${LinkerFlag}})
@@ -79,23 +98,6 @@ index b558f82..cf36093 100644
 -        option(FILAMENT_SHORTEN_MSVC_COMPILATION "Shorten compile-time in Visual Studio" OFF)
 -    else()
 -        option(FILAMENT_SHORTEN_MSVC_COMPILATION "Shorten compile-time in Visual Studio" ON)
-+        else()
-+            add_compile_options(
-+                $<$<CONFIG:>:/MD>
-+                $<$<CONFIG:Debug>:/MDd>
-+                $<$<CONFIG:Release>:/MD>
-+            )
-+        endif()
-+
-+        # TODO: Figure out why pdb generation messes with incremental compilaton.
-+        # IN RELEASE_WITH_DEBUG_INFO, generate debug info in .obj, no in pdb.
-+        set(CMAKE_CXX_FLAGS_RELWITHDEBINFO "${CMAKE_CXX_FLAGS_RELWITHDEBINFO} /Z7")
-+        set(CMAKE_C_FLAGS_RELWITHDEBINFO "${CMAKE_C_FLAGS_RELWITHDEBINFO} /Z7")
-+
-+        # In RELEASE, also generate PDBs.
-+        set(CMAKE_CXX_FLAGS_RELEASE "${CMAKE_CXX_FLAGS_RELEASE} /Zi")
-+        set(CMAKE_C_FLAGS_RELEASE "${CMAKE_C_FLAGS_RELEASE} /Zi")
-+
 +        # In DEBUG, avoid generating a PDB file which seems to mess with incremental compilation.
 +        # Instead generate debug info directly inside obj files.
 +        set(CMAKE_CXX_FLAGS_DEBUG "${CMAKE_CXX_FLAGS_DEBUG} /Z7")
@@ -107,7 +109,7 @@ index b558f82..cf36093 100644
 +                CMAKE_SHARED_LINKER_FLAGS_DEBUG
 +                CMAKE_EXE_LINKER_FLAGS_DEBUG
 +                CMAKE_MODULE_LINKER_FLAGS_DEBUG
-+                )
++            )
 +            foreach(LinkerFlag ${LinkerFlags})
 +                # The /debug flag outputs .pdb files, which we don't need on CI.
 +                string(REPLACE "/debug" "" ${LinkerFlag} ${${LinkerFlag}})
@@ -126,7 +128,7 @@ index b558f82..cf36093 100644
      endif()
  
      if (MSVC)
-@@ -368,7 +365,7 @@ endif()
+@@ -401,7 +398,7 @@ endif()
  # Detect use of the clang-cl.exe frontend, which does not support all of clangs normal options
  if ("${CMAKE_CXX_COMPILER_ID}" STREQUAL "Clang")
      if ("${CMAKE_CXX_SIMULATE_ID}" STREQUAL "MSVC")
@@ -135,7 +137,7 @@ index b558f82..cf36093 100644
      endif()
  endif()
  
-@@ -400,7 +397,7 @@ if (APPLE AND NOT IOS)
+@@ -433,7 +430,7 @@ if (APPLE AND NOT IOS)
  endif()
  
  set(CXX_STANDARD "-std=c++20")
@@ -144,7 +146,7 @@ index b558f82..cf36093 100644
      set(CXX_STANDARD "/std:c++20")
  endif()
  
-@@ -794,9 +791,14 @@ function(combine_static_libs TARGET OUTPUT DEPS)
+@@ -816,9 +813,14 @@ function(combine_static_libs TARGET OUTPUT DEPS)
      endforeach()
  
      if (WIN32)
@@ -161,7 +163,7 @@ index b558f82..cf36093 100644
              COMMENT "Combining ${target} dependencies into single shared library"
              VERBATIM
 diff --git a/filament/CMakeLists.txt b/filament/CMakeLists.txt
-index b3fac7b..de14c8a 100644
+index 43ebef8..16f0b1b 100644
 --- a/filament/CMakeLists.txt
 +++ b/filament/CMakeLists.txt
 @@ -809,6 +809,9 @@ else()
@@ -175,10 +177,10 @@ index b3fac7b..de14c8a 100644
  
  target_compile_options(${TARGET} PRIVATE
 diff --git a/filament/backend/CMakeLists.txt b/filament/backend/CMakeLists.txt
-index 661a474..35756e7 100644
+index 8da778b..181aa12 100644
 --- a/filament/backend/CMakeLists.txt
 +++ b/filament/backend/CMakeLists.txt
-@@ -544,6 +544,10 @@ else()
+@@ -546,6 +546,10 @@ else()
      )
  endif()
  
@@ -400,10 +402,10 @@ index 9f83c6c..6593581 100644
  #pragma pack(pop)
  
 diff --git a/libs/utils/include/utils/StructureOfArrays.h b/libs/utils/include/utils/StructureOfArrays.h
-index 4604eb7..fb95fa6 100644
+index 1aba109..3680a06 100644
 --- a/libs/utils/include/utils/StructureOfArrays.h
 +++ b/libs/utils/include/utils/StructureOfArrays.h
-@@ -742,7 +742,7 @@ typename StructureOfArraysBase<Allocator, Elements...>::IteratorValueRef&
+@@ -741,7 +741,7 @@ typename StructureOfArraysBase<Allocator, Elements...>::IteratorValueRef&
  StructureOfArraysBase<Allocator, Elements...>::IteratorValueRef::assign(
          IteratorValue const& rhs, std::index_sequence<Is...>) {
      // implements IteratorValueRef& IteratorValueRef::operator=(IteratorValue const& rhs)
@@ -412,7 +414,7 @@ index 4604eb7..fb95fa6 100644
      return *this;
  }
  
-@@ -751,7 +751,7 @@ template<size_t... Is>
+@@ -750,7 +750,7 @@ template<size_t... Is>
  typename StructureOfArraysBase<Allocator, Elements...>::IteratorValueRef&
  StructureOfArraysBase<Allocator, Elements...>::IteratorValueRef::assign(
          Structure const& rhs, std::index_sequence<Is...>) {
@@ -421,7 +423,7 @@ index 4604eb7..fb95fa6 100644
      return *this;
  }
  
-@@ -760,7 +760,7 @@ template<size_t... Is>
+@@ -759,7 +759,7 @@ template<size_t... Is>
  typename StructureOfArraysBase<Allocator, Elements...>::IteratorValueRef&
  StructureOfArraysBase<Allocator, Elements...>::IteratorValueRef::assign(
          Structure&& rhs, std::index_sequence<Is...>) noexcept {
@@ -430,7 +432,7 @@ index 4604eb7..fb95fa6 100644
      return *this;
  }
  
-@@ -770,7 +770,7 @@ typename StructureOfArraysBase<Allocator, Elements...>::IteratorValueRef&
+@@ -769,7 +769,7 @@ typename StructureOfArraysBase<Allocator, Elements...>::IteratorValueRef&
  StructureOfArraysBase<Allocator, Elements...>::IteratorValueRef::assign(
          IteratorValue&& rhs, std::index_sequence<Is...>) noexcept {
      // implements IteratorValueRef& IteratorValueRef::operator=(IteratorValue&& rhs) noexcept
@@ -440,10 +442,10 @@ index 4604eb7..fb95fa6 100644
      return *this;
  }
 diff --git a/libs/utils/include/utils/compiler.h b/libs/utils/include/utils/compiler.h
-index 7d33e70..f9e664c 100644
+index e55126d..09fc91e 100644
 --- a/libs/utils/include/utils/compiler.h
 +++ b/libs/utils/include/utils/compiler.h
-@@ -370,7 +370,7 @@ void __asan_unpoison_memory_region(void const volatile *addr, size_t size);
+@@ -376,7 +376,7 @@ void __asan_unpoison_memory_region(void const volatile *addr, size_t size);
  // AND multi-threading is enabled (UTILS_HAS_THREADING is not 0).
  // This prevents compile failures on single-threaded targets or builds where standard
  // annotations are disabled by default in the platform's standard library headers.
@@ -453,10 +455,10 @@ index 7d33e70..f9e664c 100644
  #else
  #define UTILS_THREAD_ANNOTATION_ATTRIBUTE(x)
 diff --git a/libs/utils/src/CallStack.cpp b/libs/utils/src/CallStack.cpp
-index 8967434..be3109b 100644
+index f05f79f..3cd2b0b 100644
 --- a/libs/utils/src/CallStack.cpp
 +++ b/libs/utils/src/CallStack.cpp
-@@ -93,7 +93,7 @@ void CallStack::update(size_t ignore) noexcept {
+@@ -89,7 +89,7 @@ void CallStack::update(size_t ignore) noexcept {
      update_gcc(ignore);
  }
  
@@ -465,7 +467,7 @@ index 8967434..be3109b 100644
      // reset the object
      ssize_t size = 0;
  
-@@ -141,7 +141,7 @@ CString CallStack::demangleTypeName(const char* mangled) {
+@@ -138,7 +138,7 @@ CString CallStack::demangleTypeName(const char* mangled) {
  
  // ------------------------------------------------------------------------------------------------
  
