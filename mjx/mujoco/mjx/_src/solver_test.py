@@ -252,6 +252,43 @@ class SolverTest(parameterized.TestCase):
     np.testing.assert_allclose(pt.deriv_0, 0.0, atol=1e-7)
     np.testing.assert_allclose(pt.deriv_1, 1.0, rtol=1e-5)
 
+  @parameterized.parameters(1e-6, 1e-12, 1e-17)
+  def test_elliptic_hessian_small_tangent(self, t):
+    """Elliptic cone Hessian is exact when T^3 < mjMINVAL."""
+    m = mujoco.MjModel.from_xml_string("""
+      <mujoco>
+        <option cone="elliptic" solver="Newton"/>
+        <worldbody>
+          <geom type="plane" size="1 1 1"/>
+          <body pos="0 0 0.09">
+            <freejoint/>
+            <geom type="sphere" size="0.1" friction="1 1 1"/>
+          </body>
+        </worldbody>
+      </mujoco>
+    """)
+    d = mujoco.MjData(m)
+    mujoco.mj_forward(m, d)
+    mx = mjx.put_model(m)
+    dx = mjx.put_data(m, d)
+    ctx = solver.Context.create(mx, dx)
+
+    # middle zone with tiny tangent t along the first tangent direction
+    fri = np.asarray(ctx.fri[0])
+    mu = fri[0]
+    n = -0.5 * t / mu
+    jaref = jax.numpy.array([n / mu, t / fri[1], 0.0])
+    ctx = solver._update_constraint(mx, dx, ctx.replace(Jaref=jaref))
+
+    # H = Dm * F * [[1, -mu, 0], [-mu, mu^2, 0], [0, 0, mu^2 - mu*n/t]] * F
+    h = np.zeros((3, 3))
+    h[0, 0] = 1.0
+    h[0, 1] = h[1, 0] = -mu
+    h[1, 1] = mu * mu
+    h[2, 2] = mu * mu - mu * n / t
+    h *= float(ctx.dm[0]) * np.outer(fri[:3], fri[:3])
+    np.testing.assert_allclose(ctx.h[0, :3, :3], h, rtol=1e-5, atol=1e-6)
+
 
 if __name__ == '__main__':
   absltest.main()
