@@ -282,6 +282,95 @@ class MuJoCoRendererTest(parameterized.TestCase):
         ortho_depth[corner], persp_depth[corner], delta=1e-2
     )
 
+  @parameterized.parameters('persp', 'ortho')
+  def test_mjr_read_pixels_depth_map(self, camera_name):
+    """Tests mjr_readPixels raw depth mapping and far-plane clipping."""
+    znear = 0.1
+    zfar = 10.0
+    xml = f"""
+<mujoco>
+  <statistic extent="1"/>
+  <visual>
+    <map znear="{znear}" zfar="{zfar}"/>
+    <quality offsamples="0"/>
+  </visual>
+  <worldbody>
+    <camera name="persp" pos="0 0 3" xyaxes="1 0 0 0 1 0"
+      projection="perspective" fovy="45"/>
+    <camera name="ortho" pos="0 0 3" xyaxes="1 0 0 0 1 0"
+      projection="orthographic" fovy="2"/>
+    <geom name="near_box" type="box" pos="0 0 1" size="0.3 0.3 0.5"/>
+    <geom name="beyond_far" type="box" pos="0 0 -9" size="10 10 0.5"/>
+  </worldbody>
+</mujoco>
+"""
+    model = mujoco.MjModel.from_xml_string(xml)
+    data = mujoco.MjData(model)
+    mujoco.mj_forward(model, data)
+
+    size = 51
+    gl = mujoco.GLContext(size, size) if mujoco.GLContext is not None else None
+    try:
+      if gl is not None:
+        gl.make_current()
+      ctx = mujoco.MjrContext(model, mujoco.mjtFontScale.mjFONTSCALE_150.value)
+      try:
+        self.assertEqual(ctx.readDepthMap, mujoco.mjtDepthMap.mjDEPTH_ZERONEAR)
+        mujoco.mjr_setBuffer(mujoco.mjtFramebuffer.mjFB_OFFSCREEN.value, ctx)
+
+        scene = mujoco.MjvScene(model=model, maxgeom=10)
+        cam = mujoco.MjvCamera()
+        cam.type = mujoco.mjtCamera.mjCAMERA_FIXED
+        cam.fixedcamid = mujoco.mj_name2id(
+            model, mujoco.mjtObj.mjOBJ_CAMERA.value, camera_name
+        )
+        mujoco.mjv_updateScene(
+            model,
+            data,
+            mujoco.MjvOption(),
+            None,
+            cam,
+            mujoco.mjtCatBit.mjCAT_ALL.value,
+            scene,
+        )
+
+        rect = mujoco.MjrRect(0, 0, size, size)
+        mujoco.mjr_render(rect, scene, ctx)
+
+        depth_zeronear = np.empty((size, size), dtype=np.float32)
+        mujoco.mjr_readPixels(None, depth_zeronear, rect, ctx)
+
+        ctx.readDepthMap = mujoco.mjtDepthMap.mjDEPTH_ZEROFAR
+        depth_zerofar = np.empty((size, size), dtype=np.float32)
+        mujoco.mjr_readPixels(None, depth_zerofar, rect, ctx)
+      finally:
+        ctx.free()
+    finally:
+      if gl is not None:
+        gl.free()
+
+    np.testing.assert_allclose(depth_zeronear + depth_zerofar, 1.0, atol=1e-6)
+
+    # Top face of near_box is at world z = 1.5, so planar camera depth is 1.5.
+    z_box = 1.5
+    if camera_name == 'persp':
+      expected_zerofar = znear * (zfar - z_box) / (z_box * (zfar - znear))
+    else:
+      expected_zerofar = (zfar - z_box) / (zfar - znear)
+    expected_zeronear = 1.0 - expected_zerofar
+
+    center = (size // 2, size // 2)
+    self.assertAlmostEqual(depth_zerofar[center], expected_zerofar, delta=1e-4)
+    self.assertAlmostEqual(
+        depth_zeronear[center], expected_zeronear, delta=1e-4
+    )
+
+    # Geometry beyond zfar (z_cam = 11.5 > 10.0) must be clipped at the far
+    # plane, leaving background corners at far depth.
+    for corner in ((0, 0), (0, -1), (-1, 0), (-1, -1)):
+      self.assertAlmostEqual(depth_zerofar[corner], 0.0, delta=1e-6)
+      self.assertAlmostEqual(depth_zeronear[corner], 1.0, delta=1e-6)
+
   def test_renderer_del_safe_when_init_fails_early(self):
     """Regression test for #3213.
 

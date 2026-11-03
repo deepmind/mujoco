@@ -307,9 +307,11 @@ Bug fixes
 - Contact pairs created with an undefined ``mjsPair.solref`` now mix the ``solref`` of their geoms using ``solmix``
   when both are positive, like contacts not defined by pairs. Previously they always took the element-wise minimum.
 - Filament depth and segmentation renders no longer apply post-processing (tone mapping, dithering), which corrupted
-  depth values and segment ID colors whenever post-processing was enabled, as it always is through the ``mjr_``
-  compatibility API. That API also now colors geoms by ``segid + 1``, like :ref:`mjRND_IDCOLOR<mjtRndFlag>` in the
-  classic renderer, so a geom with ``segid`` 0 no longer renders as background.
+  depth values and segment ID colors; perspective depth renders now project with the finite
+  :ref:`zfar<visual-map-zfar>` plane instead of Filament's infinite far plane, matching orthographic depth and the
+  classic renderer; and the ``mjr_`` compatibility API now respects ``readDepthMap`` (:ref:`mjtDepthMap`) on
+  :ref:`mjrContext` in :ref:`mjr_readPixels` and colors geoms by ``segid + 1`` like :ref:`mjRND_IDCOLOR<mjtRndFlag>`
+  so a geom with ``segid`` 0 no longer renders as background.
 - File paths on Windows are now interpreted as UTF-8 rather than the active ANSI code page, fixing loading and saving
   files when the path contains non-ASCII UTF-8 characters (:issue:`3139`). Contribution by :github:user:`mar-yan24`.
 - Fixed :ref:`dcmotor<actuator-dcmotor>` parameter handling: allow zero :ref:`motorconst<actuator-dcmotor-motorconst>`

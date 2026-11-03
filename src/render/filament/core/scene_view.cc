@@ -103,9 +103,9 @@ static filament::ColorGrading::Builder ToBuilder(
       .curves(opts.shadow_gamma, opts.mid_point, opts.highlight_scale);
 }
 
-static void SetupCamera(const mjrCamera& cam,
-                        const filament::Viewport& viewport,
+static void SetupCamera(const mjrfRenderRequest& request,
                         filament::Camera* camera) {
+  const mjrCamera& cam = request.camera;
   const filament::Camera::Projection type =
       cam.orthographic ? filament::Camera::Projection::ORTHO
                        : filament::Camera::Projection::PERSPECTIVE;
@@ -113,7 +113,8 @@ static void SetupCamera(const mjrCamera& cam,
   const float3 cam_fwd(cam.forward[0], cam.forward[1], cam.forward[2]);
   const float3 cam_up(cam.up[0], cam.up[1], cam.up[2]);
   const float3 cam_at = cam_pos + cam_fwd;
-  const float aspect_ratio = (float)viewport.width / (float)viewport.height;
+  const float aspect_ratio =
+      (float)request.viewport.width / (float)request.viewport.height;
   const float halfwidth =
       cam.frustum_width
           ? cam.frustum_width
@@ -122,6 +123,12 @@ static void SetupCamera(const mjrCamera& cam,
   camera->setProjection(type, cam.frustum_center - halfwidth,
                         cam.frustum_center + halfwidth, cam.frustum_bottom,
                         cam.frustum_top, cam.frustum_near, cam.frustum_far);
+  if (request.draw_mode == mjDRAW_MODE_DEPTH) {
+    // Filament's setProjection puts the perspective far plane at infinity; use
+    // the finite-far culling frustum so depth maps span [near, far].
+    const mat4 proj = camera->getCullingProjectionMatrix();
+    camera->setCustomProjection(proj, proj, cam.frustum_near, cam.frustum_far);
+  }
 }
 
 // Sets up the `reflection_camera` as a reflection of `src_camera` across the
@@ -324,7 +331,7 @@ void SceneView::Render(filament::Renderer* renderer,
     view->setMultiSampleAntiAliasingOptions({.enabled = false});
   }
 
-  SetupCamera(request.camera, viewport, camera_);
+  SetupCamera(request, camera_);
 
   // Aim the headlight along this request's camera. Filament re-gathers the
   // scene's lights for each render() call, so requests batched into one frame

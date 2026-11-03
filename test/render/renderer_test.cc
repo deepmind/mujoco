@@ -858,5 +858,134 @@ TEST_F(RendererTest, HorizonHazeAndSkyboxFlags) {
   }
 }
 
+TEST_F(RendererTest, DepthProjectionUsesFiniteFar) {
+  constexpr int kSize = 33;
+  constexpr float kNear = 0.1f;
+  constexpr float kFar = 10.0f;
+
+  Renderer renderer(MakeOffscreenConfig());
+  mjrfContext* ctx = renderer.GetContext();
+
+  mjrfRenderTargetConfig depth_cfg;
+  mjrf_defaultRenderTargetConfig(&depth_cfg);
+  depth_cfg.width = kSize;
+  depth_cfg.height = kSize;
+  depth_cfg.color_format = mjPIXEL_FORMAT_R32F;
+  depth_cfg.depth_format = mjPIXEL_FORMAT_DEPTH32F;
+  Renderer::RenderTargetHandle depth_target =
+      renderer.CreateRenderTarget("depth", depth_cfg);
+  ASSERT_NE(depth_target, Renderer::kInvalidRenderTarget);
+
+  mjrfScene* scene = renderer.GetScene("scene");
+  Renderer::SceneHandle scene_handle = renderer.GetSceneHandle("scene");
+
+  mjrfRenderableParams params;
+  mjrf_defaultRenderableParams(&params);
+  params.cast_shadow = false;
+  params.receive_shadow = false;
+
+  UniquePtr<mjrfTexture> white_tex = MakeTexture(ctx, kWhite);
+  mjrfMaterial mat;
+  mjrf_defaultMaterial(&mat);
+  mat.emissive = 1.0f;
+  mat.emissive_texture = white_tex.get();
+
+  const float kIdentityRot[9] = {1, 0, 0, 0, 1, 0, 0, 0, 1};
+
+  // Center box whose top face sits at world z = 1.5 (planar depth 1.5 from
+  // z=3).
+  UniquePtr<mjrfRenderable> near_box = CreateRenderable(ctx, params);
+  mjrf_setRenderableGeomMesh(near_box.get(), mjGEOM_BOX, 1, 28, 4);
+  const float kNearSize[3] = {0.2f, 0.2f, 0.5f};
+  const float kNearPos[3] = {0.0f, 0.0f, 1.0f};
+  mjrf_setRenderableSize(near_box.get(), kNearSize);
+  mjrf_setRenderablePose(near_box.get(), kNearPos, kIdentityRot);
+  mjrf_setRenderableMaterial(near_box.get(), &mat);
+  mjrf_addSceneRenderable(scene, near_box.get());
+
+  // Off-axis box spanning camera depth [7.0, 20.0] at x in [6.0, 26.0]: its
+  // front face is inside frustum_far (not CPU-culled), while its -X side face
+  // crosses frustum_far = 10.0 and must be hardware-clipped past z_far.
+  UniquePtr<mjrfRenderable> straddling_box = CreateRenderable(ctx, params);
+  mjrf_setRenderableGeomMesh(straddling_box.get(), mjGEOM_BOX, 1, 28, 4);
+  const float kStraddleSize[3] = {10.0f, 20.0f, 6.5f};
+  const float kStraddlePos[3] = {16.0f, 0.0f, -10.5f};
+  mjrf_setRenderableSize(straddling_box.get(), kStraddleSize);
+  mjrf_setRenderablePose(straddling_box.get(), kStraddlePos, kIdentityRot);
+  mjrf_setRenderableMaterial(straddling_box.get(), &mat);
+  mjrf_addSceneRenderable(scene, straddling_box.get());
+
+  // Backdrop box wholly beyond frustum_far (top face at planar depth 11.5).
+  UniquePtr<mjrfRenderable> beyond_far = CreateRenderable(ctx, params);
+  mjrf_setRenderableGeomMesh(beyond_far.get(), mjGEOM_BOX, 1, 28, 4);
+  const float kBeyondSize[3] = {20.0f, 20.0f, 0.5f};
+  const float kBeyondPos[3] = {0.0f, 0.0f, -9.0f};
+  mjrf_setRenderableSize(beyond_far.get(), kBeyondSize);
+  mjrf_setRenderablePose(beyond_far.get(), kBeyondPos, kIdentityRot);
+  mjrf_setRenderableMaterial(beyond_far.get(), &mat);
+  mjrf_addSceneRenderable(scene, beyond_far.get());
+
+  auto depth_at = [&](int x, int y) {
+    std::span<const std::byte> bytes = renderer.GetPixels(depth_target);
+    float value = 0.0f;
+    std::memcpy(&value, bytes.data() + (y * kSize + x) * sizeof(float),
+                sizeof(float));
+    return value;
+  };
+
+  Renderer::View views[1];
+  Renderer::View& view = views[0];
+  view.scene = scene_handle;
+  view.render_target = depth_target;
+  view.draw_mode = mjDRAW_MODE_DEPTH;
+  view.post_processing = false;
+  view.shadows = false;
+  view.reflections = false;
+  view.camera.pos[0] = 0.0f;
+  view.camera.pos[1] = 0.0f;
+  view.camera.pos[2] = 3.0f;
+  view.camera.forward[0] = 0.0f;
+  view.camera.forward[1] = 0.0f;
+  view.camera.forward[2] = -1.0f;
+  view.camera.up[0] = 0.0f;
+  view.camera.up[1] = 1.0f;
+  view.camera.up[2] = 0.0f;
+  view.camera.frustum_center = 0.0f;
+  view.camera.frustum_near = kNear;
+  view.camera.frustum_far = kFar;
+
+  // Perspective camera (90-degree FOV): reversed-Z finite-frustum mapping
+  // d = near * (far - z) / (z * (far - near)).
+  view.camera.orthographic = false;
+  view.camera.frustum_width = 0.1f;
+  view.camera.frustum_bottom = -0.1f;
+  view.camera.frustum_top = 0.1f;
+  renderer.Render(views);
+
+  constexpr float kBoxDepth = 1.5f;
+  constexpr float kExpectedPerspCenter =
+      kNear * (kFar - kBoxDepth) / (kBoxDepth * (kFar - kNear));
+  constexpr float kStraddleFrontDepth = 7.0f;
+  constexpr float kExpectedStraddleFront =
+      kNear * (kFar - kStraddleFrontDepth) /
+      (kStraddleFrontDepth * (kFar - kNear));
+  EXPECT_NEAR(depth_at(kSize / 2, kSize / 2), kExpectedPerspCenter, 1e-4f);
+  EXPECT_NEAR(depth_at(31, kSize / 2), kExpectedStraddleFront, 1e-4f);
+  EXPECT_NEAR(depth_at(24, kSize / 2), 0.0f, 1e-6f);
+  EXPECT_NEAR(depth_at(0, 0), 0.0f, 1e-6f);
+
+  // Orthographic camera: linear reversed-Z mapping d = (far - z) / (far -
+  // near).
+  view.camera.orthographic = true;
+  view.camera.frustum_width = 1.0f;
+  view.camera.frustum_bottom = -1.0f;
+  view.camera.frustum_top = 1.0f;
+  renderer.Render(views);
+
+  constexpr float kExpectedOrthoCenter = (kFar - kBoxDepth) / (kFar - kNear);
+  EXPECT_NEAR(depth_at(kSize / 2, kSize / 2), kExpectedOrthoCenter, 1e-4f);
+  EXPECT_NEAR(depth_at(0, 0), 0.0f, 1e-6f);
+}
+
 }  // namespace
 }  // namespace mujoco

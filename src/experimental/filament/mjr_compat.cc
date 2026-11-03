@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <memory>
@@ -39,7 +40,8 @@ class CompatContext {
 
   void Render(const mjrRect& viewport, const mjvScene* scene);
 
-  void ReadPixels(mjrRect viewport, unsigned char* rgb, float* depth);
+  void ReadPixels(mjrRect viewport, unsigned char* rgb, float* depth,
+                  int depth_map);
 
   // The headlight is a render request option; fill it in from the bridge.
   void SetHeadlight(mjrfRenderRequest* req) const {
@@ -123,7 +125,7 @@ void CompatContext::Render(const mjrRect& viewport, const mjvScene* scene) {
 }
 
 void CompatContext::ReadPixels(mjrRect viewport, unsigned char* rgb,
-                               float* depth) {
+                               float* depth, int depth_map) {
   if (framebuffer_ == mjFB_WINDOW) {
     mju_error("ReadPixels is only supported for offscreen rendering.");
   }
@@ -190,6 +192,13 @@ void CompatContext::ReadPixels(mjrRect viewport, unsigned char* rgb,
 
     const mjrfFrameHandle frame = mjrf_render(context_.get(), &req, 1, &read_req, 1);
     mjrf_waitForFrame(context_.get(), frame);
+    if (depth_map == mjDEPTH_ZERONEAR) {
+      const size_t npixel =
+          static_cast<size_t>(width) * static_cast<size_t>(height);
+      for (size_t i = 0; i < npixel; ++i) {
+        depth[i] = 1.0f - depth[i];
+      }
+    }
   }
 }
 
@@ -210,7 +219,9 @@ extern "C" {
 // mjr functions that are supported by the filament renderer.
 
 void mjr_defaultContext(mjrContext* con) {
-  memset(con, 0, sizeof(mjrContext));
+  if (con) {
+    memset(con, 0, sizeof(mjrContext));
+  }
 }
 
 void mjr_defaultRendererInfo(mjrRendererInfo* info) {
@@ -231,6 +242,7 @@ void mjr_makeFilamentContext(const mjModel* m, const mjrfContextConfig* cfg,
   if (g_context != nullptr) {
     mju_error("Context already exists!");
   }
+  mjr_defaultContext(con);
   g_context = new mujoco::CompatContext(cfg, m);
 }
 
@@ -267,8 +279,9 @@ void mjr_setBuffer(int framebuffer, mjrContext* con) {
   GetCheckedContext()->SetFrameBuffer(framebuffer);
 }
 void mjr_readPixels(unsigned char* rgb, float* depth, mjrRect viewport,
-                          const mjrContext* con) {
-  GetCheckedContext()->ReadPixels(viewport, rgb, depth);
+                    const mjrContext* con) {
+  const int depth_map = con ? con->readDepthMap : mjDEPTH_ZERONEAR;
+  GetCheckedContext()->ReadPixels(viewport, rgb, depth, depth_map);
 }
 
 // mjr functions that are NOT supported by the filament renderer.
