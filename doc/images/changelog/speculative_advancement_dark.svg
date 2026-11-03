@@ -1,0 +1,30 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="182 36 318 178" width="318" height="178" font-family="'DM Sans', Helvetica, Arial, sans-serif">
+  <defs>
+    <marker id="b" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="5" markerHeight="5" orient="auto"><path d="M 0 1.5 L 8.5 5 L 0 8.5 z" fill="#3b82f6"/></marker>
+    <marker id="p" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="5" markerHeight="5" orient="auto"><path d="M 0 1.5 L 8.5 5 L 0 8.5 z" fill="#8b5cf6"/></marker>
+    <marker id="g" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="5" markerHeight="5" orient="auto"><path d="M 0 1.5 L 8.5 5 L 0 8.5 z" fill="#10b981"/></marker>
+  </defs>
+  <line x1="105" y1="165" x2="345" y2="120" stroke="#3b82f6" stroke-opacity="0.4" stroke-width="1.8" stroke-dasharray="3 3"/>
+  <line x1="545" y1="115" x2="340" y2="155" stroke="#8b5cf6" stroke-opacity="0.4" stroke-width="1.8" stroke-dasharray="3 3"/>
+  <circle cx="234.3" cy="140.8" r="46.5" fill="none" stroke="#60a5fa" stroke-opacity="0.35" stroke-width="1.7" stroke-dasharray="3 3"/>
+  <circle cx="434.5" cy="136.6" r="53.9" fill="none" stroke="#a78bfa" stroke-opacity="0.35" stroke-width="1.7" stroke-dasharray="3 3"/>
+  <polygon points="195.3,115.4 278.6,126.4 273.3,166.1 190.1,155.1" fill="#1e3a8a" fill-opacity="0.65" stroke="#60a5fa" stroke-width="1.2"/>
+  <polygon points="385.9,113.5 432.7,82.7 483.2,159.6 436.4,190.4" fill="#4c1d95" fill-opacity="0.65" stroke="#a78bfa" stroke-width="1.2"/>
+  <circle cx="234.3" cy="140.8" r="2.2" fill="#2563eb"/>
+  <line x1="234.3" y1="140.8" x2="287.1" y2="130.9" stroke="#3b82f6" stroke-width="1.15" marker-end="url(#b)"/>
+  <text x="206.3" y="202.3" fill="#e2e8f0" font-size="11" font-weight="600">geom 1 (t=0.54)</text>
+  <path d="M 198.7 100.8 A 53.51881339845203 53.51881339845203 0 0 1 263.2 95.7" fill="none" stroke="#3b82f6" stroke-width="1.0" marker-end="url(#b)"/>
+  <text x="210.3" y="83.2" fill="#3b82f6" font-size="10.5" font-style="italic">Δω₁, r₁</text>
+  <circle cx="434.5" cy="136.6" r="2.2" fill="#7c3aed"/>
+  <line x1="434.5" y1="136.6" x2="389.4" y2="145.4" stroke="#8b5cf6" stroke-width="1.15" marker-end="url(#p)"/>
+  <text x="406.5" y="205.4" fill="#e2e8f0" font-size="11" font-weight="600">geom 2 (t=0.54)</text>
+  <path d="M 481.1 97.4 A 60.85164807134504 60.85164807134504 0 0 0 403.8 84.0" fill="none" stroke="#8b5cf6" stroke-width="1.0" marker-end="url(#p)"/>
+  <text x="416.5" y="71.7" fill="#8b5cf6" font-size="10.5" font-style="italic">Δω₂, r₂</text>
+  <line x1="322.9" y1="42.5" x2="341.6" y2="197.4" stroke="#34d399" stroke-opacity="0.75" stroke-width="1.0" stroke-dasharray="4 3"/>
+  <line x1="326.5" y1="72.3" x2="352.3" y2="69.2" stroke="#10b981" stroke-width="1.25" marker-end="url(#g)"/>
+  <text x="356.3" y="72.2" fill="#10b981" font-size="11" font-weight="700">n</text>
+  <line x1="278.6" y1="126.4" x2="385.9" y2="113.5" stroke="#f59e0b" stroke-width="1.1" stroke-dasharray="3 2"/>
+  <circle cx="278.6" cy="126.4" r="2.5" fill="#2563eb"/>
+  <circle cx="385.9" cy="113.5" r="2.5" fill="#7c3aed"/>
+  <text x="335.3" y="145.8" text-anchor="middle" fill="#d97706" font-size="11" font-weight="600">dist = 1.08</text>
+</svg>

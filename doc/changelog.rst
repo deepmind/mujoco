@@ -7,27 +7,45 @@ Upcoming Version (not yet released)
 
 Significant new features
 ^^^^^^^^^^^^^^^^^^^^^^^^
+
+  .. image:: images/changelog/speculative_advancement_light.svg
+     :align: right
+     :width: 50%
+     :class: only-light
+     :target: https://mujoco.readthedocs.io/en/latest/computation/speculative.html#spadvancement
+
+  .. image:: images/changelog/speculative_advancement_dark.svg
+     :align: right
+     :width: 50%
+     :class: only-dark
+     :target: https://mujoco.readthedocs.io/en/latest/computation/speculative.html#spadvancement
+
 - Added the :ref:`speculative<option-flag-speculative>` enable flag for :doc:`speculative contacts
   <computation/speculative>` to prevent fast-moving convex geoms from tunneling through thin obstacles within a single
-  timestep.
+  timestep. On the right, one step of conservative advancement between two rotating boxes.
 
-.. image:: https://www.gstatic.com/mujoco/doc/images/changelog/wire.gif
-   :align: right
-   :width: 40%
-   :target: https://github.com/google-deepmind/mujoco/blob/main/model/plastic/wire.xml
+.. container:: custom-clear
 
-- Added ideal elasto-plasticity for joint (:ref:`springyield<body-joint-springyield>`) and tendon
-  (:ref:`spatial<tendon-spatial-springyield>`, :ref:`fixed<tendon-fixed-springyield>`) springs, with stateful plastic
-  spring references in ``mjData.plastic`` (``mjSTATE_PLASTIC``).
+   .. raw:: html
 
-.. image:: https://www.gstatic.com/mujoco/doc/images/changelog/clay.gif
-   :align: right
-   :width: 40%
-   :target: https://github.com/google-deepmind/mujoco/blob/main/model/flex/clay.xml
+      <div style="clear: both;"></div>
 
-- Added continuum elasto-plasticity (:ref:`yield<flex-elasticity-yield>`) for 2D and 3D
-  :ref:`flexes<deformable-flex>`, with volumetric-deviatoric (von Mises :math:`J_2`) stretching and 2D shell bending
-  return mapping in ``mjData.plastic``.
+- Added elasto-plasticity, with stateful plastic deformation stored in ``mjData.plastic`` (``mjSTATE_PLASTIC``):
+
+  - Ideal elasto-plasticity for joint (:ref:`springyield<body-joint-springyield>`) and tendon
+    (:ref:`spatial<tendon-spatial-springyield>`, :ref:`fixed<tendon-fixed-springyield>`) springs (left).
+  - Continuum elasto-plasticity (:ref:`yield<flex-elasticity-yield>`) for 2D and 3D :ref:`flexes<deformable-flex>`,
+    with volumetric-deviatoric (von Mises :math:`J_2`) stretching and 2D shell bending return mapping (right).
+
+  .. image:: https://www.gstatic.com/mujoco/doc/images/changelog/wire.gif
+     :align: left
+     :width: 48%
+     :target: https://github.com/google-deepmind/mujoco/blob/main/model/plastic/wire.xml
+
+  .. image:: https://www.gstatic.com/mujoco/doc/images/changelog/clay.gif
+     :align: right
+     :width: 42%
+     :target: https://github.com/google-deepmind/mujoco/blob/main/model/flex/clay.xml
 
 .. container:: custom-clear
 
