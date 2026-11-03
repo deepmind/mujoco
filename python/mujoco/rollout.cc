@@ -64,7 +64,7 @@ Roll out batch of trajectories from initial states, get resulting states and sen
   output arguments (optional):
     state              (nbatch x nstep x nstate)      nbatch nstep states
     sensordata         (nbatch x nstep x nsendordata) nbatch trajectories of nstep sensordata arrays
-    chunk_size         integer, determines threadpool chunk size. If unspecified, the default is
+    chunk_size         integer, positive threadpool chunk size. If unspecified, the default is
                            chunk_size = max(1, nbatch / (nthread * 10))
 )";
 
@@ -287,6 +287,11 @@ class Rollout {
             << "rollout parallelizes across simulations and cannot use it";
         throw py::value_error(msg.str());
       }
+    }
+
+    // the thread pool chunks the batch by this size
+    if (chunk_size.has_value() && *chunk_size < 1) {
+      throw py::value_error("chunk_size must be positive");
     }
 
     // check that some steps need to be taken, return if not

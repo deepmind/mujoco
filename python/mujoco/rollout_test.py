@@ -797,6 +797,101 @@ class MuJoCoRolloutTest(parameterized.TestCase):
           model, data, initial_state, control, control_spec=bad_spec
       )
 
+  def test_nonpositive_nstep(self):
+    model = mujoco.MjModel.from_xml_string(TEST_XML)
+    nstate = mujoco.mj_stateSize(model, mujoco.mjtState.mjSTATE_FULLPHYSICS)
+    data = mujoco.MjData(model)
+    initial_state = zeros(1, nstate)
+
+    # a nonpositive nstep used to alias "infer the step count from control"
+    for nstep in (0, -1):
+      with self.assertRaisesWithLiteralMatch(
+          ValueError, 'nstep must be positive'
+      ):
+        rollout.rollout(model, data, initial_state, nstep=nstep)
+
+  def test_noninteger_nstep_chunk_size(self):
+    model = mujoco.MjModel.from_xml_string(TEST_XML)
+    nstate = mujoco.mj_stateSize(model, mujoco.mjtState.mjSTATE_FULLPHYSICS)
+    data = mujoco.MjData(model)
+    initial_state = zeros(1, nstate)
+
+    # falsy non-integers used to slip through the truthiness-guarded checks
+    with self.assertRaisesWithLiteralMatch(
+        ValueError, 'nstep must be an integer'
+    ):
+      rollout.rollout(model, data, initial_state, nstep='')
+    with self.assertRaisesWithLiteralMatch(
+        ValueError, 'chunk_size must be an integer'
+    ):
+      rollout.rollout(model, data, initial_state, chunk_size='')
+
+  def test_nonpositive_chunk_size(self):
+    model = mujoco.MjModel.from_xml_string(TEST_XML)
+    nstate = mujoco.mj_stateSize(model, mujoco.mjtState.mjSTATE_FULLPHYSICS)
+    data = [mujoco.MjData(model) for _ in range(2)]
+
+    nbatch = 4
+    nstep = 5
+    initial_state = randn(nbatch, nstate)
+    control = randn(nbatch, nstep, model.nu)
+
+    # at nbatch=4, 0 divided by zero, -1 and -2 deadlocked in
+    # ThreadPool::WaitCount, and -3 scheduled an overlapping job; -5 and
+    # -100 used to run by accident because abs(chunk_size) > nbatch
+    for chunk_size in (0, -1, -2, -3, -5, -100):
+      with self.assertRaisesWithLiteralMatch(
+          ValueError, 'chunk_size must be positive'
+      ):
+        rollout.rollout(
+            model, data, initial_state, control, chunk_size=chunk_size
+        )
+
+      # skip_checks bypasses the Python wrapper, so this covers the same
+      # argument reaching the C++ rollout unchecked
+      with self.assertRaisesWithLiteralMatch(
+          ValueError, 'chunk_size must be positive'
+      ):
+        rollout.rollout(
+            [model] * nbatch,
+            data,
+            initial_state,
+            control,
+            nstep=nstep,
+            chunk_size=chunk_size,
+            skip_checks=True,
+        )
+
+    # the argument is rejected even when the thread pool is not used
+    single_data = mujoco.MjData(model)
+    for chunk_size in (0, -1):
+      with self.assertRaisesWithLiteralMatch(
+          ValueError, 'chunk_size must be positive'
+      ):
+        rollout.rollout(
+            model, single_data, initial_state, control, chunk_size=chunk_size
+        )
+
+  def test_chunk_size(self):
+    model = mujoco.MjModel.from_xml_string(TEST_XML)
+    nstate = mujoco.mj_stateSize(model, mujoco.mjtState.mjSTATE_FULLPHYSICS)
+    num_workers = 4
+    nbatch = 10
+    nstep = 5
+    initial_state = randn(nbatch, nstate)
+    control = randn(nbatch, nstep, model.nu)
+    data = [mujoco.MjData(model) for _ in range(num_workers)]
+
+    py_state, py_sensordata = py_rollout(
+        model, mujoco.MjData(model), initial_state, control
+    )
+    for chunk_size in (1, 3, nbatch, nbatch + 1):
+      state, sensordata = rollout.rollout(
+          model, data, initial_state, control, chunk_size=chunk_size
+      )
+      np.testing.assert_array_equal(state, py_state)
+      np.testing.assert_array_equal(sensordata, py_sensordata)
+
   def test_stateless(self):
     model = mujoco.MjModel.from_xml_string(TEST_XML)
     nstate = mujoco.mj_stateSize(model, mujoco.mjtState.mjSTATE_FULLPHYSICS)

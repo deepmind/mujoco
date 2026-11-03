@@ -78,14 +78,16 @@ class Rollout:
         ([nbatch or 1] x [nstep or 1] x ncontrol)
       control_spec: mjtState specification of control vectors.
       skip_checks: Whether to skip internal shape and type checks.
-      nstep: Number of steps in rollouts (inferred if unspecified).
+      nstep: Number of steps in rollouts, must be positive.
+        (inferred if unspecified).
       initial_warmstart: Initial qfrc_warmstart array (optional).
         ([nbatch or 1] x nv)
       state: State output array (optional).
         (nbatch x nstep x nstate)
       sensordata: Sensor data output array (optional).
         (nbatch x nstep x nsensordata)
-      chunk_size: Determines threadpool chunk size. If unspecified,
+      chunk_size: Determines threadpool chunk size, must be positive.
+                  If unspecified,
                   chunk_size = max(1, nbatch / (nthread * 10))
 
     Returns:
@@ -130,10 +132,16 @@ class Rollout:
       raise ValueError('control_spec can only contain bits in mjSTATE_USER')
 
     # check types
-    if nstep and not isinstance(nstep, (int, np.integer)):
+    if nstep is not None and not isinstance(nstep, (int, np.integer)):
       raise ValueError('nstep must be an integer')
-    if chunk_size and not isinstance(chunk_size, (int, np.integer)):
+    if chunk_size is not None and not isinstance(chunk_size, (int, np.integer)):
       raise ValueError('chunk_size must be an integer')
+
+    # the C++ rollout treats nstep < 1 as a no-op that leaves the outputs
+    # unwritten, so reject it here rather than aliasing "infer"
+    if nstep is not None and nstep < 1:
+      raise ValueError('nstep must be positive')
+
     _check_must_be_numeric(
         initial_state=initial_state,
         initial_warmstart=initial_warmstart,
@@ -289,14 +297,16 @@ def rollout(
       ([nbatch or 1] x [nstep or 1] x ncontrol)
     control_spec: mjtState specification of control vectors.
     skip_checks: Whether to skip internal shape and type checks.
-    nstep: Number of steps in rollouts (inferred if unspecified).
+    nstep: Number of steps in rollouts, must be positive.
+      (inferred if unspecified).
     initial_warmstart: Initial qfrc_warmstart array (optional).
       ([nbatch or 1] x nv)
     state: State output array (optional).
       (nbatch x nstep x nstate)
     sensordata: Sensor data output array (optional).
       (nbatch x nstep x nsensordata)
-    chunk_size: Determines threadpool chunk size. If unspecified,
+    chunk_size: Determines threadpool chunk size, must be positive.
+                If unspecified,
                 chunk_size = max(1, nbatch / (nthread * 10))
     persistent_pool: Determines if a persistent thread pool is created or reused.
 
