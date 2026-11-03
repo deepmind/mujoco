@@ -1173,10 +1173,6 @@ void ParseMjcPhysicsMeshCollisionAPI(
 void ParseMjcPhysicsTendon(mjSpec* spec, const pxr::MjcPhysicsTendon& tendon) {
   pxr::UsdPrim prim = tendon.GetPrim();
   pxr::UsdStageRefPtr stage = prim.GetStage();
-  mjsTendon* mj_tendon = mjs_addTendon(spec, nullptr);
-  mjs_setName(mj_tendon->element, prim.GetPath().GetAsString().c_str());
-
-  SetUsdPrimPathUserValue(mj_tendon->element, prim.GetPath());
 
   pxr::TfToken type;
   tendon.GetTypeAttr().Get(&type);
@@ -1244,10 +1240,15 @@ void ParseMjcPhysicsTendon(mjSpec* spec, const pxr::MjcPhysicsTendon& tendon) {
     // Check that for N targets we have 0 or N elements in coef:
     if (!coefs.empty() && coefs.size() != n_targets) {
       mju_warning(
-          "Spatial tendon %s has %lu coefs but %lu wrap targets, skipping.",
+          "Fixed tendon %s has %lu coefs but %lu wrap targets, skipping.",
           prim.GetPath().GetAsString().c_str(), coefs.size(), n_targets);
+      return;
     }
   }
+
+  mjsTendon* mj_tendon = mjs_addTendon(spec, nullptr);
+  mjs_setName(mj_tendon->element, prim.GetPath().GetAsString().c_str());
+  SetUsdPrimPathUserValue(mj_tendon->element, prim.GetPath());
 
   int last_segment = 0;
   for (int i = 0; i < n_targets; ++i) {
@@ -1264,10 +1265,11 @@ void ParseMjcPhysicsTendon(mjSpec* spec, const pxr::MjcPhysicsTendon& tendon) {
             "Tendon %s has at least %d segments but only %lu divisors, "
             "skipping.",
             prim.GetPath().GetAsString().c_str(), segment + 1, divisors.size());
+        mjs_delete(spec, mj_tendon->element);
         return;
       }
 
-      if (segment > last_segment) {
+      if (segment > last_segment || (i == 0 && divisors[segment] != 1.0)) {
         mjsWrap* pulley_wrap = mjs_wrapPulley(mj_tendon, divisors[segment]);
         mjs_setString(pulley_wrap->info, ("Pulley between segments: " +
                                           std::to_string(last_segment) +
@@ -1296,6 +1298,7 @@ void ParseMjcPhysicsTendon(mjSpec* spec, const pxr::MjcPhysicsTendon& tendon) {
               "skipping.",
               prim.GetPath().GetAsString().c_str(), side_site_index,
               side_site_paths.size());
+          mjs_delete(spec, mj_tendon->element);
           return;
         }
         if (side_site_index >= 0) {
@@ -1307,6 +1310,7 @@ void ParseMjcPhysicsTendon(mjSpec* spec, const pxr::MjcPhysicsTendon& tendon) {
     } else {
       mju_warning("Tendon %s has an invalid wrap target type, skipping.",
                   prim.GetPath().GetAsString().c_str());
+      mjs_delete(spec, mj_tendon->element);
       return;
     }
     mjs_setString(wrap->info, ("Prim: " + wrap_target.GetAsString()).c_str());
@@ -2444,14 +2448,17 @@ void ParseConstraint(mjSpec* spec, const pxr::UsdPrim& prim, mjsBody* body,
     auto relpose_quat = localRot0 * localRot1.GetConjugate();
     relpose_quat.Normalize();
 
-    if (prim.HasAPI<pxr::MjcPhysicsEqualityConnectAPI>()) {
+    if (prim.IsA<pxr::UsdPhysicsSphericalJoint>() ||
+        prim.HasAPI<pxr::MjcPhysicsEqualityConnectAPI>()) {
       eq->type = mjEQ_CONNECT;
       eq->data[0] = localPos0[0];
       eq->data[1] = localPos0[1];
       eq->data[2] = localPos0[2];
 
-      pxr::MjcPhysicsEqualityAPI equality_api(prim);
-      ParseMjcEqualityAPISolverParams(eq, equality_api, prim);
+      if (prim.HasAPI<pxr::MjcPhysicsEqualityConnectAPI>()) {
+        pxr::MjcPhysicsEqualityAPI equality_api(prim);
+        ParseMjcEqualityAPISolverParams(eq, equality_api, prim);
+      }
     } else {
       eq->data[0] = localPos1[0];
       eq->data[1] = localPos1[1];
@@ -2889,6 +2896,10 @@ mjSpec* ParseStage(const pxr::UsdStageRefPtr stage) {
   }
 
   std::unique_ptr<Node> root = BuildKinematicTree(stage);
+  if (!root) {
+    mj_deleteSpec(spec);
+    return nullptr;
+  }
 
   // First parse the physics scene and other root elements such as keyframes
   // and actuators.

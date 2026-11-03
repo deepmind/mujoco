@@ -13,7 +13,10 @@
 // limitations under the License.
 
 #include <cmath>
+#include <cstdint>
 #include <filesystem>
+#include <fstream>
+#include <ios>
 #include <memory>
 #include <numbers>
 #include <string>
@@ -968,6 +971,242 @@ def Xform "body" (prepend apiSchemas = ["PhysicsRigidBodyAPI"]) {
   EXPECT_EQ(geom->group, 2);
   EXPECT_EQ(geom->priority, 3);
   EXPECT_EQ(geom->condim, 4);
+}
+
+TEST_F(UsdPreservationSemanticsTest, DiamondGraphKinematicTree) {
+  auto stage = pxr::UsdStage::CreateInMemory();
+  ASSERT_TRUE(stage->GetRootLayer()->ImportFromString(R"(#usda 1.0
+(metersPerUnit = 1)
+def PhysicsScene "scene" {}
+def Xform "body2" (prepend apiSchemas = ["PhysicsRigidBodyAPI"]) {
+    def Sphere "collider" (prepend apiSchemas = ["PhysicsCollisionAPI"]) {
+        double radius = 0.1
+    }
+}
+def Xform "body3" (prepend apiSchemas = ["PhysicsRigidBodyAPI"]) {
+    def Sphere "collider" (prepend apiSchemas = ["PhysicsCollisionAPI"]) {
+        double radius = 0.1
+    }
+}
+def PhysicsFixedJoint "joint_world_body2" {
+    rel physics:body1 = </body2>
+}
+def PhysicsFixedJoint "joint_world_body3" {
+    rel physics:body1 = </body3>
+}
+def PhysicsFixedJoint "joint_body2_body3" {
+    rel physics:body0 = </body2>
+    rel physics:body1 = </body3>
+}
+)"));
+  const std::string path = directory_ + "/diamond.usda";
+  ASSERT_TRUE(stage->GetRootLayer()->Export(path));
+
+  static thread_local std::string captured_error;
+  captured_error.clear();
+  auto old_handler = _mjPRIVATE_setTlsLogHandler(+[](const mjLogMessage* msg) {
+    if (msg->level == mjLOG_ERROR) {
+      captured_error = msg->subject;
+    }
+  });
+  char error[1024] = {};
+  std::unique_ptr<mjSpec, decltype(&mj_deleteSpec)> spec(
+      mj_parse(path.c_str(), nullptr, nullptr, error, sizeof(error)),
+      mj_deleteSpec);
+  _mjPRIVATE_setTlsLogHandler(old_handler);
+
+  EXPECT_EQ(spec, nullptr);
+  EXPECT_NE(captured_error.find("Cycle detected in the kinematic tree"),
+            std::string::npos)
+      << captured_error;
+
+  ASSERT_TRUE(
+      stage->GetPrimAtPath(pxr::SdfPath("/joint_body2_body3"))
+          .CreateAttribute(pxr::TfToken("physics:excludeFromArticulation"),
+                           pxr::SdfValueTypeNames->Bool)
+          .Set(true));
+  auto valid_spec = Parse(stage, "diamond_excluded.usda");
+  ASSERT_NE(valid_spec, nullptr);
+  MjModelPtr model(mj_compile(valid_spec.get(), nullptr));
+  ASSERT_NE(model, nullptr) << mjs_getError(valid_spec.get());
+  EXPECT_EQ(model->neq, 1);
+}
+
+// tiny RGB 3 x 2 PNG file
+constexpr uint8_t kTinyPng[] = {
+    0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 0x00, 0x00, 0x00,
+    0x0d, 0x49, 0x48, 0x44, 0x52, 0x00, 0x00, 0x00, 0x03, 0x00, 0x00,
+    0x00, 0x02, 0x08, 0x02, 0x00, 0x00, 0x00, 0x12, 0x16, 0xf1, 0x4d,
+    0x00, 0x00, 0x00, 0x1c, 0x49, 0x44, 0x41, 0x54, 0x08, 0xd7, 0x63,
+    0x78, 0xc1, 0xc0, 0xc0, 0xc0, 0xf0, 0xbf, 0xb8, 0xb8, 0x98, 0x81,
+    0xe1, 0x3f, 0xc3, 0xff, 0xff, 0xff, 0xc5, 0xc4, 0xc4, 0x00, 0x46,
+    0xd7, 0x07, 0x7f, 0xd2, 0x52, 0xa1, 0x41, 0x00, 0x00, 0x00, 0x00,
+    0x49, 0x45, 0x4e, 0x44, 0xae, 0x42, 0x60, 0x82};
+
+TEST_F(UsdPreservationSemanticsTest,
+       MissingTextureFileDoesNotCreateOrphanTexture) {
+  auto stage = pxr::UsdStage::CreateInMemory();
+  ASSERT_TRUE(stage->GetRootLayer()->ImportFromString(R"(#usda 1.0
+(metersPerUnit = 1)
+def Xform "body" (prepend apiSchemas = ["PhysicsRigidBodyAPI"]) {
+    def Sphere "geom" (prepend apiSchemas = ["PhysicsCollisionAPI"]) {
+        double radius = 0.1
+        rel material:binding = </material>
+    }
+}
+def Material "material" {
+    token outputs:surface.connect = </material/surface.outputs:surface>
+    def Shader "surface" {
+        uniform token info:id = "UsdPreviewSurface"
+        color3f inputs:diffuseColor.connect = </material/texture.outputs:rgb>
+        token outputs:surface
+    }
+    def Shader "texture" {
+        uniform token info:id = "UsdUVTexture"
+        asset inputs:file = @nonexistent.png@
+        float3 outputs:rgb
+    }
+}
+)"));
+  mock_warning_handler.ExpectWarnings("Could not open");
+  mock_warning_handler.ExpectWarnings("No value or texture for shader input");
+  auto spec = Parse(stage);
+  ASSERT_NE(spec, nullptr);
+  EXPECT_EQ(mjs_findElement(spec.get(), mjOBJ_TEXTURE, "/material/texture"),
+            nullptr);
+  MjModelPtr model(mj_compile(spec.get(), nullptr));
+  ASSERT_NE(model, nullptr) << mjs_getError(spec.get());
+}
+
+TEST_F(UsdPreservationSemanticsTest, SharedTextureDoesNotCollide) {
+  const std::string png_path = directory_ + "/test.png";
+  std::ofstream(png_path, std::ios::binary)
+      .write(reinterpret_cast<const char*>(kTinyPng), sizeof(kTinyPng));
+
+  auto stage = pxr::UsdStage::CreateInMemory();
+  const std::string usda = std::string(R"(#usda 1.0
+(metersPerUnit = 1)
+def Xform "body" (prepend apiSchemas = ["PhysicsRigidBodyAPI"]) {
+    def Sphere "geom" (prepend apiSchemas = ["PhysicsCollisionAPI"]) {
+        double radius = 0.1
+        rel material:binding = </material>
+    }
+}
+def Material "material" {
+    token outputs:surface.connect = </material/surface.outputs:surface>
+    def Shader "surface" {
+        uniform token info:id = "UsdPreviewSurface"
+        float inputs:metallic.connect = </material/texture.outputs:r>
+        float inputs:roughness.connect = </material/texture.outputs:r>
+        color3f inputs:diffuseColor.connect = </material/texture.outputs:rgb>
+        token outputs:surface
+    }
+    def Shader "texture" {
+        uniform token info:id = "UsdUVTexture"
+        asset inputs:file = @)") +
+                           png_path + R"(@
+        float outputs:r
+        float3 outputs:rgb
+    }
+}
+)";
+  ASSERT_TRUE(stage->GetRootLayer()->ImportFromString(usda));
+
+  auto spec = Parse(stage);
+  ASSERT_NE(spec, nullptr);
+  EXPECT_STREQ(mjs_getError(spec.get()), "");
+  MjModelPtr model(mj_compile(spec.get(), nullptr));
+  ASSERT_NE(model, nullptr) << mjs_getError(spec.get());
+  ASSERT_EQ(model->ntex, 1);
+  EXPECT_EQ(model->tex_nchannel[0], 3);
+}
+
+TEST_F(UsdPreservationSemanticsTest,
+       FixedTendonCoefMismatchSkipsAndSpatialSegmentZeroPulleyPreserved) {
+  auto stage = pxr::UsdStage::CreateInMemory();
+  ASSERT_TRUE(stage->GetRootLayer()->ImportFromString(R"(#usda 1.0
+(metersPerUnit = 1)
+def Xform "body" (prepend apiSchemas = ["PhysicsRigidBodyAPI"]) {
+    def Sphere "geom" (prepend apiSchemas = ["PhysicsCollisionAPI"]) {
+        double radius = 0.1
+    }
+    def Sphere "site1" (prepend apiSchemas = ["MjcSiteAPI"]) {
+        double radius = 0.01
+    }
+    def Sphere "site2" (prepend apiSchemas = ["MjcSiteAPI"]) {
+        double radius = 0.01
+    }
+    def PhysicsRevoluteJoint "j1" {
+        rel physics:body1 = </body>
+        uniform token physics:axis = "Z"
+    }
+    def PhysicsRevoluteJoint "j2" {
+        rel physics:body1 = </body>
+        uniform token physics:axis = "Y"
+    }
+}
+def MjcTendon "bad_fixed" {
+    uniform token mjc:type = "fixed"
+    rel mjc:path = [</body/j1>, </body/j2>]
+    uniform double[] mjc:path:coef = [1.5]
+}
+def MjcTendon "spatial_pulley0" {
+    uniform token mjc:type = "spatial"
+    rel mjc:path = [</body/site1>, </body/site2>]
+    uniform int[] mjc:path:segments = [0, 0]
+    uniform double[] mjc:path:divisors = [2.0]
+}
+)"));
+  mock_warning_handler.ExpectWarnings("has 1 coefs but 2 wrap targets");
+  auto spec = Parse(stage);
+  ASSERT_NE(spec, nullptr);
+  EXPECT_EQ(mjs_findElement(spec.get(), mjOBJ_TENDON, "/bad_fixed"), nullptr);
+
+  mjsTendon* spatial = mjs_asTendon(
+      mjs_findElement(spec.get(), mjOBJ_TENDON, "/spatial_pulley0"));
+  ASSERT_NE(spatial, nullptr);
+  ASSERT_EQ(mjs_getWrapNum(spatial), 3);
+  EXPECT_EQ(mjs_getWrap(spatial, 0)->type, mjWRAP_PULLEY);
+  EXPECT_DOUBLE_EQ(mjs_getWrapDivisor(mjs_getWrap(spatial, 0)), 2.0);
+}
+
+TEST_F(UsdPreservationSemanticsTest,
+       SphericalLoopJointWithoutMjcEqualityConnectAPIIsConnect) {
+  auto stage = pxr::UsdStage::CreateInMemory();
+  ASSERT_TRUE(stage->GetRootLayer()->ImportFromString(R"(#usda 1.0
+(metersPerUnit = 1)
+def Xform "leader" (prepend apiSchemas = ["PhysicsRigidBodyAPI"]) {
+    def Sphere "geom" (prepend apiSchemas = ["PhysicsCollisionAPI"]) {
+        double radius = 0.1
+    }
+    def PhysicsRevoluteJoint "joint" {
+        rel physics:body1 = </leader>
+    }
+}
+def Xform "follower" (prepend apiSchemas = ["PhysicsRigidBodyAPI"]) {
+    def Sphere "geom" (prepend apiSchemas = ["PhysicsCollisionAPI"]) {
+        double radius = 0.1
+    }
+    def PhysicsRevoluteJoint "joint" {
+        rel physics:body1 = </follower>
+    }
+}
+def PhysicsSphericalJoint "loop_joint" {
+    rel physics:body0 = </leader>
+    rel physics:body1 = </follower>
+    bool physics:excludeFromArticulation = true
+    point3f physics:localPos0 = (1, 2, 3)
+}
+)"));
+  auto spec = Parse(stage);
+  ASSERT_NE(spec, nullptr);
+  MjModelPtr model(mj_compile(spec.get(), nullptr));
+  ASSERT_NE(model, nullptr) << mjs_getError(spec.get());
+  ASSERT_EQ(model->neq, 1);
+  EXPECT_EQ(model->eq_type[0], mjEQ_CONNECT);
+  EXPECT_MJTNUM_EQ(model->eq_data[0], 1.0);
+  EXPECT_MJTNUM_EQ(model->eq_data[1], 2.0);
+  EXPECT_MJTNUM_EQ(model->eq_data[2], 3.0);
 }
 
 }  // namespace
