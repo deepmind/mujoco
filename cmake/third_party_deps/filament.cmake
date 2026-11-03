@@ -13,7 +13,7 @@
 # limitations under the License.
 
 set(MUJOCO_DEP_VERSION_filament
-    eec480f26618940d7cdb2ce64e01d2955babd04b  # rc/1.78.1
+    0643fd0f4363b85295fcaccd067a042072e483dd  # rc/1.79.0
     CACHE STRING "Tag/version of `filament` to be fetched."
 )
 mark_as_advanced(MUJOCO_DEP_VERSION_filament)
