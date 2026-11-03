@@ -161,6 +161,7 @@ SceneView::SceneView(ObjectManager* object_mgr, MaterialManager* material_mgr,
   depth_segment_view_->setScene(scene_);
   depth_segment_view_->setCamera(camera_);
   depth_segment_view_->setVisibleLayers(0xff, kLayerMask_Object);
+  depth_segment_view_->setShadowingEnabled(false);
   depth_segment_view_->setPostProcessingEnabled(false);
 
   reflect_view_ = engine->createView();
@@ -308,10 +309,11 @@ void SceneView::Render(filament::Renderer* renderer,
       request.draw_mode == mjDRAW_MODE_SEGMENTATION_BY_ID ||
       request.draw_mode == mjDRAW_MODE_SEGMENTATION_BY_COLOR) {
     view = depth_segment_view_;
+  } else {
+    view->setShadowingEnabled(request.shadows);
+    view->setPostProcessingEnabled(request.post_processing);
   }
   view->setViewport(viewport);
-  view->setShadowingEnabled(request.shadows);
-  view->setPostProcessingEnabled(request.post_processing);
 
   filament::MultiSampleAntiAliasingOptions options =
       view->getMultiSampleAntiAliasingOptions();

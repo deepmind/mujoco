@@ -342,6 +342,10 @@ Bug fixes
 - :ref:`accelerometer<sensor-accelerometer>` and :ref:`framelinacc<sensor-framelinacc>` sensors and
   :ref:`mj_objectAcceleration` on static and mocap bodies now report the gravitational proper acceleration, like a
   dynamic body at rest. Previously they returned zero, a regression introduced in 3.3.7.
+- Filament depth and segmentation renders no longer apply post-processing (tone mapping, dithering), which corrupted
+  depth values and segment ID colors whenever post-processing was enabled, as it always is through the ``mjr_``
+  compatibility API. That API also now colors geoms by ``segid + 1``, like :ref:`mjRND_IDCOLOR<mjtRndFlag>` in the
+  classic renderer, so a geom with ``segid`` 0 no longer renders as background.
 
 Documentation
 ^^^^^^^^^^^^^

@@ -175,7 +175,9 @@ static void UpdateGeomMaterial(mjrfRenderable* renderable, const mjvGeom& geom,
     material.roughness = model->mat_roughness[geom.matid];
   }
 
-  material.segmentation_id = geom.segid;
+  // Filament segmentation ids are 1-based (0 is the background), matching the
+  // classic renderer's mjRND_IDCOLOR, which colors each geom by segid + 1.
+  material.segmentation_id = geom.segid + 1;
 
   // Assume an emissive object is a selected object.
   if (geom.emission > 0 && geom.emission == model->vis.global.glow) {
