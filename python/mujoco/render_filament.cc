@@ -178,7 +178,11 @@ void Setter(T& dst, const U& src) {
       dst[i] = src[i];
     }
   } else if constexpr (std::is_same_v<U, std::vector<mjrVertexAttribute>>) {
-    for (int i = 0; i < src.size(); ++i) {
+    if (src.size() > std::size(dst)) {
+      throw py::value_error("Too many vertex attributes, maximum allowed is " +
+                            std::to_string(std::size(dst)));
+    }
+    for (size_t i = 0; i < src.size(); ++i) {
       dst[i] = src[i];
     }
   } else if constexpr (is_object<std::decay_t<U>>::value) {
@@ -308,6 +312,12 @@ PYBIND11_MODULE(_render_filament, m, pybind11::mod_gil_not_used()) {
   mjrf_mesh_data.def(
       "set_vertices",
       [](mjrfMeshData& data, const mjrfMeshConfig& config, py::bytes vertices) {
+        if (config.num_attributes < 0 ||
+            config.num_attributes >
+                static_cast<int>(std::size(data.vertices))) {
+          throw py::value_error("Invalid num_attributes: " +
+                                std::to_string(config.num_attributes));
+        }
         FreeMeshDataVertices(data);
         std::string_view sv(vertices);
         if (sv.empty()) {

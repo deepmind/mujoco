@@ -321,6 +321,66 @@ class MuJoCoRenderTest(absltest.TestCase):
     self.assertIn('MjrRect', rect_repr)
     self.assertIn('left: 1', rect_repr)
 
+  def test_pixel_buffer_validation(self):
+    model = mujoco.MjModel.from_xml_string('<mujoco><worldbody/></mujoco>')
+    context = mujoco.MjrContext(model, mujoco.mjtFontScale.mjFONTSCALE_150)
+    try:
+      mujoco.mjr_setBuffer(mujoco.mjtFramebuffer.mjFB_OFFSCREEN, context)
+      rect = mujoco.MjrRect(0, 0, 10, 10)
+
+      with self.assertRaisesRegex(ValueError, 'rgb buffer is too small'):
+        mujoco.mjr_readPixels(
+            np.empty(10 * 10 * 3 - 1, dtype=np.uint8), None, rect, context
+        )
+      with self.assertRaisesRegex(ValueError, 'depth buffer is too small'):
+        mujoco.mjr_readPixels(
+            None, np.empty(10 * 10 - 1, dtype=np.float32), rect, context
+        )
+      with self.assertRaisesRegex(ValueError, 'rgb buffer must be C-contiguous'):
+        mujoco.mjr_readPixels(
+            np.empty((20, 20, 3), dtype=np.uint8)[::2, ::2, :],
+            None,
+            rect,
+            context,
+        )
+      with self.assertRaisesRegex(
+          ValueError, 'depth buffer must be C-contiguous'
+      ):
+        mujoco.mjr_readPixels(
+            None,
+            np.empty((20, 20), dtype=np.float32)[::2, ::2],
+            rect,
+            context,
+        )
+
+      with self.assertRaisesRegex(ValueError, 'rgb buffer is too small'):
+        mujoco.mjr_drawPixels(
+            np.empty(10 * 10 * 3 - 1, dtype=np.uint8), None, rect, context
+        )
+      with self.assertRaisesRegex(ValueError, 'depth buffer is too small'):
+        mujoco.mjr_drawPixels(
+            None, np.empty(10 * 10 - 1, dtype=np.float32), rect, context
+        )
+
+      neg_rect = mujoco.MjrRect(0, 0, -1, 10)
+      with self.assertRaisesRegex(ValueError, 'non-negative'):
+        mujoco.mjr_readPixels(None, None, neg_rect, context)
+      with self.assertRaisesRegex(ValueError, 'non-negative'):
+        mujoco.mjr_drawPixels(None, None, neg_rect, context)
+
+      # Dimensions whose product overflows 32-bit int (65536 * 65536 = 2^32).
+      huge_rect = mujoco.MjrRect(0, 0, 65536, 65536)
+      with self.assertRaisesRegex(ValueError, 'rgb buffer is too small'):
+        mujoco.mjr_readPixels(
+            np.empty(3, dtype=np.uint8), None, huge_rect, context
+        )
+      with self.assertRaisesRegex(ValueError, 'depth buffer is too small'):
+        mujoco.mjr_drawPixels(
+            None, np.empty(1, dtype=np.float32), huge_rect, context
+        )
+    finally:
+      context.free()
+
 
 @absltest.skipUnless(_EGL_ENABLED, 'MuJoCo is not using the EGL backend')
 class EglDisplayTest(absltest.TestCase):

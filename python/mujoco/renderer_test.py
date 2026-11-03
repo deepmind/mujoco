@@ -167,6 +167,65 @@ class MuJoCoRendererTest(parameterized.TestCase):
       with self.assertRaises(ValueError):
         renderer.render(out=np.zeros((*failing_render_size, 3), np.uint8))
 
+  def test_renderer_output_with_cast_and_non_contiguous_out(self):
+    xml = """
+<mujoco>
+  <worldbody>
+    <camera name="closeup" pos="0 -6 0" xyaxes="1 0 0 0 1 100"/>
+    <geom name="white_box" type="box" size="1 1 1" rgba="1 1 1 1"/>
+  </worldbody>
+</mujoco>
+"""
+    render_size = (50, 50)
+    model = mujoco.MjModel.from_xml_string(xml)
+    data = mujoco.MjData(model)
+    mujoco.mj_forward(model, data)
+    with mujoco.Renderer(model, *render_size) as renderer:
+      renderer.update_scene(data, 'closeup')
+      expected_rgb = renderer.render()
+
+      rgb_int32 = np.zeros((*render_size, 3), dtype=np.int32)
+      pixels = renderer.render(out=rgb_int32)
+      self.assertIs(pixels, rgb_int32)
+      np.testing.assert_array_equal(rgb_int32, expected_rgb.astype(np.int32))
+
+      rgb_fortran = np.asfortranarray(
+          np.zeros((*render_size, 3), dtype=np.uint8)
+      )
+      pixels = renderer.render(out=rgb_fortran)
+      self.assertIs(pixels, rgb_fortran)
+      np.testing.assert_array_equal(rgb_fortran, expected_rgb)
+
+      renderer.enable_depth_rendering()
+      expected_depth = renderer.render()
+      depth_float64 = np.zeros(render_size, dtype=np.float64)
+      depth_pixels = renderer.render(out=depth_float64)
+      self.assertIs(depth_pixels, depth_float64)
+      np.testing.assert_array_equal(
+          depth_float64, expected_depth.astype(np.float64)
+      )
+
+      renderer.enable_segmentation_rendering()
+      expected_seg = renderer.render()
+      seg_int64 = np.zeros((*render_size, 2), dtype=np.int64)
+      seg_pixels = renderer.render(out=seg_int64)
+      self.assertIs(seg_pixels, seg_int64)
+      np.testing.assert_array_equal(seg_int64, expected_seg.astype(np.int64))
+
+  def test_renderer_restores_scene_flags_on_exception(self):
+    model = mujoco.MjModel.from_xml_string('<mujoco><worldbody/></mujoco>')
+    with mujoco.Renderer(model, 50, 50) as renderer:
+      renderer.enable_depth_rendering()
+      original_flags = renderer.scene.flags.copy()
+      with self.assertRaises(ValueError):
+        renderer.render(out=np.zeros((10, 10), dtype=np.float32))
+      np.testing.assert_array_equal(renderer.scene.flags, original_flags)
+
+      renderer.close()
+      with self.assertRaises(RuntimeError):
+        renderer.render()
+      np.testing.assert_array_equal(renderer.scene.flags, original_flags)
+
   def test_renderer_depth_rendering_camera_projection(self):
     """Tests orthographic vs perspective camera depth rendering projections.
 

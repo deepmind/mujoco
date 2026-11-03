@@ -346,6 +346,38 @@ class BatchTest(parameterized.TestCase):
       b.joint('hinge').qposadr = 0
     self.assertNotIn('jnt_qposadr', b._expanded)
 
+  def test_named_contype_and_pre_expanded_type_fields(self):
+    xml = """
+    <mujoco>
+      <worldbody>
+        <geom name="floor" type="plane" size="1 1 .1" contype="1"/>
+        <body name="ball" pos="0 0 .5">
+          <freejoint/>
+          <geom name="ball" size=".1" contype="1"/>
+        </body>
+      </worldbody>
+      <equality>
+        <connect name="conn" body1="ball" anchor="0 0 0" active="false"/>
+      </equality>
+    </mujoco>
+    """
+    m = mujoco.MjModel.from_xml_string(xml)
+    b = batch.Batch(m, NSIM)
+
+    b.geom('floor').contype = np.arange(NSIM, dtype=np.int32).reshape(NSIM, 1)
+    self.assertIn('geom_contype', b._expanded)
+    np.testing.assert_array_equal(
+        b.geom('floor').contype[:, 0], np.arange(NSIM, dtype=np.int32)
+    )
+    self.assertFalse(
+        batch._structural('flex_contype', np.zeros(1, dtype=np.int32))
+    )
+
+    eq_type = b.expand('eq_type')
+    eq_type[:, 0] = m.eq_type[0]
+    self.assertTrue(b.equality('conn').type.flags.writeable)
+    np.testing.assert_array_equal(b.equality('conn').type[:, 0], eq_type[:, 0])
+
   def test_named_empty_slices(self):
     b = batch.Batch(self.model, NSIM)
     # nuser_body is 0: empty, as model.body('pole').user

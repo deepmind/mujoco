@@ -731,6 +731,8 @@ class _Named:
         )
         out.flags.writeable = False
         return out
+      elif field in batch._expanded:  # pylint: disable=protected-access
+        rows = batch.expand(field)
       elif _structural(field, part):
         if write:
           raise ValueError(
@@ -738,7 +740,7 @@ class _Named:
           )
         out = np.broadcast_to(part, (batch.nsim, *part.shape))
         return out
-      elif write or field in batch._expanded:  # pylint: disable=protected-access
+      elif write:
         rows = batch.expand(field)
       else:
         # unexpanded read: set_const's per-simulation values, or the model's
@@ -784,8 +786,10 @@ def _per_simulation(values: np.ndarray, template: np.ndarray) -> np.ndarray:
 
 def _structural(field: str, part: np.ndarray) -> bool:
   """Whether model field holds addresses, counts, ids or types: structure."""
-  return part.dtype.kind in 'iu' and field.endswith(
-      ('adr', 'num', 'id', 'type')
+  return (
+      part.dtype.kind in 'iu'
+      and field.endswith(('adr', 'num', 'id', 'type'))
+      and not field.endswith('contype')
   )
 
 

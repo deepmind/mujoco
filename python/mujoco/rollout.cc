@@ -289,6 +289,14 @@ class Rollout {
       }
     }
 
+    // validate nstep and chunk_size
+    if (nstep < 0) {
+      throw py::value_error("nstep must be non-negative");
+    }
+    if (chunk_size.has_value() && *chunk_size <= 0) {
+      throw py::value_error("chunk_size must be a positive integer");
+    }
+
     // check that some steps need to be taken, return if not
     if (nstep < 1) {
       return;

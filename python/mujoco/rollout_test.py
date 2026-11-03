@@ -748,6 +748,117 @@ class MuJoCoRolloutTest(parameterized.TestCase):
     ):
       rollout.rollout(model, data, initial_state, control)
 
+  def test_nstep_zero_and_negative(self):
+    model = mujoco.MjModel.from_xml_string(TEST_XML)
+    nstate = mujoco.mj_stateSize(model, mujoco.mjtState.mjSTATE_FULLPHYSICS)
+    nbatch = 4
+    initial_state = zeros(nbatch, nstate)
+
+    for data in (
+        mujoco.MjData(model),
+        [mujoco.MjData(model), mujoco.MjData(model)],
+    ):
+      state, sensordata = rollout.rollout(
+          model, data, initial_state, nstep=0
+      )
+      self.assertEqual(state.shape, (nbatch, 0, nstate))
+      self.assertEqual(sensordata.shape, (nbatch, 0, model.nsensordata))
+
+      state_ctrl, sensordata_ctrl = rollout.rollout(
+          model, data, initial_state, zeros(model.nu), nstep=0
+      )
+      self.assertEqual(state_ctrl.shape, (nbatch, 0, nstate))
+      self.assertEqual(sensordata_ctrl.shape, (nbatch, 0, model.nsensordata))
+
+    data = mujoco.MjData(model)
+    with self.assertRaisesRegex(ValueError, 'dimension 1 inferred as 0'):
+      rollout.rollout(
+          model, data, initial_state, zeros(nbatch, 3, model.nu), nstep=0
+      )
+
+    for bad_nstep in (-1, 1.5, False):
+      with self.assertRaises(ValueError):
+        rollout.rollout(model, data, initial_state, nstep=bad_nstep)
+
+    with self.assertRaisesRegex(ValueError, 'nstep must be non-negative'):
+      rollout.rollout(
+          [model] * nbatch,
+          [data],
+          initial_state,
+          nstep=-1,
+          skip_checks=True,
+      )
+
+  def test_chunk_size_validation(self):
+    model = mujoco.MjModel.from_xml_string(TEST_XML)
+    nstate = mujoco.mj_stateSize(model, mujoco.mjtState.mjSTATE_FULLPHYSICS)
+    nbatch = 4
+    initial_state = zeros(nbatch, nstate)
+    threaded_data = [mujoco.MjData(model), mujoco.MjData(model)]
+
+    for bad_chunk in (0, -1, 1.5, False):
+      with self.assertRaises(ValueError):
+        rollout.rollout(
+            model, threaded_data, initial_state, chunk_size=bad_chunk
+        )
+
+    for bad_chunk in (0, -1):
+      with self.assertRaisesRegex(
+          ValueError, 'chunk_size must be a positive integer'
+      ):
+        rollout.rollout(
+            [model] * nbatch,
+            threaded_data,
+            initial_state,
+            nstep=2,
+            state=empty(nbatch, 2, nstate),
+            sensordata=empty(nbatch, 2, model.nsensordata),
+            chunk_size=bad_chunk,
+            skip_checks=True,
+        )
+
+  def test_scalar_float_inputs(self):
+    xml_1d = """
+    <mujoco>
+      <worldbody>
+        <body>
+          <joint name="j" type="slide"/>
+          <geom size="0.1"/>
+        </body>
+      </worldbody>
+      <actuator>
+        <motor joint="j"/>
+      </actuator>
+    </mujoco>
+    """
+    model = mujoco.MjModel.from_xml_string(xml_1d)
+    data = mujoco.MjData(model)
+    nstate = mujoco.mj_stateSize(model, mujoco.mjtState.mjSTATE_FULLPHYSICS)
+    initial_state = zeros(1, nstate)
+
+    state_float, _ = rollout.rollout(
+        model, data, initial_state, control=0.5, initial_warmstart=0.25, nstep=3
+    )
+    state_array, _ = rollout.rollout(
+        model,
+        data,
+        initial_state,
+        control=np.array([0.5], dtype=DTYPE),
+        initial_warmstart=np.array([0.25], dtype=DTYPE),
+        nstep=3,
+    )
+    np.testing.assert_array_equal(state_float, state_array)
+
+    model_2u = mujoco.MjModel.from_xml_string(TEST_XML)
+    data_2u = mujoco.MjData(model_2u)
+    nstate_2u = mujoco.mj_stateSize(
+        model_2u, mujoco.mjtState.mjSTATE_FULLPHYSICS
+    )
+    with self.assertRaisesWithLiteralMatch(
+        ValueError, 'trailing dimension of control must be 2, got 1'
+    ):
+      rollout.rollout(model_2u, data_2u, zeros(1, nstate_2u), control=0.5)
+
   def test_threadpool_rejected(self):
     model = mujoco.MjModel.from_xml_string(TEST_XML)
     nstate = mujoco.mj_stateSize(model, mujoco.mjtState.mjSTATE_FULLPHYSICS)

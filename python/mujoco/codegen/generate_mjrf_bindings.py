@@ -334,7 +334,16 @@ def _make_struct(code: code_builder.CodeBuilder, struct: ast_nodes.StructDecl) -
 
     field_type = _get_field_type(field)
     if 'Vector' in field_type:
-      assignments.append(f'if ({field.name}) {{ Setter(obj.{field.name}, *{field.name}); obj.num_{field.name} = {field.name}->size(); }}')
+      assignments.append(
+          f'if ({field.name}) {{\n'
+          f'    if ({field.name}->size() > std::size(obj.{field.name})) {{\n'
+          f'      throw py::value_error("Too many {field.name}, maximum allowed'
+          f' is " + std::to_string(std::size(obj.{field.name})));\n'
+          f'    }}\n'
+          f'    Setter(obj.{field.name}, *{field.name});\n'
+          f'    obj.num_{field.name} = {field.name}->size();\n'
+          f'  }}'
+      )
     else:
       assignments.append(f'if ({field.name}) Setter(obj.{field.name}, *{field.name});')
 
