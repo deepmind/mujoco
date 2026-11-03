@@ -364,6 +364,19 @@ class MuJoCoRendererTest(parameterized.TestCase):
       renderer2.render(out=out)
       np.testing.assert_array_equal(out, expected)
 
+      # PEP 442 does not guarantee finalizer order within an unreachable cycle
+      # (e.g. free-threaded Python can run `_gl_context.__del__` before
+      # `Renderer.__del__`). Verify that order explicitly on all builds.
+      unclosed = mujoco.Renderer(model, 50, 50)
+      renderer2.render()
+      if unclosed._gl_context is not None:  # pylint: disable=protected-access
+        unclosed._gl_context.__del__()
+      unclosed.__del__()
+      del unclosed
+      out.fill(0)
+      renderer2.render(out=out)
+      np.testing.assert_array_equal(out, expected)
+
     # Also verify that a standalone GLContext stays bound across Renderer.close
     # without needing another make_current() call.
     gl = mujoco.GLContext(50, 50)

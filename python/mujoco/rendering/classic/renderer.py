@@ -14,6 +14,7 @@
 # ==============================================================================
 """Defines a renderer class for the MuJoCo Python native bindings."""
 
+import functools
 from typing import Optional, Union
 
 import mujoco
@@ -21,6 +22,17 @@ from mujoco.rendering.classic import gl_context
 import numpy as np
 
 GLContext = gl_context.GLContext if hasattr(gl_context, 'GLContext') else None
+
+
+@functools.lru_cache(maxsize=8)
+def _owned_gl_context_cls(cls):
+  """Returns a `GLContext` subclass whose lifetime is managed by `Renderer`."""
+  if not isinstance(cls, type):
+    return cls
+  # Suppress independent `__del__` during PEP 442 cyclic GC (e.g. under
+  # free-threaded Python) so `Renderer.__del__` always binds this context via
+  # `as_current()` before freeing `MjrContext`, and only then calls `free()`.
+  return type(f'_Owned{cls.__name__}', (cls,), {'__del__': lambda self: None})
 
 
 class Renderer:
@@ -86,7 +98,8 @@ the clause:
     # Create render contexts.
     # TODO(nimrod): Figure out why pytype doesn't like gl_context.GLContext
     if gl_context.GLContext is not None:
-      self._gl_context = gl_context.GLContext(width, height)  # type: ignore
+      gl_context_cls = _owned_gl_context_cls(gl_context.GLContext)
+      self._gl_context = gl_context_cls(width, height)
     if self._gl_context:
       self._gl_context.make_current()
     self._mjr_context = mujoco.MjrContext(model, font_scale.value)
