@@ -65,7 +65,8 @@ void InitSim(py::module_& m) {
       .def("get_speed", &StepControl::GetSpeed,
            "Returns the desired simulation speed as a percentage of real time.")
       .def("get_speed_measured", &StepControl::GetSpeedMeasured,
-           "Returns the measured simulation speed.")
+           "Returns the measured simulation speed as a percentage of real "
+           "time, or a negative value before the first measurement.")
       .def("set_speed", &StepControl::SetSpeed, py::arg("speed"),
            "Sets the desired speed (clamped to [0.1%, 100%]).")
       .def("set_pause_state", &StepControl::SetPauseState, py::arg("state"),

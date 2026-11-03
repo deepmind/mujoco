@@ -431,24 +431,40 @@ class MjOptionSnapshot(Snapshot):
 
 @dataclasses.dataclass(frozen=True)
 class StepControlSnapshot(Snapshot):
-  """Bidirectional snapshot carrying step control state between sim and viewer."""
+  """Bidirectional snapshot carrying step control state between sim and viewer.
 
-  pause_state: sim.PauseState
-  speed: float
-  noise_scale: float
-  noise_rate: float
+  Attributes:
+    pause_state: Whether the simulation is paused.
+    speed: The desired speed as a percentage of real time.
+    noise_scale: Control noise standard deviation.
+    noise_rate: Control noise correlation rate.
+    speed_measured: The speed the sim achieves, as a percentage of real time;
+      negative when not known or when sent from the viewer.
+  """
+
+  pause_state: sim.PauseState = sim.PauseState.UNPAUSED
+  speed: float = 100.0
+  noise_scale: float = 0.0
+  noise_rate: float = 0.0
+  speed_measured: float = -1.0
 
   @classmethod
   def from_step_control(
-      cls, step_control: sim.StepControl
+      cls, step_control: sim.StepControl, speed_measured: float = -1.0
   ) -> 'StepControlSnapshot':
-    """Packs the settings of ``step_control`` into a snapshot."""
+    """Packs the settings of ``step_control`` into a snapshot.
+
+    Args:
+      step_control: The step control whose settings to pack.
+      speed_measured: The achieved speed to report, if known.
+    """
     noise_scale, noise_rate = step_control.get_noise_parameters()
     return cls(
         pause_state=step_control.get_pause_state(),
         speed=step_control.get_speed(),
         noise_scale=noise_scale,
         noise_rate=noise_rate,
+        speed_measured=speed_measured,
     )
 
 

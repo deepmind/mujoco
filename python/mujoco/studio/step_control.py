@@ -20,6 +20,11 @@ from mujoco.studio import messages
 from mujoco.studio import plugin
 from mujoco.studio import sim
 
+# The achieved speed (the snapshot's ``speed_measured``) drifts a little every
+# step. It is reported again only once it has moved this far, in percent of
+# real time, from the value last reported.
+_MEASURED_SPEED_DEADBAND = 1.0
+
 
 class StepControl(plugin.SimPlugin):
   """Default sim plugin that steps CPU physics with real-time pacing.
@@ -37,23 +42,40 @@ class StepControl(plugin.SimPlugin):
   that advance() stays non-blocking for callers on render threads (the browser
   build, scripts with their own frame loop). A plugin that replaces this one
   must at minimum pace each iteration the same way.
+
+  Reporting: a ``StepControlSnapshot`` goes to the viewer whenever a setting
+  (pause, speed, noise) changes, and whenever the achieved speed has moved by
+  ``_MEASURED_SPEED_DEADBAND``.
   """
 
   def __init__(self) -> None:
     self._model_path: str = ''
     self.step_control = sim.StepControl()
+    self._measured_reported = -1.0
 
   @messages.handler(priority=messages.Priority.INTERNAL)
   def _on_sim_init(self, _: plugin.SimInitEvent) -> None:
     self._model_path = ''
     self.step_control = sim.StepControl()
+    self._measured_reported = -1.0
+
+  def _snapshot(self) -> messages.StepControlSnapshot:
+    """Returns the settings, with the achieved speed held within its deadband.
+
+    A negative last-reported value means none has been reported yet.
+    """
+    measured = self.step_control.get_speed_measured()
+    unknown = self._measured_reported < 0.0
+    if unknown or abs(measured - self._measured_reported) >= (
+        _MEASURED_SPEED_DEADBAND
+    ):
+      self._measured_reported = measured
+    return messages.StepControlSnapshot.from_step_control(
+        self.step_control, speed_measured=self._measured_reported
+    )
 
   def _send_if_changes(self) -> contextlib.AbstractContextManager[None]:
-    return self.handle.send_if_changes(
-        lambda: messages.StepControlSnapshot.from_step_control(
-            self.step_control
-        )
-    )
+    return self.handle.send_if_changes(self._snapshot)
 
   @messages.handler(priority=messages.Priority.INTERNAL)
   def _on_post_model(self, event: messages.PostModelEvent) -> None:
@@ -64,6 +86,7 @@ class StepControl(plugin.SimPlugin):
       self.step_control.force_sync()
     else:
       self.step_control = sim.StepControl()
+      self._measured_reported = -1.0
 
   @messages.handler(priority=messages.Priority.INTERNAL)
   def _on_step_control(self, event: messages.StepControlSnapshot) -> bool:

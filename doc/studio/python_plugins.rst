@@ -241,6 +241,8 @@ individually when replacing one:
   <https://github.com/google-deepmind/mujoco/blob/main/python/mujoco/studio/step_control.py>`__): Steps CPU physics
   (:ref:`mj_step`) with real-time wall-clock pacing during ``StepEvent``, applies control noise configured from the UI
   (``StepControlSnapshot``), and handles pause (``RequestPauseEvent``) and single-step (``SingleStepEvent``) requests.
+  It reports its settings to the viewer whenever they change, and the speed it achieves whenever it has moved by more
+  than a deadband amount.
 - ``sim_history.SimHistory`` (`sim_history.py
   <https://github.com/google-deepmind/mujoco/blob/main/python/mujoco/studio/sim_history.py>`__): Records a frame into an
   authoritative ring buffer after every physics step (``PostStepEvent``), broadcasts buffer metadata to the viewer via
