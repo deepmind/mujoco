@@ -7,13 +7,13 @@
     <key>CFBundleIdentifier</key>
     <string>org.mujoco.mjpython</string>
     <key>CFBundleVersion</key>
-    <string>3.17.1</string>
+    <string>4.0.0</string>
     <key>CFBundleGetInfoString</key>
-    <string>3.17.1</string>
+    <string>4.0.0</string>
     <key>CFBundleLongVersionString</key>
-    <string>3.17.1</string>
+    <string>4.0.0</string>
     <key>CFBundleShortVersionString</key>
-    <string>3.17.1</string>
+    <string>4.0.0</string>
     <key>CFBundleExecutable</key>
     <string>mjpython</string>
     <key>CFBundleIconFile</key>

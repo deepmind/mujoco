@@ -1,7 +1,7 @@
 {
   "name": "org.mujoco",
   "displayName": "MuJoCo",
-  "version": "3.17.1",
+  "version": "4.0.0",
   "description": "MuJoCo importer and runtime plug-in",
   "dependencies": {},
   "author": {

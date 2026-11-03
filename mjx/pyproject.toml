@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name="mujoco-mjx"
-version = "3.17.1"
+version = "4.0.0"
 authors = [
     {name = "Google DeepMind", email = "mujoco@deepmind.com"},
 ]
@@ -30,7 +30,7 @@ dependencies = [
     "etils[epath]",
     "jax",
     "jaxlib",
-    "mujoco>=3.17.1.dev0",
+    "mujoco>=4.0.0.dev0",
     "scipy",
     "trimesh",
 ]
@@ -50,9 +50,9 @@ mjx-viewer = "mujoco.mjx.viewer:main"
 
 [project.urls]
 Homepage = "https://github.com/google-deepmind/mujoco/tree/main/mjx"
-Documentation = "https://mujoco.readthedocs.io/en/3.17.1"
+Documentation = "https://mujoco.readthedocs.io/en/4.0.0"
 Repository = "https://github.com/google-deepmind/mujoco/tree/main/mjx"
-Changelog = "https://mujoco.readthedocs.io/en/3.17.1/changelog.html"
+Changelog = "https://mujoco.readthedocs.io/en/4.0.0/changelog.html"
 
 [tool.isort]
 force_single_line = true
