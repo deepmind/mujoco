@@ -202,16 +202,13 @@ mjResource* VFS::Open(const char* dir, const char* name, char* error, size_t ner
 
 VFS::Status VFS::Mount(const FilePath& path, const mjpResourceProvider* provider) {
   if (!provider) { return kInvalidProvider; }
-  {
-    std::lock_guard<std::recursive_mutex> lock(mutex_);
-    if (mounts_.contains(path.Str())) { return kRepeatedName; }
-  }
-
-  ResourcePtr res = CreateResource(path.c_str(), provider);
-  provider->mount(res.get());
-
   std::lock_guard<std::recursive_mutex> lock(mutex_);
+  if (mounts_.contains(path.Str())) { return kRepeatedName; }
+
+  ResourcePtr res     = CreateResource(path.c_str(), provider);
+  mjResource* res_ptr = res.get();
   mounts_.emplace(path.Str(), std::move(res));
+  if (provider->mount) { provider->mount(res_ptr); }
   return kSuccess;
 }
 
@@ -479,7 +476,7 @@ class BufferProvider : public mjpResourceProvider {
     };
     provider->modified = [](const mjResource* res, const char* timestamp) {
       const BufferProvider* self = (const BufferProvider*)res->provider;
-      if (mju_isValidBase64(timestamp) > sizeof(std::uint64_t)) { return 1; }
+      if (mju_isValidBase64(timestamp) != sizeof(std::uint64_t)) { return 1; }
       std::uint64_t test = 0;
       mju_decodeBase64((std::uint8_t*)&test, timestamp);
       if (self->hash_ != test) { return 1; }
@@ -503,7 +500,7 @@ class BufferProvider : public mjpResourceProvider {
 
     hash_ = contents_.empty() ? 0 : 0xcbf29ce484222325;
     for (const std::uint8_t& byte : contents_) {
-      hash_ |= byte;
+      hash_ ^= byte;
       hash_ *= prime;
     }
   }
@@ -520,7 +517,7 @@ class BufferProvider : public mjpResourceProvider {
     contents_.reserve(n);
     for (size_t i = 0; i < n; i++) {
       contents_.push_back(src_bytes[i]);
-      hash_ |= src_bytes[i];
+      hash_ ^= src_bytes[i];
       hash_ *= prime;
     }
   }

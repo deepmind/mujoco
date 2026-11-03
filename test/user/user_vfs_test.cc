@@ -13,12 +13,19 @@
 // limitations under the License.
 
 #include <array>
+#include <atomic>
+#include <cstddef>
+#include <cstdint>
 #include <cstdio>
 #include <string>
+#include <thread>
+#include <vector>
 
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
+#include <mujoco/mjplugin.h>
 #include <mujoco/mujoco.h>
+#include "src/engine/engine_util_misc.h"
 #include "src/user/user_resource.h"
 #include "src/user/user_vfs.h"
 #include "test/fixture.h"
@@ -457,6 +464,144 @@ TEST_F(UserVfsTest, MoveVfs) {
   EXPECT_THAT(out, NotNull());
 
   mju_closeResource(resource);
+  mj_deleteVFS(&vfs);
+}
+
+TEST_F(UserVfsTest, BufferProviderFnv1aHashAndTimestampSize) {
+  mjVFS vfs;
+  mj_defaultVFS(&vfs);
+
+  const std::string content = "test buffer for fnv1a hash verification";
+  mj_addBufferVFS(&vfs, "test.txt", content.data(), content.size());
+
+  mjResource* resource = mju_openResource("", "test.txt", &vfs, nullptr, 0);
+  ASSERT_THAT(resource, NotNull());
+
+  std::uint64_t actual_hash = 0;
+  mju_decodeBase64(reinterpret_cast<std::uint8_t*>(&actual_hash),
+                   resource->timestamp);
+
+  std::uint64_t expected_hash = 0xcbf29ce484222325ULL;
+  static constexpr std::uint64_t prime = 0x100000001b3ULL;
+  for (std::uint8_t b : content) {
+    expected_hash ^= b;
+    expected_hash *= prime;
+  }
+  EXPECT_EQ(actual_hash, expected_hash);
+
+  mj_addBufferVFS(&vfs, "empty.txt", "", 0);
+  mjResource* empty_res = mju_openResource("", "empty.txt", &vfs, nullptr, 0);
+  ASSERT_THAT(empty_res, NotNull());
+  EXPECT_EQ(mju_isModifiedResource(empty_res, ""), 1);
+
+  const std::string dir = GetTestDataFilePath("engine/testdata/actuation/");
+  ASSERT_EQ(mj_addFileVFS(&vfs, dir.c_str(), "activation.xml"), 0);
+  mjResource* file_res =
+      mju_openResource("", "activation.xml", &vfs, nullptr, 0);
+  ASSERT_THAT(file_res, NotNull());
+  const void* file_buf = nullptr;
+  int file_sz = mju_readResource(file_res, &file_buf);
+  ASSERT_GT(file_sz, 0);
+  std::uint64_t actual_file_hash = 0;
+  mju_decodeBase64(reinterpret_cast<std::uint8_t*>(&actual_file_hash),
+                   file_res->timestamp);
+  std::uint64_t expected_file_hash = 0xcbf29ce484222325ULL;
+  const auto* file_bytes = static_cast<const std::uint8_t*>(file_buf);
+  for (int i = 0; i < file_sz; ++i) {
+    expected_file_hash ^= file_bytes[i];
+    expected_file_hash *= prime;
+  }
+  EXPECT_EQ(actual_file_hash, expected_file_hash);
+
+  mju_closeResource(file_res);
+  mju_closeResource(empty_res);
+  mju_closeResource(resource);
+  mj_deleteVFS(&vfs);
+}
+
+TEST_F(UserVfsTest, MountNullCallbackDoesNotCrash) {
+  mjVFS vfs;
+  mj_defaultVFS(&vfs);
+  mjpResourceProvider provider;
+  mjp_defaultProvider(&provider);
+  provider.prefix = "nop_mount";
+  EXPECT_EQ(provider.mount, nullptr);
+
+  EXPECT_EQ(mj_mountVFS(&vfs, "nop_mount:", &provider), 0);
+
+  mj_deleteVFS(&vfs);
+}
+
+TEST_F(UserVfsTest, DuplicateAndReentrantMountNoDoubleFree) {
+  mjVFS vfs;
+  mj_defaultVFS(&vfs);
+
+  EXPECT_EQ(mj_addBufferVFS(&vfs, "dup.txt", "a", 1), 0);
+  EXPECT_EQ(mj_addBufferVFS(&vfs, "dup.txt", "b", 1), 2);
+
+  int inner_state = 0;
+  TestProvider inner_provider(&inner_state);
+
+  struct ReentrantState {
+    mjVFS* vfs = nullptr;
+    mjpResourceProvider* inner = nullptr;
+    int sentinel = 42;
+  } state{&vfs, &inner_provider};
+
+  mjpResourceProvider outer_provider;
+  mjp_defaultProvider(&outer_provider);
+  outer_provider.prefix = "outer";
+  outer_provider.data = &state;
+  outer_provider.mount = [](mjResource* res) {
+    auto* s = static_cast<ReentrantState*>(res->provider->data);
+    res->data = &s->sentinel;
+    EXPECT_EQ(mj_mountVFS(s->vfs, "/dup/path", s->inner), 2);
+    EXPECT_EQ(mj_addBufferVFS(s->vfs, "/dup/path", "x", 1), 2);
+    return 1;
+  };
+  outer_provider.unmount = [](mjResource* res) {
+    res->data = nullptr;
+    return 1;
+  };
+
+  EXPECT_EQ(mj_mountVFS(&vfs, "/dup/path", &outer_provider), 0);
+  EXPECT_EQ(inner_state, 0);
+
+  mj_deleteVFS(&vfs);
+  EXPECT_EQ(inner_state, 0);
+}
+
+TEST_F(UserVfsTest, ConcurrentDuplicateBufferMountNoDoubleFree) {
+  mjVFS vfs;
+  mj_defaultVFS(&vfs);
+
+  constexpr int kNumThreads = 8;
+  std::atomic<bool> start{false};
+  std::atomic<int> success_count{0};
+  std::atomic<int> repeated_count{0};
+  std::vector<std::thread> threads;
+  threads.reserve(kNumThreads);
+
+  for (int i = 0; i < kNumThreads; ++i) {
+    threads.emplace_back([&]() {
+      while (!start.load(std::memory_order_acquire)) {
+      }
+      int rc = mj_addBufferVFS(&vfs, "race.txt", "data", 4);
+      if (rc == 0) {
+        success_count.fetch_add(1, std::memory_order_relaxed);
+      } else if (rc == 2) {
+        repeated_count.fetch_add(1, std::memory_order_relaxed);
+      }
+    });
+  }
+  start.store(true, std::memory_order_release);
+  for (auto& t : threads) {
+    t.join();
+  }
+
+  EXPECT_EQ(success_count.load(), 1);
+  EXPECT_EQ(repeated_count.load(), kNumThreads - 1);
+
   mj_deleteVFS(&vfs);
 }
 

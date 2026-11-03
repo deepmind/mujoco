@@ -261,6 +261,7 @@ cc_test(
     ],
     deps = [
         "//:libmujoco_hdrs",
+        "//src/engine:engine_util_misc",
         "//src/user:user_resource",
         "//src/user:user_vfs",
         "//test:fixture",
