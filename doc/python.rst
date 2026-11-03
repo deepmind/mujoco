@@ -902,6 +902,11 @@ Building from source
     If that's not the case, then we recommend installing the prebuilt binaries
     from PyPI.
 
+.. tip::
+    If you are modifying MuJoCo's C/C++ source code and want your changes
+    reflected in the Python bindings, you must rebuild MuJoCo (step 3),
+    regenerate the source distribution (step 6), and reinstall (step 7).
+
 1. Make sure you have CMake and a C++17 compiler installed.
 
 2. Clone the entire ``mujoco`` repository from GitHub.
@@ -910,12 +915,18 @@ Building from source
 
      git clone https://github.com/google-deepmind/mujoco.git
 
-3. Install MuJoCo. Either download the
-   `latest binary release <https://github.com/google-deepmind/mujoco/releases>`__
-   from GitHub (On macOS, the download corresponds to a DMG file which you can
-   mount by double-clicking or running ``hdiutil attach <dmg_file>``),
-   or *build* and *install* it from source as per the instructions in
-   :ref:`inBuild`.
+3. **Build or download MuJoCo.** The Python bindings require the MuJoCo
+   library to be available. You have two options:
+
+   **Option A: Download prebuilt binaries** (simpler)
+     Download the `latest binary release <https://github.com/google-deepmind/mujoco/releases>`__
+     from GitHub. On macOS, the download is a DMG file which you can mount by
+     double-clicking or running ``hdiutil attach <dmg_file>``.
+
+   **Option B: Build from source** (required if modifying C/C++ code)
+     Follow the instructions in :ref:`inBuild` to build and install MuJoCo
+     from source. This is necessary if you want changes to MuJoCo's C/C++
+     source code to be reflected in the Python bindings.
 
 4. ``cd`` into the python directory of the cloned MuJoCo codebase:
 
@@ -944,26 +955,40 @@ Building from source
    ``mujoco-x.y.z.tar.gz`` file (where ``x.y.z`` is the version number).
 
 7. Use the generated source distribution to build and install the bindings.
-   You'll need to specify the path to the MuJoCo library you downloaded
-   or built and installed earlier in the ``MUJOCO_PATH`` environment
-   variable, and the path to the MuJoCo plugin directory in the
-   ``MUJOCO_PLUGIN_PATH`` environment variable. You can point the
-   ``MUJOCO_PLUGIN_PATH`` environment variable to the ``plugin``
-   folder of the MuJoCo codebase you cloned.
+   You'll need to set the following environment variables:
+
+   - ``MUJOCO_PATH``: Path to the MuJoCo library (from step 3).
+   - ``MUJOCO_PLUGIN_PATH``: Path to the MuJoCo plugins directory. This is
+     required for building the bindings even if you don't use plugins.
+     You can point it to the ``plugin`` folder in the MuJoCo codebase,
+     or to the plugins directory in a prebuilt release.
 
    .. note::
       For macOS, the files need to be extracted from the DMG.
-      Once you mounted it as in step 2, the ``mujoco.framework`` directory can be found in ``/Volumes/MuJoCo``,
+      Once you mounted it as in step 3, the ``mujoco.framework`` directory can be found in ``/Volumes/MuJoCo``,
       and the plugins directory can be found in ``/Volumes/MuJoCo/MuJoCo.app/Contents/MacOS/mujoco_plugin``.
-      Those two directories can be copied out somewhere convenient, or you can use
-      ``MUJOCO_PATH=/Volumes/MuJoCo MUJOCO_PLUGIN_PATH=/Volumes/MuJoCo/MuJoCo.app/Contents/MacOS/mujoco_plugin``.
+      Those two directories can be copied out somewhere convenient, or you can use the paths directly.
 
    .. code-block:: shell
 
       cd dist
-      MUJOCO_PATH=/PATH/TO/MUJOCO \
-      MUJOCO_PLUGIN_PATH=/PATH/TO/MUJOCO/PLUGIN \
+      export MUJOCO_PATH=/PATH/TO/MUJOCO
+      export MUJOCO_PLUGIN_PATH=/PATH/TO/MUJOCO/PLUGIN
       pip install mujoco-x.y.z.tar.gz
+
+   For example, on Linux with a source build in ``~/mujoco/build``:
+
+   .. code-block:: shell
+
+      export MUJOCO_PATH=~/mujoco/build
+      export MUJOCO_PLUGIN_PATH=~/mujoco/plugin
+
+   On macOS with the DMG mounted:
+
+   .. code-block:: shell
+
+      export MUJOCO_PATH=/Volumes/MuJoCo
+      export MUJOCO_PLUGIN_PATH=/Volumes/MuJoCo/MuJoCo.app/Contents/MacOS/mujoco_plugin
 
 The Python bindings should now be installed! To check that they've been
 successfully installed, ``cd`` outside of the ``mujoco`` directory and run
