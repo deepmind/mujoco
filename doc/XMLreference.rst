@@ -4004,6 +4004,12 @@ which points are pinned. Note that each attribute below can be used to specify m
 the :el:`pin` element itself can be repeated for user convenience. The effects are cumulative; pinning the same point
 multiple times is allowed.
 
+For interpolated flexcomps (**trilinear** or **quadratic** :ref:`dof<body-flexcomp-dof>`), degrees of freedom live on a
+3D grid of ``order * cellcount + 1`` nodes per axis (``order`` = 1 for **trilinear**, 2 for **quadratic**; see
+:ref:`cellcount<body-flexcomp-cellcount>`) rather than at mesh vertices. Pinning fixes these nodes: :at:`id` and
+:at:`range` use linear node indices (``z`` fastest, then ``y``, ``x``), while :at:`grid` and :at:`gridrange` use node
+coordinates regardless of flexcomp :ref:`type<body-flexcomp-type>` (for :at:`dim` 2 or 3).
+
 .. _flexcomp-pin-id:
 
 :at:`id`: :at-val:`int(n), required`
@@ -4021,13 +4027,16 @@ multiple times is allowed.
 .. _flexcomp-pin-grid:
 
 :at:`grid`: :at-val:`int(dim*n), required`
-   Grid coordinates of points to pin. This can only be used with type grid.
+   Grid coordinates of points or interpolation nodes to pin. This can only be used with :at:`dim` 2 or 3, and requires
+   type **grid** or an interpolated :ref:`dof<body-flexcomp-dof>` (**trilinear** or **quadratic**).
 
 .. _flexcomp-pin-gridrange:
 
 :at:`gridrange`: :at-val:`int(2*dim*n), required`
-   Ranges of grid coordinates of points to pin. Each range is specified by (dim) integers for the minimum of the range
-   followed by (dim) integers for the maximum of the range. This can only be used with type grid.
+   Ranges of grid coordinates of points or interpolation nodes to pin. Each range is specified by (dim) integers for
+   the minimum of the range followed by (dim) integers for the maximum of the range. This can only be used with
+   :at:`dim` 2 or 3, and requires type **grid** or an interpolated :ref:`dof<body-flexcomp-dof>` (**trilinear** or
+   **quadratic**).
 
 .. _flexcomp-plugin:
 
