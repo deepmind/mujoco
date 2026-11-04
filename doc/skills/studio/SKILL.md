@@ -325,9 +325,18 @@ time-to-visual-feedback** rather than upfront batch verification:
     until interactive iteration wraps up (or a non-reloadable file changes).
 -   **Ship in Small, Incremental Steps**: Save multi-part UI or scene changes in
     small, self-contained increments so the user can steer layout or behavior
-    live, and declare new plugin attributes with class defaults (e.g.,
-    `gain: float = 1.0`) or reconcile state in `HotReloadEvent` (`if self in
-    event.plugins:`) since `__init__` does not re-run on class swap.
+    live.
+-   **Only Plugin Classes Are Swapped on Reload**: Hot reload swaps
+    `plugin.__class__ = new_cls` in place without re-running `__init__`, and any
+    helper objects a plugin holds (such as a state dataclass) keep their *old*
+    class—so calling a newly added method or property on that helper raises
+    `AttributeError` on the live instance. Either declare new state on the
+    plugin itself as **class-level defaults** (e.g., `gain: float = 1.0`) or
+    handle `messages.HotReloadEvent` (`if self in event.plugins:`) and rebuild
+    the helper from its old fields.
+-   **Keep `Begin`/`End` and `Push*`/`Pop*` Calls Balanced**: Dear ImGui
+    asserts at frame end on a missing `End()`, `PopStyleVar()`, or
+    `PopStyleColor()` and aborts the whole viewer process, not just the plugin.
 -   **Rely on Error Isolation & Stay Strictly On-Task**: Syntax, import, model
     compile, and handler errors retain the last working state without crashing
     the session—if an edit ever breaks isolation and crashes the viewer, track

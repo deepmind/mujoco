@@ -3,12 +3,12 @@ name: mujoco-gui
 description: >-
   Dear ImGui and ImPlot user interfaces across C++ and Python, immediate-mode
   widget design, layout and multi-row widget/column alignment (Tables API),
-  naming conventions (build_gui vs render), ID stack rules (## label
-  disambiguation vs ### seed reset override), list virtualization
-  (ImGuiListClipper), theming, input capture (WantCaptureKeyboard). Use for
-  building, aligning, styling, and debugging Dear ImGui widgets and ImPlot
-  charts. Do NOT use for Studio app architecture/plugins (mujoco-studio) or
-  physics (mujoco-python).
+  tooltip length and aspect ratio, naming conventions (build_gui vs render), ID
+  stack rules (## label disambiguation vs ### seed reset override), list
+  virtualization (ImGuiListClipper), theming, input capture
+  (WantCaptureKeyboard). Use for building, aligning, styling, and debugging Dear
+  ImGui widgets and ImPlot charts. Do NOT use for Studio app
+  architecture/plugins (mujoco-studio) or physics (mujoco-python).
 ---
 
 # Dear ImGui Development & Architecture Guide
@@ -275,7 +275,7 @@ details and patterns:
     scrolling subplots. Call `implot.ShowDemoWindow()` to inspect
     implementations.
 
-## 7. UI Design & Aesthetics: Grid Alignment (Tables API) & Theming Costs
+## 7. UI Design & Aesthetics: Grid Alignment (Tables API), Tooltips & Theming Costs
 
 High-quality ImGui tools balance immediate-mode simplicity with clean visual
 structure and consistent styling:
@@ -308,6 +308,17 @@ structure and consistent styling:
             trailing labels in their own `WidthFixed` column—calling
             `SetNextItemWidth(-1)` directly on a widget with a visible label
             sizes the frame box to the full column width and clips the label.
+
+-   **Tooltip Length & Aspect Ratio**:
+    -   Keep tooltips concise—avoid overly wordy descriptions that stretch into
+        a wide single-line banner across the viewport.
+    -   Because `SetTooltip` and `SetItemTooltip` do not wrap text
+        automatically, insert explicit newlines (`\n`) to keep the tooltip box
+        at a pleasing, compact aspect ratio (~25–40 characters per line across
+        2–3 lines) rather than a long horizontal strip.
+    -   Split lines at natural phrase, clause, or sentence boundaries (for
+        example, between the primary action summary and secondary status or
+        context) so each line reads cleanly on its own.
 
 -   **Costs of Overriding Colors & Styles (Theming Impact)**:
     -   Dear ImGui manages color palettes and visual metrics globally
