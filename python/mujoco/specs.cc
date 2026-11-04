@@ -748,7 +748,7 @@ PYBIND11_MODULE(_specs, m, pybind11::mod_gil_not_used()) {
         }
         const char* p = prefix.has_value() ? prefix.value().c_str() : "/";
         const char* s = suffix.has_value() ? suffix.value().c_str() : "";
-        raw::MjsElement* attached_frame = nullptr;
+        raw::MjsElement* parent_elem = nullptr;
         if (frame.has_value()) {
           raw::MjsFrame* frame_ptr = nullptr;
           try {
@@ -764,11 +764,7 @@ PYBIND11_MODULE(_specs, m, pybind11::mod_gil_not_used()) {
             throw pybind11::value_error(
                 "Frame spec does not match parent spec.");
           }
-          attached_frame =
-              mjs_attach(frame_ptr->element, child.ptr->element, p, s);
-          if (!attached_frame) {
-            throw pybind11::value_error(mjs_getError(self.ptr));
-          }
+          parent_elem = frame_ptr->element;
         }
         if (site.has_value()) {
           raw::MjsSite* site_ptr = nullptr;
@@ -785,24 +781,32 @@ PYBIND11_MODULE(_specs, m, pybind11::mod_gil_not_used()) {
             throw pybind11::value_error(
                 "Site spec does not match parent spec.");
           }
-          attached_frame =
-              mjs_attach(site_ptr->element, child.ptr->element, p, s);
-          if (!attached_frame) {
-            throw pybind11::value_error(mjs_getError(self.ptr));
-          }
+          parent_elem = site_ptr->element;
         }
         // add prefix and suffix to the assets keys
         std::string pre(p);
         std::string suf(s);
+        std::vector<std::pair<py::str, py::object>> new_assets;
+        new_assets.reserve(child.assets.size());
         for (const auto& asset : child.assets) {
-          std::string asset_name =
-              addPrefixAndSuffix(asset.first.cast<std::string>(), pre, suf);
-          if (self.assets.contains(asset_name) && !self.override_assets) {
-            throw pybind11::value_error("Asset " +
-                                        asset.first.cast<std::string>() +
+          std::string key = asset.first.cast<std::string>();
+          std::string asset_name = addPrefixAndSuffix(key, pre, suf);
+          py::str py_asset_name(asset_name);
+          if (self.assets.contains(py_asset_name) && !self.override_assets) {
+            throw pybind11::value_error("Asset " + key +
                                         " already exists in parent spec.");
           }
-          self.assets[py::str(asset_name)] = asset.second;
+          new_assets.emplace_back(
+              std::move(py_asset_name),
+              py::reinterpret_borrow<py::object>(asset.second));
+        }
+        raw::MjsElement* attached_frame =
+            mjs_attach(parent_elem, child.ptr->element, p, s);
+        if (!attached_frame) {
+          throw pybind11::value_error(mjs_getError(self.ptr));
+        }
+        for (const auto& [asset_name, asset_val] : new_assets) {
+          self.assets[asset_name] = asset_val;
         }
         raw::MjsElement* mesh = mjs_firstElement(child.ptr, mjOBJ_MESH);
         raw::MjsElement* tex = mjs_firstElement(child.ptr, mjOBJ_TEXTURE);

@@ -1862,6 +1862,45 @@ class SpecsTest(absltest.TestCase):
     with self.assertRaisesRegex(ValueError, 'Frame not found.'):
       parent.attach(child4, frame='invalid_frame', prefix='child3-')
 
+  def test_attach_asset_conflict_exception_safety(self):
+    parent = mujoco.MjSpec()
+    parent.worldbody.add_body(name='parent_body').add_geom(size=[0.2, 0, 0])
+    frame = parent.worldbody.add_frame(name='mount', pos=[1, 0, 0])
+    site = parent.worldbody.add_site(name='mount_site', pos=[0, 1, 0])
+    parent.assets = {'child_shared_s.obj': b'parent'}
+    parent.override_assets = False
+
+    model_before = parent.compile()
+    xml_before = parent.to_xml()
+    bodies_before = [b.name for b in parent.bodies]
+
+    child = mujoco.MjSpec()
+    child.assets = {
+        'unique.obj': b'child_unique',
+        'shared.obj': b'child_shared',
+    }
+    child.worldbody.add_body(name='part').add_geom(size=[0.1, 0, 0])
+
+    with self.assertRaisesRegex(
+        ValueError, r'Asset shared\.obj already exists in parent spec\.'
+    ):
+      parent.attach(child, prefix='child_', suffix='_s', frame=frame)
+
+    with self.assertRaisesRegex(
+        ValueError, r'Asset shared\.obj already exists in parent spec\.'
+    ):
+      parent.attach(child, prefix='child_', suffix='_s', site=site)
+
+    self.assertEqual([b.name for b in parent.bodies], bodies_before)
+    self.assertEqual(dict(parent.assets), {'child_shared_s.obj': b'parent'})
+    self.assertIsNone(child.parent)
+    self.assertEqual(parent.to_xml(), xml_before)
+
+    model_after = parent.compile()
+    self.assertEqual(model_after.nbody, model_before.nbody)
+    self.assertEqual(model_after.ngeom, model_before.ngeom)
+    np.testing.assert_array_equal(model_after.body_pos, model_before.body_pos)
+
   def test_delete_from_attached_spec_error(self):
     parent = mujoco.MjSpec()
     child = mujoco.MjSpec()
