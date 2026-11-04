@@ -5254,13 +5254,317 @@ TEST_P(FlexAttachmentTest, AttachmentCannotUseFreeGyroShortcut) {
       mjd_freeGyroPossible(model.get(), data.get(), model->body_jntadr[body]));
 }
 
-TEST_P(FlexAttachmentTest, RequiresCGForDiscreteIntegrator) {
-  std::string xml = Xml(false, "both");
-  xml.replace(xml.find("solver=\"CG\""), 11, "solver=\"Newton\"");
+TEST_P(FlexAttachmentTest, GeneralAssembleMatchesMatrixFree) {
+  for (bool mixed : {false, true}) {
+    ASSERT_NO_FATAL_FAILURE(Load("both", mixed));
+    Deform();
+    int nv = model->nv;
+    mjtNum s1 = 4e-4, s2 = 2e-2;
+
+    for (auto [flg_bend, flg_stretch] :
+         {std::pair<int, int>{1, 0}, {0, 1}, {1, 1}}) {
+      std::vector<int> rownnz(nv), rowadr(nv);
+      int nnz = mjd_flexStiff_assembleGen(
+          model.get(), data.get(), rownnz.data(), rowadr.data(), nullptr,
+          nullptr, s1, s2, flg_bend, flg_stretch, nullptr, /*flg_general=*/1);
+      ASSERT_GT(nnz, 0);
+      EXPECT_EQ(rowadr[nv - 1] + rownnz[nv - 1], nnz);
+
+      std::vector<int> colind(nnz);
+      std::vector<mjtNum> val(nnz);
+      int nnz2 = mjd_flexStiff_assembleGen(
+          model.get(), data.get(), rownnz.data(), rowadr.data(), colind.data(),
+          val.data(), s1, s2, flg_bend, flg_stretch, nullptr,
+          /*flg_general=*/1);
+      EXPECT_EQ(nnz2, nnz);
+
+      // verify strictly sorted columns and symmetry
+      std::vector<mjtNum> dense(nv * nv, 0);
+      for (int r = 0; r < nv; r++) {
+        for (int k = 0; k < rownnz[r]; k++) {
+          int c = colind[rowadr[r] + k];
+          ASSERT_GE(c, 0);
+          ASSERT_LT(c, nv);
+          if (k > 0) {
+            EXPECT_GT(c, colind[rowadr[r] + k - 1]);
+          }
+          dense[r * nv + c] = val[rowadr[r] + k];
+        }
+      }
+      for (int r = 0; r < nv; r++) {
+        for (int c = r + 1; c < nv; c++) {
+          EXPECT_THAT(dense[r * nv + c],
+                      MjNear(dense[c * nv + r], 1e-12, 1e-6));
+        }
+      }
+
+      // verify CSR * vec matches matrix-free operators
+      auto vec = Direction(3);
+      std::vector<mjtNum> expected(nv, 0), actual(nv, 0);
+      if (flg_bend) {
+        mjd_flexBend_mul(model.get(), data.get(), expected.data(), vec.data(),
+                         s1, s2);
+      }
+      if (flg_stretch) {
+        mjd_flexStretch_mul(model.get(), data.get(), expected.data(),
+                            vec.data(), s1, s2);
+      }
+      for (int r = 0; r < nv; r++) {
+        mjtNum sum = 0;
+        for (int k = 0; k < rownnz[r]; k++) {
+          sum += val[rowadr[r] + k] * vec[colind[rowadr[r] + k]];
+        }
+        actual[r] = sum;
+      }
+      EXPECT_THAT(actual, Pointwise(MjNear(1e-12, 1e-6), expected));
+    }
+  }
+}
+
+TEST_P(FlexAttachmentTest, SupportsNewtonForDiscreteIntegrator) {
+  for (bool mixed : {false, true}) {
+    std::string xml = Xml(false, "both", mixed);
+    const std::string solver_str = "solver=\"CG\"";
+    xml.replace(xml.find(solver_str), solver_str.size(),
+                "solver=\"CG\" tolerance=\"1e-14\"");
+    const std::string wb_str = "<worldbody>";
+    xml.replace(xml.find(wb_str), wb_str.size(),
+                "<worldbody><geom type='plane' pos='0 0 -.05' size='2 2 .1'/>");
+    const std::string nocontact = "contype=\"0\" conaffinity=\"0\" ";
+    for (size_t pos = 0;
+         (pos = xml.find(nocontact, pos)) != std::string::npos;) {
+      xml.erase(pos, nocontact.size());
+    }
+
+    char error[1024];
+    auto m_test = LoadModelFromString(xml, error, sizeof(error));
+    ASSERT_THAT(m_test.get(), NotNull()) << error;
+    auto d_test = MakeData(m_test);
+    int nv = m_test->nv;
+
+    std::vector<mjtNum> dir(nv);
+    for (int i = 0; i < nv; i++) dir[i] = mju_Halton(i, 2) - .5;
+    mj_integratePos(m_test.get(), d_test->qpos, dir.data(), .05);
+    mju_copy(d_test->qvel, dir.data(), nv);
+
+    m_test->opt.solver = mjSOL_CG;
+    mj_forward(m_test.get(), d_test.get());
+    std::vector<mjtNum> qacc_cg(d_test->qacc, d_test->qacc + nv);
+
+    m_test->opt.solver = mjSOL_NEWTON;
+    mj_forward(m_test.get(), d_test.get());
+    EXPECT_GT(d_test->nefmK, 0);
+    EXPECT_EQ(d_test->efm_active, 2);
+
+    // the carrier's joint dofs have rows: the articulated pull-back is in the
+    // CSR
+    int carrier = mj_name2id(m_test.get(), mjOBJ_BODY, "carrier");
+    EXPECT_GT(d_test->efm_K_rownnz[m_test->body_dofadr[carrier]], 0);
+
+    std::vector<mjtNum> rhs(nv), sol(nv), prod(nv);
+    for (int i = 0; i < nv; i++) rhs[i] = mju_Halton(i, 3) - .5;
+    mj_effSolve(m_test.get(), d_test.get(), sol.data(), rhs.data());
+    mj_mulM(m_test.get(), d_test.get(), prod.data(), sol.data());
+    mj_effMulAdd(m_test.get(), d_test.get(), prod.data(), sol.data(), 1);
+    EXPECT_THAT(prod, Pointwise(MjNear(2e-8, 2e-5), rhs));
+
+    mjtNum scale = mju_norm(qacc_cg.data(), nv) / mju_sqrt((mjtNum)nv) + 1;
+    EXPECT_THAT(AsVector(d_test->qacc, nv),
+                Pointwise(MjNear(1e-12 * scale, 1e-4 * scale), qacc_cg));
+  }
+}
+
+TEST_F(DerivativeTest, GeneralFlexStiffAssembleAllDimsAndInterp) {
+  static const char* const kXml = R"(
+  <mujoco>
+    <option integrator="discrete" solver="CG"/>
+    <worldbody>
+      <body name="arm1" pos="0 0 1">
+        <joint type="ball"/>
+        <inertial pos="0 0 0" mass="0.5" diaginertia="0.01 0.02 0.03"/>
+        <flexcomp name="rod" type="grid" count="5 1 1" spacing="0.1 0.1 0.1"
+                  radius="0.01" dim="1" mass="0.4">
+          <pin id="0"/>
+          <contact selfcollide="none" contype="0" conaffinity="0"/>
+          <elasticity young="1e5" damping="0.1"/>
+        </flexcomp>
+        <flexcomp name="tri" type="grid" count="3 3 3" spacing="0.1 0.1 0.1"
+                  pos="0 0.4 0" radius="0.01" dim="3" mass="0.5"
+                  dof="trilinear" cellcount="2 1 1">
+          <pin id="0"/>
+          <contact selfcollide="none" contype="0" conaffinity="0"/>
+          <elasticity young="1e4" poisson="0.25" damping="0.5"/>
+        </flexcomp>
+      </body>
+      <body name="arm2" pos="1 0 1">
+        <joint type="hinge" axis="0 1 0"/>
+        <inertial pos="0 0 0" mass="0.5" diaginertia="0.01 0.02 0.03"/>
+        <flexcomp name="solid" type="grid" count="2 2 2" spacing="0.1 0.1 0.1"
+                  radius="0.01" dim="3" mass="0.5" dof="full">
+          <pin id="0"/>
+          <contact selfcollide="none" contype="0" conaffinity="0"/>
+          <elasticity young="1e4" poisson="0.2" damping="0.2"/>
+        </flexcomp>
+        <flexcomp name="quad" type="grid" count="3 3 3" spacing="0.1 0.1 0.1"
+                  pos="0 0.4 0" radius="0.01" dim="3" mass="0.5"
+                  dof="quadratic" cellcount="1 1 1">
+          <pin id="0"/>
+          <contact selfcollide="none" contype="0" conaffinity="0"/>
+          <elasticity young="1e4" poisson="0.2" damping="0.3"/>
+        </flexcomp>
+      </body>
+      <body name="carrier" pos="2 0 1">
+        <freejoint/>
+        <inertial pos="0 0 0" mass="0.5" diaginertia="0.01 0.02 0.03"/>
+        <flexcomp name="shell" type="grid" count="4 4 4" spacing="0.1 0.1 0.1"
+                  radius="0.01" dim="3" mass="0.5" dof="trilinear"
+                  cellcount="1 2 2">
+          <pin id="0 2"/>
+          <contact selfcollide="none" contype="0" conaffinity="0"/>
+          <elasticity young="1e4" poisson="0.25" damping="0.4"
+                      elastic2d="stretch" thickness="0.01"/>
+        </flexcomp>
+      </body>
+    </worldbody>
+  </mujoco>
+  )";
+
   char error[1024];
-  auto rejected = LoadModelFromString(xml, error, sizeof(error));
-  EXPECT_EQ(rejected.get(), nullptr);
-  EXPECT_THAT(error, HasSubstr("general attachments requires solver='CG'"));
+  MjModelPtr model = LoadModelFromString(kXml, error, sizeof(error));
+  ASSERT_THAT(model.get(), NotNull()) << error;
+  EXPECT_EQ(mjd_flexInterpAssemblable(model.get()), 0);
+  int nv = model->nv;
+  MjDataPtr data = MakeData(model);
+
+  std::vector<mjtNum> dir(nv);
+  for (int i = 0; i < nv; i++) dir[i] = mju_Halton(i, 2) - 0.5;
+  mj_integratePos(model.get(), data->qpos, dir.data(), 0.03);
+  mju_copy(data->qvel, dir.data(), nv);
+  mj_forward(model.get(), data.get());
+
+  std::vector<mjtNum> krot(model->nflexstiffness, 0);
+  mjd_flexInterp_cacheKrot(model.get(), data.get(), krot.data());
+
+  mjtNum s1 = 4e-6, s2 = 2e-3;
+  std::vector<int> rownnz(nv), rowadr(nv);
+  int nnz = mjd_flexStiff_assembleGen(
+      model.get(), data.get(), rownnz.data(), rowadr.data(), nullptr, nullptr,
+      s1, s2, /*flg_bend=*/1, /*flg_stretch=*/1, krot.data(),
+      /*flg_general=*/1);
+  ASSERT_GT(nnz, 0);
+
+  std::vector<int> colind(nnz);
+  std::vector<mjtNum> val(nnz);
+  int nnz2 = mjd_flexStiff_assembleGen(
+      model.get(), data.get(), rownnz.data(), rowadr.data(), colind.data(),
+      val.data(), s1, s2, /*flg_bend=*/1, /*flg_stretch=*/1, krot.data(),
+      /*flg_general=*/1);
+  EXPECT_EQ(nnz2, nnz);
+
+  for (int r = 0; r < nv; r++) {
+    for (int k = 1; k < rownnz[r]; k++) {
+      EXPECT_GT(colind[rowadr[r] + k], colind[rowadr[r] + k - 1]);
+    }
+  }
+
+  for (int trial = 0; trial < 3; trial++) {
+    std::vector<mjtNum> vec(nv), res_op(nv, 0), res_csr(nv, 0);
+    for (int i = 0; i < nv; i++) {
+      vec[i] = mju_Halton(i + trial * nv, 3) - 0.5;
+    }
+    mjd_flexBend_mul(model.get(), data.get(), res_op.data(), vec.data(), s1,
+                     s2);
+    mjd_flexStretch_mul(model.get(), data.get(), res_op.data(), vec.data(), s1,
+                        s2);
+    mjd_flexInterp_mul(model.get(), data.get(), res_op.data(), vec.data(), -s1,
+                       -s2, krot.data());
+
+    for (int r = 0; r < nv; r++) {
+      mjtNum sum = 0;
+      for (int k = 0; k < rownnz[r]; k++) {
+        sum += val[rowadr[r] + k] * vec[colind[rowadr[r] + k]];
+      }
+      res_csr[r] = sum;
+    }
+    mjtNum scale = mju_norm(res_op.data(), nv) / mju_sqrt((mjtNum)nv) + 1;
+    EXPECT_THAT(res_csr,
+                Pointwise(MjNear(1e-12 * scale, 5e-5 * scale), res_op));
+    EXPECT_GE(mju_dot(vec.data(), res_csr.data(), nv), -1e-11 * scale);
+  }
+}
+
+// an interpolated node on a jointless child of a moving body moves with that
+// body: it is not a fixed node, so the stiffness must reach the body's dofs
+// under both solvers
+TEST_F(DerivativeTest, InterpNodeOnWeldedChild) {
+  static const char* const kXml = R"(
+  <mujoco>
+    <option integrator="discrete" solver="CG" tolerance="1e-14" iterations="2000"/>
+    <worldbody>
+      <body name="arm">
+        <joint name="hinge" type="hinge" axis="0 1 0"/>
+        <geom type="sphere" size=".02" pos="-.1 0 0" mass=".3"/>
+        <body name="welded"/>
+      </body>
+      <flexcomp name="pad" type="grid" count="3 3 3" spacing=".05 .05 .05"
+                pos=".1 0 0" radius=".005" dim="3" mass=".5" dof="trilinear"
+                cellcount="1 1 1">
+        <pin id="0"/>
+        <contact contype="0" conaffinity="0" selfcollide="none"/>
+        <elasticity young="1e4" poisson=".2" damping=".1"/>
+      </flexcomp>
+    </worldbody>
+  </mujoco>
+  )";
+
+  // move the pinned node from the world to the welded child, whose frame is the
+  // world frame at qpos0, so its local coordinates are unchanged
+  mjSpec* spec = mj_parseXMLString(kXml, nullptr, nullptr, 0);
+  ASSERT_THAT(spec, NotNull());
+  mjsFlex* flex = mjs_asFlex(mjs_findElement(spec, mjOBJ_FLEX, "pad"));
+  ASSERT_THAT(flex, NotNull());
+  ASSERT_EQ((*flex->nodebody)[0], "world");
+  (*flex->nodebody)[0] = "welded";
+  MjModelPtr model(mj_compile(spec, nullptr));
+  mj_deleteSpec(spec);
+  ASSERT_THAT(model.get(), NotNull());
+  int welded = mj_name2id(model.get(), mjOBJ_BODY, "welded");
+  ASSERT_EQ(model->flex_nodebodyid[model->flex_nodeadr[0]], welded);
+  EXPECT_EQ(mjd_flexInterpAssemblable(model.get()), 0);
+
+  int nv = model->nv;
+  int hinge = model->jnt_dofadr[mj_name2id(model.get(), mjOBJ_JOINT, "hinge")];
+  MjDataPtr data = MakeData(model);
+  std::vector<mjtNum> dir(nv);
+  for (int i = 0; i < nv; i++) dir[i] = mju_Halton(i, 2) - .5;
+  mj_integratePos(model.get(), data->qpos, dir.data(), .02);
+  mju_copy(data->qvel, dir.data(), nv);
+
+  // reference: the matrix-free interp operator, which follows the node's body
+  // chain
+  mj_forward(model.get(), data.get());
+  std::vector<mjtNum> vec(nv), expected(nv, 0);
+  for (int i = 0; i < nv; i++) vec[i] = mju_Halton(i, 3) - .5;
+  mjtNum h = model->opt.timestep;
+  mjd_flexInterp_mul(model.get(), data.get(), expected.data(), vec.data(),
+                     -h * h, -h, data->flexelem_krot);
+  EXPECT_NE(expected[hinge], 0);
+
+  // CG applies the operator matrix-free, Newton assembles the general CSR
+  for (mjtSolver solver : {mjSOL_CG, mjSOL_NEWTON}) {
+    model->opt.solver = solver;
+    mj_forward(model.get(), data.get());
+    std::vector<mjtNum> actual(nv, 0);
+    mj_effMulAdd(model.get(), data.get(), actual.data(), vec.data(), 1);
+    mjtNum scale = mju_norm(expected.data(), nv) / mju_sqrt((mjtNum)nv) + 1;
+    EXPECT_THAT(actual,
+                Pointwise(MjNear(1e-12 * scale, 1e-5 * scale), expected))
+        << "solver " << solver;
+    if (solver == mjSOL_NEWTON) {
+      EXPECT_EQ(data->efm_active, 2);
+      EXPECT_GT(data->efm_K_rownnz[hinge], 0);
+    }
+  }
 }
 
 INSTANTIATE_TEST_SUITE_P(

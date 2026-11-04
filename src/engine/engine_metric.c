@@ -234,6 +234,49 @@ int mj_effRank1Next(const mjModel* m, const mjData* d, mjEffRank1Iter* it,
 }
 
 
+// return 1 if i starts a 3-dof world-translation root body (its 3 dofs share one welded body at
+// the root of its kinematic tree)
+static int effSimpleTriple(const mjModel* m, int i) {
+  if (i < 0 || i + 3 > m->nv) {
+    return 0;
+  }
+  int b = m->body_weldid[m->dof_bodyid[i]];
+  return m->body_dofadr[b] == i && m->body_dofnum[b] == 3 &&
+         (m->body_simple[b] == 2 || mj_flexBodySimple(m, b));
+}
+
+
+// return 1 if every active flex can be assembled by the simple 3x3 vertex fast path
+static int efmAllSimple(const mjModel* m) {
+  if (!mjd_flexInterpAssemblable(m)) {
+    return 0;
+  }
+  for (int f=0; f < m->nflex; f++) {
+    if (!m->flex_interp[f] &&
+        mjd_flexStiff_activeGen(m, f, /*flg_bend=*/1, /*flg_stretch=*/1, /*flg_general=*/1) &&
+        !mj_flexSimple(m, f)) {
+      return 0;
+    }
+  }
+  return 1;
+}
+
+
+// values of d->efm_active: the metric is active, and its stiffness CSR d->efm_K is either the
+// simple assembly (3x3 vertex blocks of simple flexes; the other flexes use the matrix-free
+// operators) or the general one (every active flex pulled back through its attachment Jacobians,
+// so no matrix-free operator applies). mj_effBuild records the choice, so that consumers need not
+// rescan the flexes per product, and a CG solve on a copy of a Newton step (the solver fallback)
+// still sees the matrix as it was built.
+#define EFM_ACTIVE 1
+#define EFM_ACTIVE_GENERAL 2
+
+// return 1 if d->efm_K was assembled in general articulated mode
+static inline int efmGeneralCSR(const mjData* d) {
+  return d->efm_active == EFM_ACTIVE_GENERAL;
+}
+
+
 // res += B*vec, the stiffness part of the metric. The per-dof diagonal classes are applied
 // from efm_diag (scales pre-folded); the stretch (and, when assemblable, bending and interp)
 // part from the per-step CSR; terms not in the CSR fall back to the matrix-free operators.
@@ -298,7 +341,8 @@ void mj_effMulAdd(const mjModel* m, mjData* d, mjtNum* res, const mjtNum* vec, i
     }
   }
 
-  if (d->nefmK && d->nefmdof) {
+  int gen_csr = efmGeneralCSR(d);
+  if (d->nefmK && d->nefmdof && !gen_csr) {
     // the stiffness rows come in vertex triples with 3x3 blocks per neighbour (the assembly
     // writes the three dofs of each neighbour in turn), so one column index per block and the
     // three rows share the vector loads
@@ -337,21 +381,23 @@ void mj_effMulAdd(const mjModel* m, mjData* d, mjtNum* res, const mjtNum* vec, i
     }
   }
 
-  // A standard flex is assembled only when all its attachments have fixed-frame XYZ
-  // mappings. Dispatch general flexes individually: another flex's CSR must not suppress
-  // their operators. Both the stiffness and damping parts follow the passive-force flags.
-  mjtNum s1 = mjDISABLED(mjDSBL_SPRING) ? 0 : h*h;
-  mjtNum s2 = mjDISABLED(mjDSBL_DAMPER) ? 0 : h;
-  for (int f=0; f < m->nflex; f++) {
-    if (m->flex_interp[f] || m->flex_rigid[f]) continue;
-    if (m->flex_dim[f] == 1 && m->flex_bendingadr[f] < 0) continue;
-    if (!d->nefmK || !mj_flexSimple(m, f)) {
-      mjd_flexBend_mulRange(m, d, res, vec, s1, s2, f, f+1);
-      mjd_flexStretch_mulRange(m, d, res, vec, s1, s2, f, f+1);
+  // Under CG, a standard flex is assembled only when all its attachments have fixed-frame XYZ
+  // mappings; under Newton, general articulated flexes are assembled into efm_K too. Dispatch
+  // un-assembled flexes individually: another flex's CSR must not suppress their operators.
+  if (!gen_csr) {
+    mjtNum s1 = mjDISABLED(mjDSBL_SPRING) ? 0 : h*h;
+    mjtNum s2 = mjDISABLED(mjDSBL_DAMPER) ? 0 : h;
+    for (int f=0; f < m->nflex; f++) {
+      if (m->flex_interp[f] || m->flex_rigid[f]) continue;
+      if (m->flex_dim[f] == 1 && m->flex_bendingadr[f] < 0) continue;
+      if (!d->nefmK || !mj_flexSimple(m, f)) {
+        mjd_flexBend_mulRange(m, d, res, vec, s1, s2, f, f+1);
+        mjd_flexStretch_mulRange(m, d, res, vec, s1, s2, f, f+1);
+      }
     }
-  }
-  if (!d->nefmK || !mjd_flexInterpAssemblable(m)) {
-    mjd_flexInterp_mul(m, d, res, vec, -s1, -s2, d->flexelem_krot);
+    if (!d->nefmK || !mjd_flexInterpAssemblable(m)) {
+      mjd_flexInterp_mul(m, d, res, vec, -s1, -s2, d->flexelem_krot);
+    }
   }
 }
 
@@ -510,12 +556,12 @@ static mjtNum* effCholStepValues(const mjData* d, const mjEffChol* c) {
   return d->efm_L + 9*c->nb + EFF_HDR + effPackNums(c->nb, c->nL);
 }
 
-// the covered blocks of a K pattern with row sizes rownnz (nv rows): each nonzero row starts a
-// vertex triple, its 3 consecutive dofs
-static int effCoveredBlocks(int nv, const int* rownnz, int* dofid) {
+// the covered blocks of a K pattern with row sizes rownnz (nv rows): each nonzero row on a
+// standalone 3-dof slider tree starts a vertex triple, its 3 consecutive dofs
+static int effCoveredBlocks(const mjModel* m, int nv, const int* rownnz, int* dofid) {
   int nb = 0;
   for (int i=0; i < nv; ) {
-    if (rownnz[i]) {
+    if (rownnz[i] && effSimpleTriple(m, i)) {
       if (dofid) dofid[nb] = i;
       nb++;
       i += 3;
@@ -764,10 +810,12 @@ static void effCholFinish(const mjEffCholPass* p, mjEffChol* c) {
 
 // return 1 if every covered flex qualifies for the sparse Cholesky factor or ordering: 1D rods,
 // 2D flexes if allow2d, and 3D flexes if allow3d, not interpolated (currently all-or-nothing
-// across covered flexes since efm_dofid and nefmCvert index all covered triples together)
-static int effCholDimOk(const mjModel* m, int allow2d, int allow3d) {
+// across covered flexes since efm_dofid and nefmCvert index all covered triples together).
+// Flexes with articulated attachments are covered only by the general assembly (flg_general):
+// otherwise they stay matrix-free and do not restrict the factor of the simple ones.
+static int effCholDimOk(const mjModel* m, int allow2d, int allow3d, int flg_general) {
   for (int f=0; f < m->nflex; f++) {
-    int covered = mjd_flexStiff_active(m, f, /*flg_bend=*/1, /*flg_stretch=*/1) ||
+    int covered = mjd_flexStiff_activeGen(m, f, /*flg_bend=*/1, /*flg_stretch=*/1, flg_general) ||
                   mjd_flexInterp_processed(m, f) || mj_effFlexContactPossible(m, f);
     if (!covered) {
       continue;
@@ -786,16 +834,14 @@ static int effCholDimOk(const mjModel* m, int allow2d, int allow3d) {
 // the step uses the sparse factor: 1D rods and 2D flexes, whatever the solver. It serves
 // qacc_smooth (mj_effSolve) and Newton; the CG constraint solve preconditions with the folded 3x3
 // blocks (mj_effPrecFold) instead, and falls back to the factor only when it cannot fold
-static int effCholApplies(const mjModel* m, int nb, const int* dofid) {
+static int effCholApplies(const mjModel* m, const mjData* d, int nb, const int* dofid) {
   if (!nb || nb > EFF_CHOL_MAXVERT || !m->nefmCvert || m->efmC_perm[0] < 0 ||
-      !effCholDimOk(m, /*allow2d=*/1, /*allow3d=*/0)) {
+      !effCholDimOk(m, /*allow2d=*/1, /*allow3d=*/0, efmGeneralCSR(d))) {
     return 0;
   }
-  if (mjd_flexInterpAssemblable(m)) {
-    for (int f=0; f < m->nflex; f++) {
-      if (mjd_flexInterp_processed(m, f)) {
-        return 0;
-      }
+  for (int f=0; f < m->nflex; f++) {
+    if (mjd_flexInterp_processed(m, f)) {
+      return 0;
     }
   }
   return dofid[nb-1] + 3 <= m->nv;
@@ -838,13 +884,30 @@ void mj_effCholSetConst(mjModel* m, mjData* d) {
   }
   for (int t=0; t < ncap; t++) m->efmC_perm[t] = -1;
   // the ordering is structural: computed for every model with non-interpolated flexes, whatever
-  // the solver options (effCholApplies decides per step whether the metric factor is used)
-  if (!effCholDimOk(m, /*allow2d=*/1, /*allow3d=*/1)) {
+  // the solver options (effCholApplies decides per step whether the metric factor is used).
+  // Articulated flexes enter the stiffness pattern only under Newton (the general assembly of
+  // mj_effBuild), so only then do they shape the ordering
+  int gen = 0;
+  for (int f=0; m->opt.solver == mjSOL_NEWTON && f < m->nflex; f++) {
+    if (!m->flex_interp[f] &&
+        mjd_flexStiff_activeGen(m, f, /*flg_bend=*/1, /*flg_stretch=*/1, /*flg_general=*/1) &&
+        !mj_flexSimple(m, f)) {
+      gen = 1;
+      break;
+    }
+  }
+  if (!effCholDimOk(m, /*allow2d=*/1, /*allow3d=*/1, gen)) {
     return;
   }
   mj_markStack(d);
   size_t avail = mj_stackBytesAvailable(d);
   size_t need = mj_stackFrameBytes() + 3*effIntBytes(nv) + effIntBytes(ncap + 1);
+
+  // the general pattern passes need stack for the attachment chains; when it does not fit,
+  // order the simple pattern instead, whose covered vertices the ordering also serves
+  if (gen && avail < need + mjd_flexStiff_assembleGenStack(m, 1, 1, /*flg_interp=*/0)) {
+    gen = 0;
+  }
   int nb = 0, nK = 0, *K_rownnz = NULL, *K_rowadr = NULL, *blk = NULL, *dofid = NULL;
   size_t kcap = 0;
   if (avail >= need) {
@@ -852,7 +915,7 @@ void mj_effCholSetConst(mjModel* m, mjData* d) {
     K_rowadr = effInts(d, nv);
     blk = effInts(d, nv);
     dofid = effInts(d, ncap + 1);
-    nK = mjd_flexStiff_assemble(m, d, K_rownnz, K_rowadr, NULL, NULL, 0, 0, 1, 1, NULL);
+    nK = mjd_flexStiff_assembleGen(m, d, K_rownnz, K_rowadr, NULL, NULL, 0, 0, 1, 1, NULL, gen);
     for (int i=0; i < nv; i++) blk[i] = K_rownnz[i];
     for (int f=0; f < m->nflex; f++) {
       // edge equality (mjEQ_FLEX) on a non-interpolated 2D/3D flex
@@ -868,12 +931,12 @@ void mj_effCholSetConst(mjModel* m, mjData* d) {
         }
       }
     }
-    nb = effCoveredBlocks(nv, blk, NULL);
+    nb = effCoveredBlocks(m, nv, blk, NULL);
     if (!nb || nb > ncap || nb > EFF_CHOL_MAXVERT) {
       mj_freeStack(d);
       return;
     }
-    effCoveredBlocks(nv, blk, dofid);
+    effCoveredBlocks(m, nv, blk, dofid);
     if (dofid[nb-1] + 3 > nv) {
       mj_freeStack(d);
       return;
@@ -888,7 +951,7 @@ void mj_effCholSetConst(mjModel* m, mjData* d) {
   }
   int* K_colind = effInts(d, nK);
   int* perm = effInts(d, nb);
-  mjd_flexStiff_assemble(m, d, K_rownnz, K_rowadr, K_colind, NULL, 0, 0, 1, 1, NULL);
+  mjd_flexStiff_assembleGen(m, d, K_rownnz, K_rowadr, K_colind, NULL, 0, 0, 1, 1, NULL, gen);
   effCovered(nv, nb, dofid, blk);
   mjEffCholPass pass;
   if (effCholBegin(m, d, nb, dofid, blk, K_rownnz, K_rowadr, K_colind, 1, perm, &pass)) {
@@ -1029,27 +1092,34 @@ static void effCholFill(const mjModel* m, mjData* d, const mjEffChol* c, mjtNum*
       Kv[a] = d->efm_K_val + K_rowadr[i0+a];
     }
     const int* ci = d->efm_K_colind + K_rowadr[i0];
-    int nn = d->efm_K_rownnz[i0] / 3;
-    for (int j=0; j < nn; j++) {
-      int q = blk[ci[3*j]];
-      if (q < 0) continue;
+    int rownnz = d->efm_K_rownnz[i0];
+    for (int j=0; j < rownnz; ) {
+      int q = blk[ci[j]];
+      if (q < 0) {
+        j++;
+        continue;
+      }
       if (q == k) {
         for (int a=0; a < 3; a++) {
-          for (int b=0; b <= a; b++) H[da[a]+b] += Kv[a][3*j+b];
+          for (int b=0; b <= a; b++) H[da[a]+b] += Kv[a][j+b];
         }
+        j += 3;
         continue;
       }
 
       // each pair is taken from the row of the vertex eliminated first (the larger perm)
       int pq = c->perm[q];
-      if (pq > p) continue;
+      if (pq > p) {
+        j += 3;
+        continue;
+      }
       int s = slot[pq];
       if (s >= 0) {
         for (int a=0; a < 3; a++) {
           mjtNum* h = H + ra[a] + 3*s;
-          h[0] += Kv[a][3*j];
-          h[1] += Kv[a][3*j+1];
-          h[2] += Kv[a][3*j+2];
+          h[0] += Kv[a][j];
+          h[1] += Kv[a][j+1];
+          h[2] += Kv[a][j+2];
         }
       } else {
         if (qmark[q] != k) {
@@ -1060,12 +1130,13 @@ static void effCholFill(const mjModel* m, mjData* d, const mjEffChol* c, mjtNum*
         mjtNum* acc = scratch + 6*qpos[q];
         for (int a=0; a < 3; a++) {
           for (int b=0; b < 3; b++) {
-            mjtNum av = mju_abs(Kv[a][3*j+b]);
+            mjtNum av = mju_abs(Kv[a][j+b]);
             acc[a] += av;
             acc[3+b] += av;
           }
         }
       }
+      j += 3;
     }
     for (int a=0; a < 3; a++) {
       int i = i0 + a;
@@ -1178,7 +1249,7 @@ static void effCholApply(mjData* d, const mjEffChol* c, mjtNum* x, const mjtNum*
 // analyse the step's efm_K pattern and allocate d->efm_L with the analysis and the factor tail
 static mjtNum* effCholReserve(const mjModel* m, mjData* d, int nb, const int* dofid, int* ntail) {
   *ntail = 0;
-  if (!effCholApplies(m, nb, dofid)) {
+  if (!effCholApplies(m, d, nb, dofid)) {
     return NULL;
   }
   int nv = m->nv;
@@ -1271,10 +1342,10 @@ static void effBlocks(const mjModel* m, mjData* d) {
   // covered dofs come in contiguous triples (the 3 slide dofs of one flex point), but the first
   // one need not be at a multiple of 3: any joint declared before the flex shifts them. Walk the
   // covered rows rather than striding the dof index, which would straddle point boundaries.
-  int nb = effCoveredBlocks(nv, d->efm_K_rownnz, NULL);
+  int nb = effCoveredBlocks(m, nv, d->efm_K_rownnz, NULL);
   d->nefmdof = 0;
   int* adr = (int*) effAlloc(d, sizeof(int)*(nb > 0 ? nb : 1), _Alignof(int));
-  effCoveredBlocks(nv, d->efm_K_rownnz, adr);
+  effCoveredBlocks(m, nv, d->efm_K_rownnz, adr);
   int ntail = 0;
   mjtNum* B = effCholReserve(m, d, nb, adr, &ntail);
   if (!B) {
@@ -1889,6 +1960,9 @@ int mj_effCGMonolithic(const mjModel* m, const mjData* d, int solver) {
 // stack bytes of mj_effMulAdd and mj_effMulAddIsland, at most: the frames of the matrix-free
 // flex operators they fall back to, one at a time, plus the island scatter/gather frame
 size_t mj_effMulAddScratch(const mjModel* m, const mjData* d) {
+  if (efmGeneralCSR(d)) {
+    return 0;
+  }
   size_t frame = mj_stackFrameBytes(), bytes = 0;
   for (int f=0; f < m->nflex; f++) {
     if (m->flex_interp[f] || m->flex_rigid[f]) continue;
@@ -2344,11 +2418,14 @@ static int flexIsland(const mjModel* m, const mjData* d, int f) {
 
 
 // does flex f require the matrix-free stiffness path (not covered by the CSR)?
-static int flexMatrixFree(const mjModel* m, const mjData* d, int f, int interp_asm) {
+static int flexMatrixFree(const mjModel* m, const mjData* d, int f, int interp_asm, int gen_csr) {
+  if (gen_csr) {
+    return 0;
+  }
   if (m->flex_interp[f]) {
     return !interp_asm && mjd_flexInterp_processed(m, f);
   }
-  return mjd_flexStiff_active(m, f, /*flg_bend=*/1, /*flg_stretch=*/1) &&
+  return mjd_flexStiff_activeGen(m, f, /*flg_bend=*/1, /*flg_stretch=*/1, /*flg_general=*/1) &&
          (!d->nefmK || !mj_flexSimple(m, f));
 }
 
@@ -2421,9 +2498,10 @@ static void effIslandBuild(const mjModel* m, mjData* d) {
   }
 
   mju_zeroInt(isl.flex_adr, nisland + 1);
-  int interp_asm = d->nefmK && mjd_flexInterpAssemblable(m);
+  int gen_csr = efmGeneralCSR(d);
+  int interp_asm = d->nefmK && (gen_csr || mjd_flexInterpAssemblable(m));
   for (int f=0; f < m->nflex; f++) {
-    if (!flexMatrixFree(m, d, f, interp_asm)) {
+    if (!flexMatrixFree(m, d, f, interp_asm, gen_csr)) {
       continue;
     }
     int island = flexIsland(m, d, f);
@@ -2435,7 +2513,7 @@ static void effIslandBuild(const mjModel* m, mjData* d) {
     isl.flex_adr[c + 1] += isl.flex_adr[c];
   }
   for (int f=0; f < m->nflex; f++) {
-    if (!flexMatrixFree(m, d, f, interp_asm)) {
+    if (!flexMatrixFree(m, d, f, interp_asm, gen_csr)) {
       continue;
     }
     int island = flexIsland(m, d, f);
@@ -2501,13 +2579,14 @@ void mj_effMulAddIsland(const mjModel* m, mjData* d, mjtNum* res, const mjtNum* 
 
   mjEffIsland isl;
   int has_isl = effIslandStep(d, &isl);
+  int gen_csr = efmGeneralCSR(d);
 
   // flex stiffness CSR restricted to the island's covered triples.
   // Invariant: all dynamic trees of a metric-coupled flex are awake or asleep together (sleeping
   // acts on whole islands in mj_sleep and wakes whole cycles in mj_wakeIsland, and
   // unionConstraintTrees unions all awake trees of a metric-coupled flex into one island), so
   // every column in row i belongs to the same island as i.
-  if (d->nefmK && d->nefmdof && has_isl) {
+  if (d->nefmK && d->nefmdof && has_isl && !gen_csr) {
     const int* rowadr = d->efm_K_rowadr;
     const int* rownnz = d->efm_K_rownnz;
     const int* colind = d->efm_K_colind;
@@ -2558,11 +2637,11 @@ void mj_effMulAddIsland(const mjModel* m, mjData* d, mjtNum* res, const mjtNum* 
   }
 
   // matrix-free fallback for flexes in this island not covered by the CSR
-  int has_mf = has_isl ? (isl.flex_adr[island] < isl.flex_adr[island + 1]) : 0;
-  int interp_asm = d->nefmK && mjd_flexInterpAssemblable(m);
-  if (!has_isl) {
+  int has_mf = (!gen_csr && has_isl) ? (isl.flex_adr[island] < isl.flex_adr[island + 1]) : 0;
+  int interp_asm = d->nefmK && (gen_csr || mjd_flexInterpAssemblable(m));
+  if (!gen_csr && !has_isl) {
     for (int f=0; f < m->nflex; f++) {
-      if (flexMatrixFree(m, d, f, interp_asm) && flexIsland(m, d, f) == island) {
+      if (flexMatrixFree(m, d, f, interp_asm, gen_csr) && flexIsland(m, d, f) == island) {
         has_mf = 1;
         break;
       }
@@ -2575,15 +2654,16 @@ void mj_effMulAddIsland(const mjModel* m, mjData* d, mjtNum* res, const mjtNum* 
     mj_markStack(d);
     mjtNum* gvec = mjSTACKALLOC(d, m->nv, mjtNum);
     mjtNum* gres = mjSTACKALLOC(d, m->nv, mjtNum);
+    mju_zero(gvec, m->nv);
+    mju_zero(gres, m->nv);
     for (int k=0; k < nv; k++) {
-      int dof = idof2dof[k];
-      gvec[dof] = vec[k];
-      gres[dof] = 0;
+      gvec[idof2dof[k]] = vec[k];
     }
     int n = has_isl ? (isl.flex_adr[island + 1] - isl.flex_adr[island]) : m->nflex;
     for (int p=0; p < n; p++) {
       int f = has_isl ? isl.flex_ind[isl.flex_adr[island] + p] : p;
-      if (!has_isl && (!flexMatrixFree(m, d, f, interp_asm) || flexIsland(m, d, f) != island)) {
+      if (!has_isl && (!flexMatrixFree(m, d, f, interp_asm, gen_csr) ||
+                       flexIsland(m, d, f) != island)) {
         continue;
       }
       if (m->flex_interp[f]) {
@@ -2992,21 +3072,31 @@ void mj_effBuild(const mjModel* m, mjData* d, int active, int flg_factor) {
   // only when their forces are enabled; the structure does not depend on the flags
   mjtNum s1 = mjDISABLED(mjDSBL_SPRING) ? 0 : h*h;
   mjtNum s2 = mjDISABLED(mjDSBL_DAMPER) ? 0 : h;
-  const mjtNum* krot = mjd_flexInterpAssemblable(m) ? d->flexelem_krot : NULL;
+
+  // Newton needs every flex in its explicit Hessian: once any active flex is not simple, the
+  // whole stiffness goes through the general (Jacobian pull-back) assembly, including the simple
+  // flexes of the same model. Recorded now: the factor and island builds below read it.
+  int gen_csr = (m->opt.solver == mjSOL_NEWTON) && !efmAllSimple(m);
+  d->efm_active = gen_csr ? EFM_ACTIVE_GENERAL : EFM_ACTIVE;
+  const mjtNum* krot = (gen_csr || mjd_flexInterpAssemblable(m)) ? d->flexelem_krot : NULL;
   d->efm_K_rownnz = EFMALLOC(int, nv);
   d->efm_K_rowadr = EFMALLOC(int, nv);
 
   // Newton consumes the metric as an explicit sparse matrix inside its Hessian: force full
-  // CSR assembly, including bending-only flexes which otherwise keep the matrix-free stencil
-  // plus the constant mj_setConst factor (non-assemblable interp flexes are rejected by
-  // mj_checkDiscrete under Newton)
+  // CSR assembly, including bending-only flexes and general articulated flex attachments
   int assemble_any = mjd_flexStiff_any(m, krot != NULL) || mjd_flexPassiveContact_any(m);
   if (m->opt.solver == mjSOL_NEWTON) {
     for (int f=0; !assemble_any && f < m->nflex; f++) {
-      assemble_any = mjd_flexStiff_active(m, f, /*flg_bend=*/1, /*flg_stretch=*/1);
+      assemble_any = mjd_flexStiff_activeGen(m, f, /*flg_bend=*/1, /*flg_stretch=*/1, gen_csr) ||
+                     (gen_csr && mjd_flexInterp_processed(m, f));
     }
   }
-  if (assemble_any) {
+  if (assemble_any && gen_csr) {
+    // the general pattern is built once, with the CSR arrays allocated as soon as it is known
+    d->nefmK = mjd_flexStiff_assembleGenArena(m, d, d->efm_K_rownnz, d->efm_K_rowadr,
+                                              &d->efm_K_colind, &d->efm_K_val, s1, s2,
+                                              /*bend*/ 1, /*stretch*/ 1, krot);
+  } else if (assemble_any) {
     d->nefmK = mjd_flexStiff_assemble(m, d, d->efm_K_rownnz, d->efm_K_rowadr,
                                       NULL, NULL, s1, s2, /*bend*/ 1, /*stretch*/ 1, krot);
   }
@@ -3016,11 +3106,13 @@ void mj_effBuild(const mjModel* m, mjData* d, int active, int flg_factor) {
     effContactBuild(m, d, h*h);
   }
   if (d->nefmK) {
-    d->efm_K_colind = EFMALLOC(int, d->nefmK);
-    d->efm_K_val    = EFMALLOC(mjtNum, d->nefmK);
-    mjd_flexStiff_assemble(m, d, d->efm_K_rownnz, d->efm_K_rowadr,
-                           d->efm_K_colind, d->efm_K_val, s1, s2,
-                           /*bend*/ 1, /*stretch*/ 1, krot);
+    if (!gen_csr) {
+      d->efm_K_colind = EFMALLOC(int, d->nefmK);
+      d->efm_K_val    = EFMALLOC(mjtNum, d->nefmK);
+      mjd_flexStiff_assemble(m, d, d->efm_K_rownnz, d->efm_K_rowadr,
+                             d->efm_K_colind, d->efm_K_val, s1, s2,
+                             /*bend*/ 1, /*stretch*/ 1, krot);
+    }
     // per-step factor of the flex block of (M + K): the stiffness is constant during the
     // step, so one factorization here turns every preconditioner application into a direct
     // solve (the stiff flex block stops being iterated on). Consumers that only multiply
@@ -3039,6 +3131,4 @@ void mj_effBuild(const mjModel* m, mjData* d, int active, int flg_factor) {
       !mjENABLED(mjENBL_IPC) && !effCholReserved(d)) {
     effIslandBuild(m, d);
   }
-
-  d->efm_active = 1;
 }

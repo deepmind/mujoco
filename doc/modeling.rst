@@ -2095,10 +2095,9 @@ Deformables
    ``Newton`` (the default) is the best choice under ``discrete`` -- especially for stiff rods, shells, cloth, and
    :ref:`ipc <option-flag-ipc>` contact -- typically with :at:`tolerance` ``1e-6`` (raising :at:`iterations` to
    ``150–400`` only in very contact-rich scenes). Prefer ``CG`` (typically with :at:`tolerance` ``1e-5``--``1e-6``) in
-   three cases: multi-cell ``equality="strain"`` grids (whose dense per-cell constraint blocks cause heavy Cholesky
-   fill-in), large but relatively soft 3D meshes (where ``CG`` converges in a few cheap matrix-free iterations without
-   3D fill-in), and general articulated attachments under ``discrete`` (``Newton`` requires fixed or world-aligned
-   slide-jointed attachments). ``PGS`` and :at:`noslip_iterations` are not supported with flex; see
+   two cases: multi-cell ``equality="strain"`` grids (whose dense per-cell constraint blocks cause heavy Cholesky
+   fill-in) and large but relatively soft 3D meshes (where ``CG`` converges in a few cheap matrix-free iterations
+   without 3D fill-in). ``PGS`` and :at:`noslip_iterations` are not supported with flex; see
    :ref:`Integrators <geIntegrators>` for current limitations.
 
 **Stiffness and damping** (:ref:`elasticity <flex-elasticity>`, :ref:`edge <flexcomp-edge-equality>`):

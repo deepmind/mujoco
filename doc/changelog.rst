@@ -228,6 +228,10 @@ Deformables
   and pre-ordered sparse Cholesky for the 2D ``discrete`` :ref:`integrator<option-integrator>` smooth solve. Most flex
   models in ``model/flex`` now use ``solver="Newton"``, and the experimental :ref:`ipc<option-flag-ipc>` flag now
   supports ``solver="Newton"`` in addition to ``solver="CG"``.
+- ``solver="Newton"`` with the ``discrete`` :ref:`integrator<option-integrator>` now supports
+  :ref:`flex<deformable-flex>` vertices and nodes (both standard and interpolated) attached to articulated bodies.
+  Previously, such models required ``solver="CG"``. The ``model/flex/gripper_trilinear.xml`` gripper now uses
+  ``solver="Newton"``. MuJoCo Warp still requires ``solver="CG"`` for such models.
 - 1D rod bending :ref:`elasticity<flex-elasticity>` now supports curved reference configurations and torsional
   stiffness: vertices bent by more than :math:`10^{-4}` rad in ``qpos0`` keep their reference curvature and dihedral
   twist angle, so that rods such as rings, arcs, and coil springs are at rest in their compiled shape. Previously,

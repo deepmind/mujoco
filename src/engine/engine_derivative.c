@@ -1919,8 +1919,9 @@ mjtBool mjd_flexInterp_processed(const mjModel* m, int f) {
 // can ALL operator-processed interp flexes be assembled to dof-level CSR? Requires every node
 // to sit on a simple slider body (body_simple == 2: sliders only, so the point Jacobian is I3
 // regardless of the node offset -- flex_centered is NOT required) or to be fixed (0 dofs, row
-// dropped like a pinned vertex). All-or-nothing: mjd_flexInterp_mul applies every interp flex,
-// so the CSR can replace the operator only if it covers them all.
+// dropped like a pinned vertex). A node on a jointless child is classified by the body it is
+// welded to. All-or-nothing: mjd_flexInterp_mul applies every interp flex, so the CSR can
+// replace the operator only if it covers them all.
 mjtBool mjd_flexInterpAssemblable(const mjModel* m) {
   for (int f = 0; f < m->nflex; f++) {
     if (!mjd_flexInterp_processed(m, f)) {
@@ -1928,11 +1929,12 @@ mjtBool mjd_flexInterpAssemblable(const mjModel* m) {
     }
     const int* bodyid = m->flex_nodebodyid + m->flex_nodeadr[f];
     for (int n = 0; n < m->flex_nodenum[f]; n++) {
-      int dofnum = m->body_dofnum[bodyid[n]];
+      int b = m->body_weldid[bodyid[n]];
+      int dofnum = m->body_dofnum[b];
       if (dofnum == 0) {
         continue;
       }
-      if (m->body_simple[bodyid[n]] != 2 || dofnum != 3) {
+      if (m->body_simple[b] != 2 || dofnum != 3) {
         return 0;
       }
     }
@@ -2006,18 +2008,24 @@ mjtBool mjd_flexStiff_any(const mjModel* m, int flg_interp) {
 // does this standard flex contribute implicit stiffness under the given term flags?
 // 1D rod bending is state-dependent and therefore follows flg_stretch, not the constant
 // bending stencils of flg_bend
-mjtBool mjd_flexStiff_active(const mjModel* m, int f, int flg_bend, int flg_stretch) {
+mjtBool mjd_flexStiff_activeGen(const mjModel* m, int f, int flg_bend, int flg_stretch,
+                                int flg_general) {
   if (flexRod_active(m, f)) {
-    return flg_stretch && mj_flexSimple(m, f);
+    return flg_stretch && (flg_general || mj_flexSimple(m, f));
   }
   if (m->flex_interp[f] || m->flex_rigid[f] || m->flex_dim[f] < 2 ||
-      !mj_flexSimple(m, f)) {
+      (!flg_general && !mj_flexSimple(m, f))) {
     return 0;
   }
   int bend = flg_bend && m->flex_bendingadr[f] >= 0;
   int stretch = flg_stretch && m->flex_stiffnessadr[f] >= 0 &&
                 m->flex_stiffness[m->flex_stiffnessadr[f]] != 0;
   return bend || stretch;
+}
+
+
+mjtBool mjd_flexStiff_active(const mjModel* m, int f, int flg_bend, int flg_stretch) {
+  return mjd_flexStiff_activeGen(m, f, flg_bend, flg_stretch, 0);
 }
 
 // The flex-contact law (see engine_derivative.h). lam/k is taken as 0 when the multiplier is,
@@ -2166,7 +2174,7 @@ int mjd_flexStiff_assemble(const mjModel* m, mjData* d, int* rownnz, int* rowadr
       }
       const int* bodyid = m->flex_nodebodyid + m->flex_nodeadr[f];
       for (int ln = 0; ln < m->flex_nodenum[f]; ln++) {
-        int b = bodyid[ln];
+        int b = m->body_weldid[bodyid[ln]];
         if (m->body_dofnum[b] == 3) {
           bodyslot[b] = 1;
         }
@@ -2190,7 +2198,7 @@ int mjd_flexStiff_assemble(const mjModel* m, mjData* d, int* rownnz, int* rowadr
   int* nslot = mjSTACKALLOC(d, m->nflexnode > 0 ? (int)m->nflexnode : 1, int);
   for (int i = 0; i < m->nflexnode; i++) {
     int b = m->flex_nodebodyid[i];
-    nslot[i] = (b >= 0) ? bodyslot[b] : -1;
+    nslot[i] = (b >= 0) ? bodyslot[m->body_weldid[b]] : -1;
   }
 
   if (!nvert) {
@@ -2594,11 +2602,11 @@ int mjd_flexStiff_assemble(const mjModel* m, mjData* d, int* rownnz, int* rowadr
         for (int i = 0; i < npe; i++) {
           int si = nslot[m->flex_nodeadr[f] + gindices[i]];
           if (si < 0) continue;
-          int bi = m->flex_nodebodyid[m->flex_nodeadr[f] + gindices[i]];
+          int bi = m->body_weldid[m->flex_nodebodyid[m->flex_nodeadr[f] + gindices[i]]];
           for (int j = 0; j < npe; j++) {
             int sj = nslot[m->flex_nodeadr[f] + gindices[j]];
             if (sj < 0) continue;
-            int bj = m->flex_nodebodyid[m->flex_nodeadr[f] + gindices[j]];
+            int bj = m->body_weldid[m->flex_nodebodyid[m->flex_nodeadr[f] + gindices[j]]];
             // extract K_rot 3x3 block for (i,j)
             mjtNum kb_ij[9];
             for (int r = 0; r < 3; r++) {
@@ -2624,10 +2632,783 @@ int mjd_flexStiff_assemble(const mjModel* m, mjData* d, int* rownnz, int* rowadr
     }
   }
   #undef FLEXSTIFF_BLOCK
-  #undef FLEXINTERP_WALK
 
   mj_freeStack(d);
   return nnz;
+}
+
+
+// scatter J_i^T * B * J_j (Li x Lj) into sorted CSR rows (rownnz, rowadr, colind, val)
+static void flexScatterBlockGen(const int* rownnz, const int* rowadr, const int* colind,
+                                mjtNum* val, const int* Ci, int Li, const mjtNum* Ji,
+                                const int* Cj, int Lj, const mjtNum* Jj,
+                                const mjtNum B[9], mjtNum* tmp_bj) {
+  if (Li <= 0 || Lj <= 0) {
+    return;
+  }
+  const mjtNum *jj0 = Jj, *jj1 = Jj + Lj, *jj2 = Jj + 2*Lj;
+  for (int r = 0; r < 3; r++) {
+    mjtNum b0 = B[3*r + 0], b1 = B[3*r + 1], b2 = B[3*r + 2];
+    mjtNum* tr = tmp_bj + r*Lj;
+    for (int b = 0; b < Lj; b++) {
+      tr[b] = b0*jj0[b] + b1*jj1[b] + b2*jj2[b];
+    }
+  }
+  const mjtNum *ji0 = Ji, *ji1 = Ji + Li, *ji2 = Ji + 2*Li;
+  const mjtNum *t0 = tmp_bj, *t1 = tmp_bj + Lj, *t2 = tmp_bj + 2*Lj;
+  for (int a = 0; a < Li; a++) {
+    int row = Ci[a];
+    int rn = rownnz[row];
+    if (!rn) {
+      continue;
+    }
+    const int* rc = colind + rowadr[row];
+    mjtNum* rv = val + rowadr[row];
+    mjtNum g0 = ji0[a], g1 = ji1[a], g2 = ji2[a];
+
+    // Cj is sorted but not contiguous in the row (ancestor dofs, then the vertex dofs, with the
+    // columns of other vertices in between): binary-search each column from the last match, so
+    // a long row costs O(Lj log rn) instead of a linear walk across the unrelated columns
+    int pos = 0;
+    for (int b = 0; b < Lj; b++) {
+      int col = Cj[b], hi = rn;
+      while (pos < hi) {
+        int mid = (pos + hi) >> 1;
+        if (rc[mid] < col) {
+          pos = mid + 1;
+        } else {
+          hi = mid;
+        }
+      }
+      if (pos < rn && rc[pos] == col) {
+        rv[pos] += g0*t0[b] + g1*t1[b] + g2*t2[b];
+      }
+    }
+  }
+}
+
+
+// accumulate general articulated flex stiffness values into prebuilt CSR (rownnz, rowadr, colind)
+static void flexStiff_valuesGeneral(const mjModel* m, mjData* d, const int* rownnz,
+                                    const int* rowadr, const int* colind, mjtNum* val,
+                                    mjtNum s1, mjtNum s2, int flg_bend, int flg_stretch,
+                                    const mjtNum* Krot, const int* vslot, const int* nslot,
+                                    const int* nadr, const int* badr, const int* bchain,
+                                    int max_chain) {
+  mj_markStack(d);
+  mjtNum* tmp_bj = mjSTACKALLOC(d, 3*max_chain, mjtNum);
+
+  // precompute sparse point Jacobians per active standard flex vertex
+  int* vjadr = mjSTACKALLOC(d, m->nflexvert > 0 ? m->nflexvert : 1, int);
+  for (int i = 0; i < m->nflexvert; i++) {
+    vjadr[i] = -1;
+  }
+  int total_vchain = 0;
+  for (int f = 0; f < m->nflex; f++) {
+    if (!mjd_flexStiff_activeGen(m, f, flg_bend, flg_stretch, 1)) {
+      continue;
+    }
+    if (!(s1 + s2*m->flex_damping[f])) {
+      continue;
+    }
+    int va = m->flex_vertadr[f];
+    for (int lv = 0; lv < m->flex_vertnum[f]; lv++) {
+      int gv = va + lv, si = vslot[gv];
+      if (si >= 0) {
+        vjadr[gv] = total_vchain;
+        total_vchain += badr[si+1] - badr[si];
+      }
+    }
+  }
+  mjtNum* vjac = mjSTACKALLOC(d, total_vchain > 0 ? 3*total_vchain : 1, mjtNum);
+  for (int gv = 0; gv < m->nflexvert; gv++) {
+    if (vjadr[gv] < 0) {
+      continue;
+    }
+    int si = vslot[gv], Li = badr[si+1] - badr[si];
+    mj_jacSparse(m, d, vjac + 3*vjadr[gv], NULL, d->flexvert_xpos + 3*gv,
+                 m->flex_vertbodyid[gv], Li, bchain + badr[si], 0);
+  }
+
+  // accumulate standard flexes: 1D rods, 2D bending, 2D/3D stretch
+  for (int f = 0; f < m->nflex; f++) {
+    if (!mjd_flexStiff_activeGen(m, f, flg_bend, flg_stretch, 1)) {
+      continue;
+    }
+    if (!(s1 + s2*m->flex_damping[f])) {
+      continue;
+    }
+    int va = m->flex_vertadr[f];
+
+    if (flexRod_active(m, f)) {
+      mj_markStack(d);
+      const mjtNum* chain = rodChainWeights(m, d, f, s1, s2);
+      for (int h = 0; h < (int)m->flex_bending[m->flex_bendingadr[f]]; h++) {
+        int v[4], nr;
+        mjtNum K[144];
+        if (!rodHingeStiffness(m, d, f, h, s1, s2, chain, v, &nr, K)) {
+          continue;
+        }
+        int ndof = 3*nr;
+        for (int i = 0; i < nr; i++) {
+          int gvi = va + v[i], si = vslot[gvi];
+          if (si < 0 || vjadr[gvi] < 0) continue;
+          int Li = badr[si+1] - badr[si];
+          const int* Ci = bchain + badr[si];
+          const mjtNum* Ji = vjac + 3*vjadr[gvi];
+          for (int j = 0; j < nr; j++) {
+            int gvj = va + v[j], sj = vslot[gvj];
+            if (sj < 0 || vjadr[gvj] < 0) continue;
+            int Lj = badr[sj+1] - badr[sj];
+            const int* Cj = bchain + badr[sj];
+            const mjtNum* Jj = vjac + 3*vjadr[gvj];
+            mjtNum block[9];
+            for (int r = 0; r < 3; r++) {
+              mji_copy3(block + 3*r, K + ndof*(3*i + r) + 3*j);
+            }
+            flexScatterBlockGen(rownnz, rowadr, colind, val, Ci, Li, Ji, Cj, Lj, Jj, block, tmp_bj);
+          }
+        }
+      }
+      mj_freeStack(d);
+      continue;
+    }
+
+    mjtNum scale = s1 + s2*m->flex_damping[f];
+    if (!scale) {
+      continue;
+    }
+
+    if (flg_bend && m->flex_dim[f] == 2 && m->flex_bendingadr[f] >= 0) {
+      const mjtNum* b = m->flex_bending + m->flex_bendingadr[f];
+      for (int e = 0; e < m->flex_edgenum[f]; e++) {
+        const int* edge = m->flex_edge + 2*(e + m->flex_edgeadr[f]);
+        const int* flap = m->flex_edgeflap + 2*(e + m->flex_edgeadr[f]);
+        if (flap[1] == -1 || !flexBendConvex(b + 17*e)) {
+          continue;
+        }
+        int v[4] = {edge[0], edge[1], flap[0], flap[1]};
+        for (int i = 0; i < 4; i++) {
+          int gvi = va + v[i], si = vslot[gvi];
+          if (si < 0 || vjadr[gvi] < 0) continue;
+          int Li = badr[si+1] - badr[si];
+          const int* Ci = bchain + badr[si];
+          const mjtNum* Ji = vjac + 3*vjadr[gvi];
+          for (int j = 0; j < 4; j++) {
+            int gvj = va + v[j], sj = vslot[gvj];
+            if (sj < 0 || vjadr[gvj] < 0) continue;
+            mjtNum q = scale*b[17*e + 4*i + j];
+            if (!q) continue;
+            int Lj = badr[sj+1] - badr[sj];
+            const int* Cj = bchain + badr[sj];
+            const mjtNum* Jj = vjac + 3*vjadr[gvj];
+            mjtNum block[9] = {q, 0, 0, 0, q, 0, 0, 0, q};
+            flexScatterBlockGen(rownnz, rowadr, colind, val, Ci, Li, Ji, Cj, Lj, Jj, block, tmp_bj);
+          }
+        }
+      }
+    }
+
+    if (flg_stretch && m->flex_dim[f] >= 2 && m->flex_stiffnessadr[f] >= 0 &&
+        m->flex_stiffness[m->flex_stiffnessadr[f]] != 0) {
+      mj_flexHessian(m, d, f);
+      int ea = m->flex_edgeadr[f];
+      int count = m->flex_vertnum[f] + 2*m->flex_edgenum[f];
+      for (int b = 0; b < count; b++) {
+        int vi, vj;
+        mjtNum block[9];
+        if (b < m->flex_vertnum[f]) {
+          vi = vj = b;
+          const mjtNum* h = d->flexvert_hessian + 6*(va + b);
+          block[0] = scale*h[0];
+          block[1] = block[3] = scale*h[1];
+          block[2] = block[6] = scale*h[2];
+          block[4] = scale*h[3];
+          block[5] = block[7] = scale*h[4];
+          block[8] = scale*h[5];
+        } else {
+          int id = b - m->flex_vertnum[f], e = ea + id/2, transpose = id%2;
+          vi = m->flex_edge[2*e + transpose];
+          vj = m->flex_edge[2*e + 1 - transpose];
+          const mjtNum* h = d->flexedge_hessian + 9*e;
+          for (int r = 0; r < 3; r++) {
+            for (int c = 0; c < 3; c++) {
+              block[3*r + c] = scale*(transpose ? h[3*c + r] : h[3*r + c]);
+            }
+          }
+        }
+        int gvi = va + vi, gvj = va + vj;
+        int si = vslot[gvi], sj = vslot[gvj];
+        if (si < 0 || sj < 0 || vjadr[gvi] < 0 || vjadr[gvj] < 0) {
+          continue;
+        }
+        if (nadr[si] == nadr[si+1] || nadr[sj] == nadr[sj+1]) {
+          continue;
+        }
+        int Li = badr[si+1] - badr[si], Lj = badr[sj+1] - badr[sj];
+        flexScatterBlockGen(rownnz, rowadr, colind, val,
+                            bchain + badr[si], Li, vjac + 3*vjadr[gvi],
+                            bchain + badr[sj], Lj, vjac + 3*vjadr[gvj],
+                            block, tmp_bj);
+      }
+    }
+  }
+
+  // accumulate interpolated flexes (negated sign convention matches mjd_flexStiff_assemble)
+  if (Krot) {
+    for (int f = 0; f < m->nflex; f++) {
+      if (!mjd_flexInterp_processed(m, f)) {
+        continue;
+      }
+      mjtNum iscale = -(s1 + s2*m->flex_damping[f]);
+      if (!iscale) {
+        continue;
+      }
+      mj_markStack(d);
+      int nodenum = m->flex_nodenum[f], na = m->flex_nodeadr[f];
+      mjtNum* xpos_node = mjSTACKALLOC(d, nodenum > 0 ? 3*nodenum : 1, mjtNum);
+      mju_flexGatherState(m, d, f, xpos_node, NULL);
+      int* njadr = mjSTACKALLOC(d, nodenum > 0 ? nodenum : 1, int);
+      int total_nchain = 0;
+      for (int ln = 0; ln < nodenum; ln++) {
+        int si = nslot[na + ln];
+        if (si >= 0 && nadr[si] < nadr[si+1]) {
+          njadr[ln] = total_nchain;
+          total_nchain += badr[si+1] - badr[si];
+        } else {
+          njadr[ln] = -1;
+        }
+      }
+      mjtNum* njac = mjSTACKALLOC(d, total_nchain > 0 ? 3*total_nchain : 1, mjtNum);
+      for (int ln = 0; ln < nodenum; ln++) {
+        if (njadr[ln] < 0) {
+          continue;
+        }
+        int si = nslot[na + ln], Li = badr[si+1] - badr[si];
+        mj_jacSparse(m, d, njac + 3*njadr[ln], NULL, xpos_node + 3*ln,
+                     m->flex_nodebodyid[na + ln], Li, bchain + badr[si], 0);
+      }
+
+      FLEXINTERP_WALK(f, {
+        int dim_e = 3*npe;
+        const mjtNum* kb = Krot + m->flex_stiffnessadr[f] + (size_t)fe*dim_e*dim_e;
+        for (int i = 0; i < npe; i++) {
+          int lni = gindices[i];
+          int si = nslot[na + lni];
+          if (si < 0 || njadr[lni] < 0) continue;
+          int Li = badr[si+1] - badr[si];
+          const int* Ci = bchain + badr[si];
+          const mjtNum* Ji = njac + 3*njadr[lni];
+          for (int j = 0; j < npe; j++) {
+            int lnj = gindices[j];
+            int sj = nslot[na + lnj];
+            if (sj < 0 || njadr[lnj] < 0) continue;
+            int Lj = badr[sj+1] - badr[sj];
+            const int* Cj = bchain + badr[sj];
+            const mjtNum* Jj = njac + 3*njadr[lnj];
+            mjtNum kb_ij[9];
+            for (int r = 0; r < 3; r++) {
+              for (int c = 0; c < 3; c++) {
+                kb_ij[3*r + c] = iscale*kb[(3*i + r)*dim_e + 3*j + c];
+              }
+            }
+            flexScatterBlockGen(rownnz, rowadr, colind, val, Ci, Li, Ji, Cj, Lj, Jj, kb_ij, tmp_bj);
+          }
+        }
+      })
+
+      mj_freeStack(d);
+    }
+  }
+
+  mj_freeStack(d);
+}
+
+
+// sort n ints in place, ascending (shell sort: short lists, no allocation)
+static void flexSortInts(int* a, int n) {
+  for (int gap = n >> 1; gap > 0; gap >>= 1) {
+    for (int i = gap; i < n; i++) {
+      int key = a[i], j = i;
+      while (j >= gap && a[j - gap] > key) {
+        a[j] = a[j - gap];
+        j -= gap;
+      }
+      a[j] = key;
+    }
+  }
+}
+
+
+// general articulated flex stiffness assembly: pulls back world 3x3 blocks via sparse point
+// Jacobians J_u^T * B_uw * J_w for arbitrary kinematic chains (standard and interpolated flexes).
+// With colind == NULL and colind_out != NULL, the CSR arrays are allocated from the arena once
+// the pattern is known and filled in the same pass (*colind_out, *val_out), so the pattern is
+// built once instead of once for the counts and again for the fill.
+static int flexStiff_assembleGeneral(const mjModel* m, mjData* d, int* rownnz, int* rowadr,
+                                     int* colind, mjtNum* val, mjtNum s1, mjtNum s2,
+                                     int flg_bend, int flg_stretch, const mjtNum* Krot,
+                                     int** colind_out, mjtNum** val_out) {
+  int nv = m->nv;
+  mj_markStack(d);
+
+  // collect participating welded bodies with at least 1 dof
+  int* bodyslot = mjSTACKALLOC(d, m->nbody, int);
+  for (int b = 0; b < m->nbody; b++) {
+    bodyslot[b] = -1;
+  }
+  for (int f = 0; f < m->nflex; f++) {
+    if (!mjd_flexStiff_activeGen(m, f, flg_bend, flg_stretch, 1)) {
+      continue;
+    }
+    for (int lv = 0; lv < m->flex_vertnum[f]; lv++) {
+      int raw_b = m->flex_vertbodyid[m->flex_vertadr[f] + lv];
+      if (raw_b >= 0) {
+        int b = m->body_weldid[raw_b];
+        if (m->body_dofnum[b] > 0) {
+          bodyslot[b] = 1;
+        }
+      }
+    }
+  }
+  if (Krot) {
+    for (int f = 0; f < m->nflex; f++) {
+      if (!mjd_flexInterp_processed(m, f)) {
+        continue;
+      }
+      const int* bodyid = m->flex_nodebodyid + m->flex_nodeadr[f];
+      for (int ln = 0; ln < m->flex_nodenum[f]; ln++) {
+        int raw_b = bodyid[ln];
+        if (raw_b >= 0) {
+          int b = m->body_weldid[raw_b];
+          if (m->body_dofnum[b] > 0) {
+            bodyslot[b] = 1;
+          }
+        }
+      }
+    }
+  }
+
+  int nbod = 0;
+  for (int b = 0; b < m->nbody; b++) {
+    if (bodyslot[b] > 0) {
+      bodyslot[b] = nbod++;
+    }
+  }
+  if (!nbod) {
+    mju_zeroInt(rownnz, nv);
+    if (rowadr) {
+      mju_zeroInt(rowadr, nv);
+    }
+    mj_freeStack(d);
+    return 0;
+  }
+
+  int* slotbody = mjSTACKALLOC(d, nbod, int);
+  for (int b = 0; b < m->nbody; b++) {
+    if (bodyslot[b] >= 0) {
+      slotbody[bodyslot[b]] = b;
+    }
+  }
+
+  int* vslot = mjSTACKALLOC(d, m->nflexvert > 0 ? m->nflexvert : 1, int);
+  for (int i = 0; i < m->nflexvert; i++) {
+    int raw_b = m->flex_vertbodyid[i];
+    vslot[i] = (raw_b >= 0) ? bodyslot[m->body_weldid[raw_b]] : -1;
+  }
+
+  int* nslot = NULL;
+  if (Krot) {
+    nslot = mjSTACKALLOC(d, m->nflexnode > 0 ? (int)m->nflexnode : 1, int);
+    for (int i = 0; i < m->nflexnode; i++) {
+      int raw_b = m->flex_nodebodyid[i];
+      nslot[i] = (raw_b >= 0) ? bodyslot[m->body_weldid[raw_b]] : -1;
+    }
+  }
+
+  // count stencil incidence per body slot (with duplicates)
+  int* ncand = mjSTACKALLOC(d, nbod, int);
+  mju_zeroInt(ncand, nbod);
+  for (int f = 0; f < m->nflex; f++) {
+    if (!mjd_flexStiff_activeGen(m, f, flg_bend, flg_stretch, 1)) {
+      continue;
+    }
+    int dim = m->flex_dim[f], nvrt = dim + 1;
+    if (flexRod_active(m, f)) {
+      const mjtNum* b = m->flex_bending + m->flex_bendingadr[f];
+      for (int h = 0; h < (int)b[0]; h++) {
+        const mjtNum* hinge = b + 1 + mjROD_HINGE_SIZE*h;
+        int nr = mj_rodHingeVert(hinge);
+        for (int i = 0; i < nr; i++) {
+          int si = vslot[m->flex_vertadr[f] + (int)hinge[i]];
+          if (si >= 0) ncand[si] += nr;
+        }
+      }
+      continue;
+    }
+    if (flg_bend && dim == 2 && m->flex_bendingadr[f] >= 0) {
+      for (int e = 0; e < m->flex_edgenum[f]; e++) {
+        const int* edge = m->flex_edge + 2*(e + m->flex_edgeadr[f]);
+        const int* flap = m->flex_edgeflap + 2*(e + m->flex_edgeadr[f]);
+        if (flap[1] == -1) continue;
+        int v[4] = {edge[0], edge[1], flap[0], flap[1]};
+        for (int i = 0; i < 4; i++) {
+          int si = vslot[m->flex_vertadr[f] + v[i]];
+          if (si >= 0) ncand[si] += 4;
+        }
+      }
+    }
+    if (flg_stretch && dim >= 2 && m->flex_stiffnessadr[f] >= 0 &&
+        m->flex_stiffness[m->flex_stiffnessadr[f]] != 0) {
+      const int* elem = m->flex_elem + m->flex_elemdataadr[f];
+      for (int t = 0; t < m->flex_elemnum[f]; t++) {
+        for (int i = 0; i < nvrt; i++) {
+          int si = vslot[m->flex_vertadr[f] + elem[(dim+1)*t + i]];
+          if (si >= 0) ncand[si] += nvrt;
+        }
+      }
+    }
+  }
+  if (Krot) {
+    for (int f = 0; f < m->nflex; f++) {
+      if (!mjd_flexInterp_processed(m, f)) {
+        continue;
+      }
+      FLEXINTERP_WALK(f, {
+        for (int i = 0; i < npe; i++) {
+          int si = nslot[m->flex_nodeadr[f] + gindices[i]];
+          if (si >= 0) ncand[si] += npe;
+        }
+      })
+    }
+  }
+
+  // gather candidate neighbor body slots
+  int* cadr = mjSTACKALLOC(d, nbod + 1, int);
+  cadr[0] = 0;
+  for (int s = 0; s < nbod; s++) {
+    cadr[s+1] = cadr[s] + ncand[s];
+  }
+  int* cand = mjSTACKALLOC(d, cadr[nbod] > 0 ? cadr[nbod] : 1, int);
+  mju_zeroInt(ncand, nbod);
+  for (int f = 0; f < m->nflex; f++) {
+    if (!mjd_flexStiff_activeGen(m, f, flg_bend, flg_stretch, 1)) {
+      continue;
+    }
+    int dim = m->flex_dim[f], nvrt = dim + 1;
+    if (flexRod_active(m, f)) {
+      const mjtNum* b = m->flex_bending + m->flex_bendingadr[f];
+      for (int h = 0; h < (int)b[0]; h++) {
+        const mjtNum* hinge = b + 1 + mjROD_HINGE_SIZE*h;
+        int nr = mj_rodHingeVert(hinge);
+        for (int i = 0; i < nr; i++) {
+          int si = vslot[m->flex_vertadr[f] + (int)hinge[i]];
+          if (si < 0) continue;
+          for (int j = 0; j < nr; j++) {
+            int sj = vslot[m->flex_vertadr[f] + (int)hinge[j]];
+            if (sj >= 0) cand[cadr[si] + ncand[si]++] = sj;
+          }
+        }
+      }
+      continue;
+    }
+    if (flg_bend && dim == 2 && m->flex_bendingadr[f] >= 0) {
+      for (int e = 0; e < m->flex_edgenum[f]; e++) {
+        const int* edge = m->flex_edge + 2*(e + m->flex_edgeadr[f]);
+        const int* flap = m->flex_edgeflap + 2*(e + m->flex_edgeadr[f]);
+        if (flap[1] == -1) continue;
+        int v[4] = {edge[0], edge[1], flap[0], flap[1]};
+        for (int i = 0; i < 4; i++) {
+          int si = vslot[m->flex_vertadr[f] + v[i]];
+          if (si < 0) continue;
+          for (int j = 0; j < 4; j++) {
+            int sj = vslot[m->flex_vertadr[f] + v[j]];
+            if (sj >= 0) cand[cadr[si] + ncand[si]++] = sj;
+          }
+        }
+      }
+    }
+    if (flg_stretch && dim >= 2 && m->flex_stiffnessadr[f] >= 0 &&
+        m->flex_stiffness[m->flex_stiffnessadr[f]] != 0) {
+      const int* elem = m->flex_elem + m->flex_elemdataadr[f];
+      for (int t = 0; t < m->flex_elemnum[f]; t++) {
+        const int* vert = elem + (dim+1)*t;
+        for (int i = 0; i < nvrt; i++) {
+          int si = vslot[m->flex_vertadr[f] + vert[i]];
+          if (si < 0) continue;
+          for (int j = 0; j < nvrt; j++) {
+            int sj = vslot[m->flex_vertadr[f] + vert[j]];
+            if (sj >= 0) cand[cadr[si] + ncand[si]++] = sj;
+          }
+        }
+      }
+    }
+  }
+  if (Krot) {
+    for (int f = 0; f < m->nflex; f++) {
+      if (!mjd_flexInterp_processed(m, f)) {
+        continue;
+      }
+      FLEXINTERP_WALK(f, {
+        for (int i = 0; i < npe; i++) {
+          int si = nslot[m->flex_nodeadr[f] + gindices[i]];
+          if (si < 0) continue;
+          for (int j = 0; j < npe; j++) {
+            int sj = nslot[m->flex_nodeadr[f] + gindices[j]];
+            if (sj >= 0) cand[cadr[si] + ncand[si]++] = sj;
+          }
+        }
+      })
+    }
+  }
+
+  // sort and deduplicate neighbor body slots per slot
+  int* nadr = mjSTACKALLOC(d, nbod + 1, int);
+  int* neigh = mjSTACKALLOC(d, cadr[nbod] > 0 ? cadr[nbod] : 1, int);
+  nadr[0] = 0;
+  for (int s = 0; s < nbod; s++) {
+    int* c = cand + cadr[s];
+    int n = ncand[s];
+    flexSortInts(c, n);
+    int nn = 0;
+    for (int i = 0; i < n; i++) {
+      if (nn == 0 || neigh[nadr[s] + nn - 1] != c[i]) {
+        neigh[nadr[s] + nn++] = c[i];
+      }
+    }
+    nadr[s+1] = nadr[s] + nn;
+  }
+
+  // ancestor dof chain per body slot, plus transpose map from dof r -> slots containing r
+  int* chain_tmp = mjSTACKALLOC(d, nv > 0 ? nv : 1, int);
+  int* badr = mjSTACKALLOC(d, nbod + 1, int);
+  badr[0] = 0;
+  int max_chain = 1;
+  for (int s = 0; s < nbod; s++) {
+    int len = mj_bodyChain(m, slotbody[s], chain_tmp);
+    badr[s+1] = badr[s] + len;
+    if (len > max_chain) {
+      max_chain = len;
+    }
+  }
+  int* bchain = mjSTACKALLOC(d, badr[nbod] > 0 ? badr[nbod] : 1, int);
+  int* rbadr = mjSTACKALLOC(d, nv + 1, int);
+  mju_zeroInt(rbadr, nv + 1);
+  for (int s = 0; s < nbod; s++) {
+    mj_bodyChain(m, slotbody[s], bchain + badr[s]);
+    if (nadr[s] == nadr[s+1]) {
+      continue;
+    }
+    for (int k = badr[s]; k < badr[s+1]; k++) {
+      rbadr[bchain[k] + 1]++;
+    }
+  }
+  for (int r = 0; r < nv; r++) {
+    rbadr[r+1] += rbadr[r];
+  }
+  int* rbcur = mjSTACKALLOC(d, nv > 0 ? nv : 1, int);
+  for (int r = 0; r < nv; r++) {
+    rbcur[r] = rbadr[r];
+  }
+  int* rbody = mjSTACKALLOC(d, rbadr[nv] > 0 ? rbadr[nv] : 1, int);
+  for (int s = 0; s < nbod; s++) {
+    if (nadr[s] == nadr[s+1]) {
+      continue;
+    }
+    for (int k = badr[s]; k < badr[s+1]; k++) {
+      rbody[rbcur[bchain[k]]++] = s;
+    }
+  }
+
+  // count unique columns per dof row
+  int* smark = mjSTACKALLOC(d, nbod, int);
+  int* cmark = mjSTACKALLOC(d, nv > 0 ? nv : 1, int);
+  for (int s = 0; s < nbod; s++) smark[s] = -1;
+  for (int r = 0; r < nv; r++) cmark[r] = -1;
+
+  int nnz = 0;
+  for (int r = 0; r < nv; r++) {
+    int cnt = 0;
+    for (int p = rbadr[r]; p < rbadr[r+1]; p++) {
+      int si = rbody[p];
+      for (int q = nadr[si]; q < nadr[si+1]; q++) {
+        int sj = neigh[q];
+        if (smark[sj] == r) continue;
+        smark[sj] = r;
+        for (int k = badr[sj]; k < badr[sj+1]; k++) {
+          int col = bchain[k];
+          if (cmark[col] == r) continue;
+          cmark[col] = r;
+          cnt++;
+        }
+      }
+    }
+    rownnz[r] = cnt;
+    nnz += cnt;
+  }
+  if (rowadr) {
+    if (nv > 0) {
+      rowadr[0] = 0;
+    }
+    for (int r = 1; r < nv; r++) {
+      rowadr[r] = rowadr[r-1] + rownnz[r-1];
+    }
+  }
+
+  // single pass: allocate the CSR arrays now that the pattern is known
+  if (!colind && colind_out) {
+    *colind_out = NULL;
+    *val_out = NULL;
+    if (nnz) {
+      colind = mj_arenaAllocByte(d, sizeof(int)*(size_t)nnz, _Alignof(int));
+      val = mj_arenaAllocByte(d, sizeof(mjtNum)*(size_t)nnz, _Alignof(mjtNum));
+      if (!colind || !val) {
+        mjERROR("arena overflow in general flex stiffness assembly");
+      }
+      *colind_out = colind;
+      *val_out = val;
+    }
+  }
+
+  // phase 1: structure counts only
+  if (!colind) {
+    mj_freeStack(d);
+    return nnz;
+  }
+
+  // fill and sort column indices per row
+  for (int s = 0; s < nbod; s++) smark[s] = -1;
+  for (int r = 0; r < nv; r++) cmark[r] = -1;
+  for (int r = 0; r < nv; r++) {
+    if (!rownnz[r]) {
+      continue;
+    }
+    int* rc = colind + rowadr[r];
+    int cnt = 0;
+    for (int p = rbadr[r]; p < rbadr[r+1]; p++) {
+      int si = rbody[p];
+      for (int q = nadr[si]; q < nadr[si+1]; q++) {
+        int sj = neigh[q];
+        if (smark[sj] == r) continue;
+        smark[sj] = r;
+        for (int k = badr[sj]; k < badr[sj+1]; k++) {
+          int col = bchain[k];
+          if (cmark[col] == r) continue;
+          cmark[col] = r;
+          rc[cnt++] = col;
+        }
+      }
+    }
+    flexSortInts(rc, cnt);
+  }
+
+  // structure only
+  if (!val) {
+    mj_freeStack(d);
+    return nnz;
+  }
+  mju_zero(val, nnz);
+  flexStiff_valuesGeneral(m, d, rownnz, rowadr, colind, val, s1, s2, flg_bend, flg_stretch,
+                          Krot, vslot, nslot, nadr, badr, bchain, max_chain);
+
+  mj_freeStack(d);
+  return nnz;
+}
+
+
+int mjd_flexStiff_assembleGen(const mjModel* m, mjData* d, int* rownnz, int* rowadr,
+                              int* colind, mjtNum* val, mjtNum s1, mjtNum s2,
+                              int flg_bend, int flg_stretch, const mjtNum* Krot,
+                              int flg_general) {
+  if (!flg_general) {
+    return mjd_flexStiff_assemble(m, d, rownnz, rowadr, colind, val, s1, s2,
+                                  flg_bend, flg_stretch, Krot);
+  }
+  return flexStiff_assembleGeneral(m, d, rownnz, rowadr, colind, val, s1, s2,
+                                   flg_bend, flg_stretch, Krot, NULL, NULL);
+}
+
+
+int mjd_flexStiff_assembleGenArena(const mjModel* m, mjData* d, int* rownnz, int* rowadr,
+                                   int** colind, mjtNum** val, mjtNum s1, mjtNum s2,
+                                   int flg_bend, int flg_stretch, const mjtNum* Krot) {
+  return flexStiff_assembleGeneral(m, d, rownnz, rowadr, NULL, NULL, s1, s2,
+                                   flg_bend, flg_stretch, Krot, colind, val);
+}
+#undef FLEXINTERP_WALK
+
+
+// number of dofs in the kinematic chain of body b (b and its ancestors), as mj_bodyChain
+static int flexChainLength(const mjModel* m, int b) {
+  int len = 0;
+  for (int j = m->body_dofadr[b] + m->body_dofnum[b] - 1; j >= 0; j = m->dof_parentid[j]) {
+    len++;
+  }
+  return len;
+}
+
+
+size_t mjd_flexStiff_assembleGenStack(const mjModel* m, int flg_bend, int flg_stretch,
+                                      int flg_interp) {
+  // stencil incidences, counted with duplicates as the candidate lists store them
+  size_t ncand = 0;
+  for (int f = 0; f < m->nflex; f++) {
+    if (!mjd_flexStiff_activeGen(m, f, flg_bend, flg_stretch, 1)) {
+      continue;
+    }
+    if (flexRod_active(m, f)) {
+      const mjtNum* b = m->flex_bending + m->flex_bendingadr[f];
+      for (int h = 0; h < (int)b[0]; h++) {
+        size_t nr = mj_rodHingeVert(b + 1 + mjROD_HINGE_SIZE*h);
+        ncand += nr*nr;
+      }
+      continue;
+    }
+    size_t nvrt = m->flex_dim[f] + 1;
+    if (flg_bend && m->flex_dim[f] == 2 && m->flex_bendingadr[f] >= 0) {
+      ncand += 16*(size_t)m->flex_edgenum[f];
+    }
+    if (flg_stretch && m->flex_dim[f] >= 2 && m->flex_stiffnessadr[f] >= 0 &&
+        m->flex_stiffness[m->flex_stiffnessadr[f]] != 0) {
+      ncand += nvrt*nvrt*(size_t)m->flex_elemnum[f];
+    }
+  }
+  if (flg_interp) {
+    for (int f = 0; f < m->nflex; f++) {
+      if (!mjd_flexInterp_processed(m, f)) {
+        continue;
+      }
+      int order = m->flex_interp[f] < 0 ? -m->flex_interp[f] : m->flex_interp[f];
+      const int* cn = m->flex_cellnum + 3*f;
+      size_t npe, nelem;
+      if (m->flex_interp[f] < 0) {
+        npe = (order + 1)*(order + 1);
+        nelem = 2*((size_t)cn[1]*cn[2] + (size_t)cn[0]*cn[2] + (size_t)cn[0]*cn[1]);
+      } else {
+        npe = (order + 1)*(order + 1)*(order + 1);
+        nelem = (size_t)cn[0]*cn[1]*cn[2];
+      }
+      ncand += npe*npe*nelem;
+    }
+  }
+
+  // chain lengths of the welded bodies that can hold a slot
+  size_t nchain = 0;
+  for (int b = 1; b < m->nbody; b++) {
+    if (m->body_weldid[b] == b && m->body_dofnum[b] > 0) {
+      nchain += flexChainLength(m, b);
+    }
+  }
+
+  // the int arrays of the pattern passes, in allocation order
+  size_t nb = m->nbody, nv = m->nv;
+  size_t sizes[] = {nb, nb, m->nflexvert, flg_interp ? m->nflexnode : 0, nb, nb + 1, ncand,
+                    nb + 1, ncand, nv, nb + 1, nchain, nv + 1, nv, nchain, nb, nv};
+  size_t bytes = mj_stackFrameBytes();
+  for (int i = 0; i < (int)(sizeof(sizes)/sizeof(sizes[0])); i++) {
+    bytes += mj_stackBytes(sizeof(int)*(sizes[i] > 0 ? sizes[i] : 1), _Alignof(int));
+  }
+  return bytes;
 }
 
 

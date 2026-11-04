@@ -2424,17 +2424,6 @@ void mj_checkDiscrete(const mjModel* m) {
               "use <elasticity> or <edge equality> instead");
     }
   }
-  if (m->opt.solver == mjSOL_NEWTON) {
-    for (int f=0; f < m->nflex; f++) {
-      if (!m->flex_interp[f] && mj_effFlexStiffPossible(m, f) && !mj_flexSimple(m, f)) {
-        mjERROR("discrete integrator: flex with general attachments requires solver='CG'");
-      }
-    }
-  }
-  if (m->opt.solver == mjSOL_NEWTON && !mjd_flexInterpAssemblable(m)) {
-    mjERROR("discrete integrator: interpolated flex with non-simple nodes not yet "
-            "supported with the Newton solver");
-  }
   if (m->opt.solver == mjSOL_PGS || m->opt.noslip_iterations > 0) {
     // the dual solvers assemble the constraint-space AR from an explicit factorization of
     // the metric, and the only factor is the qH backbone. Under PGS the tendon and

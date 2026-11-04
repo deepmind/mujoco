@@ -4612,13 +4612,15 @@ and cross-section given by :ref:`section<flex-elasticity-section>` (see :ref:`Ro
   and ``RK4``; ``implicit`` and ``implicitfast`` are not supported, nor are :ref:`dof<body-flexcomp-dof>` **trilinear**
   and **quadratic**.
 
-Non-interpolated flex elasticity supports vertices attached to articulated bodies, including jointless welded children.
-A vertex pinned to a moving body follows that body's motion and applies its reaction force and torque to the body.
-With the :ref:`discrete<option-integrator>` integrator, the default :ref:`solver<option-solver>` **Newton** supports
-fixed attachments and independent slide bodies with local positive X, Y, and Z joints in that order and fixed ancestors
-(for both standard and interpolated flexes); use **CG** for general articulated attachments. Mocap attachments are not
-supported for non-rigid flexes with elasticity because mocap poses do not provide velocities for elastic damping, except
-for 1D flexes with zero :ref:`damping<flex-elasticity-damping>`.
+Flex elasticity (both standard and interpolated) supports vertices or nodes attached to articulated bodies, including
+jointless welded children, under both **Newton** and **CG** with the :ref:`discrete<option-integrator>` integrator.
+A vertex or node pinned to a moving body follows that body's motion and applies its reaction force and torque to the
+body. **Newton** is fastest when every vertex and node is fixed or sits on a body with three slide joints along the
+world axes: their stiffness is then assembled as 3x3 vertex blocks. Once any flex in the model has another kind of
+attachment, the stiffness of all its flexes is pulled back through the attachment Jacobians, which costs more per step.
+MuJoCo Warp does not yet support articulated attachments with **Newton**; use **CG** there. Mocap attachments are not
+supported for non-rigid flexes with elasticity because mocap poses do not provide velocities for elastic damping,
+except for 1D flexes with zero :ref:`damping<flex-elasticity-damping>`.
 
 .. _flex-elasticity-young:
 

@@ -122,6 +122,17 @@ MJAPI int mjd_flexStiff_assemble(const mjModel* m, mjData* d, int* rownnz, int* 
                                  int* colind, mjtNum* val, mjtNum s1, mjtNum s2,
                                  int flg_bend, int flg_stretch, const mjtNum* Krot);
 
+// flex stiffness (s1 + s2*damping)*K as a dof-level CSR in two passes: pass 1 (colind == NULL)
+// fills rownnz (and rowadr, if given) and returns nnz; pass 2 fills colind (and val, if given)
+// with sorted columns. With flg_general == 0 this is mjd_flexStiff_assemble: simple flexes only,
+// as 3x3 vertex blocks. With flg_general == 1 every active flex (standard and, given Krot,
+// interpolated) is pulled back through the sparse point Jacobians of its attachment bodies,
+// J_u'*K_uw*J_w, so vertices and nodes may sit on arbitrary kinematic chains.
+MJAPI int mjd_flexStiff_assembleGen(const mjModel* m, mjData* d, int* rownnz, int* rowadr,
+                                    int* colind, mjtNum* val, mjtNum s1, mjtNum s2,
+                                    int flg_bend, int flg_stretch, const mjtNum* Krot,
+                                    int flg_general);
+
 // can all interp flexes be assembled to dof-level CSR? (centered fast path everywhere)
 MJAPI mjtBool mjd_flexInterpAssemblable(const mjModel* m);
 
@@ -146,6 +157,18 @@ mjtBool mjd_flexPassiveContact_any(const mjModel* m);
 
 // does this standard flex contribute implicit stiffness under the given term flags?
 mjtBool mjd_flexStiff_active(const mjModel* m, int f, int flg_bend, int flg_stretch);
+mjtBool mjd_flexStiff_activeGen(const mjModel* m, int f, int flg_bend, int flg_stretch,
+                                int flg_general);
+
+// mjd_flexStiff_assembleGen with flg_general == 1 in one pass: fills rownnz and rowadr (nv),
+// allocates colind and val (nnz) from the arena and fills them; returns nnz
+int mjd_flexStiff_assembleGenArena(const mjModel* m, mjData* d, int* rownnz, int* rowadr,
+                                   int** colind, mjtNum** val, mjtNum s1, mjtNum s2,
+                                   int flg_bend, int flg_stretch, const mjtNum* Krot);
+
+// upper bound on the stack bytes of the pattern passes of the general assembly (no values)
+size_t mjd_flexStiff_assembleGenStack(const mjModel* m, int flg_bend, int flg_stretch,
+                                      int flg_interp);
 
 // is this interpolated flex processed by mjd_flexInterp_mul?
 mjtBool mjd_flexInterp_processed(const mjModel* m, int f);

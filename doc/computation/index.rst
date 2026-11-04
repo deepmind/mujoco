@@ -733,8 +733,6 @@ Discrete-time (``discrete``)
         :ref:`elasticity<flex-elasticity>` or :ref:`edge equality<flexcomp-edge-equality>` instead).
       - :ref:`Sleep<option-flag-sleep>` without :ref:`islands<option-flag-island>` (island grouping is required
         to keep metric-coupled trees awake or asleep together).
-      - Interpolated flexes (e.g. flexcomp ``dof="trilinear"``) whose nodes are attached to arbitrary moving bodies
-        under the ``Newton`` solver (these models require the ``CG`` solver).
 
       The following approximations and fallbacks apply under ``discrete``:
 

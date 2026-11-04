@@ -139,7 +139,7 @@ typedef struct mjData_ {
   int     nJ;                // number of non-zeros in constraint Jacobian
 
   // effective metric: per-step activity flag and sizes, set by mj_effBuild
-  int     efm_active;        // implicit effective metric M+K is active (see mj_effBuild)
+  int     efm_active;        // effective metric M+K: 0 off, 1 on, 2 on with general flex CSR
   int     nefmK;             // number of non-zeros in effective-stiffness CSR
   int     nefmcon;           // packed length of the contact rank-1 rows
   int     nefmT;             // number of tendons with terms in the metric

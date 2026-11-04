@@ -5466,9 +5466,8 @@ TEST_F(ForwardTest, DiscreteUnsupportedOptions) {
   EXPECT_THAT(forward_error(model_f.get(), data_f.get()),
               testing::HasSubstr("not yet supported with flex"));
 
-  // interpolated flex anchored to a moving body: Newton needs CSR assembly of
-  // the flex terms, only possible for simple or fixed nodes; such models
-  // require the CG solver
+  // interpolated flex anchored to a moving body: supported under both CG and
+  // Newton via general DOF-level CSR assembly
   static const char* const kXmlInterp = R"(
   <mujoco>
     <option integrator="discrete" solver="CG"/>
@@ -5492,8 +5491,7 @@ TEST_F(ForwardTest, DiscreteUnsupportedOptions) {
   model_i->opt.solver = mjSOL_CG;
   EXPECT_EQ(forward_error(model_i.get(), data_i.get()), "");
   model_i->opt.solver = mjSOL_NEWTON;
-  EXPECT_THAT(forward_error(model_i.get(), data_i.get()),
-              testing::HasSubstr("interpolated flex with non-simple nodes"));
+  EXPECT_EQ(forward_error(model_i.get(), data_i.get()), "");
 
   model->opt.noslip_iterations = 0;
   model->opt.enableflags |= mjENBL_SLEEP;
@@ -5645,6 +5643,386 @@ TEST_F(ForwardTest, DiscreteNewtonMatchesCG) {
       }
       EXPECT_LT(mju_norm(data->qvel, nv), 1e4);
     }
+  }
+}
+
+TEST_F(ForwardTest, DiscreteArticulatedFlexNewtonMatchesCG) {
+  static const char* const kXmls[] = {
+      // articulated 1D elastic rod pinned to a hinged arm in contact
+      R"(
+  <mujoco>
+    <option timestep="0.001" integrator="discrete" solver="CG" tolerance="1e-14" iterations="2000"/>
+    <worldbody>
+      <geom type="plane" size="2 2 .1"/>
+      <body name="arm" pos="0 0 .06">
+        <joint name="hinge" type="hinge" axis="0 1 0" damping=".2"/>
+        <geom type="sphere" size=".03" mass=".5"/>
+        <flexcomp name="rod" type="grid" count="5 1 1" spacing=".05 .05 .05"
+                  radius=".01" dim="1" mass=".5" pos="0 0 -.02">
+          <pin id="0"/>
+          <contact selfcollide="none"/>
+          <edge equality="true"/>
+          <elasticity young="5e4" damping=".05"/>
+        </flexcomp>
+      </body>
+    </worldbody>
+  </mujoco>
+  )",
+      // articulated clamped rod (per-edge twist dofs) on a ball-jointed arm in
+      // contact
+      R"(
+  <mujoco>
+    <option timestep="0.001" integrator="discrete" solver="CG" tolerance="1e-14" iterations="2000"/>
+    <worldbody>
+      <geom type="plane" size="2 2 .1"/>
+      <body name="arm" pos="0 0 .06">
+        <joint type="ball" damping=".2"/>
+        <geom type="sphere" size=".03" mass=".5"/>
+        <flexcomp name="rod" type="grid" count="6 1 1" spacing=".05 .05 .05"
+                  radius=".01" dim="1" mass=".5" pos="0 0 -.05">
+          <pin id="0 1"/>
+          <contact selfcollide="none"/>
+          <elasticity young="5e4" poisson=".25" damping=".05"/>
+        </flexcomp>
+      </body>
+    </worldbody>
+  </mujoco>
+  )",
+      // articulated 2D cloth pinned to a 2-link arm in contact, with a second
+      // separate island
+      R"(
+  <mujoco>
+    <option timestep="0.001" integrator="discrete" solver="CG" tolerance="1e-14" iterations="2000"/>
+    <worldbody>
+      <geom type="plane" size="2 2 .1"/>
+      <body name="link1" pos="0 0 .12">
+        <joint type="hinge" axis="0 1 0" damping=".1"/>
+        <geom type="sphere" size=".03" mass=".5"/>
+        <body name="link2" pos=".1 0 0">
+          <joint type="ball" damping=".1"/>
+          <geom type="sphere" size=".03" mass=".5"/>
+          <flexcomp name="cloth" type="grid" count="4 4 1" spacing=".05 .05 .05"
+                    radius=".008" dim="2" mass="1" pos="0 0 -.08" dof="full">
+            <pin id="0 3"/>
+            <contact selfcollide="none"/>
+            <elasticity young="2e3" poisson=".2" damping=".1" elastic2d="both" thickness=".01"/>
+          </flexcomp>
+        </body>
+      </body>
+      <body name="other_island" pos="1 0 .04">
+        <freejoint/>
+        <geom type="sphere" size=".05" mass=".5"/>
+      </body>
+    </worldbody>
+  </mujoco>
+  )",
+      // articulated 3D solid pinned to a hinged body in contact
+      R"(
+  <mujoco>
+    <option timestep="0.001" integrator="discrete" solver="CG" tolerance="1e-14" iterations="2000"/>
+    <worldbody>
+      <geom type="plane" size="2 2 .1"/>
+      <body name="arm" pos="0 0 .082">
+        <joint type="hinge" axis="0 1 0" damping=".2"/>
+        <geom type="sphere" pos=".02 0 .03" size=".02" mass=".5"/>
+        <flexcomp name="solid" type="grid" count="2 2 2" spacing=".05 .05 .05"
+                  radius=".008" dim="3" mass="1" pos="0 0 -.05" dof="full">
+          <pin id="1 3"/>
+          <contact selfcollide="none"/>
+          <elasticity young="5e3" poisson=".25" damping=".1"/>
+        </flexcomp>
+      </body>
+    </worldbody>
+  </mujoco>
+  )",
+      // articulated trilinear and shell interpolated flexes pinned to a moving
+      // body in contact
+      R"(
+  <mujoco>
+    <option timestep="0.001" integrator="discrete" solver="CG" tolerance="1e-14" iterations="2000"/>
+    <worldbody>
+      <geom type="plane" size="2 2 .1"/>
+      <body name="arm" pos="0 0 .13">
+        <joint type="hinge" axis="0 1 0" damping=".2"/>
+        <geom type="sphere" pos=".02 0 .04" size=".02" mass=".5"/>
+        <flexcomp name="tri" type="grid" count="3 3 3" spacing=".05 .05 .05"
+                  radius=".008" dim="3" mass="1" pos="0 0 -.074" dof="trilinear">
+          <pin id="2"/>
+          <contact selfcollide="none"/>
+          <elasticity young="5e3" poisson=".2" damping=".1"/>
+        </flexcomp>
+        <flexcomp name="shell" type="grid" count="4 4 4" spacing=".04 .04 .04"
+                  cellcount="1 2 2" radius=".008" dim="3" mass="1"
+                  pos=".25 0 -.064" dof="trilinear">
+          <pin id="2"/>
+          <contact selfcollide="none"/>
+          <elasticity young="5e3" poisson=".2" damping=".1"
+                      elastic2d="stretch" thickness=".01"/>
+        </flexcomp>
+      </body>
+    </worldbody>
+  </mujoco>
+  )",
+      // articulated quadratic interpolated flex pinned to a moving body in
+      // contact
+      R"(
+  <mujoco>
+    <option timestep="0.001" integrator="discrete" solver="CG" tolerance="1e-14" iterations="2000"/>
+    <worldbody>
+      <geom type="plane" size="2 2 .1"/>
+      <body name="arm" pos="0 0 .13">
+        <joint type="hinge" axis="0 1 0" damping=".2"/>
+        <geom type="sphere" pos=".02 0 .04" size=".02" mass=".5"/>
+        <flexcomp name="quad" type="grid" count="3 3 3" spacing=".05 .05 .05"
+                  cellcount="1 1 1" radius=".008" dim="3" mass="1"
+                  pos="0 0 -.074" dof="quadratic">
+          <pin id="2"/>
+          <contact selfcollide="none"/>
+          <elasticity young="5e3" poisson=".2" damping=".1"/>
+        </flexcomp>
+      </body>
+    </worldbody>
+  </mujoco>
+  )",
+  };
+
+  for (size_t xml_idx = 0; xml_idx < std::size(kXmls); ++xml_idx) {
+#ifdef mjUSESINGLE
+    // in single precision, CG diverges on a rod clamped to a moving body with
+    // per-edge twist dofs, independently of the articulated assembly
+    if (xml_idx == 1) continue;
+#endif
+    const char* xml = kXmls[xml_idx];
+    char error[1024];
+    MjModelPtr model = LoadModelFromString(xml, error, sizeof(error));
+    ASSERT_THAT(model.get(), NotNull()) << error;
+    MjDataPtr data = MakeData(model);
+    int nv = model->nv;
+
+    // rods carry per-edge twist dofs, coupled to the articulated vertices
+    if (mj_name2id(model.get(), mjOBJ_FLEX, "rod") >= 0) {
+      EXPECT_GE(mj_name2id(model.get(), mjOBJ_JOINT, "rod_twist"), 0)
+          << "xml " << xml_idx;
+    }
+
+    for (mjtCone cone : {mjCONE_PYRAMIDAL, mjCONE_ELLIPTIC}) {
+      model->opt.cone = cone;
+      model->opt.solver = mjSOL_CG;
+
+      mj_resetData(model.get(), data.get());
+      for (int i = 0; i < 20; i++) {
+        mj_step(model.get(), data.get());
+      }
+
+      mj_forward(model.get(), data.get());
+      EXPECT_GT(data->ncon, 0) << "xml " << xml_idx;
+      EXPECT_GT(data->nefc, 0) << "xml " << xml_idx;
+      int nisl = data->nisland > 0 ? data->nisland : 1;
+#ifndef mjUSESINGLE
+      // the 1e-14 CG tolerance is only reachable in double precision
+      for (int isl = 0; isl < nisl; isl++) {
+        EXPECT_LT(data->solver_niter[isl], model->opt.iterations);
+      }
+#endif
+      std::vector<mjtNum> qacc_cg(data->qacc, data->qacc + nv);
+      std::vector<mjtNum> smooth_cg(data->qacc_smooth, data->qacc_smooth + nv);
+
+      model->opt.solver = mjSOL_NEWTON;
+      mj_forward(model.get(), data.get());
+      EXPECT_GT(data->nefmK, 0);
+      EXPECT_EQ(data->efm_active, 2);
+      // dof 0 is the joint of the arm carrying the flex: the articulated
+      // pull-back is assembled
+      EXPECT_GT(data->efm_K_rownnz[0], 0) << "xml " << xml_idx;
+      for (int isl = 0; isl < nisl; isl++) {
+        EXPECT_LT(data->solver_niter[isl], 25);
+      }
+
+      mjtNum scale = mju_norm(qacc_cg.data(), nv) / mju_sqrt((mjtNum)nv) + 1;
+      for (int i = 0; i < nv; i++) {
+        EXPECT_THAT(data->qacc_smooth[i],
+                    MjNear(smooth_cg[i], 1e-8 * scale, 4e-3 * scale))
+            << "xml " << xml_idx << " cone " << cone << " dof " << i;
+        EXPECT_THAT(data->qacc[i],
+                    MjNear(qacc_cg[i], 1e-6 * scale, 1e-4 * scale))
+            << "xml " << xml_idx << " cone " << cone << " dof " << i;
+      }
+
+      for (int i = 0; i < 100; i++) {
+        mj_step(model.get(), data.get());
+      }
+      EXPECT_LT(mju_norm(data->qvel, nv), 1e4);
+    }
+  }
+}
+
+// Newton with an articulated cloth under the IPC contact flag and under sleep:
+// both paths now reach the general flex assembly, so it must step stably and
+// keep the articulated rows. IPC accepts pins on slide chains only; a single
+// oblique slide is still a general (non-simple) attachment.
+TEST_F(ForwardTest, DiscreteArticulatedFlexNewtonIpcAndSleep) {
+  // sleep: a cloth pinned to a hinged arm
+  static const char* const kSleepXml = R"(
+  <mujoco>
+    <option timestep="0.002" integrator="discrete" solver="Newton" iterations="400">
+      <flag sleep="enable"/>
+    </option>
+    <worldbody>
+      <geom type="plane" size="1 1 .1"/>
+      <body name="arm" pos="0 0 .12">
+        <joint type="hinge" axis="0 1 0" damping=".2"/>
+        <geom type="sphere" size=".02" pos=".02 0 .03" mass=".3"/>
+        <flexcomp name="cloth" type="grid" dim="2" count="5 5 1" spacing=".04 .04 1"
+                  radius=".004" mass=".1" pos="0 0 -.05">
+          <pin id="0 4"/>
+          <elasticity young="1e5" poisson=".2" thickness="2e-3" elastic2d="both"
+                      damping="1e-4"/>
+        </flexcomp>
+      </body>
+    </worldbody>
+  </mujoco>
+  )";
+
+  // IPC: free vertices must not be under jointed bodies and pins must ride
+  // slide chains, so the patch has three free vertices and one on a jointless
+  // child of a body on an oblique slide. There is no plane: the slide would
+  // drive the pinned vertex into it, which the IPC barrier cannot resolve.
+  static const char* const kIpcXml = R"(
+  <mujoco>
+    <option timestep="0.002" integrator="discrete" solver="Newton" iterations="400">
+      <flag ipc="enable"/>
+    </option>
+    <worldbody>
+      <body name="v0" pos="0 0 .1">
+        <joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/>
+        <joint type="slide" axis="0 0 1"/>
+        <inertial pos="0 0 0" mass=".05" diaginertia="1e-5 1e-5 1e-5"/>
+      </body>
+      <body name="v1" pos=".1 0 .1">
+        <joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/>
+        <joint type="slide" axis="0 0 1"/>
+        <inertial pos="0 0 0" mass=".05" diaginertia="1e-5 1e-5 1e-5"/>
+      </body>
+      <body name="v2" pos="0 .1 .1">
+        <joint type="slide" axis="1 0 0"/><joint type="slide" axis="0 1 0"/>
+        <joint type="slide" axis="0 0 1"/>
+        <inertial pos="0 0 0" mass=".05" diaginertia="1e-5 1e-5 1e-5"/>
+      </body>
+      <body name="carrier" pos=".1 .1 .1">
+        <joint type="slide" axis="1 0 1" damping=".2"/>
+        <inertial pos="0 0 0" mass=".1" diaginertia="1e-4 1e-4 1e-4"/>
+        <body name="v3"/>
+      </body>
+    </worldbody>
+    <deformable>
+      <flex name="patch" dim="2" body="v0 v1 v2 v3" element="0 1 2 1 3 2" radius=".004">
+        <elasticity young="1e5" poisson=".2" thickness="2e-3" elastic2d="both"
+                    damping="1e-4"/>
+      </flex>
+    </deformable>
+  </mujoco>
+  )";
+
+  for (const char* xml : {kSleepXml, kIpcXml}) {
+    const char* name = xml == kIpcXml ? "ipc" : "sleep";
+    char error[1024];
+    MjModelPtr model = LoadModelFromString(xml, error, sizeof(error));
+    ASSERT_THAT(model.get(), NotNull()) << name << ": " << error;
+    MjDataPtr data = MakeData(model);
+    int nv = model->nv;
+
+    for (int i = 0; i < 300; i++) {
+      mj_step(model.get(), data.get());
+      ASSERT_FALSE(data->warning[mjWARN_BADQACC].number)
+          << name << ": diverged at step " << i;
+    }
+    mj_forward(model.get(), data.get());
+    EXPECT_EQ(data->efm_active, 2) << name;
+    EXPECT_GT(data->nefmK, 0) << name;
+    EXPECT_LT(mju_norm(data->qvel, nv), 1e2) << name;
+  }
+}
+
+TEST_F(ForwardTest, DiscreteArticulatedFlexSolverFallbackAndCopy) {
+  static const char* const kXml = R"(
+  <mujoco>
+    <option timestep="0.001" integrator="discrete" solver="CG" tolerance="1e-14" iterations="500"/>
+    <worldbody>
+      <geom type="plane" size="2 2 .1"/>
+      <body name="arm" pos="0 0 .08">
+        <joint type="ball" damping=".1"/>
+        <geom type="sphere" size=".03" mass=".5"/>
+        <flexcomp name="cloth" type="grid" count="3 3 1" spacing=".05 .05 .05"
+                  radius=".008" dim="2" mass=".2" pos="0 0 -.06" dof="full">
+          <pin id="0 2"/>
+          <contact selfcollide="none"/>
+          <elasticity young="3e3" poisson=".2" damping=".1" elastic2d="both" thickness=".01"/>
+        </flexcomp>
+      </body>
+      <body name="other" pos="1 0 .04">
+        <freejoint/>
+        <geom type="sphere" size=".05" mass=".4"/>
+      </body>
+    </worldbody>
+  </mujoco>
+  )";
+
+  char error[1024];
+  MjModelPtr model = LoadModelFromString(kXml, error, sizeof(error));
+  ASSERT_THAT(model.get(), NotNull()) << error;
+  MjDataPtr data = MakeData(model);
+  int nv = model->nv;
+
+  for (int i = 0; i < 15; i++) {
+    mj_step(model.get(), data.get());
+  }
+
+  std::vector<mjtNum> qacc_cg_noisland;
+  for (int use_island : {0, 1}) {
+    if (use_island) {
+      model->opt.disableflags &= ~mjDSBL_ISLAND;
+    } else {
+      model->opt.disableflags |= mjDSBL_ISLAND;
+    }
+
+    model->opt.solver = mjSOL_CG;
+    mj_forward(model.get(), data.get());
+    EXPECT_GT(data->nefc, 0) << "use_island=" << use_island;
+    if (use_island) {
+      // the island CG path applies the matrix-free operators per island
+      // (flexMatrixFree)
+      EXPECT_GT(data->nisland, 0);
+    }
+    std::vector<mjtNum> qacc_cg(data->qacc, data->qacc + nv);
+    mjtNum scale = mju_norm(qacc_cg.data(), nv) / mju_sqrt((mjtNum)nv) + 1;
+    if (use_island) {
+      // island and monolithic CG solve the same problem, to CG's
+      // sqrt(tolerance) accuracy
+      EXPECT_THAT(qacc_cg, Pointwise(MjNear(1e-6 * scale, 1e-3 * scale),
+                                     qacc_cg_noisland));
+    } else {
+      qacc_cg_noisland = qacc_cg;
+    }
+
+    // Build general CSR metric under Newton, copy mjData, then run constraint
+    // solve under CG (as happens when Newton falls back to CG).
+    model->opt.solver = mjSOL_NEWTON;
+    mj_forward(model.get(), data.get());
+    EXPECT_GT(data->nefmK, 0);
+    EXPECT_EQ(data->efm_active, 2);
+
+    // the general CSR has rows for the ball joint of the arm
+    int arm = mj_name2id(model.get(), mjOBJ_BODY, "arm");
+    EXPECT_GT(data->efm_K_rownnz[model->body_dofadr[arm]], 0);
+
+    mjData* copy = mj_copyData(nullptr, model.get(), data.get());
+    model->opt.solver = mjSOL_CG;
+    mj_fwdConstraint(model.get(), copy);
+
+    EXPECT_THAT(AsVector(copy->qacc, nv),
+                Pointwise(MjNear(1e-10 * scale, 1e-4 * scale), qacc_cg))
+        << "use_island=" << use_island;
+    mj_deleteData(copy);
   }
 }
 
