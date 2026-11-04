@@ -217,6 +217,7 @@ class Config:
   show_console: bool = False
   show_options: bool = True
   show_toolbar: bool = False
+  show_view_gizmo: bool = True
   show_status_bar: bool = True
   show_inspector: bool = True
 
@@ -480,7 +481,7 @@ class App(plugin.ViewerPlugin):
     # dockspace exists before any plugin's BuildGuiEvent handler submits
     # windows, instead of relying on App's Priority.CRITICAL.
     ux.setup_theme(self.theme)
-    ux.configure_docking_layout(
+    workspace_rect = ux.configure_docking_layout(
         show_toolbar=self.config.show_toolbar,
         show_status_bar=self.config.show_status_bar,
     )
@@ -515,6 +516,8 @@ class App(plugin.ViewerPlugin):
             self.config.show_inspector = not self.config.show_inspector
           if imgui.MenuItem('Toolbar', '', self.config.show_toolbar):
             self.config.show_toolbar = not self.config.show_toolbar
+          if imgui.MenuItem('View Gizmo', '', self.config.show_view_gizmo):
+            self.config.show_view_gizmo = not self.config.show_view_gizmo
           if imgui.MenuItem('Status Bar', '', self.config.show_status_bar):
             self.config.show_status_bar = not self.config.show_status_bar
           imgui.Separator()
@@ -567,6 +570,16 @@ class App(plugin.ViewerPlugin):
             imgui.EndTable()
           imgui.PopStyleVar()
         imgui.End()
+
+      # -- View gizmo ---------------------------------------------------------
+      if self.config.show_view_gizmo:
+        ux.view_gizmo_gui(
+            self.model,
+            self.data,
+            self.viewer.camera,
+            self.ux_state,
+            workspace_rect,
+        )
 
       # -- Left pane: Options -------------------------------------------------
       node_flags = int(imgui.TreeNodeFlags.SpanAvailWidth) | int(

@@ -167,6 +167,7 @@ class App {
     bool picture_in_picture = false;
     bool options_panel = true;
     bool toolbar = false;
+    bool view_gizmo = true;
     bool status_bar = true;
     bool console = false;
     bool inspector_panel = true;

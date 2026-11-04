@@ -347,6 +347,24 @@ void InitUx(py::module_& m) {
       "Returns true if camera changed.");
 
   m.def(
+      "view_gizmo_gui",
+      [](const mujoco::python::MjModelWrapper& model,
+         mujoco::python::MjDataWrapper& data,
+         mujoco::python::MjvCameraWrapper& camera, UxState& ux_state,
+         const std::array<float, 4>& workspace_rect) {
+        py::gil_scoped_release no_gil;
+        return mujoco::studio::ViewGizmoGui(
+            model.get(), data.get(), *camera.get(), ux_state.camera_index,
+            ImVec4(workspace_rect[0], workspace_rect[1], workspace_rect[2],
+                   workspace_rect[3]));
+      },
+      py::arg("model"), py::arg("data"), py::arg("camera"), py::arg("ux_state"),
+      py::arg("workspace_rect"),
+      "Renders the XYZ view gizmo in workspace_rect, the (x, y, w, h) from "
+      "configure_docking_layout. May modify ux_state.camera_index. Returns "
+      "true if the camera changed.");
+
+  m.def(
       "set_camera",
       [](const mujoco::python::MjModelWrapper& model,
          mujoco::python::MjvCameraWrapper& camera, int request_idx) {

@@ -192,6 +192,14 @@ std::string GetCameraName(const mjModel* model, const mjvCamera& camera, int ind
 // UX for selecting the camera.
 bool CameraSelectionGui(const mjModel* model, mjData* data, mjvCamera& camera, int& index);
 
+// XYZ axes in the top-right corner of the 3D view (`workspace_rect`, from
+// ConfigureDockingLayout) that turn with the camera. Clicking an axis animates
+// the camera to look along it, or from the other side if it already does;
+// dragging orbits the camera. A fixed camera is first swapped for the tumble
+// camera, updating `camera_index`. Returns true if the camera changed.
+bool ViewGizmoGui(const mjModel* model, const mjData* data, mjvCamera& camera, int& camera_index,
+                  const ImVec4& workspace_rect);
+
 // UX for controlling the physics simulation parameters (e.g. integrator,
 // solver, etc.) in mjOption.
 void PhysicsGui(mjModel* model, mjSpec* spec = nullptr, float min_width = 150.0f);

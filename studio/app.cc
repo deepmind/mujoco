@@ -1492,6 +1492,11 @@ void App::BuildGui() {
     }
   }
 
+  // XYZ view gizmo.
+  if (tmp_.view_gizmo && has_model() && has_data()) {
+    ViewGizmoGui(model(), data(), camera_, tmp_.camera_idx, workspace_rect);
+  }
+
   // Display a drag-and-drop message if no model is loaded.
   if (model_kind_ == kEmptyModel) {
 #ifndef __EMSCRIPTEN__
@@ -2305,6 +2310,9 @@ void App::MainMenuGui() {
       }
       if (ImGui::MenuItem("Toolbar", nullptr, tmp_.toolbar)) {
         tmp_.toolbar = !tmp_.toolbar;
+      }
+      if (ImGui::MenuItem("View Gizmo", nullptr, tmp_.view_gizmo)) {
+        tmp_.view_gizmo = !tmp_.view_gizmo;
       }
       if (ImGui::MenuItem("Status Bar", nullptr, tmp_.status_bar)) {
         tmp_.status_bar = !tmp_.status_bar;
