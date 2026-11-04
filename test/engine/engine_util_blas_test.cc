@@ -197,5 +197,24 @@ TEST_F(EngineUtilBlasTest, MjuNormalizeZeroLength) {
   EXPECT_MJTNUM_EQ(vec[0], 42.0);
 }
 
+TEST_F(EngineUtilBlasTest, MjuNormalize) {
+  // standard normalization
+  mjtNum vec[] = {3, 4, 0};
+  EXPECT_MJTNUM_EQ(mju_normalize(vec, 3), 5);
+  EXPECT_MJTNUM_EQ(vec[0], 0.6);
+  EXPECT_MJTNUM_EQ(vec[1], 0.8);
+  EXPECT_MJTNUM_EQ(vec[2], 0);
+
+  // zero vector normalizes to x-axis
+  mjtNum zero[] = {0, 0, 0};
+  EXPECT_MJTNUM_EQ(mju_normalize(zero, 3), 0);
+  EXPECT_THAT(zero, ElementsAre(1, 0, 0));
+
+  // tiny vector normalizes to x-axis
+  mjtNum tiny[] = {0, mjMINVAL / 2, 0};
+  EXPECT_MJTNUM_EQ(mju_normalize(tiny, 3), mjMINVAL / 2);
+  EXPECT_THAT(tiny, ElementsAre(1, 0, 0));
+}
+
 }  // namespace
 }  // namespace mujoco
