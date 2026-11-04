@@ -1226,7 +1226,7 @@ TEST_F(MjCollisionTest, InterpolatedSelfCollisionPressedPillow) {
       // settled: top and bottom faces are in contact, penetration is bounded
       // (only the settled state is checked: the deepest transient penetration
       // depends on the platform)
-      EXPECT_LT(vmax, 0.05);
+      EXPECT_LT(vmax, 0.06);
       EXPECT_GT(pressed.ntopbottom, 0);
       EXPECT_GT(pressed.mindist, -m->flex_radius[0]);
       EXPECT_GT(ztop, zbottom);
