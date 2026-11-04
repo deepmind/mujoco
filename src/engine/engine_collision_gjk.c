@@ -2022,10 +2022,10 @@ static int boxNormals(mjtNum res[9], int resind[3], int dim, mjCCDObj* obj,
       resind[c++] = (y > 0) ? 2 : 3;
     }
     if (z) {
-      globalcoord(res + 3, mat, NULL, 0, 0, z);
+      globalcoord(res + 3*c, mat, NULL, 0, 0, z);
       resind[c++] = (z > 0) ? 4 : 5;
     }
-    return c == 2 ? 2 : boxNormals2(res, resind, mat, dir);
+    return c > 0 ? c : boxNormals2(res, resind, mat, dir);
   }
 
   if (dim == 1) {

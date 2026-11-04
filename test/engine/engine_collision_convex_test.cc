@@ -538,5 +538,62 @@ TEST_F(MjcConvexTest, HFieldMarginAndGap) {
   EXPECT_GT(nflex, 0);
 }
 
+
+TEST_F(MjcConvexTest, CylinderBoxNearZeroPenetrationMulticcd) {
+  static constexpr char xml[] = R"(
+  <mujoco>
+    <worldbody>
+      <geom name="cylinder" type="cylinder" size="0.005 0.01"/>
+      <body pos="-0.0012280108103396095 0.006366577323866548 0.0050013282943414845"
+            quat="0.6374277150568654 2.4329189787778094e-05 -9.472579190314077e-05 0.7705101547108238">
+        <freejoint/>
+        <geom name="box" type="box" size="0.001483693 0.0003489551 0.005"/>
+      </body>
+    </worldbody>
+  </mujoco>)";
+
+  MjModelPtr model = LoadModelFromString(xml);
+  ASSERT_THAT(model, NotNull());
+  MjDataPtr data = MakeData(model);
+  mj_forward(model.get(), data.get());
+
+  mjtNum geom_dist = mj_geomDistance(model.get(), data.get(), 0, 1, 0.05, nullptr);
+  EXPECT_NEAR(geom_dist, -0.00044e-3, 1e-6);
+
+  // Contact distance should match true distance and not phantom box width (~ -2.967 mm)
+  ASSERT_GT(data->ncon, 0);
+  for (int i = 0; i < data->ncon; i++) {
+    EXPECT_NEAR(data->contact[i].dist, geom_dist, 1e-4);
+  }
+}
+
+TEST_F(MjcConvexTest, BoxCylinderNearZeroPenetrationMulticcd) {
+  static constexpr char xml[] = R"(
+  <mujoco>
+    <worldbody>
+      <body pos="-0.0012280108103396095 0.006366577323866548 0.0050013282943414845"
+            quat="0.6374277150568654 2.4329189787778094e-05 -9.472579190314077e-05 0.7705101547108238">
+        <freejoint/>
+        <geom name="box" type="box" size="0.001483693 0.0003489551 0.005"/>
+      </body>
+      <geom name="cylinder" type="cylinder" size="0.005 0.01"/>
+    </worldbody>
+  </mujoco>)";
+
+  MjModelPtr model = LoadModelFromString(xml);
+  ASSERT_THAT(model, NotNull());
+  MjDataPtr data = MakeData(model);
+  mj_forward(model.get(), data.get());
+
+  mjtNum geom_dist = mj_geomDistance(model.get(), data.get(), 0, 1, 0.05, nullptr);
+  EXPECT_NEAR(geom_dist, -0.00044e-3, 1e-6);
+
+  // Contact distance should match true distance and not phantom box width (~ -2.967 mm)
+  ASSERT_GT(data->ncon, 0);
+  for (int i = 0; i < data->ncon; i++) {
+    EXPECT_NEAR(data->contact[i].dist, geom_dist, 1e-4);
+  }
+}
+
 }  // namespace
 }  // namespace mujoco
