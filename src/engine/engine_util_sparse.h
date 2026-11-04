@@ -149,7 +149,7 @@ MJAPI int mju_sqrMatTDSparseCount(int* res_rownnz, int* res_rowadr, int nr,
 //     (res_diagind[r] = -1 for empty rows)
 MJAPI int mju_sqrMatTDSparseSymbolic(
     int* res_rownnz, int* res_rowadr, int* res_colind, int* res_diagind, int nr, int nc,
-    const int* rownnz, const int* rowadr, const int* colind,
+    const int* rownnz, const int* rowadr, const int* colind, const int* rowsuper,
     const int* rownnzT, const int* rowadrT, const int* colindT, const int* rowsuperT, mjData* d);
 
 // numeric phase for mju_sqrMatTDSparse: compute values given pre-computed sparsity

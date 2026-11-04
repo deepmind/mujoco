@@ -18,7 +18,7 @@
 
   <compiler autolimits="true"/>
 
-  <option solver="CG" tolerance="1e-6" timestep=".001"/>
+  <option solver="Newton" tolerance="1e-6" timestep=".001"/>
 
   <size memory="100M"/>
 

@@ -23,7 +23,7 @@
 -->
   <statistic center=".4 0 .8" extent="1.3"/>
 
-  <option wind="5 5 0" density="10" solver="CG" tolerance="1e-6">
+  <option wind="5 5 0" density="10" solver="Newton" tolerance="1e-6">
   </option>
 
   <worldbody>

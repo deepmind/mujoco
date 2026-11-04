@@ -287,16 +287,16 @@ static void BM_sqrMatTD_impl(benchmark::State& state, SqrMatTDVariant variant) {
     int nH = mju_sqrMatTDSparseSymbolic(
         H_rownnz.data(), H_rowadr.data(), nullptr, nullptr, data.nefc, nv,
         data.J_rownnz.data(), data.J_rowadr.data(), data.J_colind.data(),
-        data.JT_rownnz.data(), data.JT_rowadr.data(), data.JT_colind.data(),
-        data.JT_rowsuper.data(), d);
+        data.J_rowsuper.data(), data.JT_rownnz.data(), data.JT_rowadr.data(),
+        data.JT_colind.data(), data.JT_rowsuper.data(), d);
     H.resize(nH);
     H_colind.resize(nH);
     if (variant == SqrMatTDVariant::kNumericOnly) {
       mju_sqrMatTDSparseSymbolic(
           H_rownnz.data(), H_rowadr.data(), H_colind.data(), nullptr, data.nefc,
           nv, data.J_rownnz.data(), data.J_rowadr.data(), data.J_colind.data(),
-          data.JT_rownnz.data(), data.JT_rowadr.data(), data.JT_colind.data(),
-          data.JT_rowsuper.data(), d);
+          data.J_rowsuper.data(), data.JT_rownnz.data(), data.JT_rowadr.data(),
+          data.JT_colind.data(), data.JT_rowsuper.data(), d);
     }
   } else {
     // row: use Count (lower triangle only)
@@ -351,13 +351,15 @@ static void BM_sqrMatTD_impl(benchmark::State& state, SqrMatTDVariant variant) {
         mju_sqrMatTDSparseSymbolic(
             H_rownnz.data(), H_rowadr.data(), nullptr, nullptr, data.nefc, nv,
             data.J_rownnz.data(), data.J_rowadr.data(), data.J_colind.data(),
-            data.JT_rownnz.data(), data.JT_rowadr.data(), data.JT_colind.data(),
+            data.J_rowsuper.data(), data.JT_rownnz.data(),
+            data.JT_rowadr.data(), data.JT_colind.data(),
             data.JT_rowsuper.data(), d);
         mju_sqrMatTDSparseSymbolic(
             H_rownnz.data(), H_rowadr.data(), H_colind.data(), nullptr,
             data.nefc, nv, data.J_rownnz.data(), data.J_rowadr.data(),
-            data.J_colind.data(), data.JT_rownnz.data(), data.JT_rowadr.data(),
-            data.JT_colind.data(), data.JT_rowsuper.data(), d);
+            data.J_colind.data(), data.J_rowsuper.data(), data.JT_rownnz.data(),
+            data.JT_rowadr.data(), data.JT_colind.data(),
+            data.JT_rowsuper.data(), d);
         mju_sqrMatTDSparseNumeric(
             H.data(), nv, H_rownnz.data(), H_rowadr.data(), H_colind.data(),
             nullptr, data.J.data(), data.J_rownnz.data(), data.J_rowadr.data(),
@@ -370,13 +372,15 @@ static void BM_sqrMatTD_impl(benchmark::State& state, SqrMatTDVariant variant) {
         mju_sqrMatTDSparseSymbolic(
             H_rownnz.data(), H_rowadr.data(), nullptr, nullptr, data.nefc, nv,
             data.J_rownnz.data(), data.J_rowadr.data(), data.J_colind.data(),
-            data.JT_rownnz.data(), data.JT_rowadr.data(), data.JT_colind.data(),
+            data.J_rowsuper.data(), data.JT_rownnz.data(),
+            data.JT_rowadr.data(), data.JT_colind.data(),
             data.JT_rowsuper.data(), d);
         mju_sqrMatTDSparseSymbolic(
             H_rownnz.data(), H_rowadr.data(), H_colind.data(), nullptr,
             data.nefc, nv, data.J_rownnz.data(), data.J_rowadr.data(),
-            data.J_colind.data(), data.JT_rownnz.data(), data.JT_rowadr.data(),
-            data.JT_colind.data(), data.JT_rowsuper.data(), d);
+            data.J_colind.data(), data.J_rowsuper.data(), data.JT_rownnz.data(),
+            data.JT_rowadr.data(), data.JT_colind.data(),
+            data.JT_rowsuper.data(), d);
         break;
 
       case SqrMatTDVariant::kNumericOnly:

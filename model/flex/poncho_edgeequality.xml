@@ -15,7 +15,7 @@
 
 <mujoco model="Poncho">
   <include file="mannequin.xml"/>
-  <option integrator="discrete" solver="CG" tolerance="1e-6">
+  <option integrator="discrete" solver="Newton" tolerance="1e-6">
     <flag energy="enable"/>
   </option>
 

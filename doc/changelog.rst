@@ -206,6 +206,10 @@ Deformables
      **Migration:** Read 1D records with stride 10. A record whose fourth value is negative is a single hinge
      ``[v0, v1, v2, -1, k, 0, |kb0|, 0, 0, 0]``; otherwise it is a hinge pair ``[v0, v1, v2, v3, w0, w1, om0[4]]``.
 
+- Sparse ``Newton`` (:ref:`solver<option-solver>`) is 1.4-3x faster on :ref:`flex<deformable-flex>` models, using
+  fill-reducing DOF ordering, incremental active-set Hessian updates, direct :ref:`elliptic cone<option-cone>` folding,
+  and pre-ordered sparse Cholesky for the 2D ``discrete`` :ref:`integrator<option-integrator>` smooth solve. Most flex
+  models in ``model/flex`` now use ``solver="Newton"``.
 - 1D rod bending :ref:`elasticity<flex-elasticity>` now supports curved reference configurations and torsional
   stiffness: vertices bent by more than :math:`10^{-4}` rad in ``qpos0`` keep their reference curvature and dihedral
   twist angle, so that rods such as rings, arcs, and coil springs are at rest in their compiled shape. Previously,

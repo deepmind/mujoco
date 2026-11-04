@@ -17,6 +17,8 @@
 #include "src/engine/engine_util_sparse.h"
 
 #include <array>
+#include <cstddef>
+#include <cstdint>
 #include <vector>
 
 #include <gmock/gmock.h>
@@ -416,13 +418,13 @@ static void SqrMatTDSplitCol(std::vector<mjtNum>& dense_result, int nr, int nc,
   std::vector<int> H_rowadr(nc, 0);
   int nnz = mju_sqrMatTDSparseSymbolic(
       H_rownnz.data(), H_rowadr.data(), nullptr, out_diagind, nr, nc, rownnz,
-      rowadr, colind, rownnzT, rowadrT, colindT, rowsuperT, d);
+      rowadr, colind, nullptr, rownnzT, rowadrT, colindT, rowsuperT, d);
 
   // fill mode
   std::vector<int> H_colind(nnz);
   mju_sqrMatTDSparseSymbolic(H_rownnz.data(), H_rowadr.data(), H_colind.data(),
                              out_diagind, nr, nc, rownnz, rowadr, colind,
-                             rownnzT, rowadrT, colindT, rowsuperT, d);
+                             nullptr, rownnzT, rowadrT, colindT, rowsuperT, d);
 
   // numeric phase
   std::vector<mjtNum> H(nnz, 0);
@@ -924,8 +926,8 @@ TEST_F(EngineUtilSparseTest, MjuSqrMatTDSparseSymbolic) {
   int rowadrH[] = {0, 0};
 
   int nnz = mju_sqrMatTDSparseSymbolic(rownnzH, rowadrH, nullptr, nullptr, 2, 2,
-                                       rownnz, rowadr, colind, rownnzT, rowadrT,
-                                       colindT, nullptr, data.get());
+                                       rownnz, rowadr, colind, nullptr, rownnzT,
+                                       rowadrT, colindT, nullptr, data.get());
 
   EXPECT_EQ(nnz, nnz_expected);
   EXPECT_THAT(rownnzH, ElementsAre(rownnzH_expected[0], rownnzH_expected[1]));
@@ -935,8 +937,8 @@ TEST_F(EngineUtilSparseTest, MjuSqrMatTDSparseSymbolic) {
   std::vector<int> colindH(nnz, -1);
 
   mju_sqrMatTDSparseSymbolic(rownnzH, rowadrH, colindH.data(), nullptr, 2, 2,
-                             rownnz, rowadr, colind, rownnzT, rowadrT, colindT,
-                             nullptr, data.get());
+                             rownnz, rowadr, colind, nullptr, rownnzT, rowadrT,
+                             colindT, nullptr, data.get());
 
   // verify: row 0 should have {0}, row 1 should have {0, 1}
   EXPECT_THAT(colindH, ElementsAre(0, 0, 1));
@@ -972,9 +974,9 @@ TEST_F(EngineUtilSparseTest, MjuSqrMatTDSparseSymbolicUpper) {
   int rownnzH[] = {0, 0};
   int rowadrH[] = {0, 0};
   int diagindH[] = {0, 0};
-  int nnz = mju_sqrMatTDSparseSymbolic(rownnzH, rowadrH, nullptr, diagindH, 2,
-                                       2, rownnz, rowadr, colind, rownnzT,
-                                       rowadrT, colindT, nullptr, data.get());
+  int nnz = mju_sqrMatTDSparseSymbolic(
+      rownnzH, rowadrH, nullptr, diagindH, 2, 2, rownnz, rowadr, colind,
+      nullptr, rownnzT, rowadrT, colindT, nullptr, data.get());
 
   EXPECT_EQ(nnz, nnz_expected);
   EXPECT_THAT(rownnzH, ElementsAre(rownnzH_expected[0], rownnzH_expected[1]));
@@ -1004,8 +1006,10 @@ TEST_F(EngineUtilSparseTest, MjuSqrMatTDSparseSymbolicSupernode) {
   mju_transposeSparse(matT, mat, 3, 2, rownnzT, rowadrT, colindT, nullptr,
                       rownnz, rowadr, colind);
 
-  // compute rowsuperT
+  // compute rowsuper and rowsuperT
+  int rowsuper[3];
   int rowsuperT[2];
+  mju_superSparse(3, rowsuper, rownnz, rowadr, colind);
   mju_superSparse(2, rowsuperT, rownnzT, rowadrT, colindT);
 
   // use old function as ground truth
@@ -1018,9 +1022,9 @@ TEST_F(EngineUtilSparseTest, MjuSqrMatTDSparseSymbolicSupernode) {
   // test new function with supernodes
   int rownnzH[] = {0, 0};
   int rowadrH[] = {0, 0};
-  int nnz = mju_sqrMatTDSparseSymbolic(rownnzH, rowadrH, nullptr, nullptr, 3, 2,
-                                       rownnz, rowadr, colind, rownnzT, rowadrT,
-                                       colindT, rowsuperT, data.get());
+  int nnz = mju_sqrMatTDSparseSymbolic(
+      rownnzH, rowadrH, nullptr, nullptr, 3, 2, rownnz, rowadr, colind,
+      rowsuper, rownnzT, rowadrT, colindT, rowsuperT, data.get());
 
   EXPECT_EQ(nnz, nnz_expected);
   EXPECT_THAT(rownnzH, ElementsAre(rownnzH_expected[0], rownnzH_expected[1]));
@@ -1029,8 +1033,8 @@ TEST_F(EngineUtilSparseTest, MjuSqrMatTDSparseSymbolicSupernode) {
   // test fill mode with supernodes
   std::vector<int> colindH(nnz, -1);
   mju_sqrMatTDSparseSymbolic(rownnzH, rowadrH, colindH.data(), nullptr, 3, 2,
-                             rownnz, rowadr, colind, rownnzT, rowadrT, colindT,
-                             rowsuperT, data.get());
+                             rownnz, rowadr, colind, rowsuper, rownnzT, rowadrT,
+                             colindT, rowsuperT, data.get());
 
   // verify all filled
   for (int i = 0; i < nnz; i++) {
@@ -1111,13 +1115,14 @@ TEST_F(EngineUtilSparseTest, MjuSqrMatTDSparseNumeric) {
     int diagindH[] = {0, 0};
     int nnz = mju_sqrMatTDSparseSymbolic(
         rownnzH, rowadrH, nullptr, use_diagind ? diagindH : nullptr, 2, 2,
-        rownnz, rowadr, colind, rownnzT, rowadrT, colindT, nullptr, data.get());
+        rownnz, rowadr, colind, nullptr, rownnzT, rowadrT, colindT, nullptr,
+        data.get());
 
     std::vector<int> colindH(nnz);
     mju_sqrMatTDSparseSymbolic(rownnzH, rowadrH, colindH.data(),
                                use_diagind ? diagindH : nullptr, 2, 2, rownnz,
-                               rowadr, colind, rownnzT, rowadrT, colindT,
-                               nullptr, data.get());
+                               rowadr, colind, nullptr, rownnzT, rowadrT,
+                               colindT, nullptr, data.get());
 
     // compute values using numeric phase
     std::vector<mjtNum> resH(nnz);
@@ -1567,25 +1572,26 @@ TEST_F(EngineUtilSparseTest, MjuSqrMatTDSparseSymbolicEmptyRowAndGuards) {
   int rowadrH[] = {0, 0, 0};
   int diagindH[] = {0, 0, 0};
 
-  int nnz = mju_sqrMatTDSparseSymbolic(rownnzH, rowadrH, nullptr, diagindH, 2,
-                                       3, rownnz, rowadr, colind, rownnzT,
-                                       rowadrT, colindT, nullptr, data.get());
+  int nnz = mju_sqrMatTDSparseSymbolic(
+      rownnzH, rowadrH, nullptr, diagindH, 2, 3, rownnz, rowadr, colind,
+      nullptr, rownnzT, rowadrT, colindT, nullptr, data.get());
   EXPECT_EQ(nnz, 4);
   EXPECT_THAT(rownnzH, ElementsAre(2, 0, 2));
   EXPECT_THAT(rowadrH, ElementsAre(0, 2, 2));
 
   std::vector<int> colindH(nnz, -1);
   mju_sqrMatTDSparseSymbolic(rownnzH, rowadrH, colindH.data(), diagindH, 2, 3,
-                             rownnz, rowadr, colind, rownnzT, rowadrT, colindT,
-                             nullptr, data.get());
+                             rownnz, rowadr, colind, nullptr, rownnzT, rowadrT,
+                             colindT, nullptr, data.get());
   EXPECT_EQ(diagindH[0], 0);
   EXPECT_EQ(diagindH[1], -1);
   EXPECT_EQ(diagindH[2], 3);
 
-  EXPECT_EQ(mju_sqrMatTDSparseSymbolic(rownnzH, rowadrH, nullptr, diagindH, 0,
-                                       3, rownnz, rowadr, colind, rownnzT,
-                                       rowadrT, colindT, nullptr, data.get()),
-            0);
+  EXPECT_EQ(
+      mju_sqrMatTDSparseSymbolic(rownnzH, rowadrH, nullptr, diagindH, 0, 3,
+                                 rownnz, rowadr, colind, nullptr, rownnzT,
+                                 rowadrT, colindT, nullptr, data.get()),
+      0);
   EXPECT_THAT(rownnzH, ElementsAre(0, 0, 0));
   EXPECT_THAT(rowadrH, ElementsAre(0, 0, 0));
   EXPECT_THAT(diagindH, ElementsAre(-1, -1, -1));
@@ -1596,17 +1602,18 @@ TEST_F(EngineUtilSparseTest, MjuSqrMatTDSparseSymbolicEmptyRowAndGuards) {
   diagindH[0] = diagindH[1] = diagindH[2] = 7;
   EXPECT_EQ(mju_sqrMatTDSparseSymbolic(rownnzH, shifted_rowadrH, colindH.data(),
                                        diagindH, 0, 3, rownnz, rowadr, colind,
-                                       rownnzT, rowadrT, colindT, nullptr,
-                                       data.get()),
+                                       nullptr, rownnzT, rowadrT, colindT,
+                                       nullptr, data.get()),
             0);
   EXPECT_THAT(rownnzH, ElementsAre(0, 0, 0));
   EXPECT_THAT(shifted_rowadrH, ElementsAre(0, 2, 5));
   EXPECT_THAT(diagindH, ElementsAre(-1, -1, -1));
 
-  EXPECT_EQ(mju_sqrMatTDSparseSymbolic(rownnzH, rowadrH, nullptr, diagindH, 2,
-                                       0, rownnz, rowadr, colind, rownnzT,
-                                       rowadrT, colindT, nullptr, data.get()),
-            0);
+  EXPECT_EQ(
+      mju_sqrMatTDSparseSymbolic(rownnzH, rowadrH, nullptr, diagindH, 2, 0,
+                                 rownnz, rowadr, colind, nullptr, rownnzT,
+                                 rowadrT, colindT, nullptr, data.get()),
+      0);
 }
 
 TEST_F(EngineUtilSparseTest, MjuSortSparseRowAndPermuteLowerCSR) {

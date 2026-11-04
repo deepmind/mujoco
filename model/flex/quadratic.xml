@@ -16,7 +16,7 @@
 <mujoco model="Quadratic">
   <include file="scene.xml"/>
 
-  <option solver="CG" tolerance="1e-6" timestep=".001" integrator="Euler"/>
+  <option solver="Newton" tolerance="1e-6" timestep=".001" integrator="Euler"/>
 
   <size memory="10M"/>
 

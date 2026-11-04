@@ -1131,15 +1131,12 @@ typedef struct {
   int* pathcost;          // reverse-etree path costs of L rows               (nv x 1)
   mjtSize Lflops;         // sum of squared L row nonzeros (2x factorization MACs)
   int cone_fold;          // cached fold decision (-1: recompute)
+  int flg_Lvalid;         // 1 if L holds chol(H), 0 if deferred while folding
+  int flg_Hdirty;         // 1 if H has incremental downdates since full build
+  int ndowndate;          // accumulated sparse H downdates since full build
 
   // cone fold workspace, allocated on the first fold (elliptic sparse)
-  mjtNum* Jmod;           // Jacobian, cone rows replaced by Lc'*Jc           (nJ x 1)
-  mjtNum* JTmod;          // transpose of Jmod                                (nJ x 1)
-  mjtNum* Dmod;           // constraint inertia, cone rows set to 1           (nefc x 1)
   mjtNum* Hcone;          // cone-inclusive Hessian                           (nH x 1)
-  int* JTmod_rownnz;      // Jmod transpose row nonzeros                      (nv x 1)
-  int* JTmod_rowadr;      // Jmod transpose row addresses                     (nv x 1)
-  int* JTmod_colind;      // Jmod transpose column indices                    (nJ x 1)
 
   // linesearch diagnostics
   int LSiter;             // number of linesearch iterations
@@ -2454,7 +2451,7 @@ static void MakeMetricLower(mjData* d, mjPrimalContext* ctx) {
 }
 
 
-// scratch stack bytes needed by mju_sqrMatTDSparseSymbolic + Numeric
+// scratch stack bytes needed by primalSqrSymbolic + mju_sqrMatTDSparseNumeric
 static size_t primalSqrScratchBytes(int nv, int nefc) {
   size_t sym_bytes = mj_stackFrameBytes() +
                      2 * mj_stackBytes((size_t)nv * sizeof(int), _Alignof(int)) +
@@ -2821,11 +2818,14 @@ static void primalTryReorder(const mjModel* m, mjData* d, mjPrimalContext* ctx,
       (mj_stackFrameBytes() +
        mj_stackBytes((2*(size_t)nv + (size_t)ctx->nS) * sizeof(int), _Alignof(int)) +
        mj_stackBytes((size_t)ctx->nS * sizeof(mjtNum), _Alignof(mjtNum))) : 0;
+  size_t J_scratch = nefc ?
+      (mj_stackFrameBytes() +
+       mj_stackBytes(((size_t)nv + (size_t)nefc) * sizeof(int), _Alignof(int))) : 0;
   size_t nH_cap = nH_blk_upper + (size_t)nM + (size_t)ctx->nS;
   size_t H_cap_bytes =
       mj_stackBytes(nH_cap * sizeof(mjtNum), _Alignof(mjtNum)) +
       mj_stackBytes(2 * nH_cap * sizeof(int), _Alignof(int));
-  size_t nLp_int = 3*nL_perm + (ctx->is_elliptic ? (size_t)nv : 0);
+  size_t nLp_int = 3*nL_perm + (size_t)nv;
   size_t nLp_num = ctx->is_elliptic ? 2*nL_perm : nL_perm;
   size_t Lp_bytes =
       mj_stackBytes(nLp_int * sizeof(int), _Alignof(int)) +
@@ -2836,7 +2836,7 @@ static void primalTryReorder(const mjModel* m, mjData* d, mjPrimalContext* ctx,
       mj_stackFrameBytes() + 3 * mj_stackBytes((size_t)nv * sizeof(int), _Alignof(int));
   size_t after_H = mjMAX(cg_bytes + mjMAX(chol_count_bytes, loop_bytes),
                          Lp_bytes + mjMAX(chol_fill_bytes, loop_bytes));
-  size_t after_P = mjMAX(S_scratch, H_cap_bytes + after_H);
+  size_t after_P = mjMAX(mjMAX(S_scratch, J_scratch), H_cap_bytes + after_H);
   if (mj_stackBytesAvailable(d) < P_bytes + mjMAX(after_P, cg_bytes + loop_bytes)) {
     return;
   }
@@ -2856,19 +2856,61 @@ static void primalTryReorder(const mjModel* m, mjData* d, mjPrimalContext* ctx,
   ctx->HJT          = P_num;  P_num += nJ;
   ctx->HM           = P_num;
 
-  // permute J columns and sort each row, then compute permuted transpose HJT
-  for (int i=0; i < nefc; i++) {
-    int adr = ctx->J_rowadr[i], nnz = ctx->J_rownnz[i];
-    for (int k=0; k < nnz; k++) {
-      ctx->HJ_colind[adr+k] = perm[ctx->J_colind[adr+k]];
-      ctx->HJ[adr+k] = ctx->J[adr+k];
-    }
-    mju_sortSparseRow(nnz, ctx->HJ_colind+adr, ctx->HJ+adr);
-  }
+  // permute rows of JT into HJT and scatter into sorted HJ in a single pass
   if (nefc) {
-    mju_transposeSparse(ctx->HJT, ctx->HJ, nefc, nv,
-                        ctx->HJT_rownnz, ctx->HJT_rowadr, ctx->HJT_colind, ctx->HJT_rowsuper,
-                        ctx->J_rownnz, ctx->J_rowadr, ctx->HJ_colind);
+    mj_markStack(d);
+    int* scratch = mjSTACKALLOC(d, nv + nefc, int);
+    int* invperm = scratch;
+    int* hj_pos = scratch + nv;
+    for (int r=0; r < nv; r++) {
+      invperm[perm[r]] = r;
+    }
+    mju_copyInt(hj_pos, ctx->J_rowadr, nefc);
+
+    int hjt_adr = 0;
+    for (int r=0; r < nv; r++) {
+      int r_old = invperm[r];
+      int nnz = ctx->JT_rownnz[r_old];
+      int src_adr = ctx->JT_rowadr[r_old];
+      ctx->HJT_rownnz[r] = nnz;
+      ctx->HJT_rowadr[r] = hjt_adr;
+      const int* restrict src_col = ctx->JT_colind + src_adr;
+      const mjtNum* restrict src_val = ctx->JT + src_adr;
+      int* restrict dst_col = ctx->HJT_colind + hjt_adr;
+      mjtNum* restrict dst_val = ctx->HJT + hjt_adr;
+      for (int k=0; k < nnz; k++) {
+        int i = src_col[k];
+        mjtNum v = src_val[k];
+        dst_col[k] = i;
+        dst_val[k] = v;
+        int w = hj_pos[i]++;
+        ctx->HJ_colind[w] = r;
+        ctx->HJ[w] = v;
+      }
+      hjt_adr += nnz;
+    }
+
+    ctx->HJT_rowsuper[nv-1] = 0;
+    for (int r=nv-2; r >= 0; r--) {
+      int match = 0;
+      int r_old = invperm[r];
+      if (invperm[r+1] == r_old + 1) {
+        match = (ctx->JT_rowsuper[r_old] > 0);
+      } else if (ctx->HJT_rownnz[r] == ctx->HJT_rownnz[r+1]) {
+        int nnz = ctx->HJT_rownnz[r];
+        const int* c0 = ctx->HJT_colind + ctx->HJT_rowadr[r];
+        const int* c1 = ctx->HJT_colind + ctx->HJT_rowadr[r+1];
+        match = 1;
+        for (int k=0; k < nnz; k++) {
+          if (c0[k] != c1[k]) {
+            match = 0;
+            break;
+          }
+        }
+      }
+      ctx->HJT_rowsuper[r] = match ? ctx->HJT_rowsuper[r+1] + 1 : 0;
+    }
+    mj_freeStack(d);
   } else {
     mju_zeroInt(ctx->HJT_rownnz, nv);
     mju_zeroInt(ctx->HJT_rowadr, nv);
@@ -2954,7 +2996,7 @@ static int MakeHessian(const mjModel* m, mjData* d, mjPrimalContext* ctx) {
     // count Hessian nonzeros, initialize rowadr, rownnz
     ctx->nH = mju_sqrMatTDSparseSymbolic(
         ctx->H_rownnz, ctx->H_rowadr, NULL, NULL,
-        nefc, nv, ctx->J_rownnz, ctx->J_rowadr, ctx->HJ_colind,
+        nefc, nv, ctx->J_rownnz, ctx->J_rowadr, ctx->HJ_colind, ctx->J_rowsuper,
         ctx->HJT_rownnz, ctx->HJT_rowadr, ctx->HJT_colind, ctx->HJT_rowsuper, d);
 
     // add M nonzeros to Hessian total (unavoidable overcounting since H_colind is still unknown)
@@ -2990,13 +3032,13 @@ static int MakeHessian(const mjModel* m, mjData* d, mjPrimalContext* ctx) {
     // compute H = J'*D*J: symbolic phase
     mju_sqrMatTDSparseSymbolic(
         ctx->H_rownnz, ctx->H_rowadr, ctx->H_colind, NULL,
-        nefc, nv, ctx->J_rownnz, ctx->J_rowadr, ctx->HJ_colind,
+        nefc, nv, ctx->J_rownnz, ctx->J_rowadr, ctx->HJ_colind, ctx->J_rowsuper,
         ctx->HJT_rownnz, ctx->HJT_rowadr, ctx->HJT_colind, ctx->HJT_rowsuper, d);
 
     // compute H = J'*D*J: numeric phase
     mju_sqrMatTDSparseNumeric(
-        ctx->H, nv, ctx->H_rownnz, ctx->H_rowadr, ctx->H_colind,
-        NULL, ctx->HJ, ctx->J_rownnz, ctx->J_rowadr, ctx->HJ_colind,
+        ctx->H, nv, ctx->H_rownnz, ctx->H_rowadr, ctx->H_colind, NULL,
+        ctx->HJ, ctx->J_rownnz, ctx->J_rowadr, ctx->HJ_colind,
         ctx->HJT, ctx->HJT_rownnz, ctx->HJT_rowadr, ctx->HJT_colind,
         ctx->HJT_rowsuper, ctx->D, d);
 
@@ -3022,7 +3064,7 @@ static int MakeHessian(const mjModel* m, mjData* d, mjPrimalContext* ctx) {
 
     // nL is known: check stack space, then allocate L_colind, LT_colind, LT_map, L, Lcone
     // L_colind + LT_colind + LT_map + pathcost
-    size_t nL_int = 3*(size_t)ctx->nL + (ctx->is_elliptic ? (size_t)nv : 0);
+    size_t nL_int = 3*(size_t)ctx->nL + (size_t)nv;
     size_t nL_num = ctx->is_elliptic ? 2*(size_t)ctx->nL : (size_t)ctx->nL;  // L + Lcone
     size_t L_bytes =
         mj_stackBytes(nL_int * sizeof(int), _Alignof(int)) +
@@ -3038,7 +3080,7 @@ static int MakeHessian(const mjModel* m, mjData* d, mjPrimalContext* ctx) {
     ctx->L_colind      = L_intblock;
     ctx->LT_colind     = L_intblock + ctx->nL;
     ctx->LT_map        = L_intblock + 2*ctx->nL;
-    ctx->pathcost      = ctx->is_elliptic ? L_intblock + 3*ctx->nL : NULL;
+    ctx->pathcost      = L_intblock + 3*ctx->nL;
     ctx->L             = L_numblock;
     ctx->Lcone         = ctx->is_elliptic ? L_numblock + ctx->nL : NULL;
 
@@ -3048,18 +3090,16 @@ static int MakeHessian(const mjModel* m, mjData* d, mjPrimalContext* ctx) {
                            ctx->HT_rownnz, ctx->HT_rowadr, ctx->HT_colind,
                            nv, d);
 
-    // cone fold gate inputs, fixed for the solve since the L pattern is fixed:
+    // fold gate inputs, fixed for the solve since the L pattern is fixed:
     // pathcost[r] totals the L row nonzeros along the reverse-etree path from
     // row r (parent(r) = largest off-diagonal column of L row r), the cost of
     // a rank-1 update starting at column r; Lflops totals squared row nonzeros
-    if (ctx->is_elliptic) {
-      ctx->Lflops = 0;
-      for (int r=0; r < nv; r++) {
-        int nnz = ctx->L_rownnz[r];
-        int parent = nnz >= 2 ? ctx->L_colind[ctx->L_rowadr[r] + nnz - 2] : -1;
-        ctx->pathcost[r] = nnz + (parent >= 0 ? ctx->pathcost[parent] : 0);
-        ctx->Lflops += (mjtSize)nnz * nnz;
-      }
+    ctx->Lflops = 0;
+    for (int r=0; r < nv; r++) {
+      int nnz = ctx->L_rownnz[r];
+      int parent = nnz >= 2 ? ctx->L_colind[ctx->L_rowadr[r]+nnz-2] : -1;
+      ctx->pathcost[r] = nnz + (parent >= 0 ? ctx->pathcost[parent] : 0);
+      ctx->Lflops += (mjtSize)nnz * nnz;
     }
   }
 
@@ -3086,6 +3126,77 @@ static int MakeHessian(const mjModel* m, mjData* d, mjPrimalContext* ctx) {
 // forward declarations (for readability)
 static void HessianCone(mjData* d, mjPrimalContext* ctx);
 static void HessianConeUpdate(mjData* d, mjPrimalContext* ctx);
+static int HessianConeFold(mjData* d, mjPrimalContext* ctx, mjtSize cost_L);
+
+
+// add scl * val' * val (lower triangle) into sparse symmetric matrix H
+static void primalAddRowOuterSparse(mjtNum* restrict H, const int* restrict H_rowadr,
+                                    const int* restrict H_colind, int nnz,
+                                    const int* restrict cols, const mjtNum* restrict val,
+                                    mjtNum scl) {
+  for (int a=0; a < nnz; a++) {
+    mjtNum va = scl * val[a];
+    if (!va) {
+      continue;
+    }
+    int r = cols[a];
+    int adr = H_rowadr[r];
+    const int* restrict hcol = H_colind + adr;
+    mjtNum* restrict hval = H + adr;
+    int k = 0;
+    for (int b=0; b <= a; b++) {
+      int cb = cols[b];
+      while (hcol[k] < cb) {
+        k++;
+      }
+      hval[k] += va * val[b];
+    }
+  }
+}
+
+
+// add LTJ' * LTJ (dim x nnz, lower triangle) into sparse symmetric matrix H
+static void primalAddConeOuterSparse(mjtNum* restrict H, const int* restrict H_rowadr,
+                                     const int* restrict H_colind, int dim, int nnz,
+                                     const int* restrict cols, const mjtNum* restrict LTJ) {
+  for (int a=0; a < nnz; a++) {
+    int r = cols[a];
+    int adr = H_rowadr[r];
+    const int* restrict hcol = H_colind + adr;
+    mjtNum* restrict hval = H + adr;
+    int k = 0;
+    if (dim == 3) {
+      mjtNum la0 = LTJ[a], la1 = LTJ[nnz+a], la2 = LTJ[2*nnz+a];
+      const mjtNum* restrict l0 = LTJ;
+      const mjtNum* restrict l1 = LTJ + nnz;
+      const mjtNum* restrict l2 = LTJ + 2*nnz;
+      for (int b=0; b <= a; b++) {
+        int cb = cols[b];
+        while (hcol[k] < cb) {
+          k++;
+        }
+        hval[k] += la0*l0[b] + la1*l1[b] + la2*l2[b];
+      }
+    } else {
+      mjtNum la[6];
+      for (int c=0; c < dim; c++) {
+        la[c] = LTJ[c*nnz+a];
+      }
+      for (int b=0; b <= a; b++) {
+        int cb = cols[b];
+        while (hcol[k] < cb) {
+          k++;
+        }
+        mjtNum s = 0;
+        for (int c=0; c < dim; c++) {
+          s += la[c] * LTJ[c*nnz+b];
+        }
+        hval[k] += s;
+      }
+    }
+  }
+}
+
 
 // factorize Hessian: L = chol(H), maybe (re)compute H given efc_state
 static void FactorizeHessian(mjData* d, mjPrimalContext* ctx, int flg_recompute) {
@@ -3104,8 +3215,8 @@ static void FactorizeHessian(mjData* d, mjPrimalContext* ctx, int flg_recompute)
     if (flg_recompute) {
       // compute H = J'*D*J: numeric phase
       mju_sqrMatTDSparseNumeric(
-          ctx->H, nv, ctx->H_rownnz, ctx->H_rowadr, ctx->H_colind,
-          NULL, ctx->HJ, ctx->J_rownnz, ctx->J_rowadr, ctx->HJ_colind,
+          ctx->H, nv, ctx->H_rownnz, ctx->H_rowadr, ctx->H_colind, NULL,
+          ctx->HJ, ctx->J_rownnz, ctx->J_rowadr, ctx->HJ_colind,
           ctx->HJT, ctx->HJT_rownnz, ctx->HJT_rowadr, ctx->HJT_colind,
           ctx->HJT_rowsuper, ctx->D, d);
 
@@ -3118,14 +3229,24 @@ static void FactorizeHessian(mjData* d, mjPrimalContext* ctx, int flg_recompute)
         mju_addToMatSparse(ctx->H, ctx->H_rownnz, ctx->H_rowadr, ctx->H_colind, nv,
                            ctx->S_val, ctx->S_rownnz, ctx->S_rowadr, ctx->S_colind);
       }
+      ctx->flg_Hdirty = 0;
+      ctx->ndowndate = 0;
     }
 
-    // numeric sparse factorization: L = chol(H) using pre-computed sparsity pattern
-    mju_cholFactorNumeric(
-        ctx->L, nv, mjMINVAL,
-        ctx->L_rownnz, ctx->L_rowadr, ctx->L_colind,
-        ctx->LT_rownnz, ctx->LT_rowadr, ctx->LT_colind, ctx->LT_map,
-        ctx->H, ctx->H_rownnz, ctx->H_rowadr, ctx->H_colind, ctx->cholscratch);
+    // numeric sparse factorization: L = chol(H) using pre-computed sparsity pattern.
+    // Pass cost_L = 0 so L is deferred only when cone rank-1 updates alone exceed a full
+    // factorization; passing cost_L = 3*Lflops would fold even a single cone contact, leaving
+    // flg_Lvalid = 0 and forcing a full refactor_L + re-fold on the next iteration
+    ctx->cone_fold = -1;
+    ctx->flg_Lvalid = 0;
+    if (!HessianConeFold(d, ctx, 0)) {
+      mju_cholFactorNumeric(
+          ctx->L, nv, mjMINVAL,
+          ctx->L_rownnz, ctx->L_rowadr, ctx->L_colind,
+          ctx->LT_rownnz, ctx->LT_rowadr, ctx->LT_colind, ctx->LT_map,
+          ctx->H, ctx->H_rownnz, ctx->H_rowadr, ctx->H_colind, ctx->cholscratch);
+      ctx->flg_Lvalid = 1;
+    }
   }
 
   // dense
@@ -3149,7 +3270,6 @@ static void FactorizeHessian(mjData* d, mjPrimalContext* ctx, int flg_recompute)
 
   // add cones to factor if present
   if (ctx->ncone) {
-    ctx->cone_fold = -1;
     HessianCone(d, ctx);
   }
 
@@ -3158,48 +3278,17 @@ static void FactorizeHessian(mjData* d, mjPrimalContext* ctx, int flg_recompute)
 }
 
 
-// elliptic sparse case with many cones: rebuild Lcone with one factorization.
+// elliptic sparse case with many cones: rebuild Lcone with one factorization
 static void HessianConeFolded(mjData* d, mjPrimalContext* ctx) {
   int nv = ctx->nv, nefc = ctx->nefc;
+  mjtNum* Hcone = ctx->Hcone;
+  mjtNum* LTJ = ctx->LTJ;
   mjtNum local[36];
 
-  // allocate on the first fold of this solve and reuse for the rest of it
-  if (!ctx->Jmod) {
-    size_t fold_bytes =
-        2 * mj_stackBytes((size_t)ctx->nJ * sizeof(mjtNum), _Alignof(mjtNum)) +
-        mj_stackBytes((size_t)nefc * sizeof(mjtNum), _Alignof(mjtNum)) +
-        mj_stackBytes((size_t)ctx->nH * sizeof(mjtNum), _Alignof(mjtNum)) +
-        2 * mj_stackBytes((size_t)nv * sizeof(int), _Alignof(int)) +
-        mj_stackBytes((size_t)ctx->nJ * sizeof(int), _Alignof(int));
-    size_t loop_bytes = primalLoopScratchBytes(ctx, d);
-    if (mj_stackBytesAvailable(d) < fold_bytes + loop_bytes) {
-      mj_warning(d, mjWARN_CNSTRFULL, d->narena);
-      ctx->cone_fold = 0;
-      HessianConeUpdate(d, ctx);
-      return;
-    }
-    ctx->Jmod         = mjSTACKALLOC(d, ctx->nJ, mjtNum);
-    ctx->JTmod        = mjSTACKALLOC(d, ctx->nJ, mjtNum);
-    ctx->Dmod         = mjSTACKALLOC(d, nefc, mjtNum);
-    ctx->Hcone        = mjSTACKALLOC(d, ctx->nH, mjtNum);
-    ctx->JTmod_rownnz = mjSTACKALLOC(d, nv, int);
-    ctx->JTmod_rowadr = mjSTACKALLOC(d, nv, int);
-    ctx->JTmod_colind = mjSTACKALLOC(d, ctx->nJ, int);
-  }
-  mjtNum* Jmod   = ctx->Jmod;
-  mjtNum* JTmod  = ctx->JTmod;
-  mjtNum* Dmod   = ctx->Dmod;
-  mjtNum* Hcone  = ctx->Hcone;
-  int* JT_rownnz = ctx->JTmod_rownnz;
-  int* JT_rowadr = ctx->JTmod_rowadr;
-  int* JT_colind = ctx->JTmod_colind;
+  // start from quadratic Hessian H = M + S + J_quad'*D_quad*J_quad
+  mju_copy(Hcone, ctx->H, ctx->nH);
 
-  mju_copy(Jmod, ctx->HJ, ctx->nJ);
-  for (int i=0; i < nefc; i++) {
-    Dmod[i] = ctx->efc_state[i] == mjCNSTRSTATE_QUADRATIC ? ctx->efc_D[i] : 0;
-  }
-
-  // replace cone contact rows with Lc'*Jc, where Hc = Lc*Lc'
+  // scatter cone contact Hessians Jc'*Hc*Jc into Hcone, where Hc = Lc*Lc'
   for (int i=0; i < nefc; i++) {
     if (ctx->efc_state[i] == mjCNSTRSTATE_CONE) {
       int dim = ctx->contact[ctx->efc_id[i]].dim;
@@ -3207,37 +3296,29 @@ static void HessianConeFolded(mjData* d, mjPrimalContext* ctx) {
       mju_cholFactor(local, dim, mjMINVAL);
 
       const int nnz = ctx->J_rownnz[i];
-      for (int c=0; c < dim; c++) {
-        mjtNum* dst = Jmod + ctx->J_rowadr[i+c];
-        mju_zero(dst, nnz);
-        for (int r=c; r < dim; r++) {
-          mju_addToScl(dst, ctx->HJ+ctx->J_rowadr[i+r], local[r*dim+c], nnz);
+      mju_zero(LTJ, dim*nnz);
+      for (int r=0; r < dim; r++) {
+        for (int c=0; c <= r; c++) {
+          mju_addToScl(LTJ+c*nnz, ctx->HJ+ctx->J_rowadr[i+r], local[r*dim+c], nnz);
         }
-        Dmod[i+c] = 1;
       }
+      primalAddConeOuterSparse(Hcone, ctx->H_rowadr, ctx->H_colind, dim, nnz,
+                               ctx->HJ_colind+ctx->J_rowadr[i], LTJ);
       ctx->nupdate += dim;
       i += (dim-1);
     }
   }
 
-  // Lcone = chol(Jmod'*Dmod*Jmod + M), same sparsity as L
-  mju_transposeSparse(JTmod, Jmod, nefc, nv, JT_rownnz, JT_rowadr, JT_colind, NULL,
-                      ctx->J_rownnz, ctx->J_rowadr, ctx->HJ_colind);
-  mju_sqrMatTDSparseNumeric(Hcone, nv, ctx->H_rownnz, ctx->H_rowadr, ctx->H_colind, NULL,
-                            Jmod, ctx->J_rownnz, ctx->J_rowadr, ctx->HJ_colind,
-                            JTmod, JT_rownnz, JT_rowadr, JT_colind,
-                            ctx->HJT_rowsuper, Dmod, d);
-  mju_addToMatSparse(Hcone, ctx->H_rownnz, ctx->H_rowadr, ctx->H_colind, nv,
-                     ctx->HM, ctx->HM_rownnz, ctx->HM_rowadr, ctx->HM_colind);
-  if (ctx->nS) {
-    mju_addToMatSparse(Hcone, ctx->H_rownnz, ctx->H_rowadr, ctx->H_colind, nv,
-                       ctx->S_val, ctx->S_rownnz, ctx->S_rowadr, ctx->S_colind);
+  // Lcone = chol(Hcone), same sparsity as L
+  int rank = mju_cholFactorNumeric(
+      ctx->Lcone, nv, mjMINVAL,
+      ctx->L_rownnz, ctx->L_rowadr, ctx->L_colind,
+      ctx->LT_rownnz, ctx->LT_rowadr, ctx->LT_colind, ctx->LT_map,
+      Hcone, ctx->H_rownnz, ctx->H_rowadr, ctx->H_colind,
+      ctx->cholscratch);
+  if (rank < nv && ctx->flg_Hdirty) {
+    FactorizeHessian(d, ctx, /*flg_recompute=*/1);
   }
-  mju_cholFactorNumeric(ctx->Lcone, nv, mjMINVAL,
-                        ctx->L_rownnz, ctx->L_rowadr, ctx->L_colind,
-                        ctx->LT_rownnz, ctx->LT_rowadr, ctx->LT_colind, ctx->LT_map,
-                        Hcone, ctx->H_rownnz, ctx->H_rowadr, ctx->H_colind,
-                        ctx->cholscratch);
 }
 
 
@@ -3308,20 +3389,19 @@ static void HessianConeUpdate(mjData* d, mjPrimalContext* ctx) {
 
 
 // predict whether folding is faster than rank-1 updates for the current set, comparing flop counts:
-// update path:   U = sum over cone contacts of dim * pathcost of the contact's last dof (a rank-1
-//                update walks the reverse-etree path of its last dof; lower dofs merge into it)
-// folded path:   Lflops/2 for the factorization plus S for J'*D*J over the D != 0 rows
-// fold when 10 U > 3 (Lflops + 2 S): an update flop costs about twice a factorization flop
-static int HessianConeFoldFaster(const mjPrimalContext* ctx) {
+// update path:   cost_L (for bringing L up to date) plus 10*U where U is the sum over cone contacts
+//                of dim * pathcost of the contact's last dof (a rank-1 update walks the
+//                reverse-etree path of its last dof; lower dofs merge into it)
+// folded path:   Lflops/2 for the factorization plus S for cone contact outer products on H
+// fold when cost_L + 10 U > 3 (Lflops + 2 S): an update flop costs about twice a factorization flop
+static int HessianConeFoldFaster(const mjPrimalContext* ctx, mjtSize cost_L) {
   int nefc = ctx->nefc;
 
-  // U: update flops, S: J'*D*J flops
+  // U: update flops, S: cone scatter flops
   mjtSize U = 0, S = 0;
   for (int i=0; i < nefc; i++) {
-    int nnz = ctx->J_rownnz[i];
-    if (ctx->efc_state[i] == mjCNSTRSTATE_QUADRATIC) {
-      S += (mjtSize)nnz * nnz;
-    } else if (ctx->efc_state[i] == mjCNSTRSTATE_CONE) {
+    if (ctx->efc_state[i] == mjCNSTRSTATE_CONE) {
+      int nnz = ctx->J_rownnz[i];
       int dim = ctx->contact[ctx->efc_id[i]].dim;
       int lastcol = ctx->HJ_colind[ctx->J_rowadr[i]+nnz-1];
       U += (mjtSize)dim * ctx->pathcost[lastcol];
@@ -3330,7 +3410,29 @@ static int HessianConeFoldFaster(const mjPrimalContext* ctx) {
     }
   }
 
-  return 10*U > 3*(ctx->Lflops + 2*S);
+  return cost_L + 10*U > 3*(ctx->Lflops + 2*S);
+}
+
+
+// evaluate and cache whether cone folding is faster and fits on the solver stack
+static int HessianConeFold(mjData* d, mjPrimalContext* ctx, mjtSize cost_L) {
+  if (!ctx->is_sparse || !ctx->ncone) {
+    return 0;
+  }
+  if (ctx->cone_fold < 0) {
+    ctx->cone_fold = HessianConeFoldFaster(ctx, cost_L);
+    if (ctx->cone_fold && !ctx->Hcone) {
+      size_t fold_bytes = mj_stackBytes((size_t)ctx->nH * sizeof(mjtNum), _Alignof(mjtNum));
+      size_t loop_bytes = primalLoopScratchBytes(ctx, d);
+      if (mj_stackBytesAvailable(d) < fold_bytes + loop_bytes) {
+        mj_warning(d, mjWARN_CNSTRFULL, d->narena);
+        ctx->cone_fold = 0;
+      } else {
+        ctx->Hcone = mjSTACKALLOC(d, ctx->nH, mjtNum);
+      }
+    }
+  }
+  return ctx->cone_fold;
 }
 
 
@@ -3339,18 +3441,21 @@ static void HessianCone(mjData* d, mjPrimalContext* ctx) {
   // sparse mode with many sliding contacts: one refactorization can beat
   // sum(dim) rank-1 updates per cone contact. The decision depends only on
   // sparsity patterns and efc_state, so it is cached until a state change.
-  if (ctx->is_sparse) {
-    if (ctx->cone_fold < 0) {
-      ctx->cone_fold = HessianConeFoldFaster(ctx);
-    }
-    if (ctx->cone_fold) {
-      HessianConeFolded(d, ctx);
-      return;
-    }
+  if (HessianConeFold(d, ctx, 0)) {
+    HessianConeFolded(d, ctx);
+    return;
   }
 
   HessianConeUpdate(d, ctx);
 }
+
+
+// maximum accumulated sparse Hessian downdates before rebuilding H from M + S + J'*D*J
+#ifdef mjUSESINGLE
+  #define PRIMAL_MAX_DOWNDATE 8
+#else
+  #define PRIMAL_MAX_DOWNDATE 32
+#endif
 
 
 // incremental update to Hessian factor due to changes in efc_state
@@ -3361,14 +3466,47 @@ static void HessianIncremental(mjData* d, mjPrimalContext* ctx, const int* oldst
   // clear update counter
   ctx->nupdate = 0;
 
+  // scan state changes: invalidate cached cone fold decision and accumulate quadratic update cost
+  mjtSize U_quad = 0;
+  int ndowndate_step = 0;
+  for (int i=0; i < nefc; i++) {
+    if (oldstate[i] != ctx->efc_state[i]) {
+      ctx->cone_fold = -1;
+      if (ctx->is_sparse &&
+          ((oldstate[i] == mjCNSTRSTATE_QUADRATIC) !=
+           (ctx->efc_state[i] == mjCNSTRSTATE_QUADRATIC))) {
+        if (oldstate[i] == mjCNSTRSTATE_QUADRATIC) {
+          ndowndate_step++;
+        }
+        int nnz = ctx->J_rownnz[i];
+        if (nnz > 0) {
+          int lastcol = ctx->HJ_colind[ctx->J_rowadr[i]+nnz-1];
+          U_quad += ctx->pathcost[lastcol];
+        }
+      }
+    }
+  }
+
+  // bound accumulated sparse H downdates to prevent cancellation drift across iterations
+  if (ctx->is_sparse && ndowndate_step > 0 &&
+      ctx->ndowndate + ndowndate_step >= PRIMAL_MAX_DOWNDATE) {
+    FactorizeHessian(d, ctx, /*flg_recompute=*/1);
+    return;
+  }
+
+  // decide whether L is cheaper to refactorize from H than to rank-1 update, and whether cone
+  // folding beats updating L plus rank-1 updating Lcone
+  int refactor_L =
+      ctx->is_sparse && (!ctx->flg_Lvalid || (ctx->Lflops > 4096 && 10*U_quad > 3*ctx->Lflops));
+  mjtSize cost_L = refactor_L ? 3*ctx->Lflops : 10*U_quad;
+  int use_fold = HessianConeFold(d, ctx, cost_L);
+  if (refactor_L || use_fold) {
+    ctx->flg_Lvalid = 0;
+  }
+
   // update H factorization
   for (int i=0; i < nefc; i++) {
     int flag_update = -1;
-
-    // any state change invalidates the cached cone fold decision
-    if (oldstate[i] != ctx->efc_state[i]) {
-      ctx->cone_fold = -1;
-    }
 
     // add quad
     if (oldstate[i] != mjCNSTRSTATE_QUADRATIC && ctx->efc_state[i] == mjCNSTRSTATE_QUADRATIC) {
@@ -3386,6 +3524,21 @@ static void HessianIncremental(mjData* d, mjPrimalContext* ctx, const int* oldst
       if (ctx->is_sparse) {
         // get nnz and adr of row i
         const int nnz = ctx->J_rownnz[i], adr = ctx->J_rowadr[i];
+
+        // keep H synchronized with quadratic constraints
+        mjtNum scl = flag_update ? ctx->efc_D[i] : -ctx->efc_D[i];
+        primalAddRowOuterSparse(ctx->H, ctx->H_rowadr, ctx->H_colind, nnz,
+                                ctx->HJ_colind+adr, ctx->HJ+adr, scl);
+        if (!flag_update) {
+          ctx->flg_Hdirty = 1;
+          ctx->ndowndate++;
+        }
+
+        // skip L rank-1 update when L will be refactorized or cone folding is active
+        if (!ctx->flg_Lvalid) {
+          ctx->nupdate++;
+          continue;
+        }
 
         // scale cholupd
         mju_scl(cholupd, ctx->HJ+adr, mju_sqrt(ctx->efc_D[i]), nnz);
@@ -3407,6 +3560,20 @@ static void HessianIncremental(mjData* d, mjPrimalContext* ctx, const int* oldst
         // nothing else to do
         return;
       }
+    }
+  }
+
+  // factor L from H when L was deferred or quadratic updates exceeded refactorization cost
+  if (!use_fold && ctx->is_sparse && !ctx->flg_Lvalid) {
+    rank = mju_cholFactorNumeric(
+        ctx->L, nv, mjMINVAL,
+        ctx->L_rownnz, ctx->L_rowadr, ctx->L_colind,
+        ctx->LT_rownnz, ctx->LT_rowadr, ctx->LT_colind, ctx->LT_map,
+        ctx->H, ctx->H_rownnz, ctx->H_rowadr, ctx->H_colind, ctx->cholscratch);
+    ctx->flg_Lvalid = 1;
+    if (rank < nv && ctx->flg_Hdirty) {
+      FactorizeHessian(d, ctx, /*flg_recompute=*/1);
+      return;
     }
   }
 

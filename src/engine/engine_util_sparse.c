@@ -14,6 +14,9 @@
 
 #include "engine/engine_util_sparse.h"
 
+#include <stddef.h>
+#include <stdint.h>
+
 #include <mujoco/mjdata.h>
 #include <mujoco/mjmacro.h>
 #include <mujoco/mjsan.h>  // IWYU pragma: keep
@@ -749,7 +752,7 @@ void mju_sqrMatTDUncompressedInit(int* res_rowadr, int nc) {
 int mju_sqrMatTDSparseSymbolic(
     int* restrict res_rownnz, int* restrict res_rowadr,
     int* restrict res_colind, int* restrict res_diagind, int nr, int nc,
-    const int* rownnz, const int* rowadr, const int* colind,
+    const int* rownnz, const int* rowadr, const int* colind, const int* rowsuper,
     const int* rownnzT, const int* rowadrT, const int* colindT, const int* rowsuperT, mjData* d) {
   if (nc <= 0 || nr <= 0) {
     if (nc > 0) {
@@ -829,6 +832,9 @@ int mju_sqrMatTDSparseSymbolic(
           marker[j] = 1;
           buffer_idx[buffer_nnz++] = j;
         }
+      }
+      if (rowsuper) {
+        i += rowsuper[r];
       }
     }
 

@@ -3001,7 +3001,7 @@ static void mj_makeARSymbolic(const mjModel* m, mjData* d) {
     int* diagind = mjSTACKALLOC(d, nefc, int);
     d->nA = mju_sqrMatTDSparseSymbolic(
         d->efc_AR_rownnz, d->efc_AR_rowadr, NULL, diagind,
-        nv, nefc, YT_rownnz, YT_rowadr, YT_colind,
+        nv, nefc, YT_rownnz, YT_rowadr, YT_colind, NULL,
         d->efc_Y_rownnz, d->efc_Y_rowadr, d->efc_Y_colind, Y_rowsuper, d);
 
     // allocate A values and column indices on arena
@@ -3017,7 +3017,7 @@ static void mj_makeARSymbolic(const mjModel* m, mjData* d) {
     // A = Y * Y': symbolic phase
     mju_sqrMatTDSparseSymbolic(
         d->efc_AR_rownnz, d->efc_AR_rowadr, d->efc_AR_colind, diagind,
-        nv, nefc, YT_rownnz, YT_rowadr, YT_colind,
+        nv, nefc, YT_rownnz, YT_rowadr, YT_colind, NULL,
         d->efc_Y_rownnz, d->efc_Y_rowadr, d->efc_Y_colind, Y_rowsuper, d);
 
     mj_freeStack(d);

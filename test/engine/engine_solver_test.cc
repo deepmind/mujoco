@@ -1423,5 +1423,121 @@ TEST_F(SolverTest, Discrete2DFlexNewtonSparseReorderWithFreeBody) {
   }
 }
 
+// When a 2D flex sheet impacts and slides across a tilted floor under diagonal
+// gravity, hundreds of contact rows flip between SATISFIED, QUADRATIC, and CONE
+// within a single Newton solve, exercising incremental H updates/downdates,
+// batch L refactorization (10*U_quad > 3*Lflops), and incremental cone folding
+// across condim=3 and condim=6 contacts. Sparse and dense Newton must agree.
+TEST_F(SolverTest, FlexNewtonIncrementalRefactorAndConeFold) {
+  static constexpr char xml[] = R"(
+  <mujoco>
+    <size memory="64M"/>
+    <option integrator="discrete" solver="Newton" cone="elliptic"
+            timestep="0.004" gravity="4 -3 -9.81" iterations="100">
+      <flag warmstart="disable"/>
+    </option>
+    <worldbody>
+      <geom type="plane" pos="0 0 0.01" size="2 2 0.01" condim="3"
+            solref="0.08 1" friction="0.6 0.01 0.001"/>
+      <geom type="box" pos="0 0 0.005" size="0.15 0.15 0.005"
+            condim="6" solref="0.004 1" friction="0.6 0.01 0.001"/>
+      <flexcomp name="cloth" type="grid" dim="2" count="10 10 1"
+                spacing="0.02 0.02 0.02" pos="0 0 0.014"
+                radius="0.005" mass="0.4">
+        <contact selfcollide="none" condim="6"/>
+        <elasticity young="2e4" poisson="0.3" damping="2"
+                    thickness="0.004" elastic2d="both"/>
+      </flexcomp>
+    </worldbody>
+  </mujoco>
+  )";
+
+  char error[1024];
+  MjModelPtr model = LoadModelFromString(xml, error, sizeof(error));
+  ASSERT_THAT(model.get(), NotNull()) << error;
+  model->opt.tolerance = MjTol(1e-10, 1e-5);
+  int nv = model->nv;
+
+  model->opt.jacobian = mjJAC_SPARSE;
+  MjDataPtr data_sparse = MakeData(model);
+  MjDataPtr data_dense = MakeData(model);
+
+  int state_size = mj_stateSize(model.get(), mjSTATE_PHYSICS);
+  std::vector<mjtNum> state(state_size);
+
+  for (mjtCone cone : {mjCONE_PYRAMIDAL, mjCONE_ELLIPTIC}) {
+    model->opt.cone = cone;
+    mj_resetData(model.get(), data_sparse.get());
+    mj_resetData(model.get(), data_dense.get());
+
+    bool saw_incremental_update = false;
+    bool saw_batch_change = false;
+    bool saw_full_recompute = false;
+
+    for (int step = 0; step < 8; step++) {
+      // Impart spatially varying velocities so vertices across the 10x10 sheet
+      // span SATISFIED, QUADRATIC, and CONE states simultaneously; on step 4,
+      // pull most vertices upward so >32 quadratic rows release in one solve
+      // and exercise the PRIMAL_MAX_DOWNDATE full-H rebuild path.
+      if (step == 0) {
+        for (int v = 0; v < nv / 3; v++) {
+          data_sparse->qvel[3 * v + 0] = 0.3 * (v % 10 - 4.5);
+          data_sparse->qvel[3 * v + 1] = -0.2 * (v / 10 - 4.5);
+          data_sparse->qvel[3 * v + 2] = -0.4 + 0.015 * v;
+        }
+      } else if (step == 4) {
+        mj_resetData(model.get(), data_sparse.get());
+        for (int v = 0; v < nv / 3; v++) {
+          data_sparse->qvel[3 * v + 2] = -0.5;
+        }
+      }
+      mj_getState(model.get(), data_sparse.get(), state.data(),
+                  mjSTATE_PHYSICS);
+
+      model->opt.jacobian = mjJAC_SPARSE;
+      mj_forward(model.get(), data_sparse.get());
+
+      model->opt.jacobian = mjJAC_DENSE;
+      mj_setState(model.get(), data_dense.get(), state.data(), mjSTATE_PHYSICS);
+      mj_forward(model.get(), data_dense.get());
+
+      EXPECT_EQ(data_sparse->warning[mjWARN_BADQACC].number, 0)
+          << "cone " << cone << " step " << step;
+      EXPECT_EQ(data_sparse->warning[mjWARN_CNSTRFULL].number, 0)
+          << "cone " << cone << " step " << step;
+
+      int niter = data_sparse->solver_niter[0];
+      for (int it = 0; it < niter; it++) {
+        const mjSolverStat& st = data_sparse->solver[it];
+        if (st.nchange > 0 && st.nupdate > 0 &&
+            st.nupdate < data_sparse->nefc) {
+          saw_incremental_update = true;
+        }
+        if (st.nchange >= 20) {
+          saw_batch_change = true;
+        }
+        if (st.nchange > 0 && st.nupdate >= data_sparse->nefc) {
+          saw_full_recompute = true;
+        }
+      }
+
+      for (int i = 0; i < nv; i++) {
+        mjtNum scale =
+            max(static_cast<mjtNum>(1), std::abs(data_dense->qacc[i]));
+        EXPECT_NEAR(data_sparse->qacc[i] / scale, data_dense->qacc[i] / scale,
+                    MjTol(1e-7, 1e-2))
+            << "cone " << cone << " step " << step << " dof " << i;
+      }
+
+      model->opt.jacobian = mjJAC_SPARSE;
+      mj_step(model.get(), data_sparse.get());
+    }
+
+    EXPECT_TRUE(saw_incremental_update) << "cone " << cone;
+    EXPECT_TRUE(saw_batch_change) << "cone " << cone;
+    EXPECT_TRUE(saw_full_recompute) << "cone " << cone;
+  }
+}
+
 }  // namespace
 }  // namespace mujoco
