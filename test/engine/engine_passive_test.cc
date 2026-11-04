@@ -26,6 +26,8 @@
 #include <gtest/gtest.h>
 #include <mujoco/mjmodel.h>
 #include <mujoco/mujoco.h>
+#include "src/engine/engine_core_util.h"
+#include "src/engine/engine_metric.h"
 #include "test/fixture.h"
 
 namespace mujoco {
@@ -2018,8 +2020,33 @@ TEST_F(ElasticityTest, StretchParentBodyRotation) {
 
 constexpr int kRodHingeSize = 10;
 
-// discrete elastic rod bending energy of flex f, from the compiled hinge data
-mjtNum RodBendingEnergy(const mjModel* m, const mjData* d, int f) {
+// build orthonormal frame given xaxis in frame[0..2] (matches mju_makeFrame)
+void MakeFrame(mjtNum frame[9]) {
+  mju_normalize3(frame);
+  if (mju_dot3(frame + 3, frame + 3) < 0.25) {
+    mju_zero3(frame + 3);
+    if (frame[1] < 0.5 && frame[1] > -0.5) {
+      frame[4] = 1;
+    } else {
+      frame[5] = 1;
+    }
+  }
+  mju_addToScl3(frame + 3, frame, -mju_dot3(frame, frame + 3));
+  mju_normalize3(frame + 3);
+  mju_cross(frame + 6, frame, frame + 3);
+}
+
+// chain order and per-edge reference (t, u, v) and twist angle of a 1D DER rod
+struct RodChainFrames {
+  std::vector<int> v_chain;     // flex-local vertices in chain order
+  std::vector<mjtNum> t, u, v;  // 3 per chain edge
+  std::vector<mjtNum> theta;    // 1 per chain edge
+};
+
+// discrete elastic rod bending energy of flex f, from the compiled hinge data;
+// frames (optional) receives the reference frames of a DER chain rod
+mjtNum RodBendingEnergy(const mjModel* m, const mjData* d, int f,
+                        RodChainFrames* frames = nullptr) {
   static constexpr mjtNum kSmooth = static_cast<mjtNum>(1e-4);
   const mjtNum gam = mju_sqrt(1 + kSmooth * kSmooth);
   const mjtNum* b = m->flex_bending + m->flex_bendingadr[f];
@@ -2035,24 +2062,30 @@ mjtNum RodBendingEnergy(const mjModel* m, const mjData* d, int f) {
   int nhinge = (int)b[0];
   bool is_chain = nhinge > 0;
   bool any_aniso = false;
-  int twist_jnt = -1;
+  bool any_twist_jnt = false;
   for (int h = 0; h < nhinge && is_chain; h++) {
     const mjtNum* hinge = b + 1 + kRodHingeSize * h;
-    if (hinge[3] >= 0 || (hinge[6] > 0 && hinge[5] == 0)) is_chain = false;
+    if (hinge[3] >= 0) is_chain = false;
     if (h > 0) {
       const mjtNum* prev = b + 1 + kRodHingeSize * (h - 1);
       if ((int)hinge[0] != (int)prev[1] || (int)hinge[1] != (int)prev[2]) {
         is_chain = false;
       }
     }
-    if (hinge[5] != 0) any_aniso = true;
-    if (h == 0 && hinge[7] >= 0 && hinge[8] > 0) twist_jnt = (int)hinge[7];
+    if (hinge[5] != 0 || hinge[9] != 0) any_aniso = true;
+    if (hinge[7] >= 0) any_twist_jnt = true;
+  }
+  if (is_chain) {
+    const mjtNum* last_hinge = b + 1 + kRodHingeSize * (nhinge - 1);
+    if ((int)last_hinge[1] == (int)b[1 + 0] ||
+        (int)last_hinge[2] == (int)b[1 + 0]) {
+      is_chain = false;
+    }
   }
   int va = m->flex_vertadr[f];
   bool root_clamped = (m->flex_vertbodyid[va + (int)b[1 + 0]] ==
                        m->flex_vertbodyid[va + (int)b[1 + 1]]);
-  if (!root_clamped) twist_jnt = -1;
-  if (is_chain && (any_aniso || twist_jnt >= 0)) {
+  if (is_chain && (any_aniso || any_twist_jnt)) {
     int nedge = nhinge + 1;
     int nvert_chain = nhinge + 2;
     std::vector<int> v_chain(nvert_chain);
@@ -2087,36 +2120,24 @@ mjtNum RodBendingEnergy(const mjModel* m, const mjData* d, int f) {
 
     std::vector<mjtNum> xpos0(3 * nvert_chain);
     int b0 = m->flex_vertbodyid[va + v_chain[0]];
-    mjtNum p0_b0[3], q0_b0[4], qneg0[4], qrot[4];
+    mjtNum p0_b0[3], q0_b0[4], R0_b0[9];
     body_pose0(b0, p0_b0, q0_b0);
-    mju_negQuat(qneg0, q0_b0);
-    mju_mulQuat(qrot, d->xquat + 4 * b0, qneg0);
+    mju_quat2Mat(R0_b0, q0_b0);
     for (int k = 0; k < nvert_chain; k++) {
       int gv = va + v_chain[k];
       int bk = m->flex_vertbodyid[gv];
-      mjtNum pk[3], qk[4], off[3], rel[3], rot_rel[3];
+      mjtNum pk[3], qk[4], off[3];
       body_pose0(bk, pk, qk);
       mju_rotVecQuat(off, m->flex_vert + 3 * gv, qk);
-      mju_addTo3(pk, off);
-      mju_sub3(rel, pk, p0_b0);
-      mju_rotVecQuat(rot_rel, rel, qrot);
-      mju_add3(xpos0.data() + 3 * k, d->xpos + 3 * b0, rot_rel);
+      mju_add3(xpos0.data() + 3 * k, pk, off);
     }
 
     mjtNum e0_ref[3], frame_loc[9] = {0}, t0_ref[3], u0_ref[3], v0_ref[3];
     mju_sub3(e0_ref, xpos0.data() + 3, xpos0.data());
-    mju_mulMatTVec3(frame_loc, d->xmat + 9 * b0, e0_ref);
+    mju_mulMatTVec3(frame_loc, R0_b0, e0_ref);
     mju_normalize3(frame_loc);
-    if (frame_loc[1] < 0.5 && frame_loc[1] > -0.5) {
-      frame_loc[4] = 1;
-    } else {
-      frame_loc[5] = 1;
-    }
-    mju_addToScl3(frame_loc + 3, frame_loc,
-                  -mju_dot3(frame_loc, frame_loc + 3));
-    mju_normalize3(frame_loc + 3);
-    mju_cross(frame_loc + 6, frame_loc, frame_loc + 3);
-    mjtNum psi0 = b[1 + 9];
+    MakeFrame(frame_loc);
+    mjtNum psi0 = (b[1 + 9] < 0) ? 0.5 * mjPI : 0;
     mjtNum c0 = mju_cos(psi0), s0 = mju_sin(psi0);
     mjtNum u_loc[3], v_loc[3];
     for (int c = 0; c < 3; c++) {
@@ -2128,29 +2149,28 @@ mjtNum RodBendingEnergy(const mjModel* m, const mjData* d, int f) {
     mju_mulMatVec3(v0_ref, d->xmat + 9 * b0, v_loc);
 
     std::vector<mjtNum> om0(2 * nhinge, 0);
-    mjtNum t_prev_ref[3], u_prev_ref[3], v_prev_ref[3];
-    mju_copy3(t_prev_ref, t0_ref);
-    mju_copy3(u_prev_ref, u0_ref);
-    mju_copy3(v_prev_ref, v0_ref);
+    std::vector<mjtNum> t_ref_world(3 * nedge, 0), u_ref_world(3 * nedge, 0);
+    mjtNum v_prev_ref[3];
+    mju_mulMatVec3(t_ref_world.data(), R0_b0, frame_loc);
+    mju_mulMatVec3(u_ref_world.data(), R0_b0, u_loc);
+    mju_mulMatVec3(v_prev_ref, R0_b0, v_loc);
     for (int h = 0; h < nhinge; h++) {
-      if (any_aniso && b[1 + kRodHingeSize * h + 6] > 0) {
+      if (b[1 + kRodHingeSize * h + 6] > 0) {
         mjtNum e0r[3], e1r[3], cr[3], kb_ref[3];
         mju_sub3(e0r, xpos0.data() + 3 * (h + 1), xpos0.data() + 3 * h);
         mju_sub3(e1r, xpos0.data() + 3 * (h + 2), xpos0.data() + 3 * (h + 1));
         mju_cross(cr, e0r, e1r);
         mjtNum den = mju_norm3(e0r) * mju_norm3(e1r) + mju_dot3(e0r, e1r);
         mju_scl3(kb_ref, cr, 2 / den);
-        om0[2 * h + 0] = mju_dot3(kb_ref, u_prev_ref);
+        om0[2 * h + 0] = mju_dot3(kb_ref, u_ref_world.data() + 3 * h);
         om0[2 * h + 1] = mju_dot3(kb_ref, v_prev_ref);
       }
-      mjtNum t_next_ref[3], u_next_ref[3], v_next_ref[3];
+      mjtNum* t_next_ref = t_ref_world.data() + 3 * (h + 1);
       mju_sub3(t_next_ref, xpos0.data() + 3 * (h + 2),
                xpos0.data() + 3 * (h + 1));
       mju_normalize3(t_next_ref);
-      pt(t_prev_ref, t_next_ref, u_prev_ref, u_next_ref, v_next_ref);
-      mju_copy3(t_prev_ref, t_next_ref);
-      mju_copy3(u_prev_ref, u_next_ref);
-      mju_copy3(v_prev_ref, v_next_ref);
+      pt(t_ref_world.data() + 3 * h, t_next_ref, u_ref_world.data() + 3 * h,
+         u_ref_world.data() + 3 * (h + 1), v_prev_ref);
     }
 
     std::vector<mjtNum> t_edge(3 * nedge), u_edge(3 * nedge), v_edge(3 * nedge);
@@ -2159,174 +2179,80 @@ mjtNum RodBendingEnergy(const mjModel* m, const mjData* d, int f) {
                xpos + 3 * v_chain[e]);
       mju_normalize3(t_edge.data() + 3 * e);
     }
-    if (!root_clamped && mju_dot3(t0_ref, t_edge.data()) < -1 + 1e-10) {
-      mju_addScl3(u_edge.data(), u0_ref, t_edge.data(),
-                  -mju_dot3(u0_ref, t_edge.data()));
-      mju_normalize3(u_edge.data());
-      mju_cross(v_edge.data(), t_edge.data(), u_edge.data());
-    } else {
-      pt(t0_ref, t_edge.data(), u0_ref, u_edge.data(), v_edge.data());
-    }
-    for (int h = 0; h < nhinge; h++) {
-      pt(t_edge.data() + 3 * h, t_edge.data() + 3 * (h + 1),
-         u_edge.data() + 3 * h, u_edge.data() + 3 * (h + 1),
-         v_edge.data() + 3 * (h + 1));
-    }
-    mjtNum dpsi_holonomy = 0;
-    if (root_clamped) {
-      mjtNum u_end_ref[3], v_end_ref[3];
-      pt(t_prev_ref, t_edge.data() + 3 * nhinge, u_prev_ref, u_end_ref,
-         v_end_ref);
-      dpsi_holonomy =
-          mju_atan2(mju_dot3(u_end_ref, v_edge.data() + 3 * nhinge),
-                    mju_dot3(u_end_ref, u_edge.data() + 3 * nhinge));
-    }
-    mjtNum theta_hinge = 0;
-    if (twist_jnt >= 0) {
-      int padr = m->jnt_qposadr[twist_jnt];
-      theta_hinge = d->qpos[padr] - m->qpos0[padr];
+
+    const mjtNum* state = (m->flex_plasticadr[f] >= 0 && d->plastic)
+                              ? (d->plastic + m->flex_plasticadr[f])
+                              : nullptr;
+    // clamped tail (at least two hinges): the last edge's qpos0 reference frame
+    // rotates with its body
+    int bT = m->flex_vertbodyid[va + v_chain[nhinge + 1]];
+    bool tail_clamped =
+        nhinge >= 2 && m->flex_vertbodyid[va + v_chain[nhinge]] == bT;
+    mjtNum tT_ref[3] = {0}, uT_ref[3] = {0};
+    if (tail_clamped) {
+      mjtNum pT[3], qT[4], R0_T[9], R_rel[9];
+      body_pose0(bT, pT, qT);
+      mju_quat2Mat(R0_T, qT);
+      mju_mulMatMatT(R_rel, d->xmat + 9 * bT, R0_T, 3, 3, 3);
+      mju_mulMatVec3(tT_ref, R_rel, t_ref_world.data() + 3 * nhinge);
+      mju_mulMatVec3(uT_ref, R_rel, u_ref_world.data() + 3 * nhinge);
     }
 
-    mjtNum chain_energy = 0;
-    if (!any_aniso) {
-      mjtNum inv_kt_sum = 0;
-      for (int h = 0; h < nhinge; h++) {
-        const mjtNum* hinge = b + 1 + kRodHingeSize * h;
-        mjtNum k1 = hinge[4], kb0 = hinge[6], kt = hinge[8];
-        if (kt > 0) inv_kt_sum += 1.0 / kt;
-        mjtNum kb[3];
-        binormal(v_chain[h], v_chain[h + 1], v_chain[h + 2], kb);
-        mjtNum r = mju_norm3(kb);
-        mjtNum rho = mju_sqrt(r * r + kSmooth * kSmooth * kb0 * kb0);
-        chain_energy += k1 * (rho - gam * kb0) * (rho - gam * kb0);
+    std::vector<bool> anchored(nedge, false);
+    for (int e = 0; e < nedge; e++) {
+      mjtNum* te = t_edge.data() + 3 * e;
+      mjtNum* ue = u_edge.data() + 3 * e;
+      mjtNum* ve = v_edge.data() + 3 * e;
+      if (e == 0 && root_clamped) {
+        pt(t0_ref, te, u0_ref, ue, ve);
+        anchored[e] = true;
+        continue;
       }
-      if (twist_jnt >= 0 && inv_kt_sum > 0) {
-        mjtNum kt_eff = 1.0 / inv_kt_sum;
-        mjtNum theta_tot = theta_hinge + dpsi_holonomy;
-        chain_energy += kt_eff * theta_tot * theta_tot;
+      if (e == nhinge && tail_clamped) {
+        pt(tT_ref, te, uT_ref, ue, ve);
+        anchored[e] = true;
+        continue;
       }
-      return chain_energy;
-    }
-
-    std::vector<mjtNum> om_b(2 * nhinge);
-    for (int h = 0; h < nhinge; h++) {
-      mjtNum kb[3];
-      binormal(v_chain[h], v_chain[h + 1], v_chain[h + 2], kb);
-      om_b[2 * h + 0] = mju_dot3(kb, u_edge.data() + 3 * h);
-      om_b[2 * h + 1] = mju_dot3(kb, v_edge.data() + 3 * h);
+      // time-parallel transport of the state, else spatial transport from the
+      // previous edge (edge 0: from its qpos0 reference)
+      const mjtNum* state_e = state ? (state + 6 * e) : nullptr;
+      bool has_state = state_e && mju_dot3(state_e, state_e) > 0.25 &&
+                       mju_dot3(state_e + 3, state_e + 3) > 0.25;
+      if (has_state) {
+        pt(state_e, te, state_e + 3, ue, ve);
+        anchored[e] = true;
+      } else if (e > 0) {
+        pt(te - 3, te, ue - 3, ue, ve);
+      } else {
+        pt(t_ref_world.data(), te, u_ref_world.data(), ue, ve);
+      }
     }
     std::vector<mjtNum> theta(nedge, 0);
-    int e_start = root_clamped ? 1 : 0;
-    int e_end = (twist_jnt >= 0) ? nhinge - 1 : nhinge;
-    int nint = e_end - e_start + 1;
-    if (root_clamped) {
-      theta[nhinge] = (twist_jnt >= 0) ? (theta_hinge + dpsi_holonomy) : 0;
-      for (int e = 1; e < nhinge; e++) {
-        theta[e] = (static_cast<mjtNum>(e) / nhinge) * theta[nhinge];
-      }
-    } else {
-      mjtNum A2 = 0, B2 = 0, A1 = 0, B1 = 0;
-      for (int h = 0; h < nhinge; h++) {
-        const mjtNum* hinge = b + 1 + kRodHingeSize * h;
-        mjtNum k1 = hinge[4], dk = hinge[5], k2 = k1 + dk;
-        mjtNum u = om_b[2 * h + 0], v = om_b[2 * h + 1];
-        mjtNum w1_0 = om0[2 * h + 0], w2_0 = om0[2 * h + 1];
-        A2 += -dk * (u * u - v * v);
-        B2 += -2 * dk * u * v;
-        A1 += -2 * (k1 * w1_0 * u + k2 * w2_0 * v);
-        B1 += -2 * (k1 * w1_0 * v - k2 * w2_0 * u);
-      }
-      mjtNum phi2 = 0.5 * mju_atan2(-B2, -A2);
-      mjtNum phi1 = mju_atan2(-B1, -A1);
-      mjtNum cands[4] = {phi2, static_cast<mjtNum>(phi2 + 0.5 * mjPI), phi1,
-                         static_cast<mjtNum>(phi1 + mjPI)};
-      mjtNum best_E = 0, best_th = 0;
-      for (int c = 0; c < 4; c++) {
-        mjtNum cc = mju_cos(cands[c]), sc = mju_sin(cands[c]);
-        mjtNum c2 = cc * cc - sc * sc, s2 = 2 * cc * sc;
-        mjtNum E = 0.5 * (A2 * c2 + B2 * s2) + A1 * cc + B1 * sc;
-        if (c == 0 || E < best_E) {
-          best_E = E;
-          best_th = cands[c];
-        }
-      }
-      for (int e = 0; e <= nhinge; e++) theta[e] = best_th;
-    }
-    if (nint > 0) {
-      std::vector<mjtNum> diag(nint), dsafe(nint), offd(nint), rhs(nint);
-      std::vector<mjtNum> step(nint);
-      // Thomas elimination, returns false if the matrix is not positive
-      // definite
-      auto solve = [&](std::vector<mjtNum>& dg) {
-        for (int i = 0; i < nint; i++) {
-          step[i] = rhs[i];
-          if (i > 0) {
-            mjtNum w = offd[i - 1] / dg[i - 1];
-            dg[i] -= w * offd[i - 1];
-            step[i] -= w * step[i - 1];
-          }
-          if (dg[i] < mjMINVAL) return false;
-        }
-        step[nint - 1] /= dg[nint - 1];
-        for (int i = nint - 2; i >= 0; i--) {
-          step[i] = (step[i] - offd[i] * step[i + 1]) / dg[i];
-        }
-        return true;
-      };
-      for (int iter = 0; iter < 20; iter++) {
-        mjtNum max_r = 0;
-        for (int i = 0; i < nint; i++) {
-          int e = e_start + i;
-          mjtNum kt_prev = (e > 0) ? b[1 + kRodHingeSize * (e - 1) + 8] : 0;
-          mjtNum kt_curr = (e < nhinge) ? b[1 + kRodHingeSize * e + 8] : 0;
-          mjtNum dth_prev = (e > 0) ? (theta[e] - theta[e - 1]) : 0;
-          mjtNum dth_next = (e < nhinge) ? (theta[e + 1] - theta[e]) : 0;
-          mjtNum grad = 2 * kt_prev * dth_prev - 2 * kt_curr * dth_next;
-          mjtNum hess = 2 * (kt_prev + kt_curr);
-          mjtNum hess_bend = 0, hess_gn = 0;
-          mjtNum ce = mju_cos(theta[e]), se = mju_sin(theta[e]);
-          for (int side = 0; side < 2; side++) {
-            int h = e - 1 + side;
-            if (h < 0 || h >= nhinge) continue;
-            const mjtNum* hinge = b + 1 + kRodHingeSize * h;
-            mjtNum k1 = hinge[4], dk = hinge[5];
-            mjtNum k2 = k1 + dk;
-            mjtNum b1 = om_b[2 * h + 0], b2 = om_b[2 * h + 1];
-            mjtNum om1 = ce * b1 + se * b2;
-            mjtNum om2 = -se * b1 + ce * b2;
-            mjtNum d1 = om1 - om0[2 * h + 0];
-            mjtNum d2 = om2 - om0[2 * h + 1];
-            grad += k1 * d1 * om2 - k2 * d2 * om1;
-            hess_bend +=
-                k1 * (om2 * om2 - d1 * om1) + k2 * (om1 * om1 - d2 * om2);
-            hess_gn += k1 * om2 * om2 + k2 * om1 * om1;
-          }
-          diag[i] = hess + hess_bend;
-          dsafe[i] = hess + (hess_bend > 0 ? hess_bend : hess_gn) +
-                     (root_clamped ? 0 : 1e-9);
-          rhs[i] = -grad;
-          offd[i] = (i < nint - 1) ? -2 * kt_curr : 0;
-          max_r = std::max(max_r, std::abs(grad));
-        }
-        if (max_r < 1e-12) break;
-        if (!solve(diag) && !solve(dsafe)) break;
-        mjtNum max_step = 0;
-        for (int i = 0; i < nint; i++) {
-          max_step = std::max(max_step, std::abs(step[i]));
-        }
-        mjtNum scl = max_step > 0.5 ? 0.5 / max_step : 1;
-        for (int i = 0; i < nint; i++) {
-          theta[e_start + i] += scl * step[i];
-        }
+    for (int e = 0; e < nedge; e++) {
+      int jnt = mj_rodChainTwistJnt(m, f, e);
+      if (jnt >= 0) {
+        int padr = m->jnt_qposadr[jnt];
+        theta[e] = d->qpos[padr] - m->qpos0[padr];
       }
     }
+    if (frames) {
+      frames->v_chain = v_chain;
+      frames->t = t_edge;
+      frames->u = u_edge;
+      frames->v = v_edge;
+      frames->theta = theta;
+    }
+    mjtNum chain_energy = 0;
     for (int h = 0; h < nhinge; h++) {
       const mjtNum* hinge = b + 1 + kRodHingeSize * h;
       mjtNum k1 = hinge[4], dk = hinge[5], kt = hinge[8];
       mjtNum k2 = k1 + dk;
-      mjtNum b1 = om_b[2 * h + 0], b2 = om_b[2 * h + 1];
+      mjtNum kb[3];
+      binormal(v_chain[h], v_chain[h + 1], v_chain[h + 2], kb);
       for (int side = 0; side < 2; side++) {
         int e = h + side;
+        mjtNum b1 = mju_dot3(kb, u_edge.data() + 3 * e);
+        mjtNum b2 = mju_dot3(kb, v_edge.data() + 3 * e);
         mjtNum c = mju_cos(theta[e]), s = mju_sin(theta[e]);
         mjtNum om1 = c * b1 + s * b2;
         mjtNum om2 = -s * b1 + c * b2;
@@ -2334,7 +2260,16 @@ mjtNum RodBendingEnergy(const mjModel* m, const mjData* d, int f) {
         mjtNum d2 = om2 - om0[2 * h + 1];
         chain_energy += 0.5 * (k1 * d1 * d1 + k2 * d2 * d2);
       }
-      mjtNum dtheta = theta[h + 1] - theta[h];
+      mjtNum u_trans[3], v_trans[3];
+      pt(t_edge.data() + 3 * h, t_edge.data() + 3 * (h + 1),
+         u_edge.data() + 3 * h, u_trans, v_trans);
+      mjtNum dpsi_h = mju_atan2(mju_dot3(u_edge.data() + 3 * (h + 1), v_trans),
+                                mju_dot3(u_edge.data() + 3 * (h + 1), u_trans));
+      if (state && anchored[h] && anchored[h + 1]) {
+        const mjtNum psi_old = state[6 * nedge + h];
+        dpsi_h -= 2 * mjPI * mju_round((dpsi_h - psi_old) / (2 * mjPI));
+      }
+      mjtNum dtheta = theta[h + 1] - theta[h] + dpsi_h;
       chain_energy += kt * dtheta * dtheta;
     }
     return chain_energy;
@@ -2393,6 +2328,18 @@ mjtNum RodBendingEnergy(const mjModel* m, const mjData* d, int f) {
     }
   }
   return energy;
+}
+
+// set the director state of every 1D DER rod to the current configuration;
+// finite differences of positions then see a fixed state (without one, the
+// directors are propagated from edge 0 and the forces treat them as frozen)
+void FreezeRodState(const mjModel* m, mjData* d) {
+  for (int f = 0; f < m->nflex; f++) {
+    if (m->flex_dim[f] == 1 && m->flex_plasticadr[f] >= 0) {
+      mj_rodChain(m, d, f, nullptr, nullptr, nullptr, nullptr, nullptr, nullptr,
+                  d->plastic + m->flex_plasticadr[f]);
+    }
+  }
 }
 
 static constexpr char kRodStraightXml[] = R"(
@@ -2467,8 +2414,8 @@ static constexpr char kRodVeeXml[] = R"(
 </mujoco>
 )";
 
-// straight segment ending in a planar arc: straight single hinges at vertices
-// 1, 2 and hinge pairs (3, 4), (4, 5), where vertex 3 has one curved neighbor
+// straight segment ending in a planar arc: 5 single DER hinges (straight at
+// vertices 1, 2 and curved at vertices 3, 4, 5)
 static constexpr char kRodHookXml[] = R"(
 <mujoco>
   <option gravity="0 0 0"/>
@@ -2565,19 +2512,30 @@ TEST_F(ElasticityTest, RodBendingCurvedReference) {
   EXPECT_THAT(m.get(), IsNull());
   EXPECT_THAT(error, HasSubstr("degenerate 1D flex hinge"));
 
-  // planar arc of radius 0.2 with 8 vertices: 6 curved hinges, 5 hinge pairs
+  // open <flexcomp> planar arc of radius 0.2 with 8 vertices: 6 single DER
+  // hinges and 7 per-edge twist joints
   static constexpr int kN = 8;
   static constexpr double kRadius = 0.2;
   const double dtheta = mjPI / (kN - 1);
   const double chord = 2 * kRadius * std::sin(dtheta / 2);
-  std::string point, element;
+  std::string point, element, raw_bodies, raw_body_names;
   for (int i = 0; i < kN; i++) {
-    char buf[64];
-    std::snprintf(buf, sizeof(buf), "%.17g %.17g 0  ",
-                  kRadius * std::cos(i * dtheta),
-                  kRadius * std::sin(i * dtheta));
+    char buf[256];
+    double xi = kRadius * std::cos(i * dtheta);
+    double yi = kRadius * std::sin(i * dtheta);
+    std::snprintf(buf, sizeof(buf), "%.17g %.17g 0  ", xi, yi);
     point += buf;
     if (i) element += std::to_string(i - 1) + " " + std::to_string(i) + "  ";
+    std::snprintf(
+        buf, sizeof(buf),
+        R"(<body name="v%d" pos="%.17g %.17g 0">)"
+        R"(<inertial pos="0 0 0" mass="0.125" diaginertia="1e-5 1e-5 1e-5"/>)"
+        R"(<joint type="slide" axis="1 0 0"/>)"
+        R"(<joint type="slide" axis="0 1 0"/>)"
+        R"(<joint type="slide" axis="0 0 1"/></body>)",
+        i, xi, yi);
+    raw_bodies += buf;
+    raw_body_names += "v" + std::to_string(i) + " ";
   }
   std::string arc = R"(
   <mujoco>
@@ -2594,21 +2552,22 @@ TEST_F(ElasticityTest, RodBendingCurvedReference) {
   )";
   m = LoadModelFromString(arc.c_str(), error, sizeof(error));
   ASSERT_THAT(m.get(), NotNull()) << error;
+  ASSERT_EQ(m->nv, 3 * kN + (kN - 1));
   b = m->flex_bending + m->flex_bendingadr[0];
-  ASSERT_EQ(b[0], kN - 3);
+  ASSERT_EQ(b[0], kN - 2);
 
-  // the stiffness k = EI / (l0 + l1) of each hinge is split among its pairs
   const double k = 1e7 * mjPI * std::pow(0.01, 4) / 4 / (2 * chord);
-  std::vector<double> stiffness(kN, 0);
-  for (int h = 0; h < kN - 3; h++) {
+  for (int h = 0; h < kN - 2; h++) {
     const mjtNum* hinge = b + 1 + kRodHingeSize * h;
-    EXPECT_GE(hinge[3], 0);
-    stiffness[(int)hinge[1]] += hinge[4];
-    stiffness[(int)hinge[2]] += hinge[5];
+    EXPECT_EQ(hinge[0], h);
+    EXPECT_EQ(hinge[1], h + 1);
+    EXPECT_EQ(hinge[2], h + 2);
+    EXPECT_EQ(hinge[3], -1);
+    EXPECT_NEAR(hinge[4], k, MjTol(1e-10, 1e-5) * k) << "hinge " << h;
+    EXPECT_GE(hinge[7], 0);
   }
-  for (int v = 1; v < kN - 1; v++) {
-    EXPECT_NEAR(stiffness[v], k, MjTol(1e-10, 1e-5) * k) << "vertex " << v;
-  }
+  EXPECT_GE(mj_name2id(m.get(), mjOBJ_JOINT, "arc_twist_0"), 0);
+  EXPECT_GE(mj_name2id(m.get(), mjOBJ_JOINT, "arc_twist"), 0);
 
   // zero energy at rest
   MjDataPtr d = MakeData(m);
@@ -2642,10 +2601,123 @@ TEST_F(ElasticityTest, RodBendingCurvedReference) {
   mj_fwdPosition(m.get(), d.get());
   EXPECT_LT(RodBendingEnergy(m.get(), d.get(), 0), e0);
 
-  // rigid rotations at rest, including ones that move edges across the switch
-  // of the engine's edge frame axes: no energy and no force
+  // compute reference edge tangents and Bishop directors for rigid 3D rotations
+  auto pt = [](const mjtNum t_from[3], const mjtNum t_to[3],
+               const mjtNum u_in[3], mjtNum u_out[3], mjtNum v_out[3]) {
+    mjtNum denom = 1 + mju_dot3(t_from, t_to);
+    mjtNum sum[3];
+    mju_add3(sum, t_from, t_to);
+    mjtNum scale = mju_dot3(t_to, u_in) / denom;
+    mju_addScl3(u_out, u_in, sum, -scale);
+    mju_normalize3(u_out);
+    mju_cross(v_out, t_to, u_out);
+  };
+  std::vector<mjtNum> t_ref(3 * (kN - 1)), u_ref(3 * (kN - 1));
+  for (int e = 0; e < kN - 1; e++) {
+    mjtNum x0[3] = {static_cast<mjtNum>(kRadius * std::cos(e * dtheta)),
+                    static_cast<mjtNum>(kRadius * std::sin(e * dtheta)), 0};
+    mjtNum x1[3] = {static_cast<mjtNum>(kRadius * std::cos((e + 1) * dtheta)),
+                    static_cast<mjtNum>(kRadius * std::sin((e + 1) * dtheta)),
+                    0};
+    mju_sub3(t_ref.data() + 3 * e, x1, x0);
+    mju_normalize3(t_ref.data() + 3 * e);
+  }
+  mjtNum frame0[9] = {0};
+  mju_copy3(frame0, t_ref.data());
+  MakeFrame(frame0);
+  mju_copy3(u_ref.data(), frame0 + 3);
+  for (int e = 0; e < kN - 2; e++) {
+    mjtNum v_tmp[3];
+    pt(t_ref.data() + 3 * e, t_ref.data() + 3 * (e + 1), u_ref.data() + 3 * e,
+       u_ref.data() + 3 * (e + 1), v_tmp);
+  }
+
+  // rigid 3D rotations at rest: setting per-edge twist angles for plastic == 0
+  // (and equivalently rotating (t_s, u_s) in d->plastic with theta == 0) yields
+  // zero energy and zero qfrc_spring on all m->nv DOFs
   const mjtNum axes[3][3] = {{1, 0, 0}, {0, 1, 1}, {1, -2, 3}};
   const mjtNum angles[3] = {mjPI / 2, 2.0, -1.0};
+  int padr = m->flex_plasticadr[0];
+  ASSERT_GE(padr, 0);
+  for (int r = 0; r < 3; r++) {
+    mjtNum quat[4], axis[3];
+    mju_copy3(axis, axes[r]);
+    mju_normalize3(axis);
+    mju_axisAngle2Quat(quat, axis, angles[r]);
+
+    // Case A: d->plastic == 0: the directors start from edge 0's reference
+    // transported to R t_ref, PT(t_ref -> R t_ref), and propagate spatially,
+    // which is equivariant under R, so one twist angle (that of edge 0) on
+    // every edge recovers the rotated material frames
+    d = MakeData(m);
+    for (int i = 0; i < kN; i++) {
+      mjtNum x[3] = {static_cast<mjtNum>(kRadius * std::cos(i * dtheta)),
+                     static_cast<mjtNum>(kRadius * std::sin(i * dtheta)), 0};
+      mjtNum rx[3];
+      mju_rotVecQuat(rx, x, quat);
+      mju_sub3(d->qpos + 3 * i, rx, x);
+    }
+    mjtNum rt0[3], ru0[3], u_pt0[3], v_pt0[3];
+    mju_rotVecQuat(rt0, t_ref.data(), quat);
+    mju_rotVecQuat(ru0, u_ref.data(), quat);
+    pt(t_ref.data(), rt0, u_ref.data(), u_pt0, v_pt0);
+    const mjtNum alpha0 = mju_atan2(mju_dot3(ru0, v_pt0), mju_dot3(ru0, u_pt0));
+    for (int e = 0; e < kN - 1; e++) {
+      int jnt = mj_rodChainTwistJnt(m.get(), 0, e);
+      d->qpos[m->jnt_qposadr[jnt]] = alpha0;
+    }
+    mj_forward(m.get(), d.get());
+    EXPECT_NEAR(RodBendingEnergy(m.get(), d.get(), 0), 0, MjTol(1e-10, 1e-5));
+    for (int i = 0; i < m->nv; i++) {
+      EXPECT_NEAR(d->qfrc_spring[i], 0, MjTol(1e-6, 1e-2))
+          << "rotation " << r << " (theta), dof " << i;
+    }
+
+    // Case B: rotate (t_s, u_s) in d->plastic with theta[e] == 0
+    for (int e = 0; e < kN - 1; e++) {
+      int jnt = mj_rodChainTwistJnt(m.get(), 0, e);
+      d->qpos[m->jnt_qposadr[jnt]] = 0;
+      mju_rotVecQuat(d->plastic + padr + 6 * e, t_ref.data() + 3 * e, quat);
+      mju_rotVecQuat(d->plastic + padr + 6 * e + 3, u_ref.data() + 3 * e, quat);
+    }
+    mj_forward(m.get(), d.get());
+    EXPECT_NEAR(RodBendingEnergy(m.get(), d.get(), 0), 0, MjTol(1e-10, 1e-5));
+    for (int i = 0; i < m->nv; i++) {
+      EXPECT_NEAR(d->qfrc_spring[i], 0, MjTol(1e-6, 1e-2))
+          << "rotation " << r << " (plastic), dof " << i;
+    }
+  }
+
+  // raw <flex dim="1"> arc without twist joints: compiles to kN - 3 hinge pairs
+  std::string raw_arc = R"(
+  <mujoco>
+    <option gravity="0 0 0"/>
+    <worldbody>)" + raw_bodies +
+                        R"(</worldbody>
+    <deformable>
+      <flex name="arc" dim="1" radius="0.01" body=")" +
+                        raw_body_names + R"(" element=")" + element + R"(">
+        <contact selfcollide="none" contype="0" conaffinity="0"/>
+        <elasticity young="1e7"/>
+      </flex>
+    </deformable>
+  </mujoco>
+  )";
+  MjModelPtr m_raw = LoadModelFromString(raw_arc.c_str(), error, sizeof(error));
+  ASSERT_THAT(m_raw.get(), NotNull()) << error;
+  const mjtNum* b_raw = m_raw->flex_bending + m_raw->flex_bendingadr[0];
+  ASSERT_EQ(b_raw[0], kN - 3);
+  std::vector<double> stiffness(kN, 0);
+  for (int h = 0; h < kN - 3; h++) {
+    const mjtNum* hinge = b_raw + 1 + kRodHingeSize * h;
+    EXPECT_GE(hinge[3], 0);
+    stiffness[static_cast<int>(hinge[1])] += hinge[4];
+    stiffness[static_cast<int>(hinge[2])] += hinge[5];
+  }
+  for (int v = 1; v < kN - 1; v++) {
+    EXPECT_NEAR(stiffness[v], k, MjTol(1e-10, 1e-5) * k) << "vertex " << v;
+  }
+  MjDataPtr d_raw = MakeData(m_raw);
   for (int r = 0; r < 3; r++) {
     mjtNum quat[4], axis[3];
     mju_copy3(axis, axes[r]);
@@ -2656,41 +2728,45 @@ TEST_F(ElasticityTest, RodBendingCurvedReference) {
                      static_cast<mjtNum>(kRadius * std::sin(i * dtheta)), 0};
       mjtNum rx[3];
       mju_rotVecQuat(rx, x, quat);
-      mju_sub3(d->qpos + 3 * i, rx, x);
+      mju_sub3(d_raw->qpos + 3 * i, rx, x);
     }
-    mj_forward(m.get(), d.get());
-    EXPECT_NEAR(RodBendingEnergy(m.get(), d.get(), 0), 0, MjTol(1e-10, 1e-5));
-    for (int i = 0; i < m->nv; i++) {
-      EXPECT_NEAR(d->qfrc_spring[i], 0, MjTol(1e-6, 1e-2))
-          << "rotation " << r << ", dof " << i;
+    mj_forward(m_raw.get(), d_raw.get());
+    EXPECT_NEAR(RodBendingEnergy(m_raw.get(), d_raw.get(), 0), 0,
+                MjTol(1e-10, 1e-5));
+    for (int i = 0; i < m_raw->nv; i++) {
+      EXPECT_NEAR(d_raw->qfrc_spring[i], 0, MjTol(1e-6, 1e-2))
+          << "raw rotation " << r << ", dof " << i;
     }
   }
 
-  // straight segment ending in an arc: 2 hinge pairs, then 2 straight hinges
+  // straight segment ending in an arc: 5 single DER hinges (0, 1 straight and
+  // 2, 3, 4 curved)
   m = LoadModelFromString(kRodHookXml, error, sizeof(error));
   ASSERT_THAT(m.get(), NotNull()) << error;
   b = m->flex_bending + m->flex_bendingadr[0];
-  ASSERT_EQ(b[0], 4);
-  const mjtNum* pair = b + 1;
-  EXPECT_EQ(pair[0], 2);
-  EXPECT_EQ(pair[1], 3);
-  EXPECT_EQ(pair[2], 4);
-  EXPECT_EQ(pair[3], 5);
-  for (int h = 2; h < 4; h++) {
+  ASSERT_EQ(b[0], 5);
+  for (int h = 0; h < 5; h++) {
     const mjtNum* hinge = b + 1 + kRodHingeSize * h;
-    EXPECT_EQ(hinge[1], h - 1);
+    EXPECT_EQ(hinge[0], h);
+    EXPECT_EQ(hinge[1], h + 1);
+    EXPECT_EQ(hinge[2], h + 2);
     EXPECT_EQ(hinge[3], -1);
-    EXPECT_EQ(hinge[6], 0);
+    if (h < 2) {
+      EXPECT_EQ(hinge[6], 0);
+    } else {
+      EXPECT_GT(hinge[6], 0);
+    }
   }
 
-  // vertex 3 is in one pair, with the full stiffness of its hinge
+  // vertex 3 (hinge 2) has the full stiffness EI / (l0 + l1)
   const double EI = 1e7 * mjPI * std::pow(0.01, 4) / 4;
   const double l1 = std::sqrt(0.043 * 0.043 + 0.025 * 0.025);
-  EXPECT_NEAR(pair[4], EI / (0.05 + l1), MjTol(1e-10, 1e-5) * pair[4]);
+  const mjtNum* hinge2 = b + 1 + kRodHingeSize * 2;
+  EXPECT_NEAR(hinge2[4], EI / (0.05 + l1), MjTol(1e-10, 1e-5) * hinge2[4]);
 }
 
-// out-of-plane dihedral twist between adjacent curved hinges is resisted with
-// torsional stiffness kt = GJ / (2 l), where G = E / (2 (1 + poisson))
+// out-of-plane twist on curved hinges is resisted with torsional stiffness
+// kt = GJ / (l0 + l1) on open DER chains and kt = GJ / (2 l) on hinge pairs
 TEST_F(ElasticityTest, RodBendingTorsion) {
   static constexpr char xml_template[] = R"(
   <mujoco>
@@ -2707,40 +2783,110 @@ TEST_F(ElasticityTest, RodBendingTorsion) {
   char xml[2048];
   char error[1024] = {0};
 
-  // circle section with poisson = 0.25: G = E / 2.5, J = pi r^4 / 2, l = 1
+  // <flexcomp> circle section with poisson = 0.25: 2 single DER hinges
+  // (G = E / 2.5, J = pi r^4 / 2, l0 + l1 = 2)
   std::snprintf(xml, sizeof(xml), xml_template, "0.25", "");
   MjModelPtr m = LoadModelFromString(xml, error, sizeof(error));
   ASSERT_THAT(m.get(), NotNull()) << error;
   const mjtNum* b = m->flex_bending + m->flex_bendingadr[0];
-  ASSERT_EQ(b[0], 1);
+  ASSERT_EQ(b[0], 2);
   const mjtNum* pair = b + 1;
-  EXPECT_EQ(pair[3], 3);
+  EXPECT_EQ(pair[3], -1);
 
   const double J_circle = mjPI * std::pow(0.01, 4) / 2;
   const double kt = (1e7 / (2 * 1.25)) * J_circle / 2.0;
-  // hinges (0,1,2) and (1,2,3) bend in the same direction (+z) in the xy-plane
-  // (dphi0 = 0), so tc = kt, ts = 0
   EXPECT_NEAR(pair[6], 2.0, MjTol(1e-12, 1e-6));
-  EXPECT_NEAR(pair[7], 2.0, MjTol(1e-12, 1e-6));
   EXPECT_NEAR(pair[8], kt, MjTol(1e-12, 1e-6) * kt);
-  EXPECT_NEAR(pair[9], 0.0, MjTol(1e-12, 1e-6) * kt);
+  EXPECT_NEAR(b[1 + kRodHingeSize + 6], 2.0, MjTol(1e-12, 1e-6));
+  EXPECT_NEAR(b[1 + kRodHingeSize + 8], kt, MjTol(1e-12, 1e-6) * kt);
 
-  // rotate vertex 3 around the shared edge (1, 2) by angle psi: curvature
-  // magnitudes stay at their rest values (2.0), so the energy is purely
-  // torsional: 2 kt (1 - cos(psi))
+  // rotate vertex 3 around the shared edge (1, 2) by angle psi: verify
+  // restoring force along -z and finite-difference gradient consistency
   MjDataPtr d = MakeData(m);
   const double psi = 0.6;
   d->qpos[3 * 3 + 1] = std::cos(psi) - 1.0;
   d->qpos[3 * 3 + 2] = std::sin(psi);
   mj_forward(m.get(), d.get());
-  double expected_energy = 2 * kt * (1 - std::cos(psi));
-  EXPECT_NEAR(RodBendingEnergy(m.get(), d.get(), 0), expected_energy,
-              MjTol(1e-12, 1e-5) * expected_energy);
-  // restoring force on vertex 3 along -z opposes the positive twist
+  FreezeRodState(m.get(), d.get());
+  mj_forward(m.get(), d.get());
   EXPECT_LT(d->qfrc_spring[3 * 3 + 2], 0);
+  std::vector<mjtNum> force(d->qfrc_spring, d->qfrc_spring + m->nv);
+  mjtNum fmax = 0;
+  for (mjtNum fi : force) fmax = std::max(fmax, std::abs(fi));
+  ASSERT_GT(fmax, 0);
+  const mjtNum eps = MjEps(1e-6, 1e-3);
+  for (int i = 0; i < m->nv; i++) {
+    mjtNum q = d->qpos[i];
+    d->qpos[i] = q + eps;
+    mj_fwdPosition(m.get(), d.get());
+    mjtNum ep = RodBendingEnergy(m.get(), d.get(), 0);
+    d->qpos[i] = q - eps;
+    mj_fwdPosition(m.get(), d.get());
+    mjtNum em = RodBendingEnergy(m.get(), d.get(), 0);
+    d->qpos[i] = q;
+    EXPECT_NEAR(force[i], -(ep - em) / (2 * eps), MjTol(1e-5, 1e-2) * fmax)
+        << "dof " << i;
+  }
 
-  // box section: Saint-Venant torsion constant J (kept as single hinges for the
-  // Bishop-frame tridiagonal twist solve)
+  // raw <flex dim="1"> zrod without twist joints: 1 hinge pair (mj_rodPair)
+  static constexpr char kRawZrodXml[] = R"(
+  <mujoco>
+    <option gravity="0 0 0"/>
+    <worldbody>
+      <body name="v0" pos="0 1 0">
+        <inertial pos="0 0 0" mass="0.25" diaginertia="1e-5 1e-5 1e-5"/>
+        <joint type="slide" axis="1 0 0"/>
+        <joint type="slide" axis="0 1 0"/>
+        <joint type="slide" axis="0 0 1"/>
+      </body>
+      <body name="v1" pos="0 0 0">
+        <inertial pos="0 0 0" mass="0.25" diaginertia="1e-5 1e-5 1e-5"/>
+        <joint type="slide" axis="1 0 0"/>
+        <joint type="slide" axis="0 1 0"/>
+        <joint type="slide" axis="0 0 1"/>
+      </body>
+      <body name="v2" pos="1 0 0">
+        <inertial pos="0 0 0" mass="0.25" diaginertia="1e-5 1e-5 1e-5"/>
+        <joint type="slide" axis="1 0 0"/>
+        <joint type="slide" axis="0 1 0"/>
+        <joint type="slide" axis="0 0 1"/>
+      </body>
+      <body name="v3" pos="1 1 0">
+        <inertial pos="0 0 0" mass="0.25" diaginertia="1e-5 1e-5 1e-5"/>
+        <joint type="slide" axis="1 0 0"/>
+        <joint type="slide" axis="0 1 0"/>
+        <joint type="slide" axis="0 0 1"/>
+      </body>
+    </worldbody>
+    <deformable>
+      <flex name="zrod" dim="1" radius="0.01" body="v0 v1 v2 v3"
+            element="0 1  1 2  2 3">
+        <contact selfcollide="none" contype="0" conaffinity="0"/>
+        <elasticity young="1e7" poisson="0.25"/>
+      </flex>
+    </deformable>
+  </mujoco>
+  )";
+  MjModelPtr m_raw = LoadModelFromString(kRawZrodXml, error, sizeof(error));
+  ASSERT_THAT(m_raw.get(), NotNull()) << error;
+  const mjtNum* b_raw = m_raw->flex_bending + m_raw->flex_bendingadr[0];
+  ASSERT_EQ(b_raw[0], 1);
+  const mjtNum* raw_pair = b_raw + 1;
+  EXPECT_EQ(raw_pair[3], 3);
+  EXPECT_NEAR(raw_pair[6], 2.0, MjTol(1e-12, 1e-6));
+  EXPECT_NEAR(raw_pair[7], 2.0, MjTol(1e-12, 1e-6));
+  EXPECT_NEAR(raw_pair[8], kt, MjTol(1e-12, 1e-6) * kt);
+  EXPECT_NEAR(raw_pair[9], 0.0, MjTol(1e-12, 1e-6) * kt);
+  MjDataPtr d_raw = MakeData(m_raw);
+  d_raw->qpos[3 * 3 + 1] = std::cos(psi) - 1.0;
+  d_raw->qpos[3 * 3 + 2] = std::sin(psi);
+  mj_forward(m_raw.get(), d_raw.get());
+  double expected_energy = 2 * kt * (1 - std::cos(psi));
+  EXPECT_NEAR(RodBendingEnergy(m_raw.get(), d_raw.get(), 0), expected_energy,
+              MjTol(1e-12, 1e-5) * expected_energy);
+  EXPECT_LT(d_raw->qfrc_spring[3 * 3 + 2], 0);
+
+  // box section: Saint-Venant torsion constant J (single DER hinges)
   std::snprintf(xml, sizeof(xml), xml_template, "0.0",
                 R"(section="box" sectionsize="0.02 0.01")");
   m = LoadModelFromString(xml, error, sizeof(error));
@@ -2776,7 +2922,7 @@ TEST_F(ElasticityTest, RodBendingCurvedPose) {
   )";
   MjModelPtr m = LoadModelFromString(rod, error, sizeof(error));
   ASSERT_THAT(m.get(), NotNull()) << error;
-  ASSERT_EQ(m->nv, 9);
+  ASSERT_EQ(m->nv, 11);
   MjDataPtr d = MakeData(m);
   mj_forward(m.get(), d.get());
   for (int i = 0; i < m->nv; i++) {
@@ -2817,7 +2963,7 @@ TEST_F(ElasticityTest, RodBendingCurvedPose) {
   )";
   m = LoadModelFromString(straight.c_str(), error, sizeof(error));
   ASSERT_THAT(m.get(), NotNull()) << error;
-  ASSERT_EQ(m->nv, 3 * kArc);
+  ASSERT_EQ(m->nv, 3 * kArc + (kArc - 1));
   EXPECT_EQ(m->flex_bending[m->flex_bendingadr[0]], kArc - 2);
   d = MakeData(m);
   for (int i = 0; i < kArc; i++) {
@@ -2885,6 +3031,8 @@ TEST_F(ElasticityTest, RodBendingForceIsEnergyGradient) {
       d->qpos[i] = 0.02 * std::sin(1.7 * i + 0.3);
     }
     mj_forward(m.get(), d.get());
+    FreezeRodState(m.get(), d.get());
+    mj_forward(m.get(), d.get());
     std::vector<mjtNum> force(d->qfrc_spring, d->qfrc_spring + m->nv);
     mjtNum fmax = 0;
     for (mjtNum fi : force) fmax = std::max(fmax, std::abs(fi));
@@ -2930,14 +3078,9 @@ TEST_F(ElasticityTest, RodBendingDamping) {
     EXPECT_LT(mju_dot(d->qfrc_damper, d->qvel, m->nv), 0);
 
     // rigid rotation about an arbitrary axis: no damping (qvel is in body
-    // frame), with the twist hinge, if any, at rest
+    // frame), with per-edge twist hinges spinning at omega . t_e
     mjtNum omega[3] = {0.3, -0.5, 0.7};
-    std::string twist_name =
-        std::string(m->names + m->name_flexadr[0]) + "_twist";
-    int twist = mj_name2id(m.get(), mjOBJ_JOINT, twist_name.c_str());
-    if (twist >= 0) {
-      d->qvel[m->jnt_dofadr[twist]] = 0;
-    }
+    mju_zero(d->qvel, m->nv);
     int nvert = m->flex_vertnum[0];
     for (int v = 0; v < nvert; v++) {
       int bid = m->flex_vertbodyid[m->flex_vertadr[0] + v];
@@ -2946,6 +3089,24 @@ TEST_F(ElasticityTest, RodBendingDamping) {
       mju_cross(vworld, omega, d->flexvert_xpos + 3 * v);
       mju_mulMatTVec3(d->qvel + dofadr, d->xmat + 9 * m->body_weldid[bid],
                       vworld);
+    }
+    if (m->flex_bendingadr[0] >= 0) {
+      const mjtNum* b = m->flex_bending + m->flex_bendingadr[0];
+      int nhinge = static_cast<int>(b[0]);
+      if (mj_rodHasTwist(m.get(), 0)) {
+        for (int e = 0; e <= nhinge; e++) {
+          int jid = mj_rodChainTwistJnt(m.get(), 0, e);
+          if (jid >= 0) {
+            const mjtNum* p = b + 1 + kRodHingeSize * (e == 0 ? 0 : e - 1);
+            int va = static_cast<int>(e == 0 ? p[0] : p[1]);
+            int vb = static_cast<int>(e == 0 ? p[1] : p[2]);
+            mjtNum te[3];
+            mju_sub3(te, d->flexvert_xpos + 3 * vb, d->flexvert_xpos + 3 * va);
+            mju_normalize3(te);
+            d->qvel[m->jnt_dofadr[jid]] = mju_dot3(omega, te);
+          }
+        }
+      }
     }
     mj_forward(m.get(), d.get());
     for (int i = 0; i < m->nv; i++) {
@@ -3048,7 +3209,7 @@ TEST_F(ElasticityTest, RodBendingBoxSection) {
   <mujoco>
     <worldbody>
       <flexcomp name="rod" type="grid" count="6 1 1" spacing="0.1 0.1 0.1"
-                radius="0.01" dim="1" mass="1">
+                radius="0.005" dim="1" mass="1">
         <elasticity young="1e7" %s/>
       </flexcomp>
     </worldbody>
@@ -3094,7 +3255,7 @@ TEST_F(ElasticityTest, RodBendingBoxSection) {
   <mujoco>
     <worldbody>
       <flexcomp name="ring" type="circle" count="8 1 1" spacing="0.1 0.1 0.1"
-                radius="0.01" dim="1" mass="1">
+                radius="0.005" dim="1" mass="1">
         <elasticity young="1e7" section="box" sectionsize="0.005 0.02"/>
       </flexcomp>
     </worldbody>
@@ -3140,7 +3301,7 @@ TEST_F(ElasticityTest, RodTwistAndAnisotropicBox) {
         <geom size="0.01"/>
         <body name="mount">
           <flexcomp name="rod" type="grid" count="7 1 1" spacing="0.1 0.1 0.1"
-                    radius="0.01" dim="1" mass="1">
+                    radius="0.005" dim="1" mass="1">
             <pin id="0 1"/>
             <contact selfcollide="none" contype="0" conaffinity="0"/>
             <elasticity young="1e7" poisson="0.25"
@@ -3167,6 +3328,8 @@ TEST_F(ElasticityTest, RodTwistAndAnisotropicBox) {
     }
     d->qpos[twist_qpos] = 0.4;
     mj_forward(m.get(), d.get());
+    FreezeRodState(m.get(), d.get());
+    mj_forward(m.get(), d.get());
 
     EXPECT_LT(d->qfrc_spring[twist_dof], 0);
     std::vector<mjtNum> force(d->qfrc_spring, d->qfrc_spring + m->nv);
@@ -3190,16 +3353,17 @@ TEST_F(ElasticityTest, RodTwistAndAnisotropicBox) {
   }
 
   // verify anisotropic stiffness ratio (strong vs weak axis = (0.02/0.005)^2 =
-  // 16)
+  // 16) and equalized low-mode damping ratio (damping ratio = sqrt(16) = 4)
   static constexpr char kFlatBoxXml[] = R"(
   <mujoco>
     <option gravity="0 0 0"/>
     <worldbody>
       <flexcomp name="rod" type="grid" count="5 1 1" spacing="0.1 0.1 0.1"
-                radius="0.01" dim="1" mass="1">
+                radius="0.005" dim="1" mass="1">
         <pin id="0 1"/>
         <contact selfcollide="none" contype="0" conaffinity="0"/>
-        <elasticity young="1e7" section="box" sectionsize="0.02 0.005"/>
+        <elasticity young="1e7" damping="0.01"
+                    section="box" sectionsize="0.02 0.005"/>
       </flexcomp>
     </worldbody>
   </mujoco>
@@ -3209,15 +3373,21 @@ TEST_F(ElasticityTest, RodTwistAndAnisotropicBox) {
   ASSERT_THAT(m.get(), NotNull()) << error;
   MjDataPtr d_weak = MakeData(m);
   MjDataPtr d_strong = MakeData(m);
-  // displace vertex 2 in z (weak axis) vs y (strong axis)
+  // displace vertex 2 in z (weak axis) vs y (strong axis), and give unit
+  // velocity along the same axis
   d_weak->qpos[2] = 0.01;
+  d_weak->qvel[2] = 1.0;
   d_strong->qpos[1] = 0.01;
+  d_strong->qvel[1] = 1.0;
   mj_forward(m.get(), d_weak.get());
   mj_forward(m.get(), d_strong.get());
   mjtNum e_weak = RodBendingEnergy(m.get(), d_weak.get(), 0);
   mjtNum e_strong = RodBendingEnergy(m.get(), d_strong.get(), 0);
   EXPECT_GT(e_weak, 0);
   EXPECT_NEAR(e_strong / e_weak, 16.0, MjTol(1e-10, 1e-4));
+  EXPECT_LT(d_weak->qfrc_damper[2], 0);
+  EXPECT_NEAR(d_strong->qfrc_damper[1] / d_weak->qfrc_damper[2], 4.0,
+              MjTol(1e-10, 1e-4));
 
   // zigzag strong-axis bending, where the exact Hessian of the twist solve is
   // indefinite: forces stay consistent with the energy
@@ -3229,6 +3399,8 @@ TEST_F(ElasticityTest, RodTwistAndAnisotropicBox) {
   d_bent->qpos[4] = -0.05;
   d_bent->qpos[7] = 0.05;
   d_bent->qpos[twist_qpos] = 0.3;
+  mj_forward(m.get(), d_bent.get());
+  FreezeRodState(m.get(), d_bent.get());
   mj_forward(m.get(), d_bent.get());
   std::vector<mjtNum> force(d_bent->qfrc_spring, d_bent->qfrc_spring + m->nv);
   mjtNum fmax = 0;
@@ -3248,14 +3420,14 @@ TEST_F(ElasticityTest, RodTwistAndAnisotropicBox) {
         << "dof " << i;
   }
 
-  // free and single-vertex-pinned rods have no root twist joint and are SO(3)
-  // rigid-rotation invariant even for anisotropic box cross-sections
+  // free and single-vertex-pinned rods have a free root twist joint and are
+  // SO(3) rigid-rotation invariant even for anisotropic box cross-sections
   static constexpr char kFreeBoxXml[] = R"(
   <mujoco>
     <option gravity="0 0 0"/>
     <worldbody>
       <flexcomp name="rod" type="grid" count="6 1 1" spacing="0.1 0.1 0.1"
-                radius="0.01" dim="1" mass="1">
+                radius="0.005" dim="1" mass="1">
         <pin id="0"/>
         <contact selfcollide="none" contype="0" conaffinity="0"/>
         <elasticity young="1e7" poisson="0.25"
@@ -3266,17 +3438,50 @@ TEST_F(ElasticityTest, RodTwistAndAnisotropicBox) {
   )";
   MjModelPtr m_free = LoadModelFromString(kFreeBoxXml, error, sizeof(error));
   ASSERT_THAT(m_free.get(), NotNull()) << error;
-  EXPECT_EQ(mj_name2id(m_free.get(), mjOBJ_JOINT, "rod_twist"), -1);
+  EXPECT_GE(mj_name2id(m_free.get(), mjOBJ_JOINT, "rod_twist_0"), 0);
+  EXPECT_GE(mj_name2id(m_free.get(), mjOBJ_JOINT, "rod_twist"), 0);
+  // qpos and dof addresses of the 5 twist joints, by chain edge
+  int tq[5], td[5];
+  for (int e = 0; e < 5; e++) {
+    int jnt = mj_rodChainTwistJnt(m_free.get(), 0, e);
+    ASSERT_GE(jnt, 0);
+    tq[e] = m_free->jnt_qposadr[jnt];
+    td[e] = m_free->jnt_dofadr[jnt];
+  }
+  auto relax_roll = [&](const mjModel* m_in, mjData* d_in) {
+    const mjtNum eps_t = 1e-7;
+    for (int iter = 0; iter < 10; iter++) {
+      mj_forward(m_in, d_in);
+      mjtNum f0 = 0;
+      for (int e = 0; e < 5; e++) f0 += d_in->qfrc_spring[td[e]];
+      if (std::abs(f0) < 1e-13) break;
+      for (int e = 0; e < 5; e++) d_in->qpos[tq[e]] += eps_t;
+      mj_forward(m_in, d_in);
+      mjtNum fp = 0;
+      for (int e = 0; e < 5; e++) fp += d_in->qfrc_spring[td[e]];
+      for (int e = 0; e < 5; e++) d_in->qpos[tq[e]] -= eps_t;
+      mjtNum df = (fp - f0) / eps_t;
+      mjtNum step = (std::abs(df) > 1e-12) ? (-f0 / df) : (0.1 * f0);
+      for (int e = 0; e < 5; e++) d_in->qpos[tq[e]] += step;
+    }
+    mj_forward(m_in, d_in);
+  };
   MjDataPtr d_free = MakeData(m_free);
   for (int i = 0; i < m_free->nq; i++) {
     d_free->qpos[i] = 0.02 * std::sin(1.7 * i + 0.3);
   }
+  relax_roll(m_free.get(), d_free.get());
+  int padr = m_free->flex_plasticadr[0];
+  ASSERT_GE(padr, 0);
+  EXPECT_EQ(m_free->nplastic, 6 * 5 + 4);
+  mj_step(m_free.get(), d_free.get());
   mj_forward(m_free.get(), d_free.get());
   mjtNum e_orig = RodBendingEnergy(m_free.get(), d_free.get(), 0);
   std::vector<mjtNum> f_orig(d_free->qfrc_spring,
                              d_free->qfrc_spring + m_free->nv);
-  // rotate all free vertices (1..5) around pinned vertex 0 at origin by an
-  // arbitrary 3D rotation
+  // rotate all free vertices (1..5) and the per-edge time-parallel reference
+  // frames around pinned vertex 0 at origin by an arbitrary 3D rotation;
+  // per-edge twist angles are unchanged (SO(3) frame-indifferent)
   mjtNum axis[3] = {0.4, -0.7, 0.5};
   mju_normalize3(axis);
   mjtNum qrot[4], rmat[9];
@@ -3289,18 +3494,458 @@ TEST_F(ElasticityTest, RodTwistAndAnisotropicBox) {
     mju_mulMatVec3(rot_rel, rmat, rel);
     mju_add3(x_rot, d_free->flexvert_xpos, rot_rel);
     int b_id = m_free->flex_vertbodyid[v];
-    mju_sub3(d_rot->qpos + 3 * (v - 1), x_rot, m_free->body_pos + 3 * b_id);
+    int qadr = m_free->jnt_qposadr[m_free->body_jntadr[b_id]];
+    mju_sub3(d_rot->qpos + qadr, x_rot, m_free->body_pos + 3 * b_id);
+  }
+  for (int e = 0; e < 5; e++) {
+    d_rot->qpos[tq[e]] = d_free->qpos[tq[e]];
+    mju_mulMatVec3(d_rot->plastic + padr + 6 * e, rmat,
+                   d_free->plastic + padr + 6 * e);
+    mju_mulMatVec3(d_rot->plastic + padr + 6 * e + 3, rmat,
+                   d_free->plastic + padr + 6 * e + 3);
   }
   mj_forward(m_free.get(), d_rot.get());
   mjtNum e_rot = RodBendingEnergy(m_free.get(), d_rot.get(), 0);
   EXPECT_NEAR(e_rot, e_orig, MjTol(1e-9, 1e-4) * e_orig);
   for (int v = 1; v < 6; v++) {
+    int dadr = m_free->body_dofadr[m_free->flex_vertbodyid[v]];
     mjtNum f_exp[3];
-    mju_mulMatVec3(f_exp, rmat, f_orig.data() + 3 * (v - 1));
+    mju_mulMatVec3(f_exp, rmat, f_orig.data() + dadr);
     for (int j = 0; j < 3; j++) {
-      EXPECT_NEAR(d_rot->qfrc_spring[3 * (v - 1) + j], f_exp[j],
-                  MjTol(1e-6, 1e-2));
+      EXPECT_NEAR(d_rot->qfrc_spring[dadr + j], f_exp[j], MjTol(1e-6, 1e-2));
     }
+  }
+  for (int e = 0; e < 5; e++) {
+    EXPECT_NEAR(d_rot->qfrc_spring[td[e]], f_orig[td[e]], MjTol(1e-6, 1e-2));
+  }
+
+  // twist bodies are parented under worldbody with 1e-9 mass so parent-body
+  // translation/rotation is not double-counted
+  for (int e = 0; e < 5; e++) {
+    char jname[32];
+    if (e < 4) {
+      std::snprintf(jname, sizeof(jname), "rod_twist_%d", e);
+    } else {
+      std::snprintf(jname, sizeof(jname), "rod_twist");
+    }
+    int jid = mj_name2id(m_free.get(), mjOBJ_JOINT, jname);
+    ASSERT_GE(jid, 0);
+    int bid = m_free->jnt_bodyid[jid];
+    EXPECT_EQ(m_free->body_parentid[bid], 0);
+    EXPECT_NEAR(m_free->body_mass[bid], 1e-9, 1e-15);
+  }
+  static constexpr char kImplicitBoxXml[] = R"(
+  <mujoco>
+    <option gravity="0 0 -9.81" timestep="0.002" integrator="discrete"/>
+    <worldbody>
+      <flexcomp name="rod" type="grid" count="11 1 1" spacing="0.05 0.05 0.05"
+                radius="0.005" dim="1" mass="0.1">
+        <pin id="0 1"/>
+        <edge equality="true"/>
+        <contact selfcollide="none" contype="0" conaffinity="0"/>
+        <elasticity young="1e7" poisson="0.25" damping="0.01"
+                    section="box" sectionsize="0.02 0.005"/>
+      </flexcomp>
+    </worldbody>
+  </mujoco>
+  )";
+  MjModelPtr m_imp = LoadModelFromString(kImplicitBoxXml, error, sizeof(error));
+  ASSERT_THAT(m_imp.get(), NotNull()) << error;
+  MjDataPtr d_imp = MakeData(m_imp);
+  int j_end = mj_name2id(m_imp.get(), mjOBJ_JOINT, "rod_twist");
+  ASSERT_GE(j_end, 0);
+  d_imp->qpos[m_imp->jnt_qposadr[j_end]] = 0.5;
+  for (int step = 0; step < 50; step++) {
+    mj_step(m_imp.get(), d_imp.get());
+    ASSERT_TRUE(std::isfinite(d_imp->qpos[m_imp->jnt_qposadr[j_end]]));
+  }
+  EXPECT_LT(std::abs(d_imp->qpos[m_imp->jnt_qposadr[j_end]]), 0.5);
+
+  // box-section 1D flex rendering generates 12 triangles per element using the
+  // oriented DER box cross-section
+  static constexpr char kRenderBoxXml[] = R"(
+  <mujoco>
+    <option gravity="0 0 0"/>
+    <worldbody>
+      <flexcomp name="rod" type="grid" count="4 1 1" spacing="0.1 0.1 0.1"
+                radius="0.005" dim="1" mass="1">
+        <pin id="0 1"/>
+        <contact selfcollide="none"/>
+        <elasticity young="1e7" poisson="0.25"
+                    section="box" sectionsize="0.02 0.005"/>
+      </flexcomp>
+    </worldbody>
+  </mujoco>
+  )";
+  MjModelPtr m_ren = LoadModelFromString(kRenderBoxXml, error, sizeof(error));
+  ASSERT_THAT(m_ren.get(), NotNull()) << error;
+  MjDataPtr d_ren = MakeData(m_ren);
+  mj_forward(m_ren.get(), d_ren.get());
+  mjvScene scn;
+  mjvOption opt;
+  mjvCamera cam;
+  mjv_defaultScene(&scn);
+  mjv_defaultOption(&opt);
+  mjv_defaultCamera(&cam);
+  mjv_makeScene(m_ren.get(), &scn, 100);
+  mjv_updateScene(m_ren.get(), d_ren.get(), &opt, nullptr, &cam, mjCAT_ALL,
+                  &scn);
+  EXPECT_EQ(scn.flexfacenum[0], 12 * m_ren->flex_elemnum[0]);
+  EXPECT_EQ(scn.flexfaceused[0], 12 * m_ren->flex_elemnum[0]);
+  mjv_freeScene(&scn);
+
+  // box-section 1D flex collision uses the oriented DER box cross-section and
+  // computes rotational contact Jacobians on per-edge twist DOFs and vertices
+  static constexpr char kCollideBoxXml[] = R"(
+  <mujoco>
+    <option gravity="0 0 -9.81" timestep="0.001"/>
+    <worldbody>
+      <geom name="floor" type="plane" pos="0 0 0" size="1 1 0.1"/>
+      <geom name="ball" type="sphere" pos="0.05 0.022 0.05" size="0.005"/>
+      <geom name="block" type="box" pos="0.15 0 0.059" size="0.005 0.005 0.005"/>
+      <flexcomp name="rod" type="grid" count="5 1 1" spacing="0.1 0.1 0.1"
+                pos="0 0 0.05" radius="0.005" dim="1" mass="0.1">
+        <pin id="0 1"/>
+        <edge equality="true"/>
+        <contact selfcollide="none"/>
+        <elasticity young="1e6" poisson="0.25" damping="0.01"
+                    section="box" sectionsize="0.02 0.005"/>
+      </flexcomp>
+    </worldbody>
+  </mujoco>
+  )";
+  MjModelPtr m_col = LoadModelFromString(kCollideBoxXml, error, sizeof(error));
+  ASSERT_THAT(m_col.get(), NotNull()) << error;
+  MjDataPtr d_col = MakeData(m_col);
+  mj_forward(m_col.get(), d_col.get());
+  // Even though radius=0.0005 is far smaller than the gaps, the box
+  // cross-section has half-sizes 0.02 along y and 0.005 along z, so ball (at
+  // y=0.022, r=0.005) penetrates by 0.02 + 0.005 - 0.022 = 0.003 and block (at
+  // z=0.059, sz=0.005) penetrates by 0.005 + 0.005 - (0.059 - 0.05) = 0.001.
+  int n_ball = 0, n_block = 0;
+  int id_ball = mj_name2id(m_col.get(), mjOBJ_GEOM, "ball");
+  int id_block = mj_name2id(m_col.get(), mjOBJ_GEOM, "block");
+  for (int i = 0; i < d_col->ncon; i++) {
+    if (d_col->contact[i].geom[0] == id_ball ||
+        d_col->contact[i].geom[1] == id_ball) {
+      n_ball++;
+      EXPECT_NEAR(d_col->contact[i].dist, -0.003, 1e-6);
+    }
+    if (d_col->contact[i].geom[0] == id_block ||
+        d_col->contact[i].geom[1] == id_block) {
+      n_block++;
+      EXPECT_NEAR(d_col->contact[i].dist, -0.001, 1e-6);
+    }
+  }
+  EXPECT_GT(n_ball, 0);
+  EXPECT_GT(n_block, 0);
+
+  // Verify plane-box collision and finite-difference contact Jacobian wrt
+  // both vertex translations and per-edge twist DOFs on a tilted ribbon
+  static constexpr char kPlaneTwistBoxXml[] = R"(
+  <mujoco>
+    <option gravity="0 0 -9.81" timestep="0.001" cone="pyramidal"/>
+    <worldbody>
+      <geom name="floor" type="plane" pos="0 0 0" size="1 1 0.1" condim="1" friction="0 0 0"/>
+      <flexcomp name="rod" type="grid" count="4 1 1" spacing="0.1 0.1 0.1"
+                pos="0 0 0.012" radius="0.004" dim="1" mass="0.1">
+        <pin id="0 1"/>
+        <edge equality="true"/>
+        <contact selfcollide="none" condim="1"/>
+        <elasticity young="1e6" shear="1e5" damping="0.05"
+                    section="box" sectionsize="0.02 0.004"/>
+      </flexcomp>
+    </worldbody>
+  </mujoco>
+  )";
+  MjModelPtr m_pt =
+      LoadModelFromString(kPlaneTwistBoxXml, error, sizeof(error));
+  ASSERT_THAT(m_pt.get(), NotNull()) << error;
+  MjDataPtr d_pt = MakeData(m_pt);
+  int j_twist1 = mj_name2id(m_pt.get(), mjOBJ_JOINT, "rod_twist_1");
+  int j_twist2 = mj_name2id(m_pt.get(), mjOBJ_JOINT, "rod_twist");
+  ASSERT_GE(j_twist1, 0);
+  ASSERT_GE(j_twist2, 0);
+  // Tilt edges 1 and 2 by 0.5 rad (~28.6 deg) and bend slightly out of plane
+  d_pt->qpos[1] = 0.003;
+  d_pt->qpos[2] = -0.002;
+  d_pt->qpos[4] = -0.002;
+  d_pt->qpos[5] = 0.001;
+  d_pt->qpos[m_pt->jnt_qposadr[j_twist1]] = 0.5;
+  d_pt->qpos[m_pt->jnt_qposadr[j_twist2]] = 0.5;
+  mj_forward(m_pt.get(), d_pt.get());
+  FreezeRodState(m_pt.get(), d_pt.get());
+  mj_forward(m_pt.get(), d_pt.get());
+  ASSERT_GT(d_pt->ncon, 0);
+
+  // Finite-difference check on contact normal Jacobian J_n = d(dist)/dq
+  // Note: for frictionless pyramidal/elliptic with 1 normal row per contact,
+  // efc_J for each contact is the normal Jacobian.
+  // (the frictional rows: RodContactJacobianMaterialVelocity)
+  const mjtNum fd_eps = MjEps(1e-7, 1e-4);
+  for (int c = 0; c < d_pt->ncon; c++) {
+    int efc_adr = d_pt->contact[c].efc_address;
+    ASSERT_GE(efc_adr, 0);
+    mjtNum pos0[3];
+    mju_copy3(pos0, d_pt->contact[c].pos);
+    std::vector<mjtNum> j_ana(m_pt->nv), j_fd(m_pt->nv);
+    mjtNum jscale = 0;
+    for (int j = 0; j < m_pt->nv; j++) {
+      mjtNum J_ana = 0;
+      if (mj_isSparse(m_pt.get())) {
+        int rownnz = d_pt->efc_J_rownnz[efc_adr];
+        int rowadr = d_pt->efc_J_rowadr[efc_adr];
+        for (int k = 0; k < rownnz; k++) {
+          if (d_pt->efc_J_colind[rowadr + k] == j) {
+            J_ana = d_pt->efc_J[rowadr + k];
+            break;
+          }
+        }
+      } else {
+        J_ana = d_pt->efc_J[efc_adr * m_pt->nv + j];
+      }
+      MjDataPtr d_plus = MakeData(m_pt);
+      mju_copy(d_plus->qpos, d_pt->qpos, m_pt->nq);
+      mju_copy(d_plus->plastic, d_pt->plastic, m_pt->nplastic);
+      d_plus->qpos[j] += fd_eps;
+      mj_forward(m_pt.get(), d_plus.get());
+      // Find matching contact by vertex/element and closest contact position
+      int best_c = -1;
+      mjtNum best_d = 1e10;
+      for (int c2 = 0; c2 < d_plus->ncon; c2++) {
+        if (d_plus->contact[c2].elem[1] == d_pt->contact[c].elem[1] &&
+            d_plus->contact[c2].vert[1] == d_pt->contact[c].vert[1]) {
+          mjtNum diff[3];
+          mju_sub3(diff, d_plus->contact[c2].pos, pos0);
+          mjtNum d2 = mju_norm3(diff);
+          if (d2 < best_d) {
+            best_d = d2;
+            best_c = c2;
+          }
+        }
+      }
+      ASSERT_GE(best_c, 0);
+      j_ana[j] = J_ana;
+      j_fd[j] = (d_plus->contact[best_c].dist - d_pt->contact[c].dist) / fd_eps;
+      jscale = std::max(jscale, std::abs(j_fd[j]));
+    }
+    ASSERT_GT(jscale, 0);
+    for (int j = 0; j < m_pt->nv; j++) {
+      EXPECT_NEAR(j_ana[j], j_fd[j], MjTol(1e-3, 5e-2) * jscale)
+          << "contact " << c << " dof " << j;
+    }
+  }
+  // Verify non-zero twist torque from the floor contact on the tilted edge
+  int dof_twist2 = m_pt->jnt_dofadr[j_twist2];
+  EXPECT_LT(d_pt->qfrc_constraint[dof_twist2], -1e-4);
+}
+
+// contact rows of 1D DER rods (normal, frictional, torsional and rolling): the
+// velocity efc_J * qvel of each row matches that of the rod's material point at
+// the contact (and the angular velocity of its cross-section), differentiated
+// through the vertices, the twist angles and the frozen director state; for
+// circular and box sections and for a rod with arbitrary element order
+TEST_F(ElasticityTest, RodContactJacobianMaterialVelocity) {
+  static constexpr char kCircleShuffled[] = R"(
+  <mujoco>
+    <option gravity="0 0 0" integrator="discrete" solver="CG" cone="elliptic"/>
+    <worldbody>
+      <geom type="plane" size="1 1 0.1" condim="6" friction="0.8 0.02 0.01"/>
+      <flexcomp name="rod" type="direct" dim="1" radius="0.01" mass="0.1"
+                element="2 3  0 1  3 4  1 2"
+                point="0 0 0.01  0.1 0 0.01  0.2 0 0.01  0.3 0 0.01  0.4 0 0.01">
+        <contact selfcollide="none" condim="6" margin="0.003"/>
+        <elasticity young="1e7" shear="4e6"/>
+      </flexcomp>
+    </worldbody>
+  </mujoco>
+  )";
+  static constexpr char kBox[] = R"(
+  <mujoco>
+    <option gravity="0 0 0" integrator="discrete" solver="CG" cone="elliptic"/>
+    <worldbody>
+      <geom type="plane" size="1 1 0.1" condim="6" friction="0.8 0.02 0.01"/>
+      <flexcomp name="rod" type="grid" count="5 1 1" spacing="0.1 0.1 0.1"
+                pos="0 0 0.003" radius="0.003" dim="1" mass="0.1">
+        <contact selfcollide="none" condim="6" margin="0.003"/>
+        <elasticity young="1e7" shear="4e6" section="box"
+                    sectionsize="0.02 0.003"/>
+      </flexcomp>
+    </worldbody>
+  </mujoco>
+  )";
+  static constexpr char kCircleTiltedTip[] = R"(
+  <mujoco>
+    <option gravity="0 0 0" integrator="discrete" solver="CG" cone="elliptic"/>
+    <worldbody>
+      <geom type="plane" size="1 1 0.1" condim="6" friction="0.8 0.02 0.01"/>
+      <flexcomp name="rod" type="direct" dim="1" radius="0.01" mass="0.1"
+                element="0 1  1 2  2 3  3 4"
+                point="0 0 0.01  0.07 0 0.08  0.14 0 0.15  0.21 0 0.22  0.28 0 0.29">
+        <contact selfcollide="none" condim="6" margin="0.003"/>
+        <elasticity young="1e7" shear="4e6"/>
+      </flexcomp>
+    </worldbody>
+  </mujoco>
+  )";
+  for (const char* xml : {kCircleShuffled, kBox, kCircleTiltedTip}) {
+    char error[1024] = {0};
+    MjModelPtr m = LoadModelFromString(xml, error, sizeof(error));
+    ASSERT_THAT(m.get(), NotNull()) << error;
+    const bool is_box = mj_rodBoxSize(m.get(), 0, nullptr);
+    SCOPED_TRACE(xml == kCircleTiltedTip ? "tilted_tip"
+                                         : (is_box ? "box" : "circle"));
+    MjDataPtr d = MakeData(m);
+    for (int j = 0; j < m->njnt; j++) {
+      int qadr = m->jnt_qposadr[j];
+      int dadr = m->jnt_dofadr[j];
+      bool twist = m->jnt_type[j] == mjJNT_HINGE;
+      bool vertical = !twist && m->jnt_axis[3 * j + 2] > 0.5;
+      if (xml != kCircleTiltedTip || twist) {
+        d->qpos[qadr] =
+            twist ? 0.3 * std::sin(1.1 * j)
+                  : (vertical ? 0.0004 : 0.004) * std::sin(1.7 * j + 0.3);
+      }
+      d->qvel[dadr] = std::cos(2.3 * j + 0.1);
+    }
+    mj_forward(m.get(), d.get());
+    FreezeRodState(m.get(), d.get());
+    mj_forward(m.get(), d.get());
+    ASSERT_GT(d->ncon, 0);
+    std::vector<mjtNum> jv(d->nefc);
+    mj_mulJacVec(m.get(), d.get(), jv.data(), d->qvel);
+
+    // material frames and points of the rod at q -/+ dt qvel, state frozen
+    RodChainFrames fr;
+    RodBendingEnergy(m.get(), d.get(), 0, &fr);
+    ASSERT_FALSE(fr.v_chain.empty());
+    const mjtNum dt = MjEps(1e-6, 1e-3);
+    auto frame_at = [&](mjtNum sgn, RodChainFrames* out,
+                        std::vector<mjtNum>* xpos) {
+      MjDataPtr d2 = MakeData(m);
+      mju_copy(d2->qpos, d->qpos, m->nq);
+      mju_copy(d2->plastic, d->plastic, m->nplastic);
+      mj_integratePos(m.get(), d2->qpos, d->qvel, sgn * dt);
+      mj_fwdPosition(m.get(), d2.get());
+      RodBendingEnergy(m.get(), d2.get(), 0, out);
+      xpos->assign(d2->flexvert_xpos, d2->flexvert_xpos + 3 * m->nflexvert);
+    };
+    RodChainFrames fr_p, fr_m;
+    std::vector<mjtNum> x_p, x_m;
+    frame_at(1, &fr_p, &x_p);
+    frame_at(-1, &fr_m, &x_m);
+    auto material = [](const RodChainFrames& f, int k, mjtNum m1[3],
+                       mjtNum m2[3]) {
+      mjtNum c = mju_cos(f.theta[k]), s = mju_sin(f.theta[k]);
+      for (int i = 0; i < 3; i++) {
+        m1[i] = c * f.u[3 * k + i] + s * f.v[3 * k + i];
+        m2[i] = -s * f.u[3 * k + i] + c * f.v[3 * k + i];
+      }
+    };
+
+    mjtNum scale = 0, max_err = 0;
+    int nrod = 0;
+    for (int c = 0; c < d->ncon; c++) {
+      const mjContact& con = d->contact[c];
+      int side = (con.flex[1] == 0) ? 1 : 0;
+      if (con.flex[side] != 0 || con.geom[1 - side] < 0) continue;
+      nrod++;
+      int elem = con.elem[side] >= 0
+                     ? con.elem[side]
+                     : mj_rodVertElem(m.get(), 0, con.vert[side]);
+      ASSERT_GE(elem, 0);
+      const int* ev = m->flex_elem + m->flex_elemdataadr[0] + 2 * elem;
+      int k = -1;
+      for (int e = 0; e + 1 < static_cast<int>(fr.v_chain.size()); e++) {
+        if ((fr.v_chain[e] == ev[0] && fr.v_chain[e + 1] == ev[1]) ||
+            (fr.v_chain[e] == ev[1] && fr.v_chain[e + 1] == ev[0])) {
+          k = e;
+        }
+      }
+      ASSERT_GE(k, 0);
+      if (con.vert[side] >= 0) {
+        EXPECT_TRUE(con.vert[side] == ev[0] || con.vert[side] == ev[1]);
+      }
+      const int a0 = fr.v_chain[k], a1 = fr.v_chain[k + 1];
+      const mjtNum* x0 = d->flexvert_xpos + 3 * a0;
+      const mjtNum* x1 = d->flexvert_xpos + 3 * a1;
+      const mjtNum* t = fr.t.data() + 3 * k;
+      mjtNum le = mju_dist3(x0, x1);
+
+      // surface point on the rod (plane contacts lie midway between surfaces)
+      mjtNum p[3];
+      mju_addScl3(p, con.pos, con.frame, 0.5 * (side ? 1 : -1) * con.dist);
+      mjtNum w;
+      if (con.vert[side] >= 0) {
+        w = (con.vert[side] == a1) ? 1 : 0;
+      } else {
+        mjtNum ap[3];
+        mju_sub3(ap, p, x0);
+        w = mju_clip(mju_dot3(ap, t) / le, 0, 1);
+      }
+      mjtNum r[3], m1[3], m2[3];
+      for (int i = 0; i < 3; i++) r[i] = p[i] - (1 - w) * x0[i] - w * x1[i];
+      material(fr, k, m1, m2);
+      const mjtNum ra = mju_dot3(r, m1), rb = mju_dot3(r, m2),
+                   rt = mju_dot3(r, t);
+
+      // velocity of the material point and angular velocity of its section
+      mjtNum P[2][3], R[2][9];
+      for (int n = 0; n < 2; n++) {
+        const RodChainFrames& f = n ? fr_p : fr_m;
+        const std::vector<mjtNum>& x = n ? x_p : x_m;
+        const mjtNum* y0 = x.data() + 3 * (m->flex_vertadr[0] + a0);
+        const mjtNum* y1 = x.data() + 3 * (m->flex_vertadr[0] + a1);
+        mjtNum n1[3], n2[3];
+        material(f, k, n1, n2);
+        for (int i = 0; i < 3; i++) {
+          P[n][i] = (1 - w) * y0[i] + w * y1[i] + ra * n1[i] + rb * n2[i] +
+                    rt * f.t[3 * k + i];
+          R[n][3 * i + 0] = n1[i];
+          R[n][3 * i + 1] = n2[i];
+          R[n][3 * i + 2] = f.t[3 * k + i];
+        }
+      }
+      mjtNum vel[3], q0[4], q1[4], q0inv[4], dq[4], omega[3];
+      for (int i = 0; i < 3; i++) vel[i] = (P[1][i] - P[0][i]) / (2 * dt);
+      mju_mat2Quat(q0, R[0]);
+      mju_mat2Quat(q1, R[1]);
+      mju_negQuat(q0inv, q0);
+      mju_mulQuat(dq, q1, q0inv);
+      mju_quat2Vel(omega, dq, 2 * dt);
+
+      mjtNum sgn = side ? 1 : -1;
+      for (int row = 0; row < con.dim; row++) {
+        const mjtNum* axis = con.frame + 3 * (row % 3);
+        mjtNum expected = sgn * mju_dot3(axis, row < 3 ? vel : omega);
+        mjtNum got = jv[con.efc_address + row];
+        scale = std::max(scale, std::abs(expected));
+        max_err = std::max(max_err, std::abs(got - expected));
+        EXPECT_NEAR(got, expected, MjTol(1e-5, 5e-2) * (1 + std::abs(expected)))
+            << "contact " << c << " row " << row;
+      }
+      if (xml == kCircleTiltedTip && con.vert[side] == 0) {
+        // spherical cap at vertex 0 on a tilted edge: dvec is along the contact
+        // normal, so n . (omega x dvec) = 0 and the normal row has unit weight
+        // on vertex 0 and zero on vertex 1
+        std::vector<mjtNum> jrow(m->nv, 0);
+        for (int dof = 0; dof < m->nv; dof++) {
+          std::vector<mjtNum> e_dof(m->nv, 0), out(d->nefc, 0);
+          e_dof[dof] = 1;
+          mj_mulJacVec(m.get(), d.get(), out.data(), e_dof.data());
+          jrow[dof] = out[con.efc_address];
+        }
+        int d0 = m->body_dofadr[m->flex_vertbodyid[m->flex_vertadr[0] + 0]];
+        int d1 = m->body_dofadr[m->flex_vertbodyid[m->flex_vertadr[0] + 1]];
+        for (int i = 0; i < 3; i++) {
+          EXPECT_NEAR(jrow[d0 + i], sgn * con.frame[i], MjTol(1e-12, 1e-6));
+          EXPECT_NEAR(jrow[d1 + i], 0, MjTol(1e-12, 1e-6));
+        }
+      }
+    }
+    EXPECT_GT(nrod, xml == kCircleTiltedTip ? 0 : 2);
+    EXPECT_GT(scale, 0.1);
+    EXPECT_LT(max_err, MjTol(1e-6, 1e-2) * scale);
   }
 }
 
@@ -3336,11 +3981,22 @@ TEST_F(ElasticityTest, RodTwistMotorSteadyTwist) {
   int qadr = m->jnt_qposadr[twist];
   int f = mj_name2id(m.get(), mjOBJ_FLEX, "rod");
 
-  // the twist hinge has the polar inertia and the Rayleigh damping of the rod
-  EXPECT_NEAR(m->body_inertia[3 * m->jnt_bodyid[twist]], 0.1 * 0.01 * 0.01 / 2,
-              1e-12);
-  EXPECT_GT(m->dof_damping[dof], 0);
+  // each edge twist hinge has the per-edge polar inertia; Rayleigh torsional
+  // damping acts relatively in qfrc_damper rather than m->dof_damping
+  EXPECT_NEAR(m->body_inertia[3 * m->jnt_bodyid[twist]],
+              (0.1 / 20) * 0.01 * 0.01 / 2, 1e-12);
+  EXPECT_EQ(m->dof_damping[dof], 0);
   EXPECT_GE(m->flex_plasticadr[f], 0);
+  {
+    MjDataPtr d_damp = MakeData(m);
+    d_damp->qvel[dof] = 1.0;
+    mj_forward(m.get(), d_damp.get());
+    int twist_prev = mj_name2id(m.get(), mjOBJ_JOINT, "rod_twist_18");
+    ASSERT_GE(twist_prev, 0);
+    EXPECT_LT(d_damp->qfrc_damper[dof], 0);
+    EXPECT_NEAR(d_damp->qfrc_damper[m->jnt_dofadr[twist_prev]],
+                -d_damp->qfrc_damper[dof], MjTol(1e-12, 1e-6));
+  }
 
   const mjtNum J = mjPI * 1e-8 / 2, L = 1.0, ctrl = 0.05;
   for (mjtNum sign : {1, -1}) {
@@ -3357,6 +4013,625 @@ TEST_F(ElasticityTest, RodTwistMotorSteadyTwist) {
     EXPECT_NEAR(d->qfrc_spring[dof], -sign * ctrl, 1e-3 * ctrl);
     EXPECT_LT(std::abs(d->qvel[dof]), 1e-3);
     EXPECT_LT(fmax, 1.05 * ctrl);
+  }
+}
+
+// uniform twist of more than pi per hinge on a coarse straight rod: the torsion
+// energy keeps growing as kt * alpha^2 per hinge and the tail torque does not
+// flip sign at alpha = pi (the joint difference is not wrapped)
+TEST_F(ElasticityTest, RodTwistBeyondPiEachHinge) {
+  static constexpr char xml[] = R"(
+  <mujoco>
+    <option gravity="0 0 0"/>
+    <worldbody>
+      <flexcomp name="rod" type="grid" count="6 1 1" spacing="0.1 0.1 0.1"
+                radius="0.01" dim="1" mass="0.1">
+        <pin id="0 1"/>
+        <contact selfcollide="none" contype="0" conaffinity="0"/>
+        <elasticity young="1e7" shear="4e6"/>
+      </flexcomp>
+    </worldbody>
+  </mujoco>
+  )";
+  char error[1024] = {0};
+  MjModelPtr m = LoadModelFromString(xml, error, sizeof(error));
+  ASSERT_THAT(m.get(), NotNull()) << error;
+  MjDataPtr d = MakeData(m);
+  const mjtNum* b = m->flex_bending + m->flex_bendingadr[0];
+  const int nhinge = static_cast<int>(b[0]);
+  ASSERT_EQ(nhinge, 4);
+  mjtNum kt_sum = 0;
+  for (int h = 0; h < nhinge; h++) {
+    kt_sum += b[1 + kRodHingeSize * h + 8];
+  }
+  ASSERT_GT(kt_sum, 0);
+  int tail = mj_name2id(m.get(), mjOBJ_JOINT, "rod_twist");
+  ASSERT_GE(tail, 0);
+  const mjtNum kt_tail = b[1 + kRodHingeSize * (nhinge - 1) + 8];
+
+  // edges 1..4: theta_e = (e - 0) * alpha, edge 0 clamped at 0
+  mjtNum e_prev = -1;
+  for (int i = 1; i <= 16; i++) {
+    const mjtNum alpha = i * (2 * mjPI / 8);  // up to 4 pi per hinge
+    mj_resetData(m.get(), d.get());
+    for (int e = 1; e <= nhinge; e++) {
+      int jnt = mj_rodEdgeTwistJnt(m.get(), 0, e, nullptr);
+      ASSERT_GE(jnt, 0);
+      d->qpos[m->jnt_qposadr[jnt]] = e * alpha;
+    }
+    mj_forward(m.get(), d.get());
+    mjtNum energy = RodBendingEnergy(m.get(), d.get(), 0);
+    EXPECT_NEAR(energy, kt_sum * alpha * alpha,
+                MjTol(1e-9, 1e-4) * kt_sum * alpha * alpha);
+    EXPECT_GT(energy, e_prev) << "alpha " << alpha;
+    e_prev = energy;
+    EXPECT_NEAR(d->qfrc_spring[m->jnt_dofadr[tail]], -2 * kt_tail * alpha,
+                MjTol(1e-9, 1e-4) * 2 * kt_tail * alpha);
+  }
+
+  // dynamic: a position servo turns the tail edge through 3 turns while the
+  // interior twist joints relax; the reference twist state is stepped along,
+  // and the energy and the tail torque grow continuously past pi per hinge
+  static constexpr char xml_servo[] = R"(
+  <mujoco>
+    <option gravity="0 0 0" integrator="discrete" timestep="0.002"/>
+    <worldbody>
+      <flexcomp name="rod" type="grid" count="6 1 1" spacing="0.1 0.1 0.1"
+                radius="0.01" dim="1" mass="0.1">
+        <pin id="0 1"/>
+        <edge equality="true"/>
+        <contact selfcollide="none" contype="0" conaffinity="0"/>
+        <elasticity young="1e7" shear="4e6" damping="0.05"/>
+      </flexcomp>
+    </worldbody>
+    <actuator>
+      <position joint="rod_twist" kp="1" kv="0.02"/>
+    </actuator>
+  </mujoco>
+  )";
+  MjModelPtr ms = LoadModelFromString(xml_servo, error, sizeof(error));
+  ASSERT_THAT(ms.get(), NotNull()) << error;
+  MjDataPtr ds = MakeData(ms);
+  int tail_s = mj_name2id(ms.get(), mjOBJ_JOINT, "rod_twist");
+  ASSERT_GE(tail_s, 0);
+  const int dof_s = ms->jnt_dofadr[tail_s];
+  const int nstep = 3000;
+  mjtNum e_last = 0, f_last = 0, df_max = 0, f_max = 0;
+  for (int i = 0; i < nstep; i++) {
+    ds->ctrl[0] = 6 * mjPI * std::min<mjtNum>(1, (i + 1.0) / (0.8 * nstep));
+    mj_step(ms.get(), ds.get());
+    mjtNum energy = RodBendingEnergy(ms.get(), ds.get(), 0);
+    mjtNum f = ds->qfrc_spring[dof_s];
+    ASSERT_TRUE(std::isfinite(energy));
+    if (i > 0) {
+      // no 2 pi jumps: per-step changes stay small against the final values
+      EXPECT_LT(std::abs(energy - e_last), 0.01 * kt_sum * 2 * mjPI * mjPI)
+          << "step " << i;
+      df_max = std::max(df_max, std::abs(f - f_last));
+    }
+    EXPECT_LE(f, MjTol(1e-9, 1e-5)) << "tail torque flipped at step " << i;
+    f_max = std::max(f_max, std::abs(f));
+    e_last = energy;
+    f_last = f;
+  }
+  // final twist: about 1.5 pi per hinge, torque near -2 kt (1.5 pi)
+  const mjtNum alpha_end = ds->qpos[ms->jnt_qposadr[tail_s]] / nhinge;
+  EXPECT_GT(alpha_end, 1.2 * mjPI);
+  EXPECT_NEAR(ds->qfrc_spring[dof_s], -2 * kt_tail * alpha_end,
+              0.05 * 2 * kt_tail * alpha_end);
+  EXPECT_LT(df_max, 0.05 * f_max);
+}
+
+// without director state (mj_resetData, keyframes without plastic) a rod starts
+// twist-free from edge 0's current frame: a clamped root rolled about the rod
+// axis carries no spurious reference twist, and a free rod flipped end to end
+// (antipodal to its qpos0 tangents) is still handled and initializes its state
+TEST_F(ElasticityTest, RodNoStateStartsFromCurrentFrame) {
+  static constexpr char xml[] = R"(
+  <mujoco>
+    <option gravity="0 0 0" integrator="discrete" solver="CG"/>
+    <worldbody>
+      <body name="root">
+        <joint name="roll" type="hinge" axis="1 0 0"/>
+        <geom type="sphere" size="0.01" mass="0.01"/>
+        <flexcomp name="rod" type="grid" count="5 1 1" spacing="0.1 0.1 0.1"
+                  radius="0.01" dim="1" mass="0.1">
+          <pin id="0 1"/>
+          <contact selfcollide="none" contype="0" conaffinity="0"/>
+          <elasticity young="1e7" shear="4e6"/>
+        </flexcomp>
+      </body>
+      <flexcomp name="free" type="grid" count="5 1 1" spacing="0.1 0.1 0.1"
+                pos="0 1 0" radius="0.004" dim="1" mass="0.1">
+        <contact selfcollide="none" contype="0" conaffinity="0"/>
+        <elasticity young="1e7" shear="4e6" section="box"
+                    sectionsize="0.01 0.004"/>
+      </flexcomp>
+    </worldbody>
+  </mujoco>
+  )";
+  char error[1024] = {0};
+  MjModelPtr m = LoadModelFromString(xml, error, sizeof(error));
+  ASSERT_THAT(m.get(), NotNull()) << error;
+  MjDataPtr d = MakeData(m);
+  int roll = mj_name2id(m.get(), mjOBJ_JOINT, "roll");
+  int rod = mj_name2id(m.get(), mjOBJ_FLEX, "rod");
+  int flipped = mj_name2id(m.get(), mjOBJ_FLEX, "free");
+  ASSERT_GE(roll, 0);
+
+  // rolled root: zero energy and zero twist torques
+  d->qpos[m->jnt_qposadr[roll]] = 1.3;
+  mj_forward(m.get(), d.get());
+  EXPECT_NEAR(RodBendingEnergy(m.get(), d.get(), rod), 0, MjTol(1e-12, 1e-6));
+  mjtNum energy = -1;
+  ASSERT_EQ(mj_rodChain(m.get(), d.get(), rod, &energy, nullptr, nullptr,
+                        nullptr, nullptr, nullptr, nullptr),
+            1);
+  EXPECT_NEAR(energy, 0, MjTol(1e-12, 1e-6));
+  for (int e = 1; e < 4; e++) {
+    int jnt = mj_rodChainTwistJnt(m.get(), rod, e);
+    ASSERT_GE(jnt, 0);
+    int dof = m->jnt_dofadr[jnt];
+    EXPECT_NEAR(d->qfrc_spring[dof], 0, MjTol(1e-9, 1e-4)) << "edge " << e;
+  }
+
+  // free rod flipped end to end: every tangent is antipodal to its reference
+  mj_resetData(m.get(), d.get());
+  for (int i = 0; i < m->flex_vertnum[flipped]; i++) {
+    int body = m->flex_vertbodyid[m->flex_vertadr[flipped] + i];
+    int qadr = m->jnt_qposadr[m->body_jntadr[body]];
+    d->qpos[qadr] = -2 * (0.1 * i - 0.2);
+  }
+  mj_forward(m.get(), d.get());
+  ASSERT_EQ(mj_rodChain(m.get(), d.get(), flipped, &energy, nullptr, nullptr,
+                        nullptr, nullptr, nullptr, nullptr),
+            1);
+  EXPECT_NEAR(energy, 0, MjTol(1e-12, 1e-6));
+  mjtNum mat[9], pos[3], size[3];
+  EXPECT_EQ(mj_rodBoxElem(m.get(), d.get(), flipped, 2, pos, mat, size), 1);
+  mj_step(m.get(), d.get());
+  const mjtNum* state = d->plastic + m->flex_plasticadr[flipped];
+  for (int e = 0; e < 4; e++) {
+    EXPECT_NEAR(mju_norm3(state + 6 * e), 1, MjTol(1e-12, 1e-6));
+    EXPECT_NEAR(mju_norm3(state + 6 * e + 3), 1, MjTol(1e-12, 1e-6));
+  }
+}
+
+// a rod whose last two vertices are on one body is clamped at the tail like at
+// the root: no twist joint there, the last edge's frame turns with the body,
+// and the body receives the rod's torsional reaction (spring and damper)
+TEST_F(ElasticityTest, RodTailClampTransmitsTorsion) {
+  static constexpr char xml[] = R"(
+  <mujoco>
+    <option gravity="0 0 0" integrator="discrete" solver="CG"/>
+    <worldbody>
+      <body name="v2" pos="0.2 0 0">
+        <inertial pos="0 0 0" mass="0.02" diaginertia="1e-6 1e-6 1e-6"/>
+        <joint type="slide" axis="1 0 0"/>
+        <joint type="slide" axis="0 1 0"/>
+        <joint type="slide" axis="0 0 1"/>
+      </body>
+      <body name="tail" pos="0.35 0 0">
+        <joint name="roll" type="hinge" axis="1 0 0"/>
+        <inertial pos="0 0 0" mass="0.02" diaginertia="1e-5 1e-5 1e-5"/>
+      </body>
+      <body name="t1">
+        <joint name="rod_twist_1" type="hinge" axis="1 0 0"/>
+        <inertial pos="0 0 0" mass="1e-6" diaginertia="1e-8 1e-8 1e-8"/>
+      </body>
+      <body name="t2">
+        <joint name="rod_twist_2" type="hinge" axis="1 0 0"/>
+        <inertial pos="0 0 0" mass="1e-6" diaginertia="1e-8 1e-8 1e-8"/>
+      </body>
+    </worldbody>
+    <deformable>
+      <flex name="rod" dim="1" radius="0.01" body="world world v2 tail tail"
+            vertex="0 0 0  0.1 0 0  0 0 0  -0.05 0 0  0.05 0 0"
+            element="0 1  1 2  2 3  3 4">
+        <contact selfcollide="none" contype="0" conaffinity="0"/>
+        <elasticity young="1e7" shear="4e6" damping="0.01"/>
+      </flex>
+    </deformable>
+  </mujoco>
+  )";
+  char error[1024] = {0};
+  MjModelPtr m = LoadModelFromString(xml, error, sizeof(error));
+  ASSERT_THAT(m.get(), NotNull()) << error;
+  ASSERT_TRUE(mj_rodHasTwist(m.get(), 0));
+  int roll = mj_name2id(m.get(), mjOBJ_JOINT, "roll");
+  int tw1 = mj_name2id(m.get(), mjOBJ_JOINT, "rod_twist_1");
+  int tw2 = mj_name2id(m.get(), mjOBJ_JOINT, "rod_twist_2");
+  EXPECT_EQ(mj_rodChainTwistJnt(m.get(), 0, 0), -1);
+  EXPECT_EQ(mj_rodChainTwistJnt(m.get(), 0, 1), tw1);
+  EXPECT_EQ(mj_rodChainTwistJnt(m.get(), 0, 2), tw2);
+  EXPECT_EQ(mj_rodChainTwistJnt(m.get(), 0, 3), -1);
+  const int roll_dof = m->jnt_dofadr[roll], tw2_dof = m->jnt_dofadr[tw2];
+
+  // turning the tail body loads the rod in torsion: restoring torque on it,
+  // consistent with the energy, and the opposite torque on the last free edge
+  MjDataPtr d = MakeData(m);
+  d->qpos[m->jnt_qposadr[roll]] = 0.4;
+  mj_forward(m.get(), d.get());
+  FreezeRodState(m.get(), d.get());
+  mj_forward(m.get(), d.get());
+  EXPECT_LT(d->qfrc_spring[roll_dof], 0);
+  EXPECT_GT(d->qfrc_spring[tw2_dof], 0);
+  const mjtNum eps = MjEps(1e-6, 1e-3);
+  for (int jnt : {roll, tw1, tw2}) {
+    int qadr = m->jnt_qposadr[jnt];
+    mjtNum q = d->qpos[qadr];
+    d->qpos[qadr] = q + eps;
+    mj_fwdPosition(m.get(), d.get());
+    mjtNum ep = RodBendingEnergy(m.get(), d.get(), 0);
+    d->qpos[qadr] = q - eps;
+    mj_fwdPosition(m.get(), d.get());
+    mjtNum em = RodBendingEnergy(m.get(), d.get(), 0);
+    d->qpos[qadr] = q;
+    EXPECT_NEAR(d->qfrc_spring[m->jnt_dofadr[jnt]], -(ep - em) / (2 * eps),
+                MjTol(1e-6, 1e-2) * std::abs(d->qfrc_spring[roll_dof]))
+        << m->names + m->name_jntadr[jnt];
+  }
+
+  // spinning the tail body: relative-rate damping between it and the last edge
+  mj_resetData(m.get(), d.get());
+  d->qvel[roll_dof] = 1;
+  mj_forward(m.get(), d.get());
+  EXPECT_LT(d->qfrc_damper[roll_dof], 0);
+  EXPECT_NEAR(d->qfrc_damper[tw2_dof], -d->qfrc_damper[roll_dof],
+              MjTol(1e-12, 1e-6) * std::abs(d->qfrc_damper[roll_dof]));
+}
+
+// a box ribbon clamped at both ends (pinned first and last edges) under the
+// discrete integrator: stable under gravity, and without gravity a torque on a
+// middle twist joint is resisted by both clamps, halving the twist of a ribbon
+// with a free tail
+TEST_F(ElasticityTest, ClampedBoxRodLastEdgeDiscreteStability) {
+  static constexpr char xml_template[] = R"(
+  <mujoco>
+    <option integrator="discrete" solver="CG" timestep="0.002" tolerance="1e-10"
+            iterations="200" gravity="0 0 %s"/>
+    <worldbody>
+      <flexcomp name="rod" type="grid" count="8 1 1" spacing="0.05 0.05 0.05"
+                radius="0.0015" dim="1" mass="0.05">
+        <pin id="%s"/>
+        <edge equality="true"/>
+        <contact selfcollide="none" contype="0" conaffinity="0"/>
+        <elasticity young="1e7" poisson="0.25" damping="0.05" section="box"
+                    sectionsize="0.01 0.0015"/>
+      </flexcomp>
+    </worldbody>
+    <actuator>
+      <motor joint="rod_twist_3"/>
+    </actuator>
+  </mujoco>
+  )";
+  mjtNum twist[2] = {0, 0};
+  for (int run = 0; run < 3; run++) {
+    int clamped = run > 0, gravity = run == 2;
+    char xml[2048], error[1024] = {0};
+    std::snprintf(xml, sizeof(xml), xml_template, gravity ? "-9.81" : "0",
+                  clamped ? "0 1 6 7" : "0 1 7");
+    MjModelPtr m = LoadModelFromString(xml, error, sizeof(error));
+    ASSERT_THAT(m.get(), NotNull()) << error;
+    EXPECT_EQ(mj_name2id(m.get(), mjOBJ_JOINT, "rod_twist") >= 0, !clamped);
+    int jnt = mj_name2id(m.get(), mjOBJ_JOINT, "rod_twist_3");
+    ASSERT_GE(jnt, 0);
+    MjDataPtr d = MakeData(m);
+    d->ctrl[0] = 1e-3;
+    for (int i = 0; i < 1500; i++) {
+      mj_step(m.get(), d.get());
+      ASSERT_EQ(d->warning[mjWARN_BADQACC].number, 0) << "step " << i;
+    }
+    for (int i = 0; i < m->nv; i++) {
+      ASSERT_TRUE(std::isfinite(d->qvel[i]));
+      EXPECT_LT(std::abs(d->qvel[i]), 1e-2) << "dof " << i;
+    }
+    if (!gravity) {
+      twist[clamped] = d->qpos[m->jnt_qposadr[jnt]];
+    }
+  }
+  EXPECT_GT(twist[0], 0);
+  EXPECT_NEAR(twist[1] / twist[0], 0.5, 0.1);
+}
+
+// the time-parallel state (frames and unwrapped twists) is part of
+// mjSTATE_PLASTIC and of keyframes: restoring it reproduces the trajectory
+TEST_F(ElasticityTest, RodStatePlasticRoundTrip) {
+  static constexpr char xml[] = R"(
+  <mujoco>
+    <option integrator="discrete" solver="CG" timestep="0.002"/>
+    <worldbody>
+      <flexcomp name="rod" type="grid" count="6 1 1" spacing="0.05 0.05 0.05"
+                radius="0.002" dim="1" mass="0.05">
+        <pin id="0 1"/>
+        <edge equality="true"/>
+        <contact selfcollide="none" contype="0" conaffinity="0"/>
+        <elasticity young="1e6" shear="4e5" damping="0.01" section="box"
+                    sectionsize="0.01 0.002"/>
+      </flexcomp>
+    </worldbody>
+    <actuator>
+      <motor joint="rod_twist"/>
+    </actuator>
+    <keyframe>
+      <key/>
+    </keyframe>
+  </mujoco>
+  )";
+  char error[1024] = {0};
+  MjModelPtr m = LoadModelFromString(xml, error, sizeof(error));
+  ASSERT_THAT(m.get(), NotNull()) << error;
+  EXPECT_EQ(m->nplastic, 6 * 5 + 4);
+  EXPECT_EQ(mj_stateSize(m.get(), mjSTATE_PLASTIC), m->nplastic);
+  MjDataPtr d = MakeData(m);
+  d->ctrl[0] = 2e-3;
+  for (int i = 0; i < 300; i++) mj_step(m.get(), d.get());
+  EXPECT_GT(mju_norm(d->plastic, m->nplastic), 1);
+
+  const int spec = mjSTATE_INTEGRATION;
+  std::vector<mjtNum> state(mj_stateSize(m.get(), spec));
+  mj_getState(m.get(), d.get(), state.data(), spec);
+  std::vector<mjtNum> saved_plastic(d->plastic, d->plastic + m->nplastic);
+  mj_setKeyframe(m.get(), d.get(), 0);
+  auto run = [&](mjData* dd) {
+    for (int i = 0; i < 100; i++) mj_step(m.get(), dd);
+    return std::vector<mjtNum>(dd->qpos, dd->qpos + m->nq);
+  };
+  std::vector<mjtNum> qpos_a = run(d.get());
+
+  MjDataPtr d_state = MakeData(m);
+  mj_setState(m.get(), d_state.get(), state.data(), spec);
+  std::vector<mjtNum> qpos_b = run(d_state.get());
+
+  MjDataPtr d_key = MakeData(m);
+  mj_resetDataKeyframe(m.get(), d_key.get(), 0);
+  d_key->ctrl[0] = 2e-3;
+  for (int i = 0; i < m->nplastic; i++) {
+    EXPECT_EQ(d_key->plastic[i], saved_plastic[i]);
+  }
+  std::vector<mjtNum> qpos_c = run(d_key.get());
+  for (int i = 0; i < m->nq; i++) {
+    EXPECT_EQ(qpos_b[i], qpos_a[i]) << "state, qpos " << i;
+    // keyframes do not store the solver warmstart
+    EXPECT_NEAR(qpos_c[i], qpos_a[i], MjTol(1e-6, 1e-3))
+        << "keyframe, qpos " << i;
+  }
+}
+
+// two rods in one model: the second rod's first-edge joint follows the
+// "edge 1 - 1" convention within its own joints, and the rods do not interact
+TEST_F(ElasticityTest, RodTwistTwoRods) {
+  static constexpr char xml[] = R"(
+  <mujoco>
+    <option gravity="0 0 0"/>
+    <worldbody>
+      <flexcomp name="a" type="grid" count="4 1 1" spacing="0.1 0.1 0.1"
+                radius="0.01" dim="1" mass="0.1">
+        <contact selfcollide="none" contype="0" conaffinity="0"/>
+        <elasticity young="1e7" shear="4e6"/>
+      </flexcomp>
+      <flexcomp name="b" type="grid" count="5 1 1" spacing="0.1 0.1 0.1"
+                pos="0 0.5 0" radius="0.004" dim="1" mass="0.1">
+        <contact selfcollide="none" contype="0" conaffinity="0"/>
+        <elasticity young="1e7" shear="4e6" section="box"
+                    sectionsize="0.01 0.004"/>
+      </flexcomp>
+    </worldbody>
+  </mujoco>
+  )";
+  char error[1024] = {0};
+  MjModelPtr m = LoadModelFromString(xml, error, sizeof(error));
+  ASSERT_THAT(m.get(), NotNull()) << error;
+  int fa = mj_name2id(m.get(), mjOBJ_FLEX, "a");
+  int fb = mj_name2id(m.get(), mjOBJ_FLEX, "b");
+  EXPECT_EQ(mj_rodChainTwistJnt(m.get(), fa, 0),
+            mj_name2id(m.get(), mjOBJ_JOINT, "a_twist_0"));
+  EXPECT_EQ(mj_rodChainTwistJnt(m.get(), fb, 0),
+            mj_name2id(m.get(), mjOBJ_JOINT, "b_twist_0"));
+  EXPECT_EQ(mj_rodChainTwistJnt(m.get(), fb, 3),
+            mj_name2id(m.get(), mjOBJ_JOINT, "b_twist"));
+
+  // twist only rod b: rod a feels nothing, rod b's forces follow its energy
+  MjDataPtr d = MakeData(m);
+  for (int e = 0; e < 4; e++) {
+    int jnt = mj_rodChainTwistJnt(m.get(), fb, e);
+    d->qpos[m->jnt_qposadr[jnt]] = 0.2 * (e + 1) * (e % 2 ? -1 : 1);
+  }
+  mj_forward(m.get(), d.get());
+  for (int e = 0; e < 3; e++) {
+    int jnt = mj_rodChainTwistJnt(m.get(), fa, e);
+    EXPECT_EQ(d->qfrc_spring[m->jnt_dofadr[jnt]], 0) << "a edge " << e;
+  }
+  const mjtNum eps = MjEps(1e-6, 1e-3);
+  mjtNum fmax = 0;
+  for (int e = 0; e < 4; e++) {
+    int jnt = mj_rodChainTwistJnt(m.get(), fb, e);
+    fmax = std::max(fmax, std::abs(d->qfrc_spring[m->jnt_dofadr[jnt]]));
+  }
+  ASSERT_GT(fmax, 0);
+  for (int e = 0; e < 4; e++) {
+    int jnt = mj_rodChainTwistJnt(m.get(), fb, e);
+    int qadr = m->jnt_qposadr[jnt];
+    mjtNum q = d->qpos[qadr];
+    d->qpos[qadr] = q + eps;
+    mj_fwdPosition(m.get(), d.get());
+    mjtNum ep = RodBendingEnergy(m.get(), d.get(), fb);
+    d->qpos[qadr] = q - eps;
+    mj_fwdPosition(m.get(), d.get());
+    mjtNum em = RodBendingEnergy(m.get(), d.get(), fb);
+    d->qpos[qadr] = q;
+    EXPECT_NEAR(d->qfrc_spring[m->jnt_dofadr[jnt]], -(ep - em) / (2 * eps),
+                MjTol(1e-6, 1e-2) * fmax)
+        << "b edge " << e;
+  }
+}
+
+// Euler integrates the twist joints explicitly: with a small timestep a
+// motor-twisted clamped rod settles at the static twist
+TEST_F(ElasticityTest, RodTwistEuler) {
+  static constexpr char xml[] = R"(
+  <mujoco>
+    <option gravity="0 0 0" integrator="Euler" timestep="2e-4"/>
+    <worldbody>
+      <flexcomp name="rod" type="grid" count="6 1 1" spacing="0.1 0.1 0.1"
+                radius="0.01" dim="1" mass="0.1">
+        <pin id="0 1"/>
+        <contact selfcollide="none" contype="0" conaffinity="0"/>
+        <elasticity young="1e7" shear="4e6" damping="0.002"/>
+      </flexcomp>
+    </worldbody>
+    <actuator>
+      <motor joint="rod_twist"/>
+    </actuator>
+  </mujoco>
+  )";
+  char error[1024] = {0};
+  MjModelPtr m = LoadModelFromString(xml, error, sizeof(error));
+  ASSERT_THAT(m.get(), NotNull()) << error;
+  const mjtNum* b = m->flex_bending + m->flex_bendingadr[0];
+  mjtNum compliance = 0;  // series compliance of the 4 unclamped hinges
+  for (int h = 0; h < 4; h++)
+    compliance += 1 / (2 * b[1 + kRodHingeSize * h + 8]);
+  int tail = mj_name2id(m.get(), mjOBJ_JOINT, "rod_twist");
+  MjDataPtr d = MakeData(m);
+  const mjtNum ctrl = 0.01;
+  d->ctrl[0] = ctrl;
+  for (int i = 0; i < 10000; i++) {
+    mj_step(m.get(), d.get());
+    ASSERT_TRUE(std::isfinite(d->qpos[m->jnt_qposadr[tail]])) << "step " << i;
+  }
+  EXPECT_NEAR(d->qpos[m->jnt_qposadr[tail]], ctrl * compliance,
+              0.05 * ctrl * compliance);
+}
+
+// a resting rod falls asleep with its twist trees, which share its island (all
+// the trees of the model are the rod's)
+TEST_F(ElasticityTest, RodTwistSleep) {
+  static constexpr char xml[] = R"(
+  <mujoco>
+    <option timestep="0.002" integrator="discrete" solver="CG" viscosity="2"
+            sleep_tolerance="0.1">
+      <flag sleep="enable"/>
+    </option>
+    <worldbody>
+      <geom type="plane" size="5 5 .1"/>
+      <flexcomp name="rod" type="grid" count="6 1 1" spacing="0.05 0.05 0.05"
+                radius="0.01" dim="1" mass="0.05" pos="0 0 0.01">
+        <contact selfcollide="none"/>
+        <edge equality="true"/>
+        <elasticity young="1e6" shear="4e5" damping="0.1"/>
+      </flexcomp>
+    </worldbody>
+  </mujoco>
+  )";
+  char error[1024] = {0};
+  MjModelPtr m = LoadModelFromString(xml, error, sizeof(error));
+  ASSERT_THAT(m.get(), NotNull()) << error;
+  MjDataPtr d = MakeData(m);
+  for (int e = 0; e < 5; e++) {
+    int jnt = mj_rodChainTwistJnt(m.get(), 0, e);
+    ASSERT_GE(jnt, 0);
+    d->qvel[m->jnt_dofadr[jnt]] = 1;  // start spinning
+  }
+  bool shared_island = false;
+  for (int i = 0; i < 3000; i++) {
+    mj_step(m.get(), d.get());
+    if (i == 0) {
+      int vtree = m->body_treeid[m->flex_vertbodyid[m->flex_vertadr[0]]];
+      int island = d->tree_island[vtree];
+      shared_island = island >= 0;
+      for (int e = 0; e < 5; e++) {
+        int jnt = mj_rodChainTwistJnt(m.get(), 0, e);
+        shared_island &=
+            d->tree_island[m->body_treeid[m->jnt_bodyid[jnt]]] == island;
+      }
+    }
+    if (d->ntree_awake == 0) break;
+  }
+  EXPECT_TRUE(shared_island);
+  ASSERT_EQ(d->ntree_awake, 0);
+  for (int e = 0; e < 5; e++) {
+    int jnt = mj_rodChainTwistJnt(m.get(), 0, e);
+    EXPECT_EQ(d->tree_awake[m->body_treeid[m->jnt_bodyid[jnt]]], 0)
+        << "edge " << e;
+  }
+}
+
+// a vertex of a rod with arbitrary element order maps to the element of the
+// chain edge leaving it (the last edge at the far end), not element "vertex"
+TEST_F(ElasticityTest, RodVertElemDirectOrder) {
+  static constexpr char xml[] = R"(
+  <mujoco>
+    <worldbody>
+      <flexcomp name="rod" type="direct" dim="1" radius="0.004" mass="0.1"
+                element="2 3  0 1  3 4  1 2"
+                point="0 0 0  0.1 0 0  0.2 0 0  0.3 0 0  0.4 0 0">
+        <contact selfcollide="none" contype="0" conaffinity="0"/>
+        <elasticity young="1e7" section="box" sectionsize="0.01 0.004"/>
+      </flexcomp>
+    </worldbody>
+  </mujoco>
+  )";
+  char error[1024] = {0};
+  MjModelPtr m = LoadModelFromString(xml, error, sizeof(error));
+  ASSERT_THAT(m.get(), NotNull()) << error;
+  ASSERT_TRUE(mj_rodHasTwist(m.get(), 0));
+  // element="2 3  0 1  3 4  1 2": chain edges (0,1), (1,2), (2,3), (3,4) are
+  // elements 1, 3, 0, 2, with the far-end vertex 4 also mapping to element 2
+  const int expected[5] = {1, 3, 0, 2, 2};
+  for (int v = 0; v < 5; v++) {
+    EXPECT_EQ(mj_rodVertElem(m.get(), 0, v), expected[v]) << "vertex " << v;
+  }
+}
+
+// joint stiffness on a rod twist hinge combines additively with the rod's
+// curvature-induced twist bending stiffness in efm_ck and stays idempotent
+// across velocity-stage skips
+TEST_F(ElasticityTest, RodTwistJointStiffnessMetric) {
+  static constexpr char xml[] = R"(
+  <mujoco>
+    <option integrator="discrete" solver="CG" timestep="0.002" gravity="0 0 0"/>
+    <default>
+      <joint type="hinge" stiffness="5"/>
+    </default>
+    <worldbody>
+      <flexcomp name="arc" type="direct" dim="1" radius="0.003" mass="0.1"
+                element="0 1  1 2  2 3"
+                point="0 0 0  0.1 0 0  0.18 0.06 0  0.22 0.15 0">
+        <pin id="0"/>
+        <contact selfcollide="none" contype="0" conaffinity="0"/>
+        <elasticity young="1e7" shear="4e6" section="box"
+                    sectionsize="0.012 0.003"/>
+      </flexcomp>
+    </worldbody>
+  </mujoco>
+  )";
+  char error[1024] = {0};
+  MjModelPtr m = LoadModelFromString(xml, error, sizeof(error));
+  ASSERT_THAT(m.get(), NotNull()) << error;
+  MjDataPtr d = MakeData(m);
+  mj_forward(m.get(), d.get());
+
+  mjtNum ktheta[3] = {0};
+  ASSERT_EQ(mj_rodChain(m.get(), d.get(), 0, nullptr, nullptr, nullptr, nullptr,
+                        nullptr, ktheta, nullptr),
+            1);
+  const mjtNum h = m->opt.timestep;
+  for (int e = 0; e < 3; e++) {
+    int jnt = mj_rodChainTwistJnt(m.get(), 0, e);
+    ASSERT_GE(jnt, 0);
+    EXPECT_EQ(m->jnt_stiffness[jnt], 5);
+    int dof = m->jnt_dofadr[jnt];
+    EXPECT_GT(ktheta[e], 0) << "edge " << e;
+    EXPECT_NEAR(d->efm_ck[dof], h * (5 + ktheta[e]), MjTol(1e-12, 1e-6))
+        << "edge " << e;
+  }
+
+  // re-running from mjSTAGE_VEL skips effDiagStiff; efm_ck must stay unchanged
+  std::vector<mjtNum> ck_before(d->efm_ck, d->efm_ck + m->nv);
+  mj_forwardSkip(m.get(), d.get(), mjSTAGE_POS, 0);
+  for (int i = 0; i < m->nv; i++) {
+    EXPECT_NEAR(d->efm_ck[i], ck_before[i], MjTol(1e-12, 1e-6)) << "dof " << i;
   }
 }
 
@@ -3417,7 +4692,14 @@ TEST_F(ElasticityTest, RodTwistCoilingBelt) {
       nsteady++;
     }
   }
-  EXPECT_GT(std::abs(d->plastic[m->flex_plasticadr[f] + 6]), mjPI);
+  EXPECT_EQ(m->nplastic, 6 * 20 + 19);
+  for (int e = 0; e < 20; e++) {
+    const mjtNum* p = d->plastic + m->flex_plasticadr[f] + 6 * e;
+    EXPECT_NEAR(mju_norm3(p), 1.0, 1e-6);
+    EXPECT_NEAR(mju_norm3(p + 3), 1.0, 1e-6);
+    EXPECT_NEAR(mju_dot3(p, p + 3), 0.0, 1e-6);
+  }
+  EXPECT_GT(std::abs(d->qpos[m->jnt_qposadr[twist]]), mjPI);
   EXPECT_LT(fmax, 1.5 * ctrl);
   EXPECT_NEAR(d->qfrc_passive[dof], -ctrl, 0.02 * ctrl);
   EXPECT_NEAR(fsum / nsteady, -ctrl, 0.12 * ctrl);
@@ -3533,7 +4815,7 @@ TEST_F(ElasticityTest, RodBendingMetricCholesky) {
   char error[1024] = {0};
   MjModelPtr m = LoadModelFromString(xml, error, sizeof(error));
   ASSERT_THAT(m.get(), NotNull()) << error;
-  EXPECT_EQ(m->nefmCvert, 39);
+  EXPECT_EQ(m->nefmCvert, 41);
 
   MjDataPtr d = MakeData(m);
   // bend into a smooth curve so all hinges have state-dependent 3-vertex blocks
@@ -3548,23 +4830,17 @@ TEST_F(ElasticityTest, RodBendingMetricCholesky) {
   ASSERT_GT(d->nefmL, 9 * d->nefmdof);
   EXPECT_EQ(d->efm_L[9 * d->nefmdof], 1);
 
-  // check that (M + K) qacc_smooth == qfrc_smooth + efm_c to machine precision
-  // in 1 PCG iteration
+  // check that (M + B) qacc_smooth == qfrc_smooth + efm_c to machine precision
+  // in 1 PCG iteration: the preconditioner sees the same twist chain as the
+  // operator (the twist stiffness itself is checked against finite differences
+  // in DerivativeTest.FlexRodTwistHessian)
+  auto add_metric = [](const mjModel* m_in, mjData* d_in, mjtNum* res) {
+    mj_effMulAdd(m_in, d_in, res, d_in->qacc_smooth, /*flg_contact=*/1);
+  };
   std::vector<mjtNum> rhs(m->nv), lhs(m->nv);
   mju_add(rhs.data(), d->qfrc_smooth, d->efm_c, m->nv);
   mj_mulM(m.get(), d.get(), lhs.data(), d->qacc_smooth);
-  for (int i = 0; i < m->nv; i++) {
-    int adr = d->efm_K_rowadr[i];
-    for (int j = 0; j < d->efm_K_rownnz[i]; j++) {
-      lhs[i] +=
-          d->efm_K_val[adr + j] * d->qacc_smooth[d->efm_K_colind[adr + j]];
-    }
-
-    // per-dof diagonal: twist hinge stiffness and damping
-    if (d->efm_diag) {
-      lhs[i] += d->efm_diag[i] * d->qacc_smooth[i];
-    }
-  }
+  add_metric(m.get(), d.get(), lhs.data());
   mjtNum err = 0, norm = mju_norm(rhs.data(), m->nv);
   ASSERT_GT(norm, 0);
   for (int i = 0; i < m->nv; i++) {
@@ -3583,8 +4859,8 @@ TEST_F(ElasticityTest, RodBendingMetricCholesky) {
   }
   EXPECT_GT(d->nisland, 0);
 
-  // curved helix, whose hinge pairs couple vertices three edges apart: still 1
-  // PCG iteration
+  // 3D curved helix with coupled bending (effChol) and tridiagonal twist:
+  // still 1 PCG iteration
   static constexpr char kCurvedCholXml[] = R"(
   <mujoco>
     <option integrator="discrete" timestep="0.002" iterations="1"/>
@@ -3619,13 +4895,7 @@ TEST_F(ElasticityTest, RodBendingMetricCholesky) {
   lhs.resize(m->nv);
   mju_add(rhs.data(), d->qfrc_smooth, d->efm_c, m->nv);
   mj_mulM(m.get(), d.get(), lhs.data(), d->qacc_smooth);
-  for (int i = 0; i < m->nv; i++) {
-    int adr = d->efm_K_rowadr[i];
-    for (int j = 0; j < d->efm_K_rownnz[i]; j++) {
-      lhs[i] +=
-          d->efm_K_val[adr + j] * d->qacc_smooth[d->efm_K_colind[adr + j]];
-    }
-  }
+  add_metric(m.get(), d.get(), lhs.data());
   err = 0;
   norm = mju_norm(rhs.data(), m->nv);
   ASSERT_GT(norm, 0);
@@ -3634,6 +4904,409 @@ TEST_F(ElasticityTest, RodBendingMetricCholesky) {
     err += diff * diff;
   }
   EXPECT_LT(mju_sqrt(err) / norm, MjTol(1e-11, 1e-4));
+}
+
+// CG constraint solver with a 1D DER rod uses the O(nedge) tridiagonal twist
+// fold (effTwistSolve + tw_diag), both when the twist DOFs touch only a static
+// floor and when contacts couple them to a free rigid body, matching Newton
+TEST_F(ElasticityTest, RodTwistConstraintMetricFold) {
+  static constexpr char kUncoupledXml[] = R"(
+  <mujoco>
+    <option integrator="discrete" solver="CG" timestep="0.002"
+            tolerance="1e-10" iterations="500"/>
+    <worldbody>
+      <geom name="floor" type="plane" size="2 2 0.1" friction="0.6 0.005 0.0001"/>
+      <flexcomp name="ribbon" type="grid" count="15 1 1" spacing="0.04 0.04 0.04"
+                pos="0 0 0.009" radius="0.003" dim="1" mass="0.05">
+        <pin id="0 1"/>
+        <contact selfcollide="none"/>
+        <edge equality="true"/>
+        <elasticity young="1e8" shear="4e7" damping="0.05"
+                    section="box" sectionsize="0.02 0.003"/>
+      </flexcomp>
+    </worldbody>
+  </mujoco>
+  )";
+
+  static constexpr char kCoupledXml[] = R"(
+  <mujoco>
+    <option integrator="discrete" solver="CG" timestep="0.002"
+            tolerance="1e-10" iterations="500"/>
+    <worldbody>
+      <geom name="floor" type="plane" size="2 2 0.1" friction="0.6 0.005 0.0001"/>
+      <body name="slider" pos="0.24 0 0.027">
+        <freejoint/>
+        <geom name="slider_geom" type="box" size="0.08 0.08 0.01" mass="0.2"
+              friction="0.6 0.005 0.0001"/>
+      </body>
+      <flexcomp name="ribbon" type="grid" count="15 1 1" spacing="0.04 0.04 0.04"
+                pos="0 0 0.009" radius="0.003" dim="1" mass="0.05">
+        <pin id="0 1"/>
+        <contact selfcollide="none"/>
+        <edge equality="true"/>
+        <elasticity young="1e8" shear="4e7" damping="0.05"
+                    section="box" sectionsize="0.02 0.003"/>
+      </flexcomp>
+    </worldbody>
+  </mujoco>
+  )";
+
+  for (const char* xml : {kUncoupledXml, kCoupledXml}) {
+    char error[1024] = {0};
+    MjModelPtr m = LoadModelFromString(xml, error, sizeof(error));
+    ASSERT_THAT(m.get(), NotNull()) << error;
+    MjDataPtr d_cg = MakeData(m);
+    for (int e = 1; e < 14; e++) {
+      std::string jname =
+          (e < 13) ? ("ribbon_twist_" + std::to_string(e)) : "ribbon_twist";
+      int jid = mj_name2id(m.get(), mjOBJ_JOINT, jname.c_str());
+      ASSERT_GE(jid, 0);
+      d_cg->qpos[m->jnt_qposadr[jid]] = 0.4;
+    }
+    for (int step = 0; step < 20; step++) {
+      mj_step(m.get(), d_cg.get());
+      EXPECT_EQ(d_cg->warning[mjWARN_INERTIA].number, 0);
+      EXPECT_EQ(d_cg->warning[mjWARN_BADQACC].number, 0);
+    }
+    mj_forward(m.get(), d_cg.get());
+    ASSERT_GT(d_cg->ncon, 0);
+    if (xml == kCoupledXml) {
+      // the slider must touch the ribbon, coupling twist and rigid-body trees
+      int slider = mj_name2id(m.get(), mjOBJ_GEOM, "slider_geom");
+      ASSERT_GE(slider, 0);
+      bool slider_ribbon = false;
+      for (int c = 0; c < d_cg->ncon; c++) {
+        const mjContact& con = d_cg->contact[c];
+        slider_ribbon |= (con.geom[0] == slider && con.flex[1] == 0) ||
+                         (con.geom[1] == slider && con.flex[0] == 0);
+      }
+      EXPECT_TRUE(slider_ribbon);
+    }
+
+    // compare single-step qacc with Newton at the same state
+    MjDataPtr d_nw = MakeData(m);
+    mju_copy(d_nw->qpos, d_cg->qpos, m->nq);
+    mju_copy(d_nw->qvel, d_cg->qvel, m->nv);
+    mju_copy(d_nw->plastic, d_cg->plastic, m->nplastic);
+    m->opt.solver = mjSOL_NEWTON;
+    mj_forward(m.get(), d_nw.get());
+
+    mjtNum err = 0, norm = mju_norm(d_nw->qacc, m->nv);
+    ASSERT_GT(norm, 0);
+    for (int i = 0; i < m->nv; i++) {
+      mjtNum diff = d_cg->qacc[i] - d_nw->qacc[i];
+      err += diff * diff;
+    }
+    EXPECT_LT(mju_sqrt(err) / norm, MjTol(1e-5, 1e-3));
+  }
+}
+
+// circular 1D <flexcomp> rod pushed tangentially on a frictional plane rolls
+// without slipping: axial twist DOFs spin at -vy / r and the effective rolling
+// inertia reduces linear acceleration to 2/3 of frictionless sliding
+TEST_F(ElasticityTest, RodCapsuleRollingOnPlane) {
+  static constexpr char xml_template[] = R"(
+  <mujoco>
+    <option integrator="discrete" gravity="0 0 -9.81" timestep="0.001"/>
+    <worldbody>
+      <geom name="floor" type="plane" size="2 2 0.1" %s solref="0.004 1"/>
+      <flexcomp name="rod" type="grid" count="6 1 1" spacing="0.08 0.08 0.08"
+                pos="0 0 0.02" radius="0.02" dim="1" mass="0.12">
+        <edge equality="true"/>
+        <contact selfcollide="none" %s solref="0.004 1"/>
+        <elasticity young="1e7" shear="1e7" damping="0.01"/>
+      </flexcomp>
+    </worldbody>
+  </mujoco>
+  )";
+
+  auto run_push = [&](const char* floor_attr, mjtNum* vy_out, mjtNum* dy_out,
+                      std::vector<mjtNum>* w_twist_out) {
+    char xml[2048], error[1024] = {0};
+    std::snprintf(xml, sizeof(xml), xml_template, floor_attr, floor_attr);
+    MjModelPtr m = LoadModelFromString(xml, error, sizeof(error));
+    ASSERT_THAT(m.get(), NotNull()) << error;
+    MjDataPtr d = MakeData(m);
+
+    // settle onto the floor under gravity
+    for (int step = 0; step < 100; step++) {
+      mj_step(m.get(), d.get());
+    }
+    mj_forward(m.get(), d.get());
+    mjtNum y0 = 0;
+    for (int v = 0; v < 6; v++) {
+      y0 += d->flexvert_xpos[3 * v + 1] / 6;
+    }
+
+    // apply uniform +Y horizontal push F = 0.24 N (0.04 N per vertex)
+    for (int v = 0; v < 6; v++) {
+      int bid = m->flex_vertbodyid[v];
+      d->xfrc_applied[6 * bid + 1] = 0.04;
+    }
+    for (int step = 0; step < 200; step++) {
+      mj_step(m.get(), d.get());
+    }
+    mj_forward(m.get(), d.get());
+
+    mjtNum y1 = 0, vy = 0;
+    for (int v = 0; v < 6; v++) {
+      y1 += d->flexvert_xpos[3 * v + 1] / 6;
+      vy += d->qvel[m->body_dofadr[m->flex_vertbodyid[v]] + 1] / 6;
+    }
+    *dy_out = y1 - y0;
+    *vy_out = vy;
+    w_twist_out->clear();
+    for (int e = 0; e < 5; e++) {
+      std::string jname =
+          (e < 4) ? ("rod_twist_" + std::to_string(e)) : "rod_twist";
+      int jid = mj_name2id(m.get(), mjOBJ_JOINT, jname.c_str());
+      ASSERT_GE(jid, 0);
+      w_twist_out->push_back(d->qvel[m->jnt_dofadr[jid]]);
+    }
+  };
+
+  mjtNum vy_slide = 0, dy_slide = 0, vy_roll = 0, dy_roll = 0;
+  std::vector<mjtNum> w_slide, w_roll;
+  run_push(R"(condim="1" friction="0 0 0")", &vy_slide, &dy_slide, &w_slide);
+  run_push(R"(friction="1 0.005 0.0001")", &vy_roll, &dy_roll, &w_roll);
+
+  // frictionless floor: pure translation at a = F / M = 2 m/s^2, zero axial
+  // spin
+  EXPECT_NEAR(vy_slide, 0.4, 0.01);
+  for (mjtNum w : w_slide) {
+    EXPECT_NEAR(w, 0.0, 1e-6);
+  }
+
+  // frictional floor: solid cylinder M + I / r^2 = 1.5 M gives 2/3 speed and
+  // displacement, and rolling without slip gives omega_twist = -vy / r
+  EXPECT_NEAR(vy_roll / vy_slide, 2.0 / 3.0, 0.04);
+  EXPECT_NEAR(dy_roll / dy_slide, 2.0 / 3.0, 0.04);
+  const mjtNum r = 0.02;
+  for (int e = 0; e < 5; e++) {
+    EXPECT_NEAR(w_roll[e], -vy_roll / r, 0.05 * std::abs(vy_roll / r))
+        << "edge " << e;
+  }
+}
+
+// free 3D tumbling of straight (discrete) and curved (RK4) box-section ribbons
+// in zero gravity preserves unit-orthogonal (t_old, u_old) reference frames
+// without secular roll drift or spurious elastic bending energy
+// rotation R minimizing sum_i |R a_i - b_i|^2 over n centered point pairs
+// (Horn's quaternion method: the dominant eigenvector, by power iteration)
+void BestFitRotation(const mjtNum* a, const mjtNum* b, int n, mjtNum R[9]) {
+  mjtNum S[9] = {0};
+  for (int i = 0; i < n; i++) {
+    for (int r = 0; r < 3; r++) {
+      for (int c = 0; c < 3; c++) {
+        S[3 * r + c] += a[3 * i + r] * b[3 * i + c];
+      }
+    }
+  }
+  const mjtNum xx = S[0], xy = S[1], xz = S[2], yx = S[3], yy = S[4], yz = S[5],
+               zx = S[6], zy = S[7], zz = S[8];
+  mjtNum N[16] = {xx + yy + zz, yz - zy,      zx - xz,       xy - yx,
+                  yz - zy,      xx - yy - zz, xy + yx,       zx + xz,
+                  zx - xz,      xy + yx,      -xx + yy - zz, yz + zy,
+                  xy - yx,      zx + xz,      yz + zy,       -xx - yy + zz};
+  mjtNum shift = 0;
+  for (int i = 0; i < 9; i++) shift += std::abs(S[i]);
+  for (int i = 0; i < 4; i++) N[5 * i] += shift;
+  mjtNum q[4] = {1, 0.1, 0.1, 0.1};
+  for (int iter = 0; iter < 2000; iter++) {
+    mjtNum qn[4];
+    mju_mulMatVec(qn, N, q, 4, 4);
+    mju_normalize4(qn);
+    mju_copy4(q, qn);
+  }
+  mju_quat2Mat(R, q);
+}
+
+TEST_F(ElasticityTest, RodFreeTumblingParallelTransport) {
+  // Case 1: straight box ribbon under integrator="discrete" tumbling > 2.5 rad
+  {
+    static constexpr char kStraightXml[] = R"(
+    <mujoco>
+      <option integrator="discrete" gravity="0 0 0" timestep="0.002"/>
+      <worldbody>
+        <flexcomp name="ribbon" type="grid" count="5 1 1"
+                  spacing="0.05 0.05 0.05" dim="1" radius="0.005" mass="0.01">
+          <edge equality="true"/>
+          <contact selfcollide="none" contype="0" conaffinity="0"/>
+          <elasticity young="1e7" poisson="0.25" damping="0"
+                      section="box" sectionsize="0.02 0.005"/>
+        </flexcomp>
+      </worldbody>
+    </mujoco>
+    )";
+    char error[1024] = {0};
+    MjModelPtr m = LoadModelFromString(kStraightXml, error, sizeof(error));
+    ASSERT_THAT(m.get(), NotNull()) << error;
+    ASSERT_EQ(m->nplastic, 6 * 4 + 3);
+
+    MjDataPtr d = MakeData(m);
+    mj_forward(m.get(), d.get());
+
+    mjtNum com[3] = {0, 0, 0};
+    for (int v = 0; v < 5; v++) {
+      mju_addToScl3(com, d->flexvert_xpos + 3 * v, 1.0 / 5.0);
+    }
+    const mjtNum omega[3] = {1.5, -1.2, 2.0};
+    for (int v = 0; v < 5; v++) {
+      mjtNum rel[3], vel[3];
+      mju_sub3(rel, d->flexvert_xpos + 3 * v, com);
+      mju_cross(vel, omega, rel);
+      mju_copy3(d->qvel + m->body_dofadr[m->flex_vertbodyid[v]], vel);
+    }
+    for (int e = 0; e < 4; e++) {
+      std::string jname =
+          (e < 3) ? ("ribbon_twist_" + std::to_string(e)) : "ribbon_twist";
+      int jid = mj_name2id(m.get(), mjOBJ_JOINT, jname.c_str());
+      ASSERT_GE(jid, 0);
+      mjtNum te[3];
+      mju_sub3(te, d->flexvert_xpos + 3 * (e + 1), d->flexvert_xpos + 3 * e);
+      mju_normalize3(te);
+      d->qvel[m->jnt_dofadr[jid]] = mju_dot3(omega, te);
+    }
+
+    mjtNum spin;  // axial spin of the straight ribbon, conserved
+    {
+      mjtNum t0[3];
+      mju_sub3(t0, d->flexvert_xpos + 3 * 4, d->flexvert_xpos);
+      mju_normalize3(t0);
+      spin = mju_dot3(omega, t0);
+    }
+    for (int step = 0; step < 500; step++) {
+      mj_step(m.get(), d.get());
+    }
+    mj_forward(m.get(), d.get());
+
+    // the vertices cannot tell a roll about the axis of a straight ribbon,
+    // which costs no energy either: the time-parallel frames must not spin, so
+    // that every edge's material frame rolls by exactly the conserved spin *
+    // time
+    for (int e = 0; e < 4; e++) {
+      int jnt = mj_rodChainTwistJnt(m.get(), 0, e);
+      ASSERT_GE(jnt, 0);
+      EXPECT_NEAR(d->qpos[m->jnt_qposadr[jnt]], spin * d->time,
+                  MjTol(1e-6, 1e-3) * std::abs(spin * d->time))
+          << "edge " << e;
+    }
+    EXPECT_LT(RodBendingEnergy(m.get(), d.get(), 0), MjTol(1e-8, 1e-5));
+  }
+
+  // Case 2: curved quarter-arc box ribbon undergoing 3D non-planar Poinsot
+  // tumbling (nonzero spherical holonomy across edges)
+  static constexpr int kN = 5;
+  static constexpr double kR = 0.2;
+  std::string point, element;
+  for (int i = 0; i < kN; i++) {
+    double angle = (mjPI / 2) * i / (kN - 1);
+    char buf[128];
+    std::snprintf(buf, sizeof(buf), "%.17g %.17g 0  ", kR * std::cos(angle),
+                  kR * std::sin(angle));
+    point += buf;
+    if (i > 0) {
+      element += std::to_string(i - 1) + " " + std::to_string(i) + "  ";
+    }
+  }
+  std::string xml = R"(
+  <mujoco>
+    <option integrator="RK4" gravity="0 0 0" timestep="0.0005"/>
+    <worldbody>
+      <flexcomp name="ribbon" type="direct" dim="1" radius="0.005" mass="0.01"
+                element=")" +
+                    element + R"(" point=")" + point + R"(">
+        <edge equality="true"/>
+        <contact selfcollide="none" contype="0" conaffinity="0"/>
+        <elasticity young="5e5" poisson="0.25" damping="0"
+                    section="box" sectionsize="0.02 0.005"/>
+      </flexcomp>
+    </worldbody>
+  </mujoco>
+  )";
+
+  char error[1024] = {0};
+  MjModelPtr m = LoadModelFromString(xml.c_str(), error, sizeof(error));
+  ASSERT_THAT(m.get(), NotNull()) << error;
+  ASSERT_EQ(m->nplastic, 6 * (kN - 1) + (kN - 2));
+
+  MjDataPtr d = MakeData(m);
+  mj_forward(m.get(), d.get());
+  EXPECT_NEAR(RodBendingEnergy(m.get(), d.get(), 0), 0.0, MjTol(1e-12, 1e-6));
+
+  // compute center of mass and impart rigid oblique 3D angular velocity
+  mjtNum com[3] = {0, 0, 0};
+  for (int v = 0; v < kN; v++) {
+    mju_addToScl3(com, d->flexvert_xpos + 3 * v, 1.0 / kN);
+  }
+  const mjtNum omega[3] = {0.6, -0.8, 1.0};
+  for (int v = 0; v < kN; v++) {
+    mjtNum rel[3], vel[3];
+    mju_sub3(rel, d->flexvert_xpos + 3 * v, com);
+    mju_cross(vel, omega, rel);
+    mju_copy3(d->qvel + m->body_dofadr[m->flex_vertbodyid[v]], vel);
+  }
+  for (int e = 0; e < kN - 1; e++) {
+    std::string jname =
+        (e < kN - 2) ? ("ribbon_twist_" + std::to_string(e)) : "ribbon_twist";
+    int jid = mj_name2id(m.get(), mjOBJ_JOINT, jname.c_str());
+    ASSERT_GE(jid, 0);
+    mjtNum te[3];
+    mju_sub3(te, d->flexvert_xpos + 3 * (e + 1), d->flexvert_xpos + 3 * e);
+    mju_normalize3(te);
+    d->qvel[m->jnt_dofadr[jid]] = mju_dot3(omega, te);
+  }
+
+  mj_forward(m.get(), d.get());
+  std::vector<mjtNum> Mqvel(m->nv);
+  mj_mulM(m.get(), d.get(), Mqvel.data(), d->qvel);
+  const mjtNum ke0 = 0.5 * mju_dot(d->qvel, Mqvel.data(), m->nv);
+  ASSERT_GT(ke0, 1e-5);
+
+  // material frames and centered vertices before tumbling
+  mjtNum box[2];
+  std::vector<mjtNum> mat0(9 * (kN - 1)), mat1(9 * (kN - 1));
+  ASSERT_TRUE(mj_rodBoxEdge(m.get(), d.get(), 0, mat0.data(), box));
+  auto centered = [&](std::vector<mjtNum>* x) {
+    x->assign(d->flexvert_xpos, d->flexvert_xpos + 3 * kN);
+    mjtNum c[3] = {0, 0, 0};
+    for (int v = 0; v < kN; v++) mju_addToScl3(c, x->data() + 3 * v, 1.0 / kN);
+    for (int v = 0; v < kN; v++) mju_subFrom3(x->data() + 3 * v, c);
+  };
+  std::vector<mjtNum> x0, x1;
+  centered(&x0);
+
+  for (int step = 0; step < 500; step++) {
+    mj_step(m.get(), d.get());
+  }
+  mj_forward(m.get(), d.get());
+
+  // material frames follow the best-fit rigid rotation of the vertices
+  centered(&x1);
+  mjtNum R[9];
+  BestFitRotation(x0.data(), x1.data(), kN, R);
+  mjtNum shape_err = 0;
+  for (int v = 0; v < kN; v++) {
+    mjtNum rx[3];
+    mju_mulMatVec3(rx, R, x0.data() + 3 * v);
+    shape_err = std::max(shape_err, mju_dist3(rx, x1.data() + 3 * v));
+  }
+  EXPECT_LT(shape_err, 1e-3 * kR);  // nearly rigid motion
+  mjtNum rot_angle = mju_acos(mju_clip(0.5 * (R[0] + R[4] + R[8] - 1), -1, 1));
+  EXPECT_GT(rot_angle, 0.2);  // a substantial rotation
+  ASSERT_TRUE(mj_rodBoxEdge(m.get(), d.get(), 0, mat1.data(), box));
+  for (int e = 0; e < kN - 1; e++) {
+    mjtNum expected[9];
+    mju_mulMatMat(expected, R, mat0.data() + 9 * e, 3, 3, 3);
+    for (int i = 0; i < 9; i++) {
+      EXPECT_NEAR(mat1[9 * e + i], expected[i], MjTol(2e-3, 1e-2))
+          << "element " << e << " entry " << i;
+    }
+  }
+
+  // verify negligible elastic bending/twisting energy (no secular roll drift)
+  const mjtNum bend_energy = RodBendingEnergy(m.get(), d.get(), 0);
+  EXPECT_LT(bend_energy, MjTol(1e-8, 1e-5));
 }
 
 // passive contact on interpolated flexes (trilinear volumetric, trilinear shell

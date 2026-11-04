@@ -578,10 +578,37 @@ static void mj_flexPassiveBend1D(const mjModel* m, mjData* d, int f,
     mj_flexGather(m, d, f, vvel, d->qvel);
   }
 
+  // under discrete, also record the bending stiffness of each per-edge twist angle in efm_ck so
+  // mj_effShift (which runs after mj_passive in mj_fwdVelocity) and the qH backbone see it
+  int need_ktheta = enbl_spring && d->efm_active && d->efm_ck && mj_effCouplings(m);
+  mjtNum* ktheta = need_ktheta ? mjSTACKALLOC(d, nhinge + 1, mjtNum) : NULL;
   mjtNum* Wd_chain = enbl_damper ? mjSTACKALLOC(d, 9*nhinge, mjtNum) : NULL;
   if (mj_rodChain(m, d, f, NULL, enbl_spring ? frc : NULL,
-                  enbl_spring ? d->qfrc_spring : NULL, NULL, Wd_chain, NULL)) {
+                  enbl_spring ? d->qfrc_spring : NULL, NULL, Wd_chain, ktheta, NULL)) {
+    if (ktheta) {
+      mjtNum h = m->opt.timestep;
+      for (int e = 0; e <= nhinge; e++) {
+        int j = mj_rodChainTwistJnt(m, f, e);
+        if (j >= 0) {
+          int padr = m->jnt_qposadr[j];
+          int dadr = m->jnt_dofadr[j];
+          const mjtNum* spoly = m->jnt_stiffnesspoly + mjNPOLY*j;
+          const mjtNum* qspring = m->jnt_plasticadr[j] >= 0 ?
+                                  d->plastic + m->jnt_plasticadr[j] :
+                                  m->qpos_spring + padr;
+          mjtNum kjnt = (m->jnt_stiffness[j] != 0 || !mju_isZero(spoly, mjNPOLY)) ?
+                        mju_max(0, mjd_xPolyForce(m->jnt_stiffness[j], spoly,
+                                                  d->qpos[padr] - qspring[0], mjNPOLY, 0)) : 0;
+          d->efm_ck[dadr] = h * (kjnt + ktheta[e]);
+        }
+      }
+    }
     if (enbl_damper) {
+      int va = m->flex_vertadr[f];
+      int b0 = m->flex_vertbodyid[va + (int)b[1 + 0]];
+      int bT = m->flex_vertbodyid[va + (int)b[1 + mjROD_HINGE_SIZE*(nhinge - 1) + 2]];
+      int root_clamped, tail_clamped;
+      mj_rodClampedEnds(m, f, &root_clamped, &tail_clamped);
       for (int h = 0; h < nhinge; h++) {
         const mjtNum* hinge = b + 1 + mjROD_HINGE_SIZE*h;
         int v[3] = {(int)hinge[0], (int)hinge[1], (int)hinge[2]};
@@ -600,6 +627,63 @@ static void mj_flexPassiveBend1D(const mjModel* m, mjData* d, int f,
             for (int r = 0; r < 3; r++) {
               dmp[3*v[i]+c] -= J[9*r + 3*i + c] * wd[r];
             }
+          }
+        }
+
+        // frame-indifferent torsional Rayleigh damping on relative material twist rate
+        mjtNum kt = hinge[8];
+        int jnt1 = mj_rodChainTwistJnt(m, f, h + 1);
+        int jnt0 = mj_rodChainTwistJnt(m, f, h);
+        if (kt > 0 && (jnt0 >= 0 || jnt1 >= 0)) {
+          mjtNum e0[3], e1[3];
+          mju_sub3(e0, xpos + 3*v[1], xpos + 3*v[0]);
+          mju_sub3(e1, xpos + 3*v[2], xpos + 3*v[1]);
+          mjtNum l0 = mju_norm3(e0), l1 = mju_norm3(e1);
+          if (l0 >= mjMINVAL && l1 >= mjMINVAL) {
+            mjtNum w0 = 0;
+            if (jnt0 >= 0) {
+              w0 = d->qvel[m->jnt_dofadr[jnt0]];
+            } else if (h == 0 && root_clamped && b0 > 0) {
+              w0 = mju_dot3(d->cvel + 6*b0, e0) / l0;
+            }
+            int tail = (h == nhinge - 1 && tail_clamped && bT > 0);
+            mjtNum w1 = 0;
+            if (jnt1 >= 0) {
+              w1 = d->qvel[m->jnt_dofadr[jnt1]];
+            } else if (tail) {
+              w1 = mju_dot3(d->cvel + 6*bT, e1) / l1;
+            }
+            mjtNum dv0[3], dv1[3];
+            mju_sub3(dv0, vvel + 3*v[1], vvel + 3*v[0]);
+            mju_sub3(dv1, vvel + 3*v[2], vvel + 3*v[1]);
+            mjtNum gamma_dot = (w1 - w0) + mju_dot3(kb, dv0) / (2*l0) + mju_dot3(kb, dv1) / (2*l1);
+            mjtNum tau_unscaled = 2 * kt * gamma_dot;
+            mjtNum tau_d = damp * tau_unscaled;
+            if (jnt1 >= 0) {
+              d->qfrc_damper[m->jnt_dofadr[jnt1]] -= tau_d;
+            } else if (tail) {
+              mjtNum tau_bT[3];
+              mji_scl3(tau_bT, e1, -tau_d / l1);
+              int bw = m->body_weldid[bT];
+              for (int i = m->body_dofadr[bw] + m->body_dofnum[bw] - 1;
+                   i >= 0; i = m->dof_parentid[i]) {
+                d->qfrc_damper[i] += mju_dot3(d->cdof + 6*i, tau_bT);
+              }
+            }
+            if (jnt0 >= 0) {
+              d->qfrc_damper[m->jnt_dofadr[jnt0]] += tau_d;
+            } else if (h == 0 && root_clamped && b0 > 0) {
+              mjtNum tau_b0[3];
+              mji_scl3(tau_b0, e0, tau_d / l0);
+              int bw = m->body_weldid[b0];
+              for (int i = m->body_dofadr[bw] + m->body_dofnum[bw] - 1;
+                   i >= 0; i = m->dof_parentid[i]) {
+                d->qfrc_damper[i] += mju_dot3(d->cdof + 6*i, tau_b0);
+              }
+            }
+            mji_addToScl3(dmp + 3*v[0], kb,  tau_unscaled / (2*l0));
+            mji_addToScl3(dmp + 3*v[1], kb, -tau_unscaled / (2*l0) + tau_unscaled / (2*l1));
+            mji_addToScl3(dmp + 3*v[2], kb, -tau_unscaled / (2*l1));
           }
         }
       }

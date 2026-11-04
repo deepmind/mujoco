@@ -231,6 +231,7 @@ class ModelWarp(PyTreeNode):
   efm_K_colind: np.ndarray
   efm_K_rowadr: np.ndarray
   efm_K_rownnz: np.ndarray
+  efm_con_max_dof: int
   efm_dofblk: np.ndarray
   efm_dofid: np.ndarray
   eq_connect_adr: np.ndarray
@@ -259,7 +260,9 @@ class ModelWarp(PyTreeNode):
   flex_edgeflexid: np.ndarray
   flex_edgenum: np.ndarray
   flex_edgestiffness: np.ndarray
+  flex_eff_possible: np.ndarray
   flex_elem: np.ndarray
+  flex_elem_rodedge: np.ndarray
   flex_elemadr: np.ndarray
   flex_elemdataadr: np.ndarray
   flex_elemedge: np.ndarray
@@ -280,6 +283,17 @@ class ModelWarp(PyTreeNode):
   flex_priority: np.ndarray
   flex_radius: np.ndarray
   flex_rigid: np.ndarray
+  flex_rod_box_size: np.ndarray
+  flex_rod_edgeadr: np.ndarray
+  flex_rod_edgenum: np.ndarray
+  flex_rod_has_twist: np.ndarray
+  flex_rod_hingeadr: np.ndarray
+  flex_rod_is_box: np.ndarray
+  flex_rod_is_chain: np.ndarray
+  flex_rod_root_clamped: np.ndarray
+  flex_rod_tail_clamped: np.ndarray
+  flex_rodedge_jnt: np.ndarray
+  flex_rodedge_vert: np.ndarray
   flex_rodhinge_map: np.ndarray
   flex_selfcollide: np.ndarray
   flex_shell: np.ndarray
@@ -295,6 +309,7 @@ class ModelWarp(PyTreeNode):
   flex_stiffness: np.ndarray
   flex_stiffnessadr: np.ndarray
   flex_vert: np.ndarray
+  flex_vert_rodelem: np.ndarray
   flex_vertbodyid: np.ndarray
   flex_vertcell: np.ndarray
   flex_vertflexid: np.ndarray
@@ -376,6 +391,7 @@ class ModelWarp(PyTreeNode):
   nflexface: int
   nflexintcell: int
   nflexnode: int
+  nflexrodedge: int
   nflexrodhinge: int
   nflexshelldata: int
   nflexstiffness: int
@@ -545,6 +561,21 @@ class DataWarp(PyTreeNode):
   flex_aabb_max: jax.Array
   flex_aabb_min: jax.Array
   flex_hessian_valid: jax.Array
+  flex_rod_chain_ok: jax.Array
+  flex_rod_chain_valid: jax.Array
+  flex_rod_end_torque: jax.Array
+  flex_rod_frame0_loc: jax.Array
+  flex_rod_frame0_ref: jax.Array
+  flex_rod_ref_ok: jax.Array
+  flex_rod_tail_loc: jax.Array
+  flex_rodedge_frc: jax.Array
+  flex_rodedge_grad: jax.Array
+  flex_rodedge_ktheta: jax.Array
+  flex_rodedge_tridiag: jax.Array
+  flex_rodhinge_Wd: jax.Array
+  flex_rodhinge_Wk: jax.Array
+  flex_rodhinge_g: jax.Array
+  flex_rodhinge_om0: jax.Array
   flexedge_J: jax.Array
   flexedge_hessian: jax.Array
   flexedge_length: jax.Array
@@ -770,6 +801,21 @@ _NDIM = {
         'flex_aabb_max': 3,
         'flex_aabb_min': 3,
         'flex_hessian_valid': 2,
+        'flex_rod_chain_ok': 2,
+        'flex_rod_chain_valid': 2,
+        'flex_rod_end_torque': 3,
+        'flex_rod_frame0_loc': 4,
+        'flex_rod_frame0_ref': 4,
+        'flex_rod_ref_ok': 2,
+        'flex_rod_tail_loc': 4,
+        'flex_rodedge_frc': 3,
+        'flex_rodedge_grad': 2,
+        'flex_rodedge_ktheta': 2,
+        'flex_rodedge_tridiag': 3,
+        'flex_rodhinge_Wd': 4,
+        'flex_rodhinge_Wk': 4,
+        'flex_rodhinge_g': 3,
+        'flex_rodhinge_om0': 3,
         'flexedge_J': 2,
         'flexedge_hessian': 4,
         'flexedge_length': 2,
@@ -1013,6 +1059,7 @@ _NDIM = {
         'efm_K_colind': 1,
         'efm_K_rowadr': 1,
         'efm_K_rownnz': 1,
+        'efm_con_max_dof': 0,
         'efm_dofblk': 1,
         'efm_dofid': 1,
         'eq_active0': 1,
@@ -1050,7 +1097,9 @@ _NDIM = {
         'flex_edgeflexid': 1,
         'flex_edgenum': 1,
         'flex_edgestiffness': 1,
+        'flex_eff_possible': 1,
         'flex_elem': 1,
+        'flex_elem_rodedge': 2,
         'flex_elemadr': 1,
         'flex_elemdataadr': 1,
         'flex_elemedge': 1,
@@ -1076,6 +1125,17 @@ _NDIM = {
         'flex_priority': 1,
         'flex_radius': 1,
         'flex_rigid': 1,
+        'flex_rod_box_size': 2,
+        'flex_rod_edgeadr': 1,
+        'flex_rod_edgenum': 1,
+        'flex_rod_has_twist': 1,
+        'flex_rod_hingeadr': 1,
+        'flex_rod_is_box': 1,
+        'flex_rod_is_chain': 1,
+        'flex_rod_root_clamped': 1,
+        'flex_rod_tail_clamped': 1,
+        'flex_rodedge_jnt': 1,
+        'flex_rodedge_vert': 2,
         'flex_rodhinge_map': 2,
         'flex_selfcollide': 1,
         'flex_shell': 1,
@@ -1092,6 +1152,7 @@ _NDIM = {
         'flex_stiffnessadr': 1,
         'flex_vert': 2,
         'flex_vert0': 2,
+        'flex_vert_rodelem': 1,
         'flex_vertadr': 1,
         'flex_vertbodyid': 1,
         'flex_vertcell': 1,
@@ -1271,6 +1332,7 @@ _NDIM = {
         'nflexface': 0,
         'nflexintcell': 0,
         'nflexnode': 0,
+        'nflexrodedge': 0,
         'nflexrodhinge': 0,
         'nflexshelldata': 0,
         'nflexstiffness': 0,
@@ -1589,6 +1651,21 @@ _BATCH_DIM = {
         'flex_aabb_max': True,
         'flex_aabb_min': True,
         'flex_hessian_valid': True,
+        'flex_rod_chain_ok': True,
+        'flex_rod_chain_valid': True,
+        'flex_rod_end_torque': True,
+        'flex_rod_frame0_loc': True,
+        'flex_rod_frame0_ref': True,
+        'flex_rod_ref_ok': True,
+        'flex_rod_tail_loc': True,
+        'flex_rodedge_frc': True,
+        'flex_rodedge_grad': True,
+        'flex_rodedge_ktheta': True,
+        'flex_rodedge_tridiag': True,
+        'flex_rodhinge_Wd': True,
+        'flex_rodhinge_Wk': True,
+        'flex_rodhinge_g': True,
+        'flex_rodhinge_om0': True,
         'flexedge_J': True,
         'flexedge_hessian': True,
         'flexedge_length': True,
@@ -1832,6 +1909,7 @@ _BATCH_DIM = {
         'efm_K_colind': False,
         'efm_K_rowadr': False,
         'efm_K_rownnz': False,
+        'efm_con_max_dof': False,
         'efm_dofblk': False,
         'efm_dofid': False,
         'eq_active0': False,
@@ -1869,7 +1947,9 @@ _BATCH_DIM = {
         'flex_edgeflexid': False,
         'flex_edgenum': False,
         'flex_edgestiffness': False,
+        'flex_eff_possible': False,
         'flex_elem': False,
+        'flex_elem_rodedge': False,
         'flex_elemadr': False,
         'flex_elemdataadr': False,
         'flex_elemedge': False,
@@ -1895,6 +1975,17 @@ _BATCH_DIM = {
         'flex_priority': False,
         'flex_radius': False,
         'flex_rigid': False,
+        'flex_rod_box_size': False,
+        'flex_rod_edgeadr': False,
+        'flex_rod_edgenum': False,
+        'flex_rod_has_twist': False,
+        'flex_rod_hingeadr': False,
+        'flex_rod_is_box': False,
+        'flex_rod_is_chain': False,
+        'flex_rod_root_clamped': False,
+        'flex_rod_tail_clamped': False,
+        'flex_rodedge_jnt': False,
+        'flex_rodedge_vert': False,
         'flex_rodhinge_map': False,
         'flex_selfcollide': False,
         'flex_shell': False,
@@ -1911,6 +2002,7 @@ _BATCH_DIM = {
         'flex_stiffnessadr': False,
         'flex_vert': False,
         'flex_vert0': False,
+        'flex_vert_rodelem': False,
         'flex_vertadr': False,
         'flex_vertbodyid': False,
         'flex_vertcell': False,
@@ -2090,6 +2182,7 @@ _BATCH_DIM = {
         'nflexface': False,
         'nflexintcell': False,
         'nflexnode': False,
+        'nflexrodedge': False,
         'nflexrodhinge': False,
         'nflexshelldata': False,
         'nflexstiffness': False,

@@ -598,6 +598,7 @@ cc_library(
     deps = [
         ":engine_collision_convex",
         ":engine_collision_primitive",
+        ":engine_core_util",
         ":engine_inline",
         ":engine_util_blas",
         ":engine_util_spatial",
@@ -866,6 +867,7 @@ cc_library(
     visibility = [":_api_visibility"],
     deps = [
         ":engine_array_safety",
+        ":engine_core_util",
         ":engine_util_errmem",
         ":engine_util_misc",
         "//:libmujoco_hdrs",
@@ -941,6 +943,7 @@ cc_library(
     ],
     deps = [
         ":engine_core",
+        ":engine_core_util",
         ":engine_forward",
         ":engine_init",
         ":engine_macro",

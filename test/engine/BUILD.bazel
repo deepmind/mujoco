@@ -412,6 +412,8 @@ cc_test(
     ],
     deps = [
         "//:mujoco",
+        "//src/engine:engine_core_util",
+        "//src/engine:engine_derivative",
         "//test:fixture",
         "@googletest//:gtest_main",
     ],

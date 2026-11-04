@@ -895,7 +895,7 @@ TEST_F(IslandTest, IslandFlex) {
   }
 
   EXPECT_THAT(AsVector(data1->qpos, model->nq),
-              Pointwise(DoubleNear(1e-6), AsVector(data2->qpos, model->nq)));
+              Pointwise(MjNear(1e-6, 1e-5), AsVector(data2->qpos, model->nq)));
 
   mj_deleteData(data2);
   mj_deleteData(data1);

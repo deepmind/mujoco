@@ -1494,10 +1494,7 @@ static void advanceFinish(const mjModel* m, mjData* d, const mjtNum* qvel) {
       if (sleep_filter && mj_sleepState(m, d, mjOBJ_FLEX, f) != mjS_AWAKE) {
         continue;
       }
-      mjtNum state[mjROD_STATE_SIZE];
-      if (mj_rodChain(m, d, f, NULL, NULL, NULL, NULL, NULL, state)) {
-        mju_copy(d->plastic + m->flex_plasticadr[f], state, mjROD_STATE_SIZE);
-      }
+      mj_rodChain(m, d, f, NULL, NULL, NULL, NULL, NULL, NULL, d->plastic + m->flex_plasticadr[f]);
     }
   }
 

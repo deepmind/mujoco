@@ -1318,8 +1318,8 @@ static void PrimalAllocate(const mjModel* m, mjData* d, mjPrimalContext* ctx, in
       nInt += (count);         \
   } while (0)
 
-  // CG: the solver's copy of the metric blocks, for mj_effPrecFold
-  int nep = !flg_Newton ? 9*mj_effFoldBlocks(d, ctx->island) : 0;
+  // CG: the solver's copy of the metric blocks (and 1D DER twist diagonal), for mj_effPrecFold
+  int nep = !flg_Newton ? 9*mj_effFoldBlocks(d, ctx->island) + mj_effTwistDiagSize(m, d, ctx->island) : 0;
 
   for (int pass = 0; pass < 2; pass++) {
     if (pass) {

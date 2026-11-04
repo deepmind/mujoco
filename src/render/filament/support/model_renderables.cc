@@ -31,6 +31,7 @@
 #include <mujoco/mjmodel.h>
 #include <mujoco/mjrfilament.h>
 #include <mujoco/mujoco.h>
+#include "engine/engine_core_util.h"
 #include "engine/engine_sleep.h"
 #include "render/filament/support/filament_util.h"
 #include "render/filament/support/mesh_util.h"
@@ -307,18 +308,65 @@ void ModelRenderables::Update(const mjData* data) {
         const int edgenum = model->flex_edgenum[i];
         const int elemadr = model->flex_elemadr[i];
         const int elemnum = model->flex_elemnum[i];
-        const float radius = model->flex_radius[i];
+        float radius = model->flex_radius[i];
+        mjtNum box[2];
+        std::vector<mjtNum> elem_mat;
+        const bool box_rod = mj_rodBoxSize(model, i, box) && elemnum > 0;
+        bool is_box = false;
+        if (box_rod) {
+          elem_mat.resize(9 * elemnum);
+          is_box = mj_rodBoxEdge(model, data, i, elem_mat.data(), box);
+          // fallback capsule of a box rod: the minor half-size, as in collisions
+          radius = static_cast<float>(box[1]);
+        }
         auto& edges = flexes_[i];
+
+        // switch the edge meshes when the box frames become (un)available
+        if (is_box != flex_box_mesh_[i]) {
+          for (auto& edge : edges) {
+            mjrf_setRenderableGeomMesh(edge.get(),
+                                       is_box ? mjGEOM_BOX : mjGEOM_CAPSULE,
+                                       is_box ? 1 : 4, is_box ? 1 : 8, 1);
+          }
+          flex_box_mesh_[i] = is_box;
+        }
+
+        // element of each edge: flex_edge need not follow the element order
+        const int* elem = model->flex_elem + model->flex_elemdataadr[i];
+        auto edge_elem = [&](int j, int idx0, int idx1) {
+          auto match = [&](int k) {
+            return k >= 0 && k < elemnum &&
+                   ((elem[2 * k] == idx0 && elem[2 * k + 1] == idx1) ||
+                    (elem[2 * k] == idx1 && elem[2 * k + 1] == idx0));
+          };
+          if (match(j)) return j;
+          for (int k = 0; k < elemnum; ++k) {
+            if (match(k)) return k;
+          }
+          return -1;
+        };
+
         for (int j = 0; j < edgenum; ++j) {
           const int e = j + edgeadr;
           const int idx0 = model->flex_edge[2 * e];
           const int idx1 = model->flex_edge[2 * e + 1];
           const float3 v0 = ReadFloat3(data->flexvert_xpos, vertadr + idx0);
           const float3 v1 = ReadFloat3(data->flexvert_xpos, vertadr + idx1);
-          Connect(edges[j].get(), v0, v1, radius);
+          const int k = edge_elem(j, idx0, idx1);
+          if (is_box && k >= 0) {
+            const float len = length(v1 - v0);
+            const float3 pos = (v0 + v1) * 0.5f;
+            const float3 size = {static_cast<float>(box[0]),
+                                 static_cast<float>(box[1]), 0.5f * len};
+            const mat3f mat = ReadMat3(elem_mat.data(), k);
+            mjrf_setRenderablePose(edges[j].get(), pos.v, mat.asArray());
+            mjrf_setRenderableSize(edges[j].get(), size.v);
+          } else {
+            Connect(edges[j].get(), v0, v1, radius);
+          }
           const int matid =
-              (j < elemnum) ? model->flex_matid[elemadr + j]
-                            : (elemnum > 0 ? model->flex_matid[elemadr] : -1);
+              (k >= 0) ? model->flex_matid[elemadr + k]
+                       : (elemnum > 0 ? model->flex_matid[elemadr] : -1);
           mjrfMaterial material = GetMaterial(mjOBJ_FLEX, i, data, matid);
           mjrf_setRenderableMaterial(flexes_[i][j].get(), &material);
         }
@@ -479,6 +527,7 @@ void ModelRenderables::AddFlexGeoms() {
 
   flexes_.reserve(model->nflex);
   flex_slices_.reserve(model->nflex);
+  flex_box_mesh_.reserve(model->nflex);
   flex_meshes_.reserve(model->nflex);
   for (int i = 0; i < model->nflex; ++i) {
     flex_meshes_.emplace_back(nullptr, nullptr);
@@ -492,17 +541,25 @@ void ModelRenderables::AddFlexGeoms() {
 
     const int dim = model->flex_dim[i];
     if (dim == 1) {
+      mjtNum box[2];
+      const bool is_box = mj_rodBoxSize(model, i, box) && model->flex_elemnum[i] > 0;
       const float radius = model->flex_radius[i];
-      const float size[3] = {radius, radius, radius};
+      const float size[3] = {is_box ? static_cast<float>(box[0]) : radius,
+                             is_box ? static_cast<float>(box[1]) : radius,
+                             radius};
       parts.reserve(model->flex_edgenum[i]);
       for (int j = 0; j < model->flex_edgenum[i]; ++j) {
         auto renderable = CreateRenderable(ctx, params);
-        mjrf_setRenderableGeomMesh(renderable.get(), mjGEOM_CAPSULE, 4, 8, 1);
+        mjrf_setRenderableGeomMesh(renderable.get(),
+                                   is_box ? mjGEOM_BOX : mjGEOM_CAPSULE,
+                                   is_box ? 1 : 4, is_box ? 1 : 8, 1);
         mjrf_setRenderableSize(renderable.get(), size);
         mjrf_setRenderableMaterial(renderable.get(), &material);
         parts.push_back(std::move(renderable));
       }
+      flex_box_mesh_.push_back(is_box);
     } else {
+      flex_box_mesh_.push_back(false);
       slices = CalculateFlexMeshSlices(model, i);
       parts.reserve(slices.size());
       for (size_t k = 0; k < slices.size(); ++k) {

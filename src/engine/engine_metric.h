@@ -50,7 +50,9 @@ typedef struct {
 typedef struct {
   int cls;             // producer class
   int i;               // index within class
-  int k;               // sub-row within index (multi-output actuators)
+  int k;               // sub-row within index (multi-output actuators, rod hinges)
+  int colind[2];       // inline column indices for 2-dof coupling rows
+  mjtNum val[2];       // inline values for 2-dof coupling rows
 } mjEffRank1Iter;
 
 // yield the next live rank-1 term of the metric; init the cursor to {0}, returns 0 when
@@ -108,6 +110,10 @@ MJAPI size_t mj_effPrecScratch(const mjModel* m, const mjData* d);
 // number of covered 3x3 blocks mj_effPrecFold writes (island < 0: nefmdof; island >= 0: the
 // island's covered triples, at most island_nv/3)
 MJAPI int mj_effFoldBlocks(const mjData* d, int island);
+
+// length of the per-dof diagonal fold tail for 1D DER rod twist chains (L + 9*mj_effFoldBlocks),
+// 0 if none
+int mj_effTwistDiagSize(const mjModel* m, const mjData* d, int island);
 
 // stack bytes mj_effPrecFold takes for ncol columns (m->nv or island_nv[island])
 MJAPI size_t mj_effFoldScratch(int ncol);

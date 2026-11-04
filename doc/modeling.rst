@@ -1352,27 +1352,28 @@ instead to specify shear and volumetric stiffnesses separately using the `Poisso
 **Rods**.
 
 For 1D flexes, :ref:`elasticity<flex-elasticity>` implements the `discrete elastic rod
-<https://www.cs.columbia.edu/cg/pdfs/143-rods.pdf>`__ (DER) model of bending and torsion. Along a chain of single
-(unpaired) interior vertices, a twist-free *Bishop frame* is propagated from the first edge to the last edge by discrete
-parallel transport across each vertex. Each edge carries a material frame rotated by an angle :math:`\theta_e` about its
-tangent relative to the Bishop frame. When the first edge is clamped to a body via ``<pin id="0 1"/>``, that body fixes
-the root Bishop frame and receives the reaction torque of the rod, while :ref:`flexcomp<body-flexcomp>` creates a
-``<name>_twist`` body with a hinge joint at the other end to control or actuate the terminal material angle. Because the
-Bishop frame has holonomy when the centerline moves in 3D, the geometric twist of the centerline is tracked
-incrementally against a reference direction on the last edge that is parallel-transported in time and stored in
-``mjData.plastic`` (``mjSTATE_PLASTIC``), keeping the twist energy continuous as the rod coils or writhes (as in
-`cable.xml <https://github.com/google-deepmind/mujoco/blob/main/model/flex/cable.xml>`__ and `belt.xml
-<https://github.com/google-deepmind/mujoco/blob/main/model/flex/belt.xml>`__). For circular cross-sections
-(:ref:`section<flex-elasticity-section>` **circle**), the material twist distributes uniformly along the chain in closed
-form; for rectangular cross-sections (**box**), the interior edge angles are solved quasistatically at each step via a
-tridiagonal system so that bending and torsion couple and relax into the weak bending axis.
+<https://www.cs.columbia.edu/cg/pdfs/143-rods.pdf>`__ (DER) model of bending and torsion. For open chains with at least
+two elements (both **circle** and **box** :ref:`sections<flex-elasticity-section>`), :ref:`flexcomp<body-flexcomp>`
+creates per-edge twist bodies and hinge joints (``<name>_twist_0``, ..., ``<name>_twist``, omitting ``<name>_twist_0``
+when the first edge is clamped to a body via ``<pin id="0 1"/>``, and ``<name>_twist`` when the last two points of a rod
+with at least three elements are pinned). Each edge carries a material frame rotated by an angle :math:`\theta_e` about
+its tangent relative to a per-edge reference frame ``(t_old, u_old)`` that is parallel-transported in time and stored
+in ``mjData.plastic`` (``mjSTATE_PLASTIC``), together with the reference twist of each interior vertex, unwrapped
+across steps. A clamped end fixes that end's material frame to the pinning body, which receives the reaction torque of
+the rod, while an unclamped ``<name>_twist`` controls or actuates the terminal material angle. Time-parallel transport
+keeps both torsion and curved reference bending continuous and drift-free as the rod coils, writhes, or tumbles in 3D
+(as in `cable.xml <https://github.com/google-deepmind/mujoco/blob/main/model/flex/cable.xml>`__, `belt.xml
+<https://github.com/google-deepmind/mujoco/blob/main/model/flex/belt.xml>`__, and `curved_rods.xml
+<https://github.com/google-deepmind/mujoco/blob/main/model/flex/curved_rods.xml>`__), while frictional contact forces
+couple into the per-edge twist DOFs through their cross-sectional lever arm so circular cables roll on surfaces and
+twist in grippers and rectangular (**box**) ribbons couple anisotropic bending, torsion, and oriented-box contact.
 
-For circular rods whose reference configuration ``qpos0`` has adjacent curved vertices (bent by more than
-:math:`10^{-4}` rad, such as `coil.xml <https://github.com/google-deepmind/mujoco/blob/main/model/flex/coil.xml>`__ or
-`curved_rods.xml <https://github.com/google-deepmind/mujoco/blob/main/model/flex/curved_rods.xml>`__), adjacent curved
-vertices are paired across their shared edge: each vertex's bending stiffness is split evenly among its pairs and the
-dihedral twist between their osculating planes around the shared edge is penalized relative to its reference value in
-``qpos0``, preserving 3D rest curvature and torsion.
+For closed circular loops (such as the ring in `curved_rods.xml
+<https://github.com/google-deepmind/mujoco/blob/main/model/flex/curved_rods.xml>`__) or raw ``<flex dim="1">`` elements
+without twist joints whose reference configuration ``qpos0`` has adjacent curved vertices (bent by more than
+:math:`10^{-4}` rad), adjacent curved vertices are paired across their shared edge: each vertex's bending stiffness is
+split evenly among its pairs and the dihedral twist between their osculating planes around the shared edge is penalized
+relative to its reference value in ``qpos0``, preserving 3D rest curvature and torsion.
 
 **Parametrization types**.
 

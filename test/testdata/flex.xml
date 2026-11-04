@@ -43,7 +43,7 @@
 
     <!-- 1D elastic rod with box cross-section and edge equality, bridging both stacks -->
     <flexcomp name="rod" type="grid" dim="1" count="4 1 1" spacing=".035 .035 .035"
-              pos="0 0 0.061" radius="0.004" mass="0.2" rgba=".9 .4 .1 1">
+              pos="0 0 0.061" mass="0.2" rgba=".9 .4 .1 1">
       <elasticity young="2e3" damping="0.01" section="box" sectionsize="0.005 0.003"/>
       <edge equality="true"/>
       <contact selfcollide="none"/>

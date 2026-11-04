@@ -126,9 +126,8 @@ Deformables
        ``<elasticity section="box" sectionsize="..."/>``.
      - Plugin ``bend`` and ``twist``: set ``<elasticity young="..." shear="..."/>``.
      - Root attachment ``initial``: ``initial="none"`` maps to ``<pin id="0 1"/>`` (clamps the first edge's material
-       frame to the parent body and creates the ``<name>_twist`` body and hinge joint); ``initial="ball"`` maps to
-       ``<pin id="0"/>`` (spherical anchor at the first vertex, no twist joint); ``initial="free"`` maps to no
-       ``<pin/>``.
+       frame to the parent body and omits ``<name>_twist_0``); ``initial="ball"`` maps to ``<pin id="0"/>`` (spherical
+       anchor at the first vertex, keeping ``<name>_twist_0`` free); ``initial="free"`` maps to no ``<pin/>``.
      - Plugin ``flat="true"``: define the rod straight in ``qpos0`` (e.g., ``type="grid"``) and set the curved initial
        pose via ``qpos`` or a :ref:`keyframe<keyframe>` (curves defined directly in ``point`` are at rest in ``qpos0``,
        corresponding to ``flat="false"``).
@@ -136,7 +135,22 @@ Deformables
      - Integrator: use ``integrator="discrete"`` for implicit integration (or ``Euler`` / ``RK4``; ``implicit`` and
        ``implicitfast`` are not supported for 1D rod elasticity).
      - Body names ``B_first`` / ``B_<i>`` / ``B_last``: unpinned vertices create bodies ``<name>_<i>`` (pinned vertices
-       attach directly to the parent body), plus ``<name>_twist`` when ``<pin id="0 1"/>`` is used.
+       attach directly to the parent body), plus per-edge twist bodies and joints (see the next entry).
+
+   - Open elastic 1D :ref:`flexcomps<body-flexcomp>` with at least two elements now create per-edge twist bodies with
+     hinge joints ``<name>_twist_0``, ..., ``<name>_twist`` under the world body (omitting the joint of an edge clamped
+     by pinning both of its points: ``<name>_twist_0`` for ``<pin id="0 1"/>``, and ``<name>_twist`` for the last two
+     points of a rod with at least three elements), and store their time-parallel reference frames and reference
+     twists in ``mjData.plastic``. This changes ``nq``, ``nv``, ``nbody``, ``nplastic`` and the ``qpos`` layout of such
+     models, shifts the indices of bodies and joints declared after the flexcomp, and changes the simulation: rods now
+     roll on surfaces and twist in grippers. Box sections (:at:`section` **box**) require these joints, so raw
+     :ref:`flexes<deformable-flex>` with box sections now need them too, and their collision :at:`radius` is set to the
+     minor half-size of the section (an explicit :at:`radius` that differs from it is now a compile error).
+
+     **Migration:** Update keyframes and any code that indexes ``qpos``, ``qvel`` or bodies by number, preferably
+     addressing vertex bodies (``<name>_<i>``) and twist joints by name. Save and restore rod state with
+     ``mjSTATE_PLASTIC``. Raw box-section flexes need hinge joints named as above (see
+     :ref:`elasticity<flex-elasticity>`).
 
    - Fixed the elastic constants of non-interpolated :ref:`flexes<deformable-flex>` (**full** and **radial**
      :ref:`dofs<body-flexcomp-dof>`), which now match :ref:`young<flex-elasticity-young>`,
@@ -204,7 +218,10 @@ Deformables
      configurations and pairs of adjacent bent vertices. Previously, each record was ``[v_prev, v, v_next, k]``.
 
      **Migration:** Read 1D records with stride 10. A record whose fourth value is negative is a single hinge
-     ``[v0, v1, v2, -1, k, 0, |kb0|, 0, 0, 0]``; otherwise it is a hinge pair ``[v0, v1, v2, v3, w0, w1, om0[4]]``.
+     ``[v0, v1, v2, -1, k1, k2 - k1, |kb0|, jnt, kt, b]``: principal bending stiffnesses ``k1 <= k2``, the twist hinge
+     joint ``jnt`` of the edge ``(v1, v2)`` (-1 if none; the joint of the first edge, when present, is that of the
+     first record minus one), torsional stiffness ``kt``, and the signed minor half-size ``b`` of a box section (0
+     for circular sections). Otherwise it is a hinge pair ``[v0, v1, v2, v3, w0, w1, om0[4]]``.
 
 - Sparse ``Newton`` (:ref:`solver<option-solver>`) is 1.4-3x faster on :ref:`flex<deformable-flex>` models, using
   fill-reducing DOF ordering, incremental active-set Hessian updates, direct :ref:`elliptic cone<option-cone>` folding,
@@ -215,11 +232,11 @@ Deformables
   stiffness: vertices bent by more than :math:`10^{-4}` rad in ``qpos0`` keep their reference curvature and dihedral
   twist angle, so that rods such as rings, arcs, and coil springs are at rest in their compiled shape. Previously,
   such models failed to compile. The new :ref:`shear<flex-elasticity-shear>` attribute optionally overrides the
-  shear modulus used for torsion. Open elastic 1D flexcomps with a clamped root edge get a ``<name>_twist`` hinge
-  joint that holds the material frame of the last edge, with the polar inertia and Rayleigh torsional damping of the
-  rod; the geometric twist is carried in time in the plastic state, so the twist energy stays continuous when the rod
-  coils. Box sections solve the twist of the interior edges quasistatically. See the
-  :ref:`documentation<flex-elasticity>`.
+  shear modulus used for torsion. Open rods carry per-edge twist joints (see the breaking change above) with
+  per-edge polar inertia, frame-indifferent relative Rayleigh torsional damping, time-parallel reference frames, and
+  frictional contact lever-arm coupling. Box sections additionally use anisotropic principal stiffnesses with
+  equalized damping ratio (:math:`\sqrt{k_1 k_2}` on the weak axis) and an oriented box in the DER material frame for
+  rendering and collision detection. See the :ref:`documentation<flex-elasticity>`.
 - Volumetric interpolated flexes (**trilinear** or **quadratic** :ref:`dofs<body-flexcomp-dof>` with
   ``elastic2d="none"``) now integrate cell stiffness and lump nodal masses over the mesh volume using Finite Cell Method
   (FCM) subcell quadrature instead of treating every non-empty grid cell as a full cube. This changes the stiffness and

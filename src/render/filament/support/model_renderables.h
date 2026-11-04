@@ -106,6 +106,8 @@ class ModelRenderables {
   std::vector<UniquePtr<mjrfRenderable>> skins_;
   std::vector<std::vector<UniquePtr<mjrfRenderable>>> flexes_;
   std::vector<std::vector<FlexMeshSlice>> flex_slices_;
+  // 1D flexes whose edge renderables currently hold box meshes (box-section rods)
+  std::vector<bool> flex_box_mesh_;
   std::vector<std::vector<UniquePtr<mjrfRenderable>>> tendons_;
   std::unordered_map<int, std::array<UniquePtr<mjrfRenderable>, 2>>
       slider_cranks_;

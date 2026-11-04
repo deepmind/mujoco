@@ -217,6 +217,16 @@ def _flex_simple(mjm: mujoco.MjModel, f: int) -> bool:
   return True
 
 
+def _eff_flex_contact_possible(mjm: mujoco.MjModel, f: int) -> bool:
+  """Whether flex f uses penalty passive contact in the metric, see mj_effFlexContactPossible."""
+  return bool(
+    mjm.flex_passive[f]
+    and not mjm.flex_rigid[f]
+    and mjm.flex_dim[f] >= 2
+    and not (mjm.opt.enableflags & mujoco.mjtEnableBit.mjENBL_IPC)
+  )
+
+
 def _eff_flex_stiff_possible(mjm: mujoco.MjModel, f: int) -> bool:
   """Whether flex f contributes elastic stiffness to the metric, see mj_effFlexStiffPossible."""
   if mjm.flex_rigid[f]:
@@ -234,6 +244,90 @@ def _eff_flex_stiff_possible(mjm: mujoco.MjModel, f: int) -> bool:
       end = int(mjm.flex_bendingadr[g])
       break
   return bool(np.any(mjm.flex_bending[badr:end] != 0))
+
+
+def _is_open_rod_chain(mjm: mujoco.MjModel, fi: int) -> tuple[bool, int]:
+  """Returns (is_open_chain, nhinge) for single-hinge open 1D rod flex `fi`."""
+  if types.ROD_HINGE_SIZE != 10:
+    return False, 0
+  bendingadr = int(mjm.flex_bendingadr[fi])
+  if mjm.flex_dim[fi] != 1 or mjm.flex_interp[fi] != 0 or bendingadr < 0:
+    return False, 0
+  nhinge = int(mjm.flex_bending[bendingadr])
+  if nhinge <= 0:
+    return False, 0
+  records = mjm.flex_bending[bendingadr + 1 : bendingadr + 1 + 10 * nhinge].reshape(nhinge, 10)
+  if (records[:, 3] >= 0).any():
+    return False, 0
+  for h in range(1, nhinge):
+    if int(records[h, 0]) != int(records[h - 1, 1]) or int(records[h, 1]) != int(records[h - 1, 2]):
+      return False, 0
+  if int(records[-1, 1]) == int(records[0, 0]) or int(records[-1, 2]) == int(records[0, 0]):
+    return False, 0
+  return True, nhinge
+
+
+def _get_nflexrod_counts(mjm: mujoco.MjModel) -> tuple[int, int]:
+  """Returns (nflexrodhinge, nflexrodedge) across all flexes."""
+  nflexrodhinge = 0
+  nflexrodedge = 0
+  for fi in range(mjm.nflex):
+    bendingadr = int(mjm.flex_bendingadr[fi])
+    if mjm.flex_dim[fi] == 1 and mjm.flex_interp[fi] == 0 and not mjm.flex_rigid[fi] and bendingadr >= 0:
+      nhinge = int(mjm.flex_bending[bendingadr])
+      if nhinge > 0:
+        nflexrodhinge += nhinge
+    is_open, nhinge_open = _is_open_rod_chain(mjm, fi)
+    if is_open:
+      nflexrodedge += nhinge_open + 1
+  return nflexrodhinge, nflexrodedge
+
+
+def _mjm_rod_vert_elems(mjm: mujoco.MjModel, fi: int) -> list[int]:
+  """Element of 1D flex `fi` incident to each local vertex, or -1; matches mj_rodVertElem.
+
+  A chain vertex maps to the element of the chain edge leaving it (the last edge at the far end),
+  any other vertex to the first element containing it. O(nvert + nelem) via lookup tables.
+  """
+  nvert = int(mjm.flex_vertnum[fi])
+  elemnum = int(mjm.flex_elemnum[fi])
+  res = [-1] * nvert
+  if mjm.flex_dim[fi] != 1 or elemnum <= 0:
+    return res
+  ed_base = int(mjm.flex_elemdataadr[fi])
+  elem = [(int(mjm.flex_elem[ed_base + 2 * e]), int(mjm.flex_elem[ed_base + 2 * e + 1])) for e in range(elemnum)]
+  first_elem = {}
+  pair_elem = {}
+  for e, (ev0, ev1) in enumerate(elem):
+    first_elem.setdefault(ev0, e)
+    first_elem.setdefault(ev1, e)
+    pair_elem.setdefault((min(ev0, ev1), max(ev0, ev1)), e)
+
+  chain = []
+  bendingadr = int(mjm.flex_bendingadr[fi])
+  if bendingadr >= 0 and types.ROD_HINGE_SIZE == 10:
+    nhinge = int(mjm.flex_bending[bendingadr])
+    if nhinge > 0 and mjm.flex_bending[bendingadr + 1 + 3] < 0:
+      chain = [int(mjm.flex_bending[bendingadr + 1 + 10 * h]) for h in range(nhinge)]
+      chain += [int(mjm.flex_bending[bendingadr + 1 + 10 * (nhinge - 1) + 1 + i]) for i in range(2)]
+  chain_index = {}
+  for j, cv in enumerate(chain):
+    chain_index.setdefault(cv, j)
+
+  for v in range(nvert):
+    k = v if (v < len(chain) and chain[v] == v) else chain_index.get(v, -1)
+    if k >= 0:
+      c = min(k, len(chain) - 2)
+      c0, c1 = chain[c], chain[c + 1]
+      if c < elemnum and set(elem[c]) == {c0, c1}:
+        res[v] = c
+        continue
+      e = pair_elem.get((min(c0, c1), max(c0, c1)), -1)
+      if e >= 0:
+        res[v] = e
+        continue
+    res[v] = first_elem.get(v, -1)
+  return res
 
 
 def _get_efm_data(mjm: mujoco.MjModel) -> mujoco.MjData | None:
@@ -655,9 +749,7 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
           has_actuator_wrap = True
           break
   m.has_actuator_wrap = has_actuator_wrap
-  m.has_actuator_dcmotor = bool(
-    mjm.nactuator > 0 and np.any(mjm.actuator_dyntype == int(mujoco.mjtDyn.mjDYN_DCMOTOR))
-  )
+  m.has_actuator_dcmotor = bool(mjm.nactuator > 0 and np.any(mjm.actuator_dyntype == int(mujoco.mjtDyn.mjDYN_DCMOTOR)))
   m.has_1d_flex = bool(mjm.nflex > 0 and np.any(mjm.flex_dim == 1))
   m.has_2d_flex = bool(mjm.nflex > 0 and np.any(mjm.flex_dim == 2))
   m.has_3d_flex = bool(mjm.nflex > 0 and np.any(mjm.flex_dim == 3))
@@ -1352,27 +1444,139 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
 
   # 1D rod bending hinges: (flex id, address of the hinge data in flex_bending)
   flex_rodhinge_map = []
+  flex_rod_hingeadr = np.full(mjm.nflex, -1, dtype=np.int32)
   for fi in range(mjm.nflex):
     bendingadr = int(mjm.flex_bendingadr[fi])
     if mjm.flex_dim[fi] != 1 or mjm.flex_interp[fi] != 0 or mjm.flex_rigid[fi] or bendingadr < 0:
       continue
     nhinge = int(mjm.flex_bending[bendingadr])
-    if types.ROD_HINGE_SIZE == 10 and nhinge + 1 > types.ROD_MAX_EDGES:
-      records = mjm.flex_bending[bendingadr + 1 : bendingadr + 1 + types.ROD_HINGE_SIZE * nhinge].reshape(
-        nhinge, types.ROD_HINGE_SIZE
-      )
-      va = int(mjm.flex_vertadr[fi])
-      root_clamped = mjm.flex_vertbodyid[va + int(records[0, 0])] == mjm.flex_vertbodyid[va + int(records[0, 1])]
-      has_twist = root_clamped and records[0, 7] >= 0 and records[0, 8] > 0
-      has_aniso = bool((records[:, 5] != 0).any())
-      if has_twist or has_aniso:
-        raise NotImplementedError(
-          f"1D rod chain with {nhinge + 1} edges exceeds ROD_MAX_EDGES ({types.ROD_MAX_EDGES})."
-        )
-    for h in range(nhinge):
-      flex_rodhinge_map.append((fi, bendingadr + 1 + types.ROD_HINGE_SIZE * h))
+    if nhinge > 0:
+      flex_rod_hingeadr[fi] = len(flex_rodhinge_map)
+      for h in range(nhinge):
+        flex_rodhinge_map.append((fi, bendingadr + 1 + types.ROD_HINGE_SIZE * h))
   m.nflexrodhinge = len(flex_rodhinge_map)
   m.flex_rodhinge_map = np.array(flex_rodhinge_map, dtype=np.int32).reshape(-1, 2)
+  m.flex_rod_hingeadr = flex_rod_hingeadr
+
+  nflex = mjm.nflex
+  nflexrodedge = 0
+
+  flex_rod_is_chain = np.zeros(nflex, dtype=bool)
+  flex_rod_has_twist = np.zeros(nflex, dtype=bool)
+  flex_rod_is_box = np.zeros(nflex, dtype=bool)
+  flex_rod_root_clamped = np.zeros(nflex, dtype=bool)
+  flex_rod_tail_clamped = np.zeros(nflex, dtype=bool)
+  flex_eff_possible = np.array(
+    [_eff_flex_stiff_possible(mjm, fi) or _eff_flex_contact_possible(mjm, fi) for fi in range(nflex)],
+    dtype=bool,
+  )
+  flex_rod_box_size = np.zeros((nflex, 2), dtype=np.float32)
+  flex_rod_edgeadr = np.zeros(nflex, dtype=np.int32)
+  flex_rod_edgenum = np.zeros(nflex, dtype=np.int32)
+
+  rodedge_vert_list = []
+  rodedge_jnt_list = []
+
+  flex_elem_rodedge = np.empty((mjm.nflexelem, 2), dtype=np.int32)
+  flex_elem_rodedge[:, 0] = -1
+  flex_elem_rodedge[:, 1] = 1
+  flex_vert_rodelem = np.full(mjm.nflexvert, -1, dtype=np.int32)
+
+  for fi in range(nflex):
+    va = int(mjm.flex_vertadr[fi])
+    if mjm.flex_dim[fi] == 1:
+      flex_vert_rodelem[va : va + int(mjm.flex_vertnum[fi])] = _mjm_rod_vert_elems(mjm, fi)
+
+    bendingadr = int(mjm.flex_bendingadr[fi])
+    if mjm.flex_dim[fi] == 1 and bendingadr >= 0 and types.ROD_HINGE_SIZE == 10:
+      nhinge_raw = int(mjm.flex_bending[bendingadr])
+      if nhinge_raw > 0:
+        h0 = mjm.flex_bending[bendingadr + 1 : bendingadr + 1 + 10]
+        if h0[3] < 0 and h0[4] > 0 and h0[9] != 0:
+          flex_rod_is_box[fi] = True
+          b_half = abs(float(h0[9]))
+          a_half = b_half * np.sqrt(max(1.0, 1.0 + float(h0[5]) / float(h0[4])))
+          flex_rod_box_size[fi, 0] = a_half
+          flex_rod_box_size[fi, 1] = b_half
+
+    is_open, nhinge = _is_open_rod_chain(mjm, fi)
+    if not is_open:
+      continue
+
+    records = mjm.flex_bending[bendingadr + 1 : bendingadr + 1 + 10 * nhinge].reshape(nhinge, 10)
+    has_twist = bool(mjm.flex_elemnum[fi] > 0 and (records[0, 7] >= 0 or records[-1, 7] >= 0 or records[0, 9] != 0))
+    flex_rod_has_twist[fi] = has_twist
+
+    b0 = int(mjm.flex_vertbodyid[va + int(records[0, 0])])
+    b1 = int(mjm.flex_vertbodyid[va + int(records[0, 1])])
+    root_clamped = b0 == b1
+    flex_rod_root_clamped[fi] = root_clamped
+
+    bT_prev = int(mjm.flex_vertbodyid[va + int(records[-1, 1])])
+    bT = int(mjm.flex_vertbodyid[va + int(records[-1, 2])])
+    tail_clamped = bool(nhinge >= 2 and bT_prev == bT)
+    flex_rod_tail_clamped[fi] = tail_clamped
+
+    nedge = nhinge + 1
+    flex_rod_edgeadr[fi] = nflexrodedge
+    flex_rod_edgenum[fi] = nedge
+
+    v_chain = [int(records[h, 0]) for h in range(nhinge)] + [int(records[-1, 1]), int(records[-1, 2])]
+    for e in range(nedge):
+      rodedge_vert_list.append((v_chain[e], v_chain[e + 1]))
+      if e == 0:
+        jnt1 = int(records[0, 7])
+        jnt = (jnt1 - 1) if (not root_clamped and jnt1 >= 1) else -1
+      else:
+        jnt = int(records[e - 1, 7])
+      if jnt < 0 or jnt >= mjm.njnt:
+        jnt = -1
+      rodedge_jnt_list.append(jnt)
+
+    elem_start = int(mjm.flex_elemadr[fi])
+    elem_data_start = int(mjm.flex_elemdataadr[fi])
+    for e in range(int(mjm.flex_elemnum[fi])):
+      ed = elem_data_start + 2 * e
+      ev0 = int(mjm.flex_elem[ed])
+      ev1 = int(mjm.flex_elem[ed + 1])
+      edge_idx = -1
+      edge_sign = 1
+      for k in range(nedge):
+        idx = e if (k == 0 and e < nedge) else (0 if (k == e and e < nedge) else k)
+        v0, v1 = rodedge_vert_list[nflexrodedge + idx]
+        if ev0 == v0 and ev1 == v1:
+          edge_idx = idx
+          edge_sign = 1
+          break
+        elif ev0 == v1 and ev1 == v0:
+          edge_idx = idx
+          edge_sign = -1
+          break
+      flex_elem_rodedge[elem_start + e, 0] = edge_idx
+      flex_elem_rodedge[elem_start + e, 1] = edge_sign
+
+    any_aniso = bool((records[:, 5] != 0).any() or (records[:, 9] != 0).any())
+    any_twist_jnt = bool((records[:, 7] >= 0).any())
+    flex_rod_is_chain[fi] = bool(not mjm.flex_rigid[fi] and (any_aniso or any_twist_jnt))
+    nflexrodedge += nedge
+
+  m.nflexrodedge = nflexrodedge
+  m.efm_con_max_dof = _calculate_efm_con_max_dof(mjm)
+  m.flex_rod_is_chain = flex_rod_is_chain
+  m.flex_rod_has_twist = flex_rod_has_twist
+  m.flex_rod_is_box = flex_rod_is_box
+  m.flex_rod_root_clamped = flex_rod_root_clamped
+  m.flex_rod_tail_clamped = flex_rod_tail_clamped
+  m.flex_eff_possible = flex_eff_possible
+  m.flex_rod_box_size = flex_rod_box_size
+  m.flex_rod_edgeadr = flex_rod_edgeadr
+  m.flex_rod_edgenum = flex_rod_edgenum
+  m.flex_rodedge_vert = (
+    np.array(rodedge_vert_list, dtype=np.int32).reshape(-1, 2) if rodedge_vert_list else np.zeros((0, 2), dtype=np.int32)
+  )
+  m.flex_rodedge_jnt = np.array(rodedge_jnt_list, dtype=np.int32)
+  m.flex_elem_rodedge = flex_elem_rodedge
+  m.flex_vert_rodelem = flex_vert_rodelem
 
   if not flex_bend_interp_map:
     m.nflexbend_interp = 0
@@ -1512,6 +1716,105 @@ def _default_njmax(mjm: mujoco.MjModel, mjd: Optional[mujoco.MjData] = None) -> 
   return int(valid_sizes[np.searchsorted(valid_sizes, njmax)])
 
 
+def _mjm_rod_has_twist(mjm: mujoco.MjModel, fi: int) -> bool:
+  """Returns True when flex `fi` is an open 1D DER rod chain with twist DOFs or box section."""
+  if mjm.flex_elemnum[fi] <= 0:
+    return False
+  is_open, nhinge = _is_open_rod_chain(mjm, fi)
+  if not is_open:
+    return False
+  bendingadr = int(mjm.flex_bendingadr[fi])
+  records = mjm.flex_bending[bendingadr + 1 : bendingadr + 1 + 10 * nhinge].reshape(nhinge, 10)
+  return bool(records[0, 7] >= 0 or records[-1, 7] >= 0 or records[0, 9] != 0)
+
+
+def _mjm_rod_elem_twist_jnts(mjm: mujoco.MjModel, fi: int) -> list[int]:
+  """Twist joint of each element of open 1D DER rod `fi`, or -1; O(nelem) via a chain-edge table."""
+  elemnum = int(mjm.flex_elemnum[fi])
+  res = [-1] * elemnum
+  if not _mjm_rod_has_twist(mjm, fi):
+    return res
+  bendingadr = int(mjm.flex_bendingadr[fi])
+  nhinge = int(mjm.flex_bending[bendingadr])
+  va = int(mjm.flex_vertadr[fi])
+  root_clamped = (
+    mjm.flex_vertbodyid[va + int(mjm.flex_bending[bendingadr + 1])]
+    == mjm.flex_vertbodyid[va + int(mjm.flex_bending[bendingadr + 2])]
+  )
+  edge_jnt = {}
+  for c in range(nhinge + 1):
+    if c < nhinge:
+      cv0 = int(mjm.flex_bending[bendingadr + 1 + 10 * c])
+      cv1 = int(mjm.flex_bending[bendingadr + 1 + 10 * c + 1])
+    else:
+      cv0 = int(mjm.flex_bending[bendingadr + 1 + 10 * (nhinge - 1) + 1])
+      cv1 = int(mjm.flex_bending[bendingadr + 1 + 10 * (nhinge - 1) + 2])
+    if c == 0:
+      jnt1 = int(mjm.flex_bending[bendingadr + 1 + 7])
+      jnt = (jnt1 - 1) if (not root_clamped and jnt1 >= 1) else -1
+    else:
+      jnt = int(mjm.flex_bending[bendingadr + 1 + 10 * (c - 1) + 7])
+    edge_jnt.setdefault((min(cv0, cv1), max(cv0, cv1)), jnt if (0 <= jnt < mjm.njnt) else -1)
+  ed_base = int(mjm.flex_elemdataadr[fi])
+  for e in range(elemnum):
+    v0, v1 = int(mjm.flex_elem[ed_base + 2 * e]), int(mjm.flex_elem[ed_base + 2 * e + 1])
+    res[e] = edge_jnt.get((min(v0, v1), max(v0, v1)), -1)
+  return res
+
+
+def _calculate_efm_con_max_dof(mjm: mujoco.MjModel) -> int:
+  """Returns maximum unique DOFs affected by any passive flex contact in `mjm`."""
+  if mjm.nflex == 0 or mjm.nv == 0:
+    return 1
+  geom_nnz = [_body_set_nnz(mjm, {mjm.geom_bodyid[g]}) for g in range(mjm.ngeom)]
+  non_interp_flex_nnz = []
+  passive_flex_nnz = []
+  for fi in range(mjm.nflex):
+    if mjm.flex_interp[fi] != 0 or mjm.flex_rigid[fi]:
+      continue
+    vert_start = int(mjm.flex_vertadr[fi])
+    dim = int(mjm.flex_dim[fi])
+    elem_num = int(mjm.flex_elemnum[fi])
+    elem_data_start = int(mjm.flex_elemdataadr[fi])
+    f_nnz = 0
+    if elem_num > 0:
+      has_rod_twist = _mjm_rod_has_twist(mjm, fi)
+      elem_jnt = _mjm_rod_elem_twist_jnts(mjm, fi) if has_rod_twist else []
+      for e in range(elem_num):
+        elem_bodies = {
+          mjm.flex_vertbodyid[vert_start + mjm.flex_elem[elem_data_start + e * (dim + 1) + k]] for k in range(dim + 1)
+        }
+        if has_rod_twist:
+          jnt_e = elem_jnt[e]
+          if 0 <= jnt_e < mjm.njnt:
+            elem_bodies.add(int(mjm.jnt_bodyid[jnt_e]))
+        f_nnz = max(f_nnz, _body_set_nnz(mjm, elem_bodies))
+      if has_rod_twist:
+        vert_elem = _mjm_rod_vert_elems(mjm, fi)
+        for v in range(int(mjm.flex_vertnum[fi])):
+          e_rod = vert_elem[v]
+          vert_bodies = {mjm.flex_vertbodyid[vert_start + v]}
+          if e_rod >= 0:
+            vert_bodies.add(mjm.flex_vertbodyid[vert_start + mjm.flex_elem[elem_data_start + 2 * e_rod]])
+            vert_bodies.add(mjm.flex_vertbodyid[vert_start + mjm.flex_elem[elem_data_start + 2 * e_rod + 1]])
+            jnt_e = elem_jnt[e_rod]
+            if 0 <= jnt_e < mjm.njnt:
+              vert_bodies.add(int(mjm.jnt_bodyid[jnt_e]))
+          f_nnz = max(f_nnz, _body_set_nnz(mjm, vert_bodies))
+    else:
+      for v in range(int(mjm.flex_vertnum[fi])):
+        f_nnz = max(f_nnz, _body_set_nnz(mjm, {mjm.flex_vertbodyid[vert_start + v]}))
+    non_interp_flex_nnz.append(f_nnz)
+    if mjm.flex_passive[fi] != 0 and dim >= 2:
+      passive_flex_nnz.append(f_nnz)
+  if not passive_flex_nnz:
+    max_other = max([0] + non_interp_flex_nnz + geom_nnz)
+    return int(min(max(2 * max_other, 1), max(mjm.nv, 1)))
+  max_passive = max(passive_flex_nnz)
+  max_other = max([0] + non_interp_flex_nnz + geom_nnz)
+  return int(min(max(max_passive + max_other, 1), max(mjm.nv, 1)))
+
+
 def _body_pair_nnz(mjm: mujoco.MjModel, body1: int, body2: int) -> int:
   """Returns the number of unique DOFs in the kinematic tree union of two bodies."""
   body1 = mjm.body_weldid[body1]
@@ -1583,11 +1886,29 @@ def _calculate_max_contact_nnz(mjm: mujoco.MjModel) -> int:
       elem_num = mjm.flex_elemnum[fi]
       elem_data_start = mjm.flex_elemdataadr[fi]
       if elem_num > 0:
+        has_rod_twist = _mjm_rod_has_twist(mjm, fi)
+        elem_jnt = _mjm_rod_elem_twist_jnts(mjm, fi) if has_rod_twist else []
         for e in range(elem_num):
           elem_bodies = {
             mjm.flex_vertbodyid[vert_start + mjm.flex_elem[elem_data_start + e * (dim + 1) + k]] for k in range(dim + 1)
           }
+          if has_rod_twist:
+            jnt_e = elem_jnt[e]
+            if 0 <= jnt_e < mjm.njnt:
+              elem_bodies.add(int(mjm.jnt_bodyid[jnt_e]))
           flex_nnz[fi] = max(flex_nnz[fi], _body_set_nnz(mjm, elem_bodies))
+        if has_rod_twist:
+          vert_elem = _mjm_rod_vert_elems(mjm, fi)
+          for v in range(mjm.flex_vertnum[fi]):
+            e_rod = vert_elem[v]
+            vert_bodies = {mjm.flex_vertbodyid[vert_start + v]}
+            if e_rod >= 0:
+              vert_bodies.add(mjm.flex_vertbodyid[vert_start + mjm.flex_elem[elem_data_start + 2 * e_rod]])
+              vert_bodies.add(mjm.flex_vertbodyid[vert_start + mjm.flex_elem[elem_data_start + 2 * e_rod + 1]])
+              jnt_e = elem_jnt[e_rod]
+              if 0 <= jnt_e < mjm.njnt:
+                vert_bodies.add(int(mjm.jnt_bodyid[jnt_e]))
+            flex_nnz[fi] = max(flex_nnz[fi], _body_set_nnz(mjm, vert_bodies))
       else:
         for v in range(mjm.flex_vertnum[fi]):
           flex_nnz[fi] = max(
@@ -2021,6 +2342,7 @@ def make_data(
   sizes["nvmax_pad_sq"] = sizes["nvmax_pad"] * sizes["nvmax_pad"]
   sizes["nflexintcell"] = _get_nflexintcell(mjm)
   sizes["nflexface"] = _get_nflexface(mjm)
+  sizes["nflexrodhinge"], sizes["nflexrodedge"] = _get_nflexrod_counts(mjm)
   efm_d = _get_efm_data(mjm)
   sizes["nefmK"] = int(efm_d.nefmK) if efm_d else 0
   sizes["nefmL"] = 9 * int(efm_d.nefmdof) if efm_d else 0
@@ -2261,6 +2583,7 @@ def put_data(
   sizes["nvmax_pad"] = _nvmax_pad(nvmax)
   sizes["nvmax_pad_sq"] = sizes["nvmax_pad"] * sizes["nvmax_pad"]
   sizes["nflexface"] = _get_nflexface(mjm)
+  sizes["nflexrodhinge"], sizes["nflexrodedge"] = _get_nflexrod_counts(mjm)
   efm_d = _get_efm_data(mjm)
   sizes["nefmK"] = int(efm_d.nefmK) if efm_d else 0
   sizes["nefmL"] = 9 * int(efm_d.nefmdof) if efm_d else 0

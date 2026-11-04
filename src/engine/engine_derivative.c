@@ -1658,17 +1658,19 @@ void mjd_flexBend_mul(const mjModel* m, mjData* d, mjtNum* res, const mjtNum* ve
 // Jacobian J (nvrt x 3*nvrt) and weight W = s1*Wk + s2*damping*Wd of 1D rod hinge h of flex f, a
 // single hinge (nvrt = 3, kb space) or a hinge pair (nvrt = 4, om space), so that the stiffness is
 // J'WJ; returns 0 if the hinge is degenerate
-// weights Wk, Wd (9 x nhinge each, kb space) of all hinges of the 1D rod chain of flex f, evaluated
-// once on the mjData stack (the caller marks and frees it); NULL if the chain is isotropic or
-// not handled by mj_rodChain
-static mjtNum* rodChainWeights(const mjModel* m, mjData* d, int f) {
+// weights Wk, Wd (9 x nhinge each, kb space) of all hinges of the 1D DER rod chain of flex f,
+// evaluated once on the mjData stack (the caller marks and frees it); NULL if not handled by
+// mj_rodChain
+static mjtNum* rodChainWeights(const mjModel* m, mjData* d, int f, mjtNum s1, mjtNum s2) {
   const mjtNum* b = m->flex_bending + m->flex_bendingadr[f];
   int nhinge = (int)b[0];
-  if (nhinge <= 0 || b[1 + 3] >= 0 || b[1 + 5] == 0) {
+  if (nhinge <= 0 || b[1 + 3] >= 0) {
     return NULL;
   }
   mjtNum* W = mjSTACKALLOC(d, 18*nhinge, mjtNum);
-  if (!mj_rodChain(m, d, f, NULL, NULL, NULL, W, W + 9*nhinge, NULL)) {
+  mjtNum* Wk = s1 ? W : NULL;
+  mjtNum* Wd = (s2 && m->flex_damping[f]) ? (W + 9*nhinge) : NULL;
+  if (!mj_rodChain(m, d, f, NULL, NULL, NULL, Wk, Wd, NULL, NULL)) {
     return NULL;
   }
   return W;
@@ -1685,19 +1687,22 @@ static int rodHingeWeight(const mjModel* m, const mjData* d, int f, int h, mjtNu
     v[i] = (int)hinge[i];
   }
   int n = mj_rodHingeVert(hinge);
+  mjtNum sd = s2*m->flex_damping[f];
   mjtNum Wk[16], Wd[16];
   if (n == 3) {
     mjtNum kb[3];
     if (!mj_rodHinge(xpos + 3*v[0], xpos + 3*v[1], xpos + 3*v[2], kb, J)) {
       return 0;
     }
-    if (chain && hinge[5] != 0) {
+    if (chain) {
       int nhinge = (int)m->flex_bending[m->flex_bendingadr[f]];
-      mju_copy(Wk, chain + 9*h, 9);
-      mju_copy(Wd, chain + 9*nhinge + 9*h, 9);
-    } else {
-      mj_rodHingeWeights(NULL, Wk, Wd, kb, hinge[4], hinge[6]);
+      for (int i = 0; i < 9; i++) {
+        W[i] = (s1 ? s1*chain[9*h + i] : 0) + (sd ? sd*chain[9*nhinge + 9*h + i] : 0);
+      }
+      *nvrt = n;
+      return 1;
     }
+    mj_rodHingeWeights(NULL, Wk, Wd, kb, hinge[4], hinge[6]);
   } else {
     mjtNum om[4];
     if (!mj_rodPair(xpos + 3*v[0], xpos + 3*v[1], xpos + 3*v[2], xpos + 3*v[3], om, J)) {
@@ -1705,12 +1710,47 @@ static int rodHingeWeight(const mjModel* m, const mjData* d, int f, int h, mjtNu
     }
     mj_rodPairWeights(NULL, Wk, Wd, om, hinge[4], hinge[5], hinge + 6);
   }
-  mjtNum sd = s2*m->flex_damping[f];
   for (int i = 0; i < n*n; i++) {
     W[i] = s1*Wk[i] + sd*Wd[i];
   }
   *nvrt = n;
   return 1;
+}
+
+
+// vertex Bishop-twist row j_psi (1x9) and scaled weight (s1 + s2*damp)*2*kt for DER hinge h: the
+// vertex-vertex block 2kt j_psi' j_psi of the torsion term; the metric omits its cross blocks with
+// the twist dofs (see class 3 of mj_effRank1Next)
+static mjtNum rodHingeTorsionRow(const mjModel* m, const mjData* d, int f, int h,
+                                 mjtNum s1, mjtNum s2, const mjtNum* chain, mjtNum j_psi[9]) {
+  if (!chain) {
+    return 0;
+  }
+  const mjtNum* hinge = m->flex_bending + m->flex_bendingadr[f] + 1 + mjROD_HINGE_SIZE*h;
+  mjtNum kt = hinge[8];
+  mjtNum scale = (s1 + s2*m->flex_damping[f]) * 2 * kt;
+  if (scale <= 0) {
+    return 0;
+  }
+  const mjtNum* xpos = d->flexvert_xpos + 3*m->flex_vertadr[f];
+  int v0 = (int)hinge[0], v1 = (int)hinge[1], v2 = (int)hinge[2];
+  mjtNum kb[3], e0[3], e1[3];
+  if (!mj_rodHinge(xpos + 3*v0, xpos + 3*v1, xpos + 3*v2, kb, NULL)) {
+    return 0;
+  }
+  mju_sub3(e0, xpos + 3*v1, xpos + 3*v0);
+  mju_sub3(e1, xpos + 3*v2, xpos + 3*v1);
+  mjtNum l0 = mju_norm3(e0), l1 = mju_norm3(e1);
+  if (l0 < mjMINVAL || l1 < mjMINVAL) {
+    return 0;
+  }
+  mjtNum inv0 = 0.5 / l0, inv1 = 0.5 / l1;
+  for (int c = 0; c < 3; c++) {
+    j_psi[0 + c] = -kb[c] * inv0;
+    j_psi[3 + c] =  kb[c] * (inv0 - inv1);
+    j_psi[6 + c] =  kb[c] * inv1;
+  }
+  return scale;
 }
 
 
@@ -1729,6 +1769,16 @@ static int rodHingeStiffness(const mjModel* m, const mjData* d, int f, int h,
   mjtNum WJ[48];
   mju_mulMatMat(WJ, W, J, n, n, 3*n);
   mju_mulMatTMat(K, J, WJ, n, 3*n, 3*n);
+
+  mjtNum j_psi[9];
+  mjtNum wt = rodHingeTorsionRow(m, d, f, h, s1, s2, chain, j_psi);
+  if (wt > 0) {
+    for (int r = 0; r < 9; r++) {
+      for (int c = 0; c < 9; c++) {
+        K[9*r + c] += wt * j_psi[r] * j_psi[c];
+      }
+    }
+  }
   return 1;
 }
 
@@ -1744,7 +1794,7 @@ static void flexRod_mul(const mjModel* m, mjData* d, int f, mjtNum* res, const m
   mjtNum* wres = mjSTACKALLOC(d, 3*nvert, mjtNum);
   mj_flexGather(m, d, f, wvec, vec);
   mju_zero(wres, 3*nvert);
-  const mjtNum* chain = rodChainWeights(m, d, f);
+  const mjtNum* chain = rodChainWeights(m, d, f, s1, s2);
 
   for (int h = 0; h < nhinge; h++) {
     int v[4], n;
@@ -1770,6 +1820,19 @@ static void flexRod_mul(const mjModel* m, mjData* d, int f, mjtNum* res, const m
           sum += J[3*n*r + 3*i + c]*w[r];
         }
         wres[3*v[i]+c] += sum;
+      }
+    }
+
+    mjtNum j_psi[9];
+    mjtNum wt = rodHingeTorsionRow(m, d, f, h, s1, s2, chain, j_psi);
+    if (wt > 0) {
+      mjtNum dot = 0;
+      for (int i = 0; i < 3; i++) {
+        dot += mju_dot3(j_psi + 3*i, wvec + 3*v[i]);
+      }
+      dot *= wt;
+      for (int i = 0; i < 3; i++) {
+        mji_addToScl3(wres + 3*v[i], j_psi + 3*i, dot);
       }
     }
   }
@@ -2386,7 +2449,7 @@ int mjd_flexStiff_assemble(const mjModel* m, mjData* d, int* rownnz, int* rowadr
     if (flexRod_active(m, f)) {
       int va = m->flex_vertadr[f];
       mj_markStack((mjData*)d);
-      const mjtNum* chain = rodChainWeights(m, (mjData*)d, f);
+      const mjtNum* chain = rodChainWeights(m, (mjData*)d, f, s1, s2);
       for (int h = 0; h < (int)m->flex_bending[m->flex_bendingadr[f]]; h++) {
         int v[4], nr;
         mjtNum K[144];

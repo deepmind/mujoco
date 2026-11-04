@@ -625,6 +625,9 @@ void mj_flexSkip(const mjModel* m, mjData* d, int skiprigid) {
   // compute flex element aabb
   for (int f=0; f < m->nflex; f++) {
     int dim = m->flex_dim[f];
+    mjtNum box[2];
+    mjtNum pad = mj_rodBoxSize(m, f, box) ? mju_max(m->flex_radius[f], mju_norm(box, 2))
+                                          : m->flex_radius[f];
 
     // process elements of this flex
     int elemnum = m->flex_elemnum[f];
@@ -649,9 +652,9 @@ void mj_flexSkip(const mjModel* m, mjData* d, int skiprigid) {
       d->flexelem_aabb[6*base+0] = 0.5*(xmax[0]+xmin[0]);
       d->flexelem_aabb[6*base+1] = 0.5*(xmax[1]+xmin[1]);
       d->flexelem_aabb[6*base+2] = 0.5*(xmax[2]+xmin[2]);
-      d->flexelem_aabb[6*base+3] = 0.5*(xmax[0]-xmin[0]) + m->flex_radius[f];
-      d->flexelem_aabb[6*base+4] = 0.5*(xmax[1]-xmin[1]) + m->flex_radius[f];
-      d->flexelem_aabb[6*base+5] = 0.5*(xmax[2]-xmin[2]) + m->flex_radius[f];
+      d->flexelem_aabb[6*base+3] = 0.5*(xmax[0]-xmin[0]) + pad;
+      d->flexelem_aabb[6*base+4] = 0.5*(xmax[1]-xmin[1]) + pad;
+      d->flexelem_aabb[6*base+5] = 0.5*(xmax[2]-xmin[2]) + pad;
     }
   }
 

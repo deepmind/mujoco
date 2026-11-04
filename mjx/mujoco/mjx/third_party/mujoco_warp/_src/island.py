@@ -112,18 +112,25 @@ def _is_repeated_fixed_support_efc(
 @wp.func
 def _flex_contact_bodies(
   # Model:
+  jnt_bodyid: wp.array[int],
   geom_bodyid: wp.array[int],
   flex_dim: wp.array[int],
   flex_cellnum: wp.array[wp.vec3i],
   flex_nodeadr: wp.array[int],
   flex_vertadr: wp.array[int],
+  flex_elemadr: wp.array[int],
+  flex_elemnum: wp.array[int],
   flex_elemdataadr: wp.array[int],
-  flex_shelldataadr: wp.array[int],
   flex_nodebodyid: wp.array[int],
   flex_vertbodyid: wp.array[int],
   flex_elem: wp.array[int],
-  flex_shell: wp.array[int],
   flex_vert0: wp.array[wp.vec3],
+  flex_rod_has_twist: wp.array[bool],
+  flex_rod_edgeadr: wp.array[int],
+  flex_rod_edgenum: wp.array[int],
+  flex_rodedge_jnt: wp.array[int],
+  flex_elem_rodedge: wp.array[wp.vec2i],
+  flex_vert_rodelem: wp.array[int],
   # Data in:
   flexvert_xpos_in: wp.array2d[wp.vec3],
   contact_pos_in: wp.array[wp.vec3],
@@ -145,19 +152,26 @@ def _flex_contact_bodies(
   elem = contact_elem_in[conid]
   vert = contact_vert_in[conid]
   pos = contact_pos_in[conid]
-  bodies0, _ = support.contact_bodies_and_weights(
+  bodies0, _weights0 = support.contact_bodies_and_weights(
+    jnt_bodyid,
     geom_bodyid,
     flex_dim,
     flex_cellnum,
     flex_nodeadr,
     flex_vertadr,
+    flex_elemadr,
+    flex_elemnum,
     flex_elemdataadr,
-    flex_shelldataadr,
     flex_nodebodyid,
     flex_vertbodyid,
     flex_elem,
-    flex_shell,
     flex_vert0,
+    flex_rod_has_twist,
+    flex_rod_edgeadr,
+    flex_rod_edgenum,
+    flex_rodedge_jnt,
+    flex_elem_rodedge,
+    flex_vert_rodelem,
     flexvert_xpos_in,
     conid,
     0,
@@ -168,19 +182,26 @@ def _flex_contact_bodies(
     pos,
     worldid,
   )
-  bodies1, _ = support.contact_bodies_and_weights(
+  bodies1, _weights1 = support.contact_bodies_and_weights(
+    jnt_bodyid,
     geom_bodyid,
     flex_dim,
     flex_cellnum,
     flex_nodeadr,
     flex_vertadr,
+    flex_elemadr,
+    flex_elemnum,
     flex_elemdataadr,
-    flex_shelldataadr,
     flex_nodebodyid,
     flex_vertbodyid,
     flex_elem,
-    flex_shell,
     flex_vert0,
+    flex_rod_has_twist,
+    flex_rod_edgeadr,
+    flex_rod_edgenum,
+    flex_rodedge_jnt,
+    flex_elem_rodedge,
+    flex_vert_rodelem,
     flexvert_xpos_in,
     conid,
     1,
@@ -194,12 +215,173 @@ def _flex_contact_bodies(
   return bodies0, bodies1
 
 
+@wp.kernel
+def _flex_island_dsu(
+  # Model:
+  opt_enableflags: int,
+  body_treeid: wp.array[int],
+  jnt_bodyid: wp.array[int],
+  flex_interp: wp.array[int],
+  flex_nodeadr: wp.array[int],
+  flex_nodenum: wp.array[int],
+  flex_vertadr: wp.array[int],
+  flex_vertnum: wp.array[int],
+  flex_nodebodyid: wp.array[int],
+  flex_vertbodyid: wp.array[int],
+  flex_rod_has_twist: wp.array[bool],
+  flex_eff_possible: wp.array[bool],
+  flex_rod_edgeadr: wp.array[int],
+  flex_rod_edgenum: wp.array[int],
+  flex_rodedge_jnt: wp.array[int],
+  # Data in:
+  nefc_in: wp.array[int],
+  tree_awake_in: wp.array2d[int],
+  # In:
+  sleep_metric_flex: bool,
+  # Data out:
+  tree_island_out: wp.array2d[int],
+  # Out:
+  island_parent_out: wp.array2d[int],
+):
+  """Unions awake dynamic trees of each metric-coupled flex (vertices, nodes, twist joints)."""
+  worldid, f = wp.tid()
+  if not flex_eff_possible[f]:
+    return
+  if nefc_in[worldid] == 0 and not sleep_metric_flex:
+    return
+  sleep_enabled = (opt_enableflags & types.EnableBit.SLEEP) != 0
+  use_interp = flex_interp[f] != 0
+  num = flex_nodenum[f] if use_interp else flex_vertnum[f]
+  adr = flex_nodeadr[f] if use_interp else flex_vertadr[f]
+  tree1 = int(-1)
+  for j in range(num):
+    b = flex_nodebodyid[adr + j] if use_interp else flex_vertbodyid[adr + j]
+    tree2 = body_treeid[b]
+    if tree2 < 0 or tree2 == tree1 or (sleep_enabled and tree_awake_in[worldid, tree2] == 0):
+      continue
+    if tree1 < 0:
+      tree1 = tree2
+    else:
+      _dsu_union(island_parent_out, worldid, tree1, tree2, tree_island_out)
+  if flex_rod_has_twist[f]:
+    eadr = flex_rod_edgeadr[f]
+    for e in range(flex_rod_edgenum[f]):
+      jnt = flex_rodedge_jnt[eadr + e]
+      if jnt < 0:
+        continue
+      tree2 = body_treeid[jnt_bodyid[jnt]]
+      if tree2 < 0 or tree2 == tree1 or (sleep_enabled and tree_awake_in[worldid, tree2] == 0):
+        continue
+      if tree1 < 0:
+        tree1 = tree2
+      else:
+        _dsu_union(island_parent_out, worldid, tree1, tree2, tree_island_out)
+
+
+@wp.kernel
+def _passive_contact_island_dsu(
+  # Model:
+  opt_enableflags: int,
+  body_treeid: wp.array[int],
+  jnt_bodyid: wp.array[int],
+  geom_bodyid: wp.array[int],
+  flex_dim: wp.array[int],
+  flex_cellnum: wp.array[wp.vec3i],
+  flex_nodeadr: wp.array[int],
+  flex_vertadr: wp.array[int],
+  flex_elemadr: wp.array[int],
+  flex_elemnum: wp.array[int],
+  flex_elemdataadr: wp.array[int],
+  flex_nodebodyid: wp.array[int],
+  flex_vertbodyid: wp.array[int],
+  flex_elem: wp.array[int],
+  flex_vert0: wp.array[wp.vec3],
+  flex_rod_has_twist: wp.array[bool],
+  flex_rod_edgeadr: wp.array[int],
+  flex_rod_edgenum: wp.array[int],
+  flex_rodedge_jnt: wp.array[int],
+  flex_elem_rodedge: wp.array[wp.vec2i],
+  flex_vert_rodelem: wp.array[int],
+  # Data in:
+  nefc_in: wp.array[int],
+  flexvert_xpos_in: wp.array2d[wp.vec3],
+  tree_awake_in: wp.array2d[int],
+  contact_pos_in: wp.array[wp.vec3],
+  contact_geom_in: wp.array[wp.vec2i],
+  contact_flex_in: wp.array[wp.vec2i],
+  contact_elem_in: wp.array[wp.vec2i],
+  contact_vert_in: wp.array[wp.vec2i],
+  contact_worldid_in: wp.array[int],
+  contact_type_in: wp.array[int],
+  nacon_in: wp.array[int],
+  # In:
+  sleep_metric_flex: bool,
+  # Data out:
+  tree_island_out: wp.array2d[int],
+  # Out:
+  island_parent_out: wp.array2d[int],
+):
+  """Unions awake dynamic trees coupled by passive flex contacts under the discrete integrator."""
+  cid = wp.tid()
+  if cid >= nacon_in[0]:
+    return
+  if (contact_type_in[cid] & int(types.ContactType.PASSIVE)) == 0:
+    return
+  worldid = contact_worldid_in[cid]
+  if nefc_in[worldid] == 0 and not sleep_metric_flex:
+    return
+  sleep_enabled = (opt_enableflags & types.EnableBit.SLEEP) != 0
+  bodies0, bodies1 = _flex_contact_bodies(
+    jnt_bodyid,
+    geom_bodyid,
+    flex_dim,
+    flex_cellnum,
+    flex_nodeadr,
+    flex_vertadr,
+    flex_elemadr,
+    flex_elemnum,
+    flex_elemdataadr,
+    flex_nodebodyid,
+    flex_vertbodyid,
+    flex_elem,
+    flex_vert0,
+    flex_rod_has_twist,
+    flex_rod_edgeadr,
+    flex_rod_edgenum,
+    flex_rodedge_jnt,
+    flex_elem_rodedge,
+    flex_vert_rodelem,
+    flexvert_xpos_in,
+    contact_pos_in,
+    contact_geom_in,
+    contact_flex_in,
+    contact_elem_in,
+    contact_vert_in,
+    worldid,
+    cid,
+  )
+  tree1 = int(-1)
+  for k in range(8):
+    body = bodies0[k % 4] if k < 4 else bodies1[k % 4]
+    if body < 0:
+      continue
+    tree2 = body_treeid[body]
+    if tree2 < 0 or tree2 == tree1 or (sleep_enabled and tree_awake_in[worldid, tree2] == 0):
+      continue
+    if tree1 < 0:
+      tree1 = tree2
+    else:
+      _dsu_union(island_parent_out, worldid, tree1, tree2, tree_island_out)
+
+
 @wp.kernel(module="unique")
 def _island_dsu(
   # Model:
   nv: int,
+  opt_enableflags: int,
   body_treeid: wp.array[int],
   jnt_dofadr: wp.array[int],
+  jnt_bodyid: wp.array[int],
   dof_treeid: wp.array[int],
   geom_bodyid: wp.array[int],
   site_bodyid: wp.array[int],
@@ -207,21 +389,28 @@ def _island_dsu(
   flex_cellnum: wp.array[wp.vec3i],
   flex_nodeadr: wp.array[int],
   flex_vertadr: wp.array[int],
+  flex_elemadr: wp.array[int],
+  flex_elemnum: wp.array[int],
   flex_elemdataadr: wp.array[int],
-  flex_shelldataadr: wp.array[int],
   flex_nodebodyid: wp.array[int],
   flex_vertbodyid: wp.array[int],
   flex_elem: wp.array[int],
-  flex_shell: wp.array[int],
   flex_vert0: wp.array[wp.vec3],
   eq_type: wp.array[int],
   eq_obj1id: wp.array[int],
   eq_obj2id: wp.array[int],
   eq_objtype: wp.array[int],
   is_sparse: bool,
+  flex_rod_has_twist: wp.array[bool],
+  flex_rod_edgeadr: wp.array[int],
+  flex_rod_edgenum: wp.array[int],
+  flex_rodedge_jnt: wp.array[int],
+  flex_elem_rodedge: wp.array[wp.vec2i],
+  flex_vert_rodelem: wp.array[int],
   # Data in:
   nefc_in: wp.array[int],
   flexvert_xpos_in: wp.array2d[wp.vec3],
+  tree_awake_in: wp.array2d[int],
   contact_pos_in: wp.array[wp.vec3],
   contact_geom_in: wp.array[wp.vec2i],
   contact_flex_in: wp.array[wp.vec2i],
@@ -248,6 +437,7 @@ def _island_dsu(
   with a long prefix fills the device the same way a large batch of short ones does.
   """
   worldid, chunkid, lane = wp.tid()
+  sleep_enabled = (opt_enableflags & types.EnableBit.SLEEP) != 0
   chunk_beg = chunkid * chunk_size
   chunk_end = wp.min(chunk_beg + chunk_size, wp.min(njmax_in, nefc_in[worldid]))
   for efcid in range(chunk_beg + lane, chunk_end, wp.block_dim()):
@@ -294,18 +484,25 @@ def _island_dsu(
       else:
         # flex: union the trees of the bodies of both sides
         bodies0, bodies1 = _flex_contact_bodies(
+          jnt_bodyid,
           geom_bodyid,
           flex_dim,
           flex_cellnum,
           flex_nodeadr,
           flex_vertadr,
+          flex_elemadr,
+          flex_elemnum,
           flex_elemdataadr,
-          flex_shelldataadr,
           flex_nodebodyid,
           flex_vertbodyid,
           flex_elem,
-          flex_shell,
           flex_vert0,
+          flex_rod_has_twist,
+          flex_rod_edgeadr,
+          flex_rod_edgenum,
+          flex_rodedge_jnt,
+          flex_elem_rodedge,
+          flex_vert_rodelem,
           flexvert_xpos_in,
           contact_pos_in,
           contact_geom_in,
@@ -323,7 +520,7 @@ def _island_dsu(
           if body < 0:
             continue
           tree = body_treeid[body]
-          if tree < 0:
+          if tree < 0 or (sleep_enabled and tree_awake_in[worldid, tree] == 0):
             continue
           if first_tree < 0:
             first_tree = tree
@@ -335,6 +532,11 @@ def _island_dsu(
       use_generic = 1
 
     if use_generic == 0:
+      if sleep_enabled:
+        if tree0 >= 0 and tree_awake_in[worldid, tree0] == 0:
+          tree0 = -1
+        if tree1 >= 0 and tree_awake_in[worldid, tree1] == 0:
+          tree1 = -1
       _dsu_union(island_parent_out, worldid, tree0, tree1, tree_island_out)
       continue
 
@@ -352,7 +554,7 @@ def _island_dsu(
       elif efc_J_in[worldid, efcid, dof] == 0.0:
         continue
       tree = dof_treeid[dof]
-      if tree < 0:
+      if tree < 0 or (sleep_enabled and tree_awake_in[worldid, tree] == 0):
         continue
       if first_tree < 0:
         first_tree = tree
@@ -441,13 +643,87 @@ def direct_dsu(m: types.Model, d: types.Data, island_parent: wp.array2d[int]):
     dim=(d.nworld, m.ntree),
     inputs=[d.nisland, d.tree_island, island_parent],
   )
+  if m.nflex > 0:
+    has_passive = not ((m.opt.disableflags & types.DisableBit.SPRING) and (m.opt.disableflags & types.DisableBit.DAMPER))
+    sleep_metric_flex = (
+      bool(m.opt.enableflags & types.EnableBit.SLEEP) and m.opt.integrator == types.IntegratorType.DISCRETE and has_passive
+    )
+    wp.launch(
+      _flex_island_dsu,
+      dim=(d.nworld, m.nflex),
+      inputs=[
+        m.opt.enableflags,
+        m.body_treeid,
+        m.jnt_bodyid,
+        m.flex_interp,
+        m.flex_nodeadr,
+        m.flex_nodenum,
+        m.flex_vertadr,
+        m.flex_vertnum,
+        m.flex_nodebodyid,
+        m.flex_vertbodyid,
+        m.flex_rod_has_twist,
+        m.flex_eff_possible,
+        m.flex_rod_edgeadr,
+        m.flex_rod_edgenum,
+        m.flex_rodedge_jnt,
+        d.nefc,
+        d.tree_awake,
+        sleep_metric_flex,
+      ],
+      outputs=[d.tree_island, island_parent],
+    )
+    if m.opt.integrator == types.IntegratorType.DISCRETE and m.has_flex_passive:
+      wp.launch(
+        _passive_contact_island_dsu,
+        dim=d.naconmax,
+        inputs=[
+          m.opt.enableflags,
+          m.body_treeid,
+          m.jnt_bodyid,
+          m.geom_bodyid,
+          m.flex_dim,
+          m.flex_cellnum,
+          m.flex_nodeadr,
+          m.flex_vertadr,
+          m.flex_elemadr,
+          m.flex_elemnum,
+          m.flex_elemdataadr,
+          m.flex_nodebodyid,
+          m.flex_vertbodyid,
+          m.flex_elem,
+          m.flex_vert0,
+          m.flex_rod_has_twist,
+          m.flex_rod_edgeadr,
+          m.flex_rod_edgenum,
+          m.flex_rodedge_jnt,
+          m.flex_elem_rodedge,
+          m.flex_vert_rodelem,
+          d.nefc,
+          d.flexvert_xpos,
+          d.tree_awake,
+          d.contact.pos,
+          d.contact.geom,
+          d.contact.flex,
+          d.contact.elem,
+          d.contact.vert,
+          d.contact.worldid,
+          d.contact.type,
+          d.nacon,
+          sleep_metric_flex,
+        ],
+        outputs=[d.tree_island, island_parent],
+      )
+
   wp.launch_tiled(
     _island_dsu,
     dim=(d.nworld, nchunk),
     inputs=[
       m.nv,
+      m.opt.enableflags,
       m.body_treeid,
       m.jnt_dofadr,
+      m.jnt_bodyid,
       m.dof_treeid,
       m.geom_bodyid,
       m.site_bodyid,
@@ -455,20 +731,27 @@ def direct_dsu(m: types.Model, d: types.Data, island_parent: wp.array2d[int]):
       m.flex_cellnum,
       m.flex_nodeadr,
       m.flex_vertadr,
+      m.flex_elemadr,
+      m.flex_elemnum,
       m.flex_elemdataadr,
-      m.flex_shelldataadr,
       m.flex_nodebodyid,
       m.flex_vertbodyid,
       m.flex_elem,
-      m.flex_shell,
       m.flex_vert0,
       m.eq_type,
       m.eq_obj1id,
       m.eq_obj2id,
       m.eq_objtype,
       m.is_sparse,
+      m.flex_rod_has_twist,
+      m.flex_rod_edgeadr,
+      m.flex_rod_edgenum,
+      m.flex_rodedge_jnt,
+      m.flex_elem_rodedge,
+      m.flex_vert_rodelem,
       d.nefc,
       d.flexvert_xpos,
+      d.tree_awake,
       d.contact.pos,
       d.contact.geom,
       d.contact.flex,
@@ -729,6 +1012,7 @@ def _compute_efc_tree(
   nv: int,
   body_treeid: wp.array[int],
   jnt_dofadr: wp.array[int],
+  jnt_bodyid: wp.array[int],
   dof_treeid: wp.array[int],
   geom_bodyid: wp.array[int],
   site_bodyid: wp.array[int],
@@ -736,18 +1020,24 @@ def _compute_efc_tree(
   flex_cellnum: wp.array[wp.vec3i],
   flex_nodeadr: wp.array[int],
   flex_vertadr: wp.array[int],
+  flex_elemadr: wp.array[int],
+  flex_elemnum: wp.array[int],
   flex_elemdataadr: wp.array[int],
-  flex_shelldataadr: wp.array[int],
   flex_nodebodyid: wp.array[int],
   flex_vertbodyid: wp.array[int],
   flex_elem: wp.array[int],
-  flex_shell: wp.array[int],
   flex_vert0: wp.array[wp.vec3],
   eq_type: wp.array[int],
   eq_obj1id: wp.array[int],
   eq_obj2id: wp.array[int],
   eq_objtype: wp.array[int],
   is_sparse: bool,
+  flex_rod_has_twist: wp.array[bool],
+  flex_rod_edgeadr: wp.array[int],
+  flex_rod_edgenum: wp.array[int],
+  flex_rodedge_jnt: wp.array[int],
+  flex_elem_rodedge: wp.array[wp.vec2i],
+  flex_vert_rodelem: wp.array[int],
   # Data in:
   nefc_in: wp.array[int],
   flexvert_xpos_in: wp.array2d[wp.vec3],
@@ -828,18 +1118,25 @@ def _compute_efc_tree(
     else:
       # flex: first tree of the bodies of both sides
       bodies0, bodies1 = _flex_contact_bodies(
+        jnt_bodyid,
         geom_bodyid,
         flex_dim,
         flex_cellnum,
         flex_nodeadr,
         flex_vertadr,
+        flex_elemadr,
+        flex_elemnum,
         flex_elemdataadr,
-        flex_shelldataadr,
         flex_nodebodyid,
         flex_vertbodyid,
         flex_elem,
-        flex_shell,
         flex_vert0,
+        flex_rod_has_twist,
+        flex_rod_edgeadr,
+        flex_rod_edgenum,
+        flex_rodedge_jnt,
+        flex_elem_rodedge,
+        flex_vert_rodelem,
         flexvert_xpos_in,
         contact_pos_in,
         contact_geom_in,
@@ -992,6 +1289,7 @@ def compute_island_mapping(m: types.Model, d: types.Data):
       m.nv,
       m.body_treeid,
       m.jnt_dofadr,
+      m.jnt_bodyid,
       m.dof_treeid,
       m.geom_bodyid,
       m.site_bodyid,
@@ -999,18 +1297,24 @@ def compute_island_mapping(m: types.Model, d: types.Data):
       m.flex_cellnum,
       m.flex_nodeadr,
       m.flex_vertadr,
+      m.flex_elemadr,
+      m.flex_elemnum,
       m.flex_elemdataadr,
-      m.flex_shelldataadr,
       m.flex_nodebodyid,
       m.flex_vertbodyid,
       m.flex_elem,
-      m.flex_shell,
       m.flex_vert0,
       m.eq_type,
       m.eq_obj1id,
       m.eq_obj2id,
       m.eq_objtype,
       m.is_sparse,
+      m.flex_rod_has_twist,
+      m.flex_rod_edgeadr,
+      m.flex_rod_edgenum,
+      m.flex_rodedge_jnt,
+      m.flex_elem_rodedge,
+      m.flex_vert_rodelem,
       d.nefc,
       d.flexvert_xpos,
       d.contact.pos,

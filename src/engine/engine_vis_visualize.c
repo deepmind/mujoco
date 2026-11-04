@@ -3517,6 +3517,124 @@ static void copyTex(float* dst, const float* src, int nface, int i0, int i1, int
 }
 
 
+// emit one triangle of a 1D box-section rod element
+static void makeRodBoxTri(float* _face, float* _normal, int nface,
+                          const mjtNum p0[3], const mjtNum p1[3], const mjtNum p2[3],
+                          const mjtNum n0[3], const mjtNum n1[3], const mjtNum n2[3]) {
+  float* face = _face + 9*nface;
+  float* normal = _normal + 9*nface;
+  const mjtNum* pts[3] = {p0, p1, p2};
+  const mjtNum* nrms[3] = {n0, n1, n2};
+  for (int k=0; k < 3; k++) {
+    face[3*k+0] = (float) pts[k][0];
+    face[3*k+1] = (float) pts[k][1];
+    face[3*k+2] = (float) pts[k][2];
+    normal[3*k+0] = (float) nrms[k][0];
+    normal[3*k+1] = (float) nrms[k][1];
+    normal[3*k+2] = (float) nrms[k][2];
+  }
+}
+
+
+// construct 12 faces (4 sides + 2 caps) for one 1D box-section rod element
+static int makeRodBoxElem(float* face, float* normal, float* texdst, const float* texsrc,
+                          int nface, const mjtNum* vertxpos, const int* elem,
+                          int nelem, int e, const mjtNum* elem_mat, const mjtNum box[2],
+                          int smooth) {
+  const int* edata = elem + 2*e;
+  int i0 = edata[0], i1 = edata[1];
+  const mjtNum* x0 = vertxpos + 3*i0;
+  const mjtNum* x1 = vertxpos + 3*i1;
+  const mjtNum* Re = elem_mat + 9*e;
+  mjtNum m1e[3] = {Re[0], Re[3], Re[6]};
+  mjtNum m2e[3] = {Re[1], Re[4], Re[7]};
+  mjtNum te[3]  = {Re[2], Re[5], Re[8]};
+  mjtNum nte[3] = {-te[0], -te[1], -te[2]};
+
+  // cross-section axes at start and end of element (mitered at shared vertices when smooth)
+  mjtNum u0[3] = {m1e[0], m1e[1], m1e[2]};
+  mjtNum w0[3] = {m2e[0], m2e[1], m2e[2]};
+  mjtNum u1[3] = {m1e[0], m1e[1], m1e[2]};
+  mjtNum w1[3] = {m2e[0], m2e[1], m2e[2]};
+  if (smooth) {
+    if (e > 0 && elem[2*(e-1)+1] == i0) {
+      const mjtNum* Rp = elem_mat + 9*(e-1);
+      mjtNum up[3] = {m1e[0] + Rp[0], m1e[1] + Rp[3], m1e[2] + Rp[6]};
+      mjtNum wp[3] = {m2e[0] + Rp[1], m2e[1] + Rp[4], m2e[2] + Rp[7]};
+      if (mju_normalize3(up) > mjMINVAL && mju_normalize3(wp) > mjMINVAL) {
+        mju_copy3(u0, up);
+        mju_copy3(w0, wp);
+      }
+    }
+    if (e + 1 < nelem && elem[2*(e+1)] == i1) {
+      const mjtNum* Rn = elem_mat + 9*(e+1);
+      mjtNum un[3] = {m1e[0] + Rn[0], m1e[1] + Rn[3], m1e[2] + Rn[6]};
+      mjtNum wn[3] = {m2e[0] + Rn[1], m2e[1] + Rn[4], m2e[2] + Rn[7]};
+      if (mju_normalize3(un) > mjMINVAL && mju_normalize3(wn) > mjMINVAL) {
+        mju_copy3(u1, un);
+        mju_copy3(w1, wn);
+      }
+    }
+  }
+
+  // 4 corners at start and end: (+a,-b), (+a,+b), (-a,+b), (-a,-b)
+  mjtNum a = box[0], b = box[1];
+  const mjtNum sa[4] = {+a, +a, -a, -a};
+  const mjtNum sb[4] = {-b, +b, +b, -b};
+  mjtNum c0[4][3], c1[4][3];
+  for (int j=0; j < 4; j++) {
+    for (int d=0; d < 3; d++) {
+      c0[j][d] = x0[d] + sa[j]*u0[d] + sb[j]*w0[d];
+      c1[j][d] = x1[d] + sa[j]*u1[d] + sb[j]*w1[d];
+    }
+  }
+
+  // outward normals for the 4 sides at start and end: +u, +w, -u, -w
+  mjtNum n0[4][3] = {
+    { u0[0],  u0[1],  u0[2]},
+    { w0[0],  w0[1],  w0[2]},
+    {-u0[0], -u0[1], -u0[2]},
+    {-w0[0], -w0[1], -w0[2]}
+  };
+  mjtNum n1[4][3] = {
+    { u1[0],  u1[1],  u1[2]},
+    { w1[0],  w1[1],  w1[2]},
+    {-u1[0], -u1[1], -u1[2]},
+    {-w1[0], -w1[1], -w1[2]}
+  };
+
+  // 4 side quads (8 triangles)
+  for (int j=0; j < 4; j++) {
+    int jn = (j + 1) & 3;
+    makeRodBoxTri(face, normal, nface, c0[j], c0[jn], c1[jn], n0[j], n0[j], n1[j]);
+    copyTex(texdst, texsrc, nface, i0, i0, i1);
+    nface++;
+
+    makeRodBoxTri(face, normal, nface, c0[j], c1[jn], c1[j], n0[j], n1[j], n1[j]);
+    copyTex(texdst, texsrc, nface, i0, i1, i1);
+    nface++;
+  }
+
+  // start cap (2 triangles)
+  makeRodBoxTri(face, normal, nface, c0[0], c0[3], c0[2], nte, nte, nte);
+  copyTex(texdst, texsrc, nface, i0, i0, i0);
+  nface++;
+  makeRodBoxTri(face, normal, nface, c0[0], c0[2], c0[1], nte, nte, nte);
+  copyTex(texdst, texsrc, nface, i0, i0, i0);
+  nface++;
+
+  // end cap (2 triangles)
+  makeRodBoxTri(face, normal, nface, c1[0], c1[1], c1[2], te, te, te);
+  copyTex(texdst, texsrc, nface, i1, i1, i1);
+  nface++;
+  makeRodBoxTri(face, normal, nface, c1[0], c1[2], c1[3], te, te, te);
+  copyTex(texdst, texsrc, nface, i1, i1, i1);
+  nface++;
+
+  return nface;
+}
+
+
 // update visible flexes only
 void mjv_updateActiveFlex(const mjModel* m, mjData* d, mjvScene* scn, const mjvOption* opt) {
   // save flex visualization flags in scene (needed by renderer)
@@ -3550,12 +3668,51 @@ void mjv_updateActiveFlex(const mjModel* m, mjData* d, mjvScene* scn, const mjvO
                           m->flex_texcoord + 2*m->flex_texcoordadr[f] : NULL;
     int nmat = flexUniqueMatids(m, f, opt, matids, maxmat);
 
-    // 1D, or face and skin disabled: no faces
-    if (dim == 1 || (!opt->flags[mjVIS_FLEXFACE] && !opt->flags[mjVIS_FLEXSKIN])) {
+    // face and skin disabled: no faces
+    if (!opt->flags[mjVIS_FLEXFACE] && !opt->flags[mjVIS_FLEXSKIN]) {
       scn->flexfaceused[f] = 0;
       for (int k=0; k < nmat; k++) {
         group_offset[k] = 0;
         group_count[k] = 0;
+      }
+    }
+
+    // 1D: oriented box faces when section="box", no faces otherwise
+    else if (dim == 1) {
+      mjtNum box[2];
+      int nelem = m->flex_elemnum[f];
+      if (nelem > 0 && scn->flexfacenum[f] >= 12*nelem && mj_rodBoxSize(m, f, box)) {
+        mj_markStack(d);
+        mjtNum* elem_mat = mjSTACKALLOC(d, 9*nelem, mjtNum);
+        int nface = 0;
+        if (mj_rodBoxEdge(m, d, f, elem_mat, box)) {
+          const int* elem = m->flex_elem + m->flex_elemdataadr[f];
+          int smooth = opt->flags[mjVIS_FLEXSKIN] && !flg_flat;
+          for (int k=0; k < nmat; k++) {
+            group_offset[k] = nface;
+            for (int e=0; e < nelem; e++) {
+              if (nmat > 1 && m->flex_matid[m->flex_elemadr[f]+e] != matids[k]) {
+                continue;
+              }
+              nface = makeRodBoxElem(face, normal, texdst, texsrc, nface,
+                                     vertxpos, elem, nelem, e, elem_mat, box, smooth);
+            }
+            group_count[k] = nface - group_offset[k];
+          }
+        } else {
+          for (int k=0; k < nmat; k++) {
+            group_offset[k] = 0;
+            group_count[k] = 0;
+          }
+        }
+        scn->flexfaceused[f] = nface;
+        mj_freeStack(d);
+      } else {
+        scn->flexfaceused[f] = 0;
+        for (int k=0; k < nmat; k++) {
+          group_offset[k] = 0;
+          group_count[k] = 0;
+        }
       }
     }
 

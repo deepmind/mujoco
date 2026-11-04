@@ -777,10 +777,10 @@ static void setFixed(mjModel* m, mjData* d) {
       }
       if (m->flex_dim[i] == 1 && m->flex_bendingadr[i] >= 0) {
         const mjtNum* b = m->flex_bending + m->flex_bendingadr[i];
-        for (int h = 0; h < (int)b[0]; ++h) {
-          const mjtNum* hinge = b + 1 + 10 * h;
-          if (hinge[3] < 0 && hinge[7] >= 0) {
-            int jnt = (int)hinge[7];
+        int nhinge = (int)b[0];
+        for (int e = 0; e <= nhinge; ++e) {
+          int jnt = mj_rodChainTwistJnt(m, i, e);
+          if (jnt >= 0) {
             int treeid = m->dof_treeid[m->jnt_dofadr[jnt]];
             if (treeid != -1 && m->tree_sleep_policy[treeid] == mjSLEEP_AUTO) {
               m->tree_sleep_policy[treeid] = mjSLEEP_AUTO_NEVER;

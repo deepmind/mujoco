@@ -14,7 +14,7 @@
 # ==============================================================================
 
 
-from typing import Optional
+from typing import Optional, Tuple
 
 import warp as wp
 
@@ -25,6 +25,7 @@ from mujoco.mjx.third_party.mujoco_warp._src.types import MJ_MAXVAL
 from mujoco.mjx.third_party.mujoco_warp._src.types import MJ_MINVAL
 from mujoco.mjx.third_party.mujoco_warp._src.types import Q_LD_BLOCK_COMPACT
 from mujoco.mjx.third_party.mujoco_warp._src.types import Q_LD_BLOCK_SPARSE
+from mujoco.mjx.third_party.mujoco_warp._src.types import ROD_HINGE_SIZE
 from mujoco.mjx.third_party.mujoco_warp._src.types import CamLightType
 from mujoco.mjx.third_party.mujoco_warp._src.types import ConeType
 from mujoco.mjx.third_party.mujoco_warp._src.types import ConstraintType
@@ -602,6 +603,172 @@ def _flex_face_kinematics(
   face_quat_out[worldid, face_id] = support.mat33_to_quat_polar(F)
 
 
+@wp.func
+def _rod_body_pose0(
+  # Model:
+  body_parentid: wp.array[int],
+  body_pos: wp.array2d[wp.vec3],
+  body_quat: wp.array2d[wp.quat],
+  # In:
+  worldid: int,
+  bodyid: int,
+) -> Tuple[wp.vec3, wp.quat]:
+  """Nominal pose of a body with all joints at zero (rodBodyPose0)."""
+  pos_id = worldid % body_pos.shape[0]
+  quat_id = worldid % body_quat.shape[0]
+  pos = wp.vec3(0.0)
+  quat = wp.quat(1.0, 0.0, 0.0, 0.0)
+  cur = bodyid
+  while cur > 0:
+    q = body_quat[quat_id, cur]
+    pos = math.rot_vec_quat(pos, q) + body_pos[pos_id, cur]
+    quat = math.mul_quat(q, quat)
+    cur = body_parentid[cur]
+  return pos, quat
+
+
+@wp.func
+def _rod_vert_pos0(
+  # Model:
+  body_parentid: wp.array[int],
+  body_pos: wp.array2d[wp.vec3],
+  body_quat: wp.array2d[wp.quat],
+  flex_vertbodyid: wp.array[int],
+  flex_vert: wp.array[wp.vec3],
+  # In:
+  worldid: int,
+  vertid: int,
+) -> wp.vec3:
+  """Nominal world position of a flex vertex with all joints at zero (rodVertPos0)."""
+  pos, quat = _rod_body_pose0(body_parentid, body_pos, body_quat, worldid, flex_vertbodyid[vertid])
+  return pos + math.rot_vec_quat(flex_vert[vertid], quat)
+
+
+@wp.kernel
+def _flex_rod_ref(
+  # Model:
+  body_parentid: wp.array[int],
+  body_pos: wp.array2d[wp.vec3],
+  body_quat: wp.array2d[wp.quat],
+  flex_vertadr: wp.array[int],
+  flex_bendingadr: wp.array[int],
+  flex_vertbodyid: wp.array[int],
+  flex_vert: wp.array[wp.vec3],
+  flex_bending: wp.array[float],
+  flex_rod_tail_clamped: wp.array[bool],
+  flex_rod_hingeadr: wp.array[int],
+  flex_rod_edgeadr: wp.array[int],
+  flex_rod_edgenum: wp.array[int],
+  flex_rodedge_vert: wp.array[wp.vec2i],
+  # Data out:
+  flex_rod_chain_valid_out: wp.array2d[bool],
+  flex_rod_ref_ok_out: wp.array2d[bool],
+  flex_rod_frame0_loc_out: wp.array3d[wp.vec3],
+  flex_rod_frame0_ref_out: wp.array3d[wp.vec3],
+  flex_rod_tail_loc_out: wp.array3d[wp.vec3],
+  flex_rodhinge_om0_out: wp.array2d[wp.vec2],
+):
+  """Reference frames and curvatures of open 1D DER rods at the nominal body poses of this world.
+
+  Mirrors rodChain, rodRootDirector and rodTailDirector, which recompute them from body_pos and
+  body_quat; also invalidates the cached rod chain evaluation (passive.eval_rod_chains).
+  """
+  worldid, f = wp.tid()
+  z3 = wp.vec3(0.0)
+  flex_rod_chain_valid_out[worldid, f] = False
+  flex_rod_ref_ok_out[worldid, f] = False
+  for i in range(2):
+    flex_rod_frame0_loc_out[worldid, f, i] = z3
+    flex_rod_frame0_ref_out[worldid, f, i] = z3
+    flex_rod_tail_loc_out[worldid, f, i] = z3
+
+  nedge = flex_rod_edgenum[f]
+  nhinge = nedge - 1
+  if wp.static(ROD_HINGE_SIZE != 10) or nhinge <= 0:
+    return
+
+  hadr = flex_rod_hingeadr[f]
+  if hadr >= 0:
+    for h in range(nhinge):
+      flex_rodhinge_om0_out[worldid, hadr + h] = wp.vec2(0.0)
+
+  va = flex_vertadr[f]
+  eadr = flex_rod_edgeadr[f]
+  bendingadr = flex_bendingadr[f]
+
+  # first edge: qpos0 frame in the frame of its first body (rodRootDirector)
+  verts0 = flex_rodedge_vert[eadr]
+  _p0, q0 = _rod_body_pose0(body_parentid, body_pos, body_quat, worldid, flex_vertbodyid[va + verts0[0]])
+  R0 = math.quat_to_mat(q0)
+  xa = _rod_vert_pos0(body_parentid, body_pos, body_quat, flex_vertbodyid, flex_vert, worldid, va + verts0[0])
+  xv = _rod_vert_pos0(body_parentid, body_pos, body_quat, flex_vertbodyid, flex_vert, worldid, va + verts0[1])
+  t0_loc = wp.transpose(R0) @ (xv - xa)
+  n_t0 = wp.length(t0_loc)
+  if n_t0 < MJ_MINVAL:
+    return
+  t0_loc = t0_loc / n_t0
+  frame_u, frame_v = math.orthogonals(t0_loc)
+  psi0 = float(0.0)
+  if flex_bending[bendingadr + 1 + 9] < 0.0:
+    psi0 = 0.5 * wp.pi
+  c0 = wp.cos(psi0)
+  s0 = wp.sin(psi0)
+  u0_loc = c0 * frame_u + s0 * frame_v
+  v0_loc = -s0 * frame_u + c0 * frame_v
+  t_ref = R0 @ t0_loc
+  u_ref = R0 @ u0_loc
+  v_prev = R0 @ v0_loc
+  flex_rod_frame0_loc_out[worldid, f, 0] = t0_loc
+  flex_rod_frame0_loc_out[worldid, f, 1] = u0_loc
+  flex_rod_frame0_ref_out[worldid, f, 0] = t_ref
+  flex_rod_frame0_ref_out[worldid, f, 1] = u_ref
+
+  # reference Bishop frame along the qpos0 chain, for curved references or a clamped tail (rodChain)
+  tail_clamped = flex_rod_tail_clamped[f]
+  need_ref_chain = tail_clamped
+  for h in range(nhinge):
+    if flex_bending[bendingadr + 1 + ROD_HINGE_SIZE * h + 6] > 0.0:
+      need_ref_chain = True
+  if need_ref_chain:
+    for h in range(nhinge):
+      xb = _rod_vert_pos0(
+        body_parentid, body_pos, body_quat, flex_vertbodyid, flex_vert, worldid, va + flex_rodedge_vert[eadr + h + 1][1]
+      )
+      if hadr >= 0 and flex_bending[bendingadr + 1 + ROD_HINGE_SIZE * h + 6] > 0.0:
+        e0 = xv - xa
+        e1 = xb - xv
+        l0 = wp.length(e0)
+        l1 = wp.length(e1)
+        denom = l0 * l1 + wp.dot(e0, e1)
+        if l0 >= MJ_MINVAL and l1 >= MJ_MINVAL and denom >= MJ_MINVAL:
+          kb = (2.0 / denom) * wp.cross(e0, e1)
+          flex_rodhinge_om0_out[worldid, hadr + h] = wp.vec2(wp.dot(kb, u_ref), wp.dot(kb, v_prev))
+      t_next = xb - xv
+      n_next = wp.length(t_next)
+      if n_next < MJ_MINVAL:
+        return
+      t_next = t_next / n_next
+      ok_pt, u_next, v_next = support.rod_parallel_transport(t_ref, t_next, u_ref)
+      if not ok_pt:
+        return
+      t_ref = t_next
+      u_ref = u_next
+      v_prev = v_next
+      xa = xv
+      xv = xb
+
+    # clamped last edge: qpos0 frame in the frame of its body (rodTailDirector)
+    if tail_clamped:
+      _pT, qT = _rod_body_pose0(
+        body_parentid, body_pos, body_quat, worldid, flex_vertbodyid[va + flex_rodedge_vert[eadr + nhinge][1]]
+      )
+      RT = math.quat_to_mat(qT)
+      flex_rod_tail_loc_out[worldid, f, 0] = wp.transpose(RT) @ t_ref
+      flex_rod_tail_loc_out[worldid, f, 1] = wp.transpose(RT) @ u_ref
+
+  flex_rod_ref_ok_out[worldid, f] = True
+
+
 @event_scope
 def flex(m: Model, d: Data):
   if m.nflex > 0:
@@ -685,6 +852,35 @@ def flex(m: Model, d: Data):
       d.face_quat,
     ],
   )
+
+  if m.nflexrodedge > 0:
+    wp.launch(
+      _flex_rod_ref,
+      dim=(d.nworld, m.nflex),
+      inputs=[
+        m.body_parentid,
+        m.body_pos,
+        m.body_quat,
+        m.flex_vertadr,
+        m.flex_bendingadr,
+        m.flex_vertbodyid,
+        m.flex_vert,
+        m.flex_bending,
+        m.flex_rod_tail_clamped,
+        m.flex_rod_hingeadr,
+        m.flex_rod_edgeadr,
+        m.flex_rod_edgenum,
+        m.flex_rodedge_vert,
+      ],
+      outputs=[
+        d.flex_rod_chain_valid,
+        d.flex_rod_ref_ok,
+        d.flex_rod_frame0_loc,
+        d.flex_rod_frame0_ref,
+        d.flex_rod_tail_loc,
+        d.flex_rodhinge_om0,
+      ],
+    )
 
 
 @wp.kernel

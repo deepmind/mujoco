@@ -180,6 +180,7 @@ cc_test(
     ],
     deps = [
         "//:mujoco",
+        "//src/engine:engine_core_util",
         "//src/user:user_model",
         "//test:fixture",
         "@googletest//:gtest_main",

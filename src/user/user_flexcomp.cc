@@ -114,6 +114,83 @@ void mjCFlexcomp::MarkEmptyCells(
 }
 
 
+// extract ordered vertices of a single connected open 1D chain of >= 2 edges; returns false if the
+// edge graph is closed, branched, disconnected, or has fewer than 2 edges
+static bool ExtractOpenRodChain(int                                     nvert,
+                                const std::vector<std::pair<int, int>>& edges,
+                                int                                     preferred_start,
+                                std::vector<int>&                       chain_verts) {
+  chain_verts.clear();
+  int nedge = static_cast<int>(edges.size());
+  if (nedge < 2 || nvert < 3) { return false; }
+
+  std::vector<std::vector<int>> neighbors(nvert);
+  for (const auto& e : edges) {
+    if (e.first < 0 ||
+        e.first >= nvert ||
+        e.second < 0 ||
+        e.second >= nvert ||
+        e.first == e.second) {
+      return false;
+    }
+    neighbors[e.first].push_back(e.second);
+    neighbors[e.second].push_back(e.first);
+  }
+
+  int end0 = -1, end1 = -1;
+  for (int v = 0; v < nvert; v++) {
+    if (neighbors[v].size() > 2) { return false; }
+    if (neighbors[v].size() == 1) {
+      if (end0 < 0) {
+        end0 = v;
+      } else if (end1 < 0) {
+        end1 = v;
+      } else {
+        return false;
+      }
+    }
+  }
+  if (end0 < 0 || end1 < 0) { return false; }
+
+  int start = (preferred_start == end0 || preferred_start == end1) ? preferred_start : end0;
+  chain_verts.reserve(nedge + 1);
+  int prev = -1, curr = start;
+  for (int step = 0; step <= nedge; step++) {
+    chain_verts.push_back(curr);
+    if (step == nedge) { break; }
+    int next = -1;
+    for (int nb : neighbors[curr]) {
+      if (nb != prev) {
+        next = nb;
+        break;
+      }
+    }
+    if (next < 0) { return false; }
+    prev = curr;
+    curr = next;
+  }
+  return static_cast<int>(chain_verts.size()) == nedge + 1;
+}
+
+
+static bool ExtractOpenRodChainElem(int                     nvert,
+                                    const std::vector<int>& elem,
+                                    std::vector<int>&       chain_verts) {
+  chain_verts.clear();
+  if (elem.size() < 4 || elem.size() % 2 != 0) { return false; }
+  std::vector<std::pair<int, int>> edges;
+  edges.reserve(elem.size() / 2);
+  for (size_t i = 0; i < elem.size(); i += 2) {
+    int u = std::min(elem[i], elem[i + 1]);
+    int v = std::max(elem[i], elem[i + 1]);
+    if (std::find(edges.begin(), edges.end(), std::make_pair(u, v)) == edges.end()) {
+      edges.emplace_back(u, v);
+    }
+  }
+  return ExtractOpenRodChain(nvert, edges, elem[0], chain_verts);
+}
+
+
 // make flexcomp object
 bool mjCFlexcomp::Make(mjsBody* body, char* error, int error_sz, const mjVFS* vfs) {
   // a mesh asset can only be used by mesh and gmsh flexcomps
@@ -610,41 +687,61 @@ bool mjCFlexcomp::Make(mjsBody* body, char* error, int error_sz, const mjVFS* vf
     }
   }
 
-  // add twist hinge body and joint for 1D elastic open rods with a clamped root edge
+  // add per-edge twist hinge bodies and joints for 1D elastic open rods
   if (pf->dim == 1 &&
       !rigid &&
-      doftype == mjFCOMPDOF_FULL &&
       pf->young > 0 &&
-      type != mjFCOMPTYPE_CIRCLE &&
-      pinned.size() >= 2 &&
-      pinned[0] &&
-      pinned[1]) {
-    mjsBody* pb = mjs_addBody(body, 0);
-    mjuu_setvec(pb->pos, 0, 0, 0);
-    mjuu_zerovec(pb->ipos, 3);
+      pf->section == mjFLEXSECTION_BOX &&
+      doftype != mjFCOMPDOF_FULL) {
+    return comperr(
+        error,
+        "1D flexcomp elasticity with box section requires dof='full' so per-edge twist joints can "
+        "be created",
+        error_sz);
+  }
+  if (pf->dim == 1 && !rigid && doftype == mjFCOMPDOF_FULL && pf->young > 0) {
+    std::vector<int> chain_verts;
+    if (ExtractOpenRodChainElem(npnt, element, chain_verts)) {
+      int  nedge        = static_cast<int>(chain_verts.size()) - 1;
+      bool root_clamped = (pinned[chain_verts[0]] && pinned[chain_verts[1]]);
+      // a pinned last edge clamps the tail like the root (at least 3 edges, so that the free
+      // first edge's joint can still be found from the second edge's, see mjCFlex::Compile)
+      bool tail_clamped =
+          nedge >= 3 && pinned[chain_verts[nedge - 1]] && pinned[chain_verts[nedge]];
+      double polar = pf->section == mjFLEXSECTION_BOX ? (pf->sectionsize[0] * pf->sectionsize[0] +
+                                                         pf->sectionsize[1] * pf->sectionsize[1]) /
+                                                            3
+                                                      : pf->radius * pf->radius / 2;
+      double edgemass     = mass / nedge;
+      double twistinertia = edgemass * polar > mjMINVAL ? edgemass * polar : bodymass;
+      int    e_start      = root_clamped ? 1 : 0;
+      int    e_end        = tail_clamped ? nedge - 1 : nedge;
+      mjsBody* world      = mjs_findBody(&model->spec, "world");
+      for (int e = e_start; e < e_end; e++) {
+        mjsBody* pb = mjs_addBody(world, 0);
+        mjuu_setvec(pb->pos, 0, 0, 0);
+        mjuu_zerovec(pb->ipos, 3);
+        pb->mass             = 1e-9;
+        pb->inertia[0]       = mjMAX(1e-9, twistinertia);
+        pb->inertia[1]       = mjMAX(1e-9, twistinertia);
+        pb->inertia[2]       = mjMAX(1e-9, twistinertia);
+        pb->explicitinertial = true;
 
-    // rotational inertia of the twist hinge: polar mass moment of the rod about its axis
-    double polar =
-        pf->section == mjFLEXSECTION_BOX
-            ? (pf->sectionsize[0] * pf->sectionsize[0] + pf->sectionsize[1] * pf->sectionsize[1]) /
-                  3
-            : pf->radius * pf->radius / 2;
-    double twistinertia  = mass * polar > mjMINVAL ? mass * polar : bodymass;
-    pb->mass             = bodymass;
-    pb->inertia[0]       = twistinertia;
-    pb->inertia[1]       = twistinertia;
-    pb->inertia[2]       = twistinertia;
-    pb->explicitinertial = true;
+        mjsJoint* jnt = mjs_addJoint(pb, 0);
+        jnt->type     = mjJNT_HINGE;
+        mjuu_setvec(jnt->pos, 0, 0, 0);
+        mjuu_setvec(jnt->axis, 1, 0, 0);
 
-    mjsJoint* jnt = mjs_addJoint(pb, 0);
-    jnt->type     = mjJNT_HINGE;
-    mjuu_setvec(jnt->pos, 0, 0, 0);
-    mjuu_setvec(jnt->axis, 1, 0, 0);
-
-    char txt[100];
-    mju::sprintf_arr(txt, "%s_twist", name.c_str());
-    mjs_setName(pb->element, txt);
-    mjs_setName(jnt->element, txt);
+        char txt[100];
+        if (e < nedge - 1) {
+          mju::sprintf_arr(txt, "%s_twist_%d", name.c_str(), e);
+        } else {
+          mju::sprintf_arr(txt, "%s_twist", name.c_str());
+        }
+        mjs_setName(pb->element, txt);
+        mjs_setName(jnt->element, txt);
+      }
+    }
   }
 
   // create nodal mesh for trilinear/quadratic interpolation
@@ -1681,7 +1778,8 @@ static int ComputeRodBending(std::vector<double>&                    bending,
                              double                                  EI2,
                              double                                  GJ,
                              double                                  psi0,
-                             int                                     twist_jnt,
+                             bool                                    der_chain,
+                             int                                     preferred_start,
                              int*                                    bad) {
   *bad = -1;
 
@@ -1716,10 +1814,33 @@ static int ComputeRodBending(std::vector<double>&                    bending,
     if (norm > kRodStraightTol) { curvature[v] = norm; }
   }
 
-  // number of pairs of each hinge (only for isotropic cross-sections; anisotropic chains stay as
-  // single hinges for the Bishop-frame tridiagonal twist solve)
+  // open-chain DER rod with explicit per-edge twist DOFs (or box cross-section): emit ordered
+  // single hinges along the chain
+  if (der_chain) {
+    std::vector<int> chain_verts;
+    if (ExtractOpenRodChain(nvert, edges, preferred_start, chain_verts)) {
+      bending.assign(1, 0);
+      for (size_t h = 0; h + 2 < chain_verts.size(); h++) {
+        int v = chain_verts[h + 1];
+        bending.push_back(chain_verts[h]);
+        bending.push_back(v);
+        bending.push_back(chain_verts[h + 2]);
+        bending.push_back(-1);
+        bending.push_back(stiffness[v]);
+        bending.push_back(dstiffness[v]);
+        bending.push_back(curvature[v]);
+        bending.push_back(-1);
+        bending.push_back(torsion[v]);
+        bending.push_back(psi0);
+        bending[0]++;
+      }
+      return 1;
+    }
+  }
+
+  // number of pairs of each hinge (twistless closed loops / raw 1D flexes)
   std::vector<int> npair(nvert, 0);
-  if (EI1 == EI2) {
+  if (EI1 == EI2 && psi0 == 0) {
     for (const auto& e : edges) {
       if (curvature[e.first] > 0 && curvature[e.second] > 0) {
         npair[e.first]++;
@@ -1731,7 +1852,7 @@ static int ComputeRodBending(std::vector<double>&                    bending,
   // hinge pairs across edges shared by curved hinges
   bending.assign(1, 0);
   for (const auto& e : edges) {
-    if (EI1 != EI2) { break; }
+    if (EI1 != EI2 || psi0 != 0) { break; }
     int v1 = e.first;
     int v2 = e.second;
     if (curvature[v1] == 0 || curvature[v2] == 0) { continue; }
@@ -1775,7 +1896,7 @@ static int ComputeRodBending(std::vector<double>&                    bending,
     bending.push_back(stiffness[v]);
     bending.push_back(dstiffness[v]);
     bending.push_back(curvature[v]);
-    bending.push_back(twist_jnt);
+    bending.push_back(-1);
     bending.push_back(torsion[v]);
     bending.push_back(psi0);
     bending[0]++;
@@ -2462,13 +2583,16 @@ int mjCFlex::PlasticNum() const {
     return 0;
   }
   if (compiled) {
-    // twist reference of a 1D rod chain with a twist hinge on its first (single) hinge
+    // per-edge time-parallel (t, u) reference frames of a 1D DER open rod chain (6*nedge numbers)
+    // followed by the unwrapped reference twist of each hinge (nhinge numbers)
     if (dim == 1 &&
         bending.size() >= 1 + mjROD_HINGE_SIZE &&
         bending[0] > 0 &&
         bending[1 + 3] < 0 &&
-        bending[1 + 7] >= 0) {
-      return mjROD_STATE_SIZE;
+        (bending[1 + 9] != 0 ||
+         bending[1 + 7] >= 0 ||
+         bending[1 + mjROD_HINGE_SIZE * ((int)bending[0] - 1) + 7] >= 0)) {
+      return 6 * ((int)bending[0] + 1) + (int)bending[0];
     }
     int pnum = 0;
     if (stressyield > 0 && !interpolated && !rigid && dim >= 2) {
@@ -2479,9 +2603,33 @@ int mjCFlex::PlasticNum() const {
   }
   bool rgd = !spec_vert_.empty() && spec_vertbody_.size() == 1;
   if (!rgd && spec.dim == 1 && spec.young > 0 && spec_nodebody_.empty() && model) {
-    const mjCBase* twist = model->FindObject(mjOBJ_JOINT, name + "_twist");
-    if (twist && static_cast<const mjCJoint*>(twist)->spec.type == mjJNT_HINGE) {
-      return mjROD_STATE_SIZE;
+    // flexcomp names the per-edge twist hinges <name>_twist_0, ..., <name>_twist, omitting the
+    // first for a clamped root and the last for a clamped tail
+    auto is_twist_body = [&](const mjCBase* obj) {
+      if (!obj) { return false; }
+      const mjCBody* body = static_cast<const mjCJoint*>(obj)->body;
+      return body &&
+             body->parent == model->Bodies()[0] &&
+             body->joints.size() == 1 &&
+             body->geoms.empty() &&
+             body->bodies.empty();
+    };
+    bool has_twist = false;
+    for (const char* suffix : {"_twist", "_twist_0", "_twist_1"}) {
+      const mjCBase* twist =
+          !name.empty() ? model->FindObject(mjOBJ_JOINT, name + suffix) : nullptr;
+      if (is_twist_body(twist) && static_cast<const mjCJoint*>(twist)->spec.type == mjJNT_HINGE) {
+        has_twist = true;
+      }
+    }
+    if (spec.section == mjFLEXSECTION_BOX || has_twist) {
+      int max_v = -1;
+      for (int v : spec_elem_) { max_v = std::max(max_v, v); }
+      std::vector<int> chain_verts;
+      if (ExtractOpenRodChainElem(max_v + 1, spec_elem_, chain_verts)) {
+        int nedge = static_cast<int>(chain_verts.size()) - 1;
+        return 6 * nedge + (nedge - 1);
+      }
     }
   }
   if (rgd || spec.stressyield <= 0 || !spec_nodebody_.empty() || spec.dim < 2 || spec.young <= 0) {
@@ -3244,6 +3392,15 @@ void mjCFlex::Compile(const mjVFS* vfs) {
     }
   }
 
+  // box-section rods replace radius with the minor half-size below; reject an explicit radius
+  // that would be silently overwritten (checked before the gauge, which scales both alike)
+  mjsFlex default_flex;
+  mjs_defaultFlex(&default_flex);
+  const double box_minor = std::min(sectionsize[0], sectionsize[1]);
+  const bool   box_radius_ok =
+      radius == default_flex.radius || std::abs(radius - box_minor) <= 1e-6 * std::abs(box_minor);
+  const double user_radius = radius;
+
   // resolve body ids
   ResolveReferences(model);
   ApplyGauge();
@@ -3490,30 +3647,49 @@ void mjCFlex::Compile(const mjVFS* vfs) {
         if (sectionsize[0] <= 0 || sectionsize[1] <= 0) {
           throw mjCError(this, "1D flex elasticity with box section requires positive sectionsize");
         }
-        // half-sizes a >= b: I1 is the weak axis, I2 is the strong axis
+        // half-sizes a >= b: I1 is the weak axis, I2 is the strong axis; slot 9 stores +b when
+        // sectionsize[0] >= sectionsize[1] (psi0 = 0) and -b when sectionsize[0] < sectionsize[1]
+        // (psi0 = pi/2), from which runtime consumers recover both psi0 and (a, b)
         double a = std::max(sectionsize[0], sectionsize[1]);
         double b = std::min(sectionsize[0], sectionsize[1]);
         I1       = 4.0 * a * b * b * b / 3.0;
         I2       = 4.0 * b * a * a * a / 3.0;
         J        = a * b * b * b * (16.0 / 3.0 - 3.36 * (b / a) * (1.0 - pow(b / a, 4) / 12.0));
-        if (sectionsize[0] < sectionsize[1]) { psi0 = 0.5 * mjPI; }
+        psi0     = (sectionsize[0] < sectionsize[1]) ? -b : b;
+
+        // collisions without an oriented-box pair (and rendering without box frames) fall back
+        // to capsules: give them the minor half-size, so the contact geometry follows the section
+        if (!box_radius_ok) {
+          char values[100];
+          std::snprintf(values, sizeof(values), "%g, got %g", box_minor, user_radius);
+          throw mjCError(this,
+                         "1D flex with box section uses the minor half-size of sectionsize as "
+                         "radius; remove radius or set it to that value (%s)",
+                         values);
+        }
+        radius = b;
       } else {
         throw mjCError(this, "unknown 1D flex section %d", nullptr, section);
       }
-      int       twist_jnt = -1;
-      mjCJoint* twist     = nullptr;
-      if (!name.empty() && vertbodyid.size() >= 2 && vertbodyid[0] == vertbodyid[1]) {
-        std::string twist_name = name + "_twist";
-        mjCBase*    jobj       = model->FindObject(mjOBJ_JOINT, twist_name);
-        if (jobj) {
-          mjCJoint* jnt = static_cast<mjCJoint*>(jobj);
-          if (jnt->type == mjJNT_HINGE) {
-            twist_jnt = jnt->id;
-            twist     = jnt;
-          }
-        }
+      // per-edge twist hinges: flexcomp omits <name>_twist_0 for a clamped root and <name>_twist
+      // for a clamped tail, so one of these exists whenever any does
+      auto is_twist_body = [&](const mjCBase* obj) {
+        if (!obj) { return false; }
+        const mjCBody* body = static_cast<const mjCJoint*>(obj)->body;
+        return body &&
+               body->parent == model->Bodies()[0] &&
+               body->joints.size() == 1 &&
+               body->geoms.empty() &&
+               body->bodies.empty();
+      };
+      bool has_twist = false;
+      for (const char* suffix : {"_twist", "_twist_0", "_twist_1"}) {
+        mjCBase* jobj = name.empty() ? nullptr : model->FindObject(mjOBJ_JOINT, name + suffix);
+        if (is_twist_body(jobj)) { has_twist = true; }
       }
-      double G = shear > 0 ? shear : young / (2 * (1 + poisson));
+      bool   der_chain       = (section == mjFLEXSECTION_BOX) || has_twist;
+      int    preferred_start = elem_.empty() ? -1 : elem_[0];
+      double G               = shear > 0 ? shear : young / (2 * (1 + poisson));
       int    bad;
       if (!ComputeRodBending(bending,
                              vertxpos.data(),
@@ -3523,16 +3699,17 @@ void mjCFlex::Compile(const mjVFS* vfs) {
                              young * I2,
                              G * J,
                              psi0,
-                             twist_jnt,
+                             der_chain,
+                             preferred_start,
                              &bad)) {
         throw mjCError(this, "degenerate 1D flex hinge at vertex %d", nullptr, bad);
       }
       if (bending[0] == 0) { bending.clear(); }
 
-      // anisotropic box cross-sections require a single open chain of single hinges
-      if (section == mjFLEXSECTION_BOX && !bending.empty()) {
-        int  nhinge     = (int)bending[0];
-        bool open_chain = (edge.size() == static_cast<size_t>(nhinge + 1));
+      // open-chain DER validation and per-edge twist joint binding
+      if (der_chain) {
+        int  nhinge     = bending.empty() ? 0 : (int)bending[0];
+        bool open_chain = (nhinge > 0 && edge.size() == static_cast<size_t>(nhinge + 1));
         for (int h = 0; h < nhinge && open_chain; h++) {
           const double* hinge = bending.data() + 1 + mjROD_HINGE_SIZE * h;
           if (hinge[3] >= 0) { open_chain = false; }
@@ -3550,27 +3727,81 @@ void mjCFlex::Compile(const mjVFS* vfs) {
             open_chain = false;
           }
         }
-        if (!open_chain) {
+        if (section == mjFLEXSECTION_BOX && !open_chain) {
           throw mjCError(this, "1D flex elasticity with box section requires an open chain");
         }
-      }
 
-      // Rayleigh damping of the twist hinge, with the series torsional stiffness 2 kt_eff of a
-      // chain of single hinges (see mj_rodTwistStiffness), unless the joint sets its own damping
-      if (twist && !bending.empty()) {
-        int    nhinge = (int)bending[0];
-        double inv_kt = 0;
-        for (int h = 0; h < nhinge && inv_kt >= 0; h++) {
-          const double* hinge      = bending.data() + 1 + mjROD_HINGE_SIZE * h;
-          bool          contiguous = h == 0 || ((int)hinge[0] == (int)hinge[1 - mjROD_HINGE_SIZE] &&
-                                                (int)hinge[1] == (int)hinge[2 - mjROD_HINGE_SIZE]);
-          if (hinge[3] >= 0 || (hinge[6] > 0 && hinge[5] == 0) || !contiguous) {
-            inv_kt = -1;
-          } else if (hinge[8] > 0) {
-            inv_kt += 1 / hinge[8];
+        int nbound = 0;
+        if (open_chain) {
+          const double* last = bending.data() + 1 + mjROD_HINGE_SIZE * (nhinge - 1);
+          bool root_clamped  = (vertbodyid[(int)bending[1 + 0]] == vertbodyid[(int)bending[1 + 1]]);
+          bool tail_clamped  = nhinge >= 2 && vertbodyid[(int)last[1]] == vertbodyid[(int)last[2]];
+          int  e_start       = root_clamped ? 1 : 0;
+          int  e_end         = tail_clamped ? nhinge - 1 : nhinge;
+
+          // bind the per-edge twist hinges by name: either every unclamped edge has one or none
+          // does; the engine finds edge 0's joint as the joint of edge 1 minus one, so the
+          // compiler checks that convention (it holds for flexcomp, which adds them in order)
+          auto twist_name = [&](int e) {
+            return (e < nhinge) ? (name + "_twist_" + std::to_string(e)) : (name + "_twist");
+          };
+          if (!name.empty()) {
+            std::vector<int> twist_id(nhinge + 1, -1);
+            for (int e = 0; e <= nhinge; e++) {
+              std::string jname = twist_name(e);
+              mjCBase*    jobj  = model->FindObject(mjOBJ_JOINT, jname);
+              if (!is_twist_body(jobj)) { continue; }
+              mjCJoint* jnt = static_cast<mjCJoint*>(jobj);
+              if (jnt->type != mjJNT_HINGE) {
+                throw mjCError(this, "1D flex twist joint '%s' must be a hinge", jname.c_str());
+              }
+              if (e < e_start || e > e_end) {
+                throw mjCError(this,
+                               "1D flex twist joint '%s' given for an edge clamped by its pinned "
+                               "vertices",
+                               jname.c_str());
+              }
+              twist_id[e] = jnt->id;
+              nbound++;
+            }
+            if (nbound) {
+              for (int e = e_start; e <= e_end; e++) {
+                if (twist_id[e] < 0) {
+                  throw mjCError(this,
+                                 "1D flex with per-edge twist joints is missing joint '%s'",
+                                 twist_name(e).c_str());
+                }
+              }
+              if (e_start == 0 && twist_id[0] != twist_id[1] - 1) {
+                throw mjCError(this,
+                               "1D flex twist joint '%s' must immediately precede the twist joint "
+                               "of the second edge",
+                               twist_name(0).c_str());
+              }
+              for (int e = 1; e <= nhinge; e++) {
+                bending[1 + mjROD_HINGE_SIZE * (e - 1) + 7] = twist_id[e];
+              }
+            }
+          }
+
+          // without twist joints the material frame of a box section would stay locked to its
+          // reference (theta = 0): flexcomp creates them for open elastic rods
+          if (section == mjFLEXSECTION_BOX && !nbound) {
+            if (name.empty()) {
+              throw mjCError(
+                  this,
+                  "1D flex elasticity with box section requires a named flex with per-edge twist "
+                  "joints");
+            }
+            std::string needed = (e_start == e_end)
+                                     ? twist_name(e_start)
+                                     : (twist_name(e_start) + ", ..., " + twist_name(e_end));
+            throw mjCError(this,
+                           "1D flex elasticity with box section requires per-edge twist joints %s "
+                           "(created by flexcomp with dof='full' for named open rods)",
+                           needed.c_str());
           }
         }
-        if (inv_kt > 0 && twist->spec.damping[0] == 0) { twist->damping[0] = damping * 2 / inv_kt; }
       }
     }
 

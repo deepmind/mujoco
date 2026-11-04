@@ -1479,8 +1479,10 @@ int mj_contactJacobian(const mjModel* m, mjData* d, const mjContact* con, int di
                        mjtNum* jac1p, mjtNum* jac2p,
                        mjtNum* jac1r, mjtNum* jac2r, int* chain) {
   // special case: single body on each side
-  if ((con->geom[0] >= 0 || (con->vert[0] >= 0 && m->flex_interp[con->flex[0]] == 0)) &&
-      (con->geom[1] >= 0 || (con->vert[1] >= 0 && m->flex_interp[con->flex[1]] == 0))) {
+  if ((con->geom[0] >= 0 || (con->vert[0] >= 0 && m->flex_interp[con->flex[0]] == 0 &&
+                             !mj_rodHasTwist(m, con->flex[0]))) &&
+      (con->geom[1] >= 0 || (con->vert[1] >= 0 && m->flex_interp[con->flex[1]] == 0 &&
+                             !mj_rodHasTwist(m, con->flex[1])))) {
     // get bodies
     int bid[2];
     for (int side=0; side < 2; side++) {
@@ -1519,7 +1521,16 @@ int mj_contactJacobian(const mjModel* m, mjData* d, const mjContact* con, int di
     }
 
     // combine weighted Jacobians
-    return mj_jacSum(m, d, chain, nb, bid, bweight, con->pos, jacdifp, jacdifr, dim > 3);
+    int NV = mj_jacSum(m, d, chain, nb, bid, bweight, con->pos, jacdifp, jacdifr, dim > 3);
+    if (NV > 0) {
+      for (int side = 0; side < 2; side++) {
+        if (con->flex[side] >= 0 && mj_rodHasTwist(m, con->flex[side])) {
+          mj_rodContactJac(m, d, con, side, NV, mj_isSparse(m) ? chain : NULL,
+                           jacdifp, dim > 3 ? jacdifr : NULL);
+        }
+      }
+    }
+    return NV;
   }
 }
 
@@ -2554,8 +2565,10 @@ static int mj_nc(const mjModel* m, mjData* d, int* nnz) {
     int NV = 0;
     if (nnz) {
       // single body on each side (geom-geom or flex vert-vert): skip common dofs
-      if ((con->geom[0] >= 0 || (con->vert[0] >= 0 && m->flex_interp[con->flex[0]] == 0)) &&
-          (con->geom[1] >= 0 || (con->vert[1] >= 0 && m->flex_interp[con->flex[1]] == 0))) {
+      if ((con->geom[0] >= 0 || (con->vert[0] >= 0 && m->flex_interp[con->flex[0]] == 0 &&
+                                 !mj_rodHasTwist(m, con->flex[0]))) &&
+          (con->geom[1] >= 0 || (con->vert[1] >= 0 && m->flex_interp[con->flex[1]] == 0 &&
+                                 !mj_rodHasTwist(m, con->flex[1])))) {
         // get bodies
         int bid[2];
         for (int side=0; side < 2; side++) {

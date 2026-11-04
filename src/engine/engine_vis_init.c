@@ -21,6 +21,7 @@
 #include <mujoco/mjmodel.h>
 #include <mujoco/mjvisualize.h>
 #include "engine/engine_array_safety.h"
+#include "engine/engine_core_util.h"
 #include "engine/engine_util_errmem.h"
 #include "engine/engine_util_misc.h"
 
@@ -171,9 +172,9 @@ void mjv_makeScene(const mjModel* m, mjvScene* scn, int maxgeom) {
     // count max number of flex faces to be rendered (depending on vis options)
     int nface = 0;
     for (int f=0; f < nflex; f++) {
-      // 1D : 0
+      // 1D : 12*elements for box section, 0 otherwise
       if (m->flex_dim[f] == 1) {
-        scn->flexfacenum[f] = 0;
+        scn->flexfacenum[f] = mj_rodBoxSize(m, f, NULL) ? 12*m->flex_elemnum[f] : 0;
       }
 
       // 2D: 2*fragments + 2*elements

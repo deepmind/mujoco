@@ -73,9 +73,6 @@ def _rod_hinge_size() -> int:
 
 ROD_HINGE_SIZE = _rod_hinge_size()
 
-# maximum number of edges in a 1D DER rod chain with twist or anisotropic cross-section
-ROD_MAX_EDGES = 64
-
 # maximum size (by number of edges) of an horizon in EPA algorithm
 MJ_MAX_EPAHORIZON = 24
 # maximum average number of trianglarfaces EPA can insert at each iteration
@@ -96,9 +93,6 @@ Q_LD_BLOCK_SPARSE = -1
 
 # maximum number of plugin attributes
 _NPLUGINATTR = 128
-
-# max DOFs per passive flex contact (2 sides * 4 max vertices per 3D tet * 3 DOFs per vertex)
-EFM_CON_MAX_DOF = 24
 
 # max nodes per interpolated flex cell ((2 + 1)^3 for quadratic)
 FLEX_INTERP_MAX_NODES = 27
@@ -1770,6 +1764,22 @@ class Model:
     flex_face: global node indices of each face                             (nflexface, 9)
     nflexrodhinge: number of 1D rod bending hinges (single hinges or hinge pairs)
     flex_rodhinge_map: flex id and flex_bending address of each rod hinge   (nflexrodhinge, 2)
+    nflexrodedge: number of 1D DER rod chain edges across all flexes
+    efm_con_max_dof: maximum DOFs affected by a passive flex contact
+    flex_rod_is_chain: whether flex is an open 1D single-hinge DER chain    (nflex,)
+    flex_rod_has_twist: whether flex is a 1D DER rod with twist or box      (nflex,)
+    flex_rod_is_box: whether flex is a 1D DER rod with box cross-section    (nflex,)
+    flex_rod_root_clamped: whether first two vertices share a body          (nflex,)
+    flex_rod_tail_clamped: whether last two vertices share a body           (nflex,)
+    flex_eff_possible: whether flex contributes to effective metric         (nflex,)
+    flex_rod_box_size: box cross-section half-sizes (a, b)                  (nflex, 2)
+    flex_rod_hingeadr: start index in flex_rodhinge_* for each flex         (nflex,)
+    flex_rod_edgeadr: start index in flex_rodedge_* for each flex           (nflex,)
+    flex_rod_edgenum: number of DER chain edges for each flex               (nflex,)
+    flex_rodedge_vert: local endpoint vertices of each DER chain edge       (nflexrodedge, 2)
+    flex_rodedge_jnt: twist hinge joint id of each DER chain edge; -1 none  (nflexrodedge,)
+    flex_elem_rodedge: (chain edge index, orientation sign) per flex elem   (nflexelem, 2)
+    flex_vert_rodelem: incident local element index per flex vertex         (nflexvert,)
   """
 
   nq: int
@@ -1796,6 +1806,7 @@ class Model:
   nflexelemdata: int
   nflexstiffness: int
   nflexbending: int
+
   nefm0dof: int
   nefm0L: int
   nflexelemedge: int
@@ -2314,6 +2325,22 @@ class Model:
   flex_face: array("nflexface", 9, int)
   nflexrodhinge: int
   flex_rodhinge_map: array("nflexrodhinge", wp.vec2i)
+  nflexrodedge: int
+  efm_con_max_dof: int
+  flex_rod_is_chain: array("nflex", bool)
+  flex_rod_has_twist: array("nflex", bool)
+  flex_rod_is_box: array("nflex", bool)
+  flex_rod_root_clamped: array("nflex", bool)
+  flex_rod_tail_clamped: array("nflex", bool)
+  flex_eff_possible: array("nflex", bool)
+  flex_rod_box_size: array("nflex", wp.vec2)
+  flex_rod_hingeadr: array("nflex", int)
+  flex_rod_edgeadr: array("nflex", int)
+  flex_rod_edgenum: array("nflex", int)
+  flex_rodedge_vert: array("nflexrodedge", wp.vec2i)
+  flex_rodedge_jnt: array("nflexrodedge", int)
+  flex_elem_rodedge: array("nflexelem", wp.vec2i)
+  flex_vert_rodelem: array("nflexvert", int)
 
 
 class ContactType(enum.IntFlag):
@@ -2599,6 +2626,24 @@ class Data:
     overflow: overflow bitmask (OverflowType)                   (nworld,)
     face_xpos: cartesian flex face positions                    (nworld, nflexface, 9, 3)
     face_quat: cartesian flex face orientations                 (nworld, nflexface, 4)
+    flex_rod_chain_ok: whether 1D rod DER chain succeeded       (nworld, nflex)
+    flex_rodhinge_g: 1D rod hinge kb-space gradient             (nworld, nflexrodhinge, 3)
+    flex_rodhinge_Wk: 1D rod hinge kb-space stiffness weight    (nworld, nflexrodhinge, 3, 3)
+    flex_rodhinge_Wd: 1D rod hinge kb-space damping weight      (nworld, nflexrodhinge, 3, 3)
+    flex_rodedge_ktheta: 1D rod edge twist bending stiffness    (nworld, nflexrodedge)
+    flex_rodedge_grad: 1D rod edge dE/dtheta                    (nworld, nflexrodedge)
+    flex_rodedge_frc: 1D rod edge twist/director force          (nworld, nflexrodedge, 3)
+    flex_rodedge_tridiag: 1D rod twist tridiagonal scratch      (nworld, nflexrodedge, 2)
+    flex_rod_end_torque: 1D rod clamped-end reaction torques    (nworld, nflex, 6)
+    flex_rod_chain_valid: whether 1D rod chain cache is current (nworld, nflex)
+    flex_rod_ref_ok: whether 1D rod qpos0 reference is valid    (nworld, nflex)
+    flex_rod_frame0_loc: 1D rod qpos0 first-edge frame (t, u)   (nworld, nflex, 2, 3)
+                         in the frame of its first body
+    flex_rod_frame0_ref: 1D rod qpos0 first-edge frame (t, u)   (nworld, nflex, 2, 3)
+                         in world coordinates
+    flex_rod_tail_loc: 1D rod qpos0 last-edge frame (t, u)      (nworld, nflex, 2, 3)
+                       in the frame of its last body
+    flex_rodhinge_om0: 1D rod hinge reference curvatures        (nworld, nflexrodhinge, 2)
   """
 
   solver_niter: array("nworld", int)
@@ -2759,6 +2804,21 @@ class Data:
   overflow: array("nworld", int)
   face_xpos: array("nworld", "nflexface", 9, wp.vec3)
   face_quat: array("nworld", "nflexface", wp.quat)
+  flex_rod_chain_ok: array("nworld", "nflex", bool)
+  flex_rodhinge_g: array("nworld", "nflexrodhinge", wp.vec3)
+  flex_rodhinge_Wk: array("nworld", "nflexrodhinge", wp.mat33)
+  flex_rodhinge_Wd: array("nworld", "nflexrodhinge", wp.mat33)
+  flex_rodedge_ktheta: array("nworld", "nflexrodedge", float)
+  flex_rodedge_grad: array("nworld", "nflexrodedge", float)
+  flex_rodedge_frc: array("nworld", "nflexrodedge", wp.vec3)
+  flex_rodedge_tridiag: array("nworld", "nflexrodedge", wp.vec2)
+  flex_rod_end_torque: array("nworld", "nflex", wp.spatial_vector)
+  flex_rod_chain_valid: array("nworld", "nflex", bool)
+  flex_rod_ref_ok: array("nworld", "nflex", bool)
+  flex_rod_frame0_loc: array("nworld", "nflex", 2, wp.vec3)
+  flex_rod_frame0_ref: array("nworld", "nflex", 2, wp.vec3)
+  flex_rod_tail_loc: array("nworld", "nflex", 2, wp.vec3)
+  flex_rodhinge_om0: array("nworld", "nflexrodhinge", wp.vec2)
 
 
 @dataclasses.dataclass
@@ -2778,6 +2838,7 @@ class InverseContext:
   # discrete integrator effective-metric scratch (see SolverContext)
   efm_con: Optional[tuple] = None
   flex_scratch: Optional[tuple] = None
+  tw_diag: Optional[wp.array] = None
 
 
 @dataclasses.dataclass
@@ -2817,6 +2878,7 @@ class SolverContext:
   efm_con: Optional[tuple] = None
   flex_scratch: Optional[tuple] = None
   solve_ld_scratch: Optional[wp.array] = None
+  tw_diag: Optional[wp.array] = None
 
 
 @dataclasses.dataclass

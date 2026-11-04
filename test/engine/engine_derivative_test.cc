@@ -4371,59 +4371,61 @@ TEST_F(DerivativeTest, FlexStiffAssemble) {
   }
 }
 
+// 1D rods pinned at their first vertex (free first edge, per-edge twist joints)
+static const char* const kRodStraightPinned = R"(
+<mujoco>
+  <option integrator="discrete" gravity="0 0 0"/>
+  <worldbody>
+    <body name="turned" euler="20 30 40">
+      <flexcomp name="rod" type="grid" count="6 1 1" spacing="0.1 0.1 0.1"
+                radius="0.01" dim="1" mass="1">
+        <pin id="0"/>
+        <contact selfcollide="none" contype="0" conaffinity="0"/>
+        <elasticity young="1e7"/>
+      </flexcomp>
+    </body>
+  </worldbody>
+</mujoco>
+)";
+static const char* const kRodHelixPinned = R"(
+<mujoco>
+  <option integrator="discrete" gravity="0 0 0"/>
+  <worldbody>
+    <body name="turned" euler="20 30 40">
+      <flexcomp name="helix" type="direct" dim="1" radius="0.01" mass="1"
+                element="0 1  1 2  2 3  3 4  4 5"
+                point="0.15 0.00 0.00   0.106 0.106 0.04   0.00 0.15 0.08
+                       -0.106 0.106 0.12   -0.15 0.00 0.16
+                       -0.106 -0.106 0.20">
+        <pin id="0"/>
+        <contact selfcollide="none" contype="0" conaffinity="0"/>
+        <elasticity young="1e7"/>
+      </flexcomp>
+    </body>
+  </worldbody>
+</mujoco>
+)";
+static const char* const kRodVeePinned = R"(
+<mujoco>
+  <option integrator="discrete" gravity="0 0 0"/>
+  <worldbody>
+    <body name="turned" euler="20 30 40">
+      <flexcomp name="vee" type="direct" dim="1" radius="0.01" mass="1"
+                element="0 1  1 2" point="0 0 0  0.1 0 0  0.18 0.06 0.02">
+        <pin id="0"/>
+        <contact selfcollide="none" contype="0" conaffinity="0"/>
+        <elasticity young="1e7"/>
+      </flexcomp>
+    </body>
+  </worldbody>
+</mujoco>
+)";
+
 // 1D rod bending stiffness: at rest (straight, hinge pairs, and a curved single
 // hinge) the energy gradient vanishes, so the PSD Gauss-Newton Hessian used by
 // the metric is exact. Checked against central differences of the spring force
 TEST_F(DerivativeTest, FlexRodHessianAtRest) {
-  static const char* const kStraight = R"(
-  <mujoco>
-    <option integrator="discrete" gravity="0 0 0"/>
-    <worldbody>
-      <body name="turned" euler="20 30 40">
-        <flexcomp name="rod" type="grid" count="6 1 1" spacing="0.1 0.1 0.1"
-                  radius="0.01" dim="1" mass="1">
-          <pin id="0"/>
-          <contact selfcollide="none" contype="0" conaffinity="0"/>
-          <elasticity young="1e7"/>
-        </flexcomp>
-      </body>
-    </worldbody>
-  </mujoco>
-  )";
-  static const char* const kHelix = R"(
-  <mujoco>
-    <option integrator="discrete" gravity="0 0 0"/>
-    <worldbody>
-      <body name="turned" euler="20 30 40">
-        <flexcomp name="helix" type="direct" dim="1" radius="0.01" mass="1"
-                  element="0 1  1 2  2 3  3 4  4 5"
-                  point="0.15 0.00 0.00   0.106 0.106 0.04   0.00 0.15 0.08
-                         -0.106 0.106 0.12   -0.15 0.00 0.16
-                         -0.106 -0.106 0.20">
-          <pin id="0"/>
-          <contact selfcollide="none" contype="0" conaffinity="0"/>
-          <elasticity young="1e7"/>
-        </flexcomp>
-      </body>
-    </worldbody>
-  </mujoco>
-  )";
-  static const char* const kVee = R"(
-  <mujoco>
-    <option integrator="discrete" gravity="0 0 0"/>
-    <worldbody>
-      <body name="turned" euler="20 30 40">
-        <flexcomp name="vee" type="direct" dim="1" radius="0.01" mass="1"
-                  element="0 1  1 2" point="0 0 0  0.1 0 0  0.18 0.06 0.02">
-          <pin id="0"/>
-          <contact selfcollide="none" contype="0" conaffinity="0"/>
-          <elasticity young="1e7"/>
-        </flexcomp>
-      </body>
-    </worldbody>
-  </mujoco>
-  )";
-  for (const char* xml : {kStraight, kHelix, kVee}) {
+  for (const char* xml : {kRodStraightPinned, kRodHelixPinned, kRodVeePinned}) {
     char error[1024];
     MjModelPtr model = LoadModelFromString(xml, error, sizeof(error));
     ASSERT_THAT(model.get(), NotNull()) << error;
@@ -4431,6 +4433,15 @@ TEST_F(DerivativeTest, FlexRodHessianAtRest) {
     int nv = model->nv;
     MjDataPtr data = MakeData(model);
     mj_forward(model.get(), data.get());
+
+    // freeze the director state at rest, so finite differences see a fixed one
+    for (int f = 0; f < model->nflex; f++) {
+      if (model->flex_plasticadr[f] >= 0) {
+        mj_rodChain(model.get(), data.get(), f, nullptr, nullptr, nullptr,
+                    nullptr, nullptr, nullptr,
+                    data->plastic + model->flex_plasticadr[f]);
+      }
+    }
 
     vector<mjtNum> vec(nv), res(nv, 0);
     for (int i = 0; i < nv; i++) {
@@ -4451,6 +4462,7 @@ TEST_F(DerivativeTest, FlexRodHessianAtRest) {
 
     mjtNum max_err = 0, scale = 0;
     for (int i = 0; i < nv; i++) {
+      if (model->jnt_type[model->dof_jntid[i]] != mjJNT_SLIDE) continue;
       mjtNum fd = -(plus->qfrc_spring[i] - minus->qfrc_spring[i]) / (2 * eps);
       max_err = mju_max(max_err, mju_abs(res[i] - fd));
       scale = mju_max(scale, mju_abs(fd));
@@ -4461,6 +4473,118 @@ TEST_F(DerivativeTest, FlexRodHessianAtRest) {
         << "rod bending Hessian is not the Jacobian of the force at rest";
     mj_deleteData(plus);
     mj_deleteData(minus);
+  }
+}
+
+// twist-twist block of the metric (1D DER rods with per-edge twist joints): the
+// torsion tridiagonal 2 kt plus the bending stiffness of each twist angle
+// (mj_rodChain), against central differences of the spring force in the
+// twist angles. Exact at rest (straight, helix, vee and a curved box ribbon,
+// whose material curvatures give the twist angles bending stiffness); away from
+// rest (a bent box ribbon) the off-diagonals stay exact and the diagonal only
+// gains where a hinge side's second derivative is negative and clamped to 0
+TEST_F(DerivativeTest, FlexRodTwistHessian) {
+  static const char* const kBoxArc = R"(
+  <mujoco>
+    <option integrator="discrete" gravity="0 0 0"/>
+    <worldbody>
+      <flexcomp name="arc" type="direct" dim="1" radius="0.005" mass="0.1"
+                element="0 1  1 2  2 3  3 4  4 5"
+                point="0.2 0 0  0.190211 0.0618034 0  0.161803 0.117557 0
+                       0.117557 0.161803 0  0.0618034 0.190211 0  0 0.2 0">
+        <pin id="0"/>
+        <contact selfcollide="none" contype="0" conaffinity="0"/>
+        <elasticity young="1e7" shear="4e6" section="box"
+                    sectionsize="0.012 0.003"/>
+      </flexcomp>
+    </worldbody>
+  </mujoco>
+  )";
+  struct Case {
+    const char* xml;
+    bool bend;  // deform the vertices away from rest
+  };
+  for (Case c : {Case{kRodStraightPinned, false}, Case{kRodHelixPinned, false},
+                 Case{kRodVeePinned, false}, Case{kBoxArc, false},
+                 Case{kBoxArc, true}}) {
+    char error[1024];
+    MjModelPtr model = LoadModelFromString(c.xml, error, sizeof(error));
+    ASSERT_THAT(model.get(), NotNull()) << error;
+    SCOPED_TRACE(std::string(model->names + model->name_flexadr[0]) +
+                 (c.bend ? " bent" : " rest"));
+    model->flex_damping[0] = 0;  // the stiffness part only: B = h^2 K
+    const mjtNum h = model->opt.timestep;
+    int nv = model->nv;
+    MjDataPtr data = MakeData(model);
+    if (c.bend) {
+      for (int j = 0; j < model->njnt; j++) {
+        if (model->jnt_type[j] == mjJNT_SLIDE) {
+          int qadr = model->jnt_qposadr[j];
+          data->qpos[qadr] = 0.004 * std::sin(1.3 * qadr + 0.4);
+        }
+      }
+    }
+    mj_forward(model.get(), data.get());
+    for (int f = 0; f < model->nflex; f++) {
+      if (model->flex_plasticadr[f] >= 0) {
+        mj_rodChain(model.get(), data.get(), f, nullptr, nullptr, nullptr,
+                    nullptr, nullptr, nullptr,
+                    data->plastic + model->flex_plasticadr[f]);
+      }
+    }
+    mj_forward(model.get(), data.get());
+
+    int nedge =
+        static_cast<int>(model->flex_bending[model->flex_bendingadr[0]]) + 1;
+    vector<int> dofs;
+    for (int e = 0; e < nedge; e++) {
+      int jnt = mj_rodChainTwistJnt(model.get(), 0, e);
+      ASSERT_GE(jnt, 0) << "edge " << e;
+      dofs.push_back(model->jnt_dofadr[jnt]);
+    }
+    int n = dofs.size();
+
+    // metric columns and central differences of the spring force
+    mjtNum eps = MjEps(1e-6, 1e-3), scale = 0, max_err = 0, kbend = 0;
+    vector<mjtNum> vec(nv), res(nv);
+    for (int j = 0; j < n; j++) {
+      mju_zero(vec.data(), nv);
+      mju_zero(res.data(), nv);
+      vec[dofs[j]] = 1;
+      mj_effMulAdd(model.get(), data.get(), res.data(), vec.data(), 0);
+      int qadr = model->jnt_qposadr[model->dof_jntid[dofs[j]]];
+      mjData* plus = mj_copyData(NULL, model.get(), data.get());
+      mjData* minus = mj_copyData(NULL, model.get(), data.get());
+      plus->qpos[qadr] += eps;
+      minus->qpos[qadr] -= eps;
+      mj_forward(model.get(), plus);
+      mj_forward(model.get(), minus);
+      for (int i = 0; i < n; i++) {
+        mjtNum fd =
+            -(plus->qfrc_spring[dofs[i]] - minus->qfrc_spring[dofs[i]]) /
+            (2 * eps);
+        mjtNum ana = res[dofs[i]] / (h * h);
+        mjtNum err = ana - fd;
+        if (c.bend && i == j) {
+          err = mju_min(0, err);  // PSD clamp: the diagonal may only gain
+        }
+        max_err = mju_max(max_err, mju_abs(err));
+        scale = mju_max(scale, mju_abs(fd));
+      }
+      kbend = mju_max(kbend, data->efm_ck[dofs[j]] / h);
+      mj_deleteData(plus);
+      mj_deleteData(minus);
+    }
+    EXPECT_GT(scale, 0);
+    EXPECT_LT(max_err, MjTol(1e-6, 1e-2) * scale);
+
+    // curved and bent rods exercise the bending stiffness of the twist angles
+    bool straight = (c.xml == kRodStraightPinned) && !c.bend;
+    if (straight) {
+      EXPECT_LT(kbend, MjTol(1e-9, 1e-4) * scale);
+    } else {
+      EXPECT_GT(kbend, 1e-3 * scale);
+    }
   }
 }
 

@@ -14,6 +14,7 @@
 
 #include "engine/engine_metric.h"
 
+#include <float.h>
 #include <limits.h>
 #include <stddef.h>
 #include <stdint.h>
@@ -49,6 +50,22 @@
 // uniformly: the smooth acceleration, the constraint solver and inverse dynamics all see the
 // same metric.
 
+// pivot floor for the dense Cholesky factors of the metric's blocks: rounding can leave a pivot of
+// a positive definite block as small as n*eps*(max diagonal), e.g. stiff contact rows folded over
+// a light vertex in single precision, and a floor of only mjMINVAL then blows up the preconditioner
+#ifdef mjUSESINGLE
+#define EFF_EPS FLT_EPSILON
+#else
+#define EFF_EPS DBL_EPSILON
+#endif
+static mjtNum effPivotFloor(const mjtNum* mat, int n) {
+  mjtNum dmax = 0;
+  for (int i=0; i < n; i++) {
+    dmax = mju_max(dmax, mat[i*(n+1)]);
+  }
+  return mju_max(mjMINVAL, n*EFF_EPS*dmax);
+}
+
 // arena allocation with hard failure (mirrors stack overflow semantics)
 static void* effAlloc(mjData* d, size_t bytes, size_t align) {
   void* p = mj_arenaAllocByte(d, bytes, align);
@@ -58,6 +75,22 @@ static void* effAlloc(mjData* d, size_t bytes, size_t align) {
   return p;
 }
 #define EFMALLOC(type, n) (type*) effAlloc(d, sizeof(type)*(size_t)(n), _Alignof(type))
+
+// torsion term of hinge h of 1D DER rod f: scale * (v[dof1] - v[dof0])^2 on the twist dofs of the
+// hinge's two edges (-1: clamped edge), scale = (s1 + s2*damping) * 2*kt; returns scale, 0 if none.
+// The one definition of the twist chain's off-diagonals for the operator (class 3), the shift and
+// effTwistSolve
+static mjtNum effTwistHinge(const mjModel* m, int f, int h, mjtNum s1, mjtNum s2,
+                            int* dof0, int* dof1) {
+  const mjtNum* hinge = m->flex_bending + m->flex_bendingadr[f] + 1 + mjROD_HINGE_SIZE*h;
+  mjtNum scale = (s1 + s2*m->flex_damping[f]) * 2 * hinge[8];
+  *dof0 = mj_rodChainTwistDof(m, f, h);
+  *dof1 = mj_rodChainTwistDof(m, f, h + 1);
+  if (scale <= 0 || (*dof0 < 0 && *dof1 < 0)) {
+    return 0;
+  }
+  return scale;
+}
 
 // yield the next live rank-1 term of the metric; see the declaration for the contract
 int mj_effRank1Next(const mjModel* m, const mjData* d, mjEffRank1Iter* it,
@@ -114,7 +147,9 @@ int mj_effRank1Next(const mjModel* m, const mjData* d, mjEffRank1Iter* it,
   // wholesale when the caller accounts for contact separately
   while (it->cls == 2) {
     if (!flg_contact || it->k >= d->nefmcon) {
-      it->cls = 3;  // not a producer class: the cursor's done state
+      it->cls = 3;
+      it->i = 0;
+      it->k = 0;
       break;
     }
     int adr = it->k, nnz = d->efm_con_ind[adr];   // packed row: header then entries
@@ -124,6 +159,76 @@ int mj_effRank1Next(const mjModel* m, const mjData* d, mjEffRank1Iter* it,
     e->val = d->efm_con_val + adr + 2;
     it->k = adr + 2 + nnz;
     return 1;
+  }
+
+  // class 3: one entry per torsion hinge of 1D DER rods (tridiagonal coupling on per-edge twist
+  // DOFs). The metric keeps the diagonal blocks of the rod's Gauss-Newton torsion term
+  // 2kt (v; j_psi)(v; j_psi)': the twist-twist block 2kt v v' here (plus the bending stiffness of
+  // each twist angle, a per-dof diagonal in efm_diag, see effDiagStiff) and the vertex-vertex
+  // block 2kt j_psi' j_psi in the flex stiffness (rodHingeTorsionRow), omitting the cross blocks
+  // 2kt v j_psi'. The result stays PSD, keeps every twist chain tridiagonal and in its own trees
+  // (exact O(nedge) effTwistSolve), and over-stiffens only the zero-energy mode where the twist
+  // angles cancel a change of reference twist (twist/writhe exchange), which is thus damped more
+  // under discrete than the exact Hessian would
+  if (it->cls == 3) {
+    int passive = !(mjDISABLED(mjDSBL_SPRING) && mjDISABLED(mjDSBL_DAMPER));
+    if (!passive || !mj_effCouplings(m)) {
+      it->cls = 4;
+      return 0;
+    }
+    mjtNum h_dt = m->opt.timestep;
+    mjtNum s1 = mjDISABLED(mjDSBL_SPRING) ? 0 : h_dt*h_dt;
+    mjtNum s2 = mjDISABLED(mjDSBL_DAMPER) ? 0 : h_dt;
+    int sleep_filter = mjENABLED(mjENBL_SLEEP) && d->ntree_awake < m->ntree;
+    while (it->i < m->nflex) {
+      int f = it->i;
+      if (it->k == 0 &&
+          (m->flex_rigid[f] || !mj_rodHasTwist(m, f) ||
+           (sleep_filter && mj_sleepState(m, d, mjOBJ_FLEX, f) != mjS_AWAKE))) {
+        it->i++;
+        continue;
+      }
+      int nhinge = (int)m->flex_bending[m->flex_bendingadr[f]];
+      if (it->k >= nhinge) {
+        it->i++;
+        it->k = 0;
+        continue;
+      }
+      int h = it->k++, dof0, dof1;
+      mjtNum scale = effTwistHinge(m, f, h, s1, s2, &dof0, &dof1);
+      if (!scale) {
+        continue;
+      }
+      if (dof0 >= 0 && dof1 >= 0) {
+        if (dof0 < dof1) {
+          it->colind[0] = dof0;
+          it->val[0] = -1;
+          it->colind[1] = dof1;
+          it->val[1] = 1;
+        } else {
+          it->colind[0] = dof1;
+          it->val[0] = 1;
+          it->colind[1] = dof0;
+          it->val[1] = -1;
+        }
+        e->nnz = 2;
+      } else if (dof1 >= 0) {
+        it->colind[0] = dof1;
+        it->val[0] = 1;
+        e->nnz = 1;
+      } else if (dof0 >= 0) {
+        it->colind[0] = dof0;
+        it->val[0] = -1;
+        e->nnz = 1;
+      } else {
+        continue;
+      }
+      e->colind = it->colind;
+      e->val = it->val;
+      e->scale = scale;
+      return 1;
+    }
+    it->cls = 4;
   }
   return 0;
 }
@@ -1185,7 +1290,7 @@ static void effBlocks(const mjModel* m, mjData* d) {
   for (int k = 0; k < nb; k++) {
     mjtNum* Bk = B + 9*k;
     effBlockRaw(m, d, adr[k], Bk);
-    mju_cholFactor(Bk, 3, mjMINVAL);
+    mju_cholFactor(Bk, 3, effPivotFloor(Bk, 3));
   }
   d->efm_L = B;
   d->efm_dofid = adr;
@@ -1229,6 +1334,157 @@ static void effCovSolve(const mjModel* m, mjData* d, const mjtNum* L, mjtNum* x,
   }
 }
 
+static int flexIsland(const mjModel* m, const mjData* d, int f);
+
+// length of the per-dof diagonal fold tail for 1D DER rod twist chains (L + 9*mj_effFoldBlocks),
+// 0 if none
+int mj_effTwistDiagSize(const mjModel* m, const mjData* d, int island) {
+  int passive = !(mjDISABLED(mjDSBL_SPRING) && mjDISABLED(mjDSBL_DAMPER));
+  if (!d->efm_active || !passive || !mj_effCouplings(m)) {
+    return 0;
+  }
+  int sleep_filter = mjENABLED(mjENBL_SLEEP) && d->ntree_awake < m->ntree;
+  for (int f = 0; f < m->nflex; f++) {
+    if (m->flex_rigid[f] || !mj_rodHasTwist(m, f)) {
+      continue;
+    }
+    if (island >= 0) {
+      if (flexIsland(m, d, f) == island) {
+        return d->island_nv[island];
+      }
+    } else if (!sleep_filter || mj_sleepState(m, d, mjOBJ_FLEX, f) == mjS_AWAKE) {
+      return m->nv;
+    }
+  }
+  return 0;
+}
+
+
+// the twist dofs of 1D DER rod f lie on chain edges [*e0, *e1] (the clamped ends have none);
+// returns 1 if each is a single-dof tree, so that effTwistSolve can solve the chain exactly
+static int effTwistChain(const mjModel* m, int f, int* e0, int* e1) {
+  int nhinge = (int)m->flex_bending[m->flex_bendingadr[f]];
+  *e0 = -1;
+  *e1 = -2;
+  for (int e = 0; e <= nhinge; e++) {
+    int dof = mj_rodChainTwistDof(m, f, e);
+    if (dof < 0) {
+      if (*e0 >= 0 && *e1 < *e0) {
+        *e1 = e - 1;
+      }
+      continue;
+    }
+    if (*e1 >= *e0 && *e0 >= 0) {
+      return 0;   // a gap in the chain
+    }
+    if (*e0 < 0) {
+      *e0 = e;
+    }
+    if (m->M_rownnz[dof] != 1 || m->tree_dofnum[m->dof_treeid[dof]] != 1) {
+      return 0;
+    }
+  }
+  if (*e0 < 0) {
+    return 0;
+  }
+  if (*e1 < *e0) {
+    *e1 = nhinge;
+  }
+  return 1;
+}
+
+
+// exact O(nedge) symmetric tridiagonal LDL^T solve on 1D DER rod twist chains (island < 0: global)
+static void effTwistSolve(const mjModel* m, mjData* d, mjtNum* x, const mjtNum* rhs, int island,
+                          const mjtNum* tw_diag) {
+  int passive = !(mjDISABLED(mjDSBL_SPRING) && mjDISABLED(mjDSBL_DAMPER));
+  if (!passive || !mj_effCouplings(m) || !d->efm_sdiag) {
+    return;
+  }
+  mjtNum h_dt = m->opt.timestep;
+  mjtNum s1 = mjDISABLED(mjDSBL_SPRING) ? 0 : h_dt*h_dt;
+  mjtNum s2 = mjDISABLED(mjDSBL_DAMPER) ? 0 : h_dt;
+  int sleep_filter = mjENABLED(mjENBL_SLEEP) && d->ntree_awake < m->ntree;
+  int idofadr = (island >= 0) ? d->island_idofadr[island] : 0;
+
+  for (int f = 0; f < m->nflex; f++) {
+    if (m->flex_rigid[f] || !mj_rodHasTwist(m, f)) {
+      continue;
+    }
+    if (island >= 0) {
+      if (flexIsland(m, d, f) != island) {
+        continue;
+      }
+    } else if (sleep_filter && mj_sleepState(m, d, mjOBJ_FLEX, f) != mjS_AWAKE) {
+      continue;
+    }
+
+    mjtNum scale_f = s1 + s2 * m->flex_damping[f];
+    const mjtNum* b = m->flex_bending + m->flex_bendingadr[f];
+    int nhinge = (int)b[0];
+    if (scale_f <= 0 || nhinge <= 0) {
+      continue;
+    }
+    int e_start, e_end;
+    if (!effTwistChain(m, f, &e_start, &e_end)) {
+      continue;
+    }
+    int ntw = e_end - e_start + 1;
+
+    size_t req = mj_stackFrameBytes() + mj_stackBytes(sizeof(int)*(size_t)ntw, _Alignof(int)) +
+                 2*mj_stackBytes(sizeof(mjtNum)*(size_t)ntw, _Alignof(mjtNum)) +
+                 (ntw > 1 ? mj_stackBytes(sizeof(mjtNum)*(size_t)(ntw - 1), _Alignof(mjtNum)) : 0);
+    if (mj_stackBytesAvailable(d) < req) {
+      continue;
+    }
+    mj_markStack(d);
+    int* dofs = mjSTACKALLOC(d, ntw, int);
+    mjtNum* diag = mjSTACKALLOC(d, ntw, mjtNum);
+    mjtNum* off = (ntw > 1) ? mjSTACKALLOC(d, ntw - 1, mjtNum) : NULL;
+    mjtNum* z = mjSTACKALLOC(d, ntw, mjtNum);
+    int valid = 1;
+    for (int k = 0; k < ntw; k++) {
+      int dof = mj_rodChainTwistDof(m, f, e_start + k);
+      if (island >= 0) {
+        int lidof = d->map_dof2idof[dof] - idofadr;
+        if (lidof < 0 || lidof >= d->island_nv[island]) {
+          valid = 0;
+          break;
+        }
+        dofs[k] = lidof;
+        z[k] = rhs[lidof];
+      } else {
+        dofs[k] = dof;
+        z[k] = rhs[dof];
+      }
+      int mdiag = m->M_rowadr[dof];
+      mjtNum d_extra = tw_diag ? tw_diag[dofs[k]] : 0;
+      diag[k] = mju_max(mjMINVAL, d->M[mdiag] + d->efm_sdiag[dof] + d_extra);
+    }
+    if (valid) {
+      for (int k = 0; k < ntw - 1; k++) {
+        int dof0, dof1;
+        off[k] = -effTwistHinge(m, f, e_start + k, s1, s2, &dof0, &dof1);
+      }
+      for (int k = 0; k < ntw - 1; k++) {
+        mjtNum lk = off[k] / diag[k];
+        off[k] = lk;
+        diag[k + 1] = mju_max(mjMINVAL, diag[k + 1] - lk * lk * diag[k]);
+        z[k + 1] -= lk * z[k];
+      }
+      z[ntw - 1] /= diag[ntw - 1];
+      for (int k = ntw - 2; k >= 0; k--) {
+        z[k] = z[k] / diag[k] - off[k] * z[k + 1];
+      }
+      for (int k = 0; k < ntw; k++) {
+        x[dofs[k]] = z[k];
+      }
+    }
+    mj_freeStack(d);
+  }
+}
+
+
 // L: folded blocks (mj_effPrecFold), or NULL for the step's own factor
 static void effBlockApply(const mjModel* m, mjData* d, const mjtNum* L, mjtNum* x,
                           const mjtNum* b) {
@@ -1267,6 +1523,9 @@ static void effBlockApply(const mjModel* m, mjData* d, const mjtNum* L, mjtNum* 
   if (d->efm_diag) {
     mj_solveLD(x, d->qH, d->qHDiagInv, sleep_filter ? d->nv_awake : nv, 1,
                m->M_rownnz, m->M_rowadr, m->M_colind, sleep_filter ? d->dof_awake_ind : NULL);
+    const mjtNum* tw_diag = (L && mj_effTwistDiagSize(m, d, -1)) ?
+                            (L + 9*mj_effFoldBlocks(d, -1)) : NULL;
+    effTwistSolve(m, d, x, rhs, -1, tw_diag);
   } else {
     mj_solveLD(x, d->qLD, d->qLDiagInv, sleep_filter ? d->nv_awake : nv, 1,
                m->M_rownnz, m->M_rowadr, m->M_colind, sleep_filter ? d->dof_awake_ind : NULL);
@@ -1444,17 +1703,21 @@ size_t mj_effFoldScratch(int ncol) {
 }
 
 
-// fold the rank-1 classes and the efc rows into L (9*mj_effFoldBlocks): for each folded triple in
-// ascending dof order, the factored 3x3 diagonal block of M + K + rank-1 classes + J'*D*J.
+// fold the rank-1 classes and the efc rows into L (9*mj_effFoldBlocks + mj_effTwistDiagSize):
+// for each folded triple in ascending dof order, the factored 3x3 diagonal block of
+// M + K + rank-1 classes + J'*D*J, plus the per-dof diagonal fold for 1D DER rod twist chains.
 // island >= 0: J is the island's (island-local columns) and only the island's triples are written
-// compactly in L[0..9*nfold). Returns nfold (0, leaving L untouched, when no triple is folded or
-// the stack cannot hold the frame)
+// compactly in L[0..9*nfold). Returns nfold (0, leaving L untouched, when no triple or twist chain
+// is folded or the stack cannot hold the frame)
 int mj_effPrecFold(const mjModel* m, mjData* d, mjtNum* L, int island, int nefc,
                    const mjtNum* efc_D, int is_sparse, const mjtNum* J,
                    const int* J_rownnz, const int* J_rowadr, const int* J_colind) {
   int nb = d->nefmdof;
+  int nblk = mj_effFoldBlocks(d, island);
+  int ntw = mj_effTwistDiagSize(m, d, island);
   int ncol = island >= 0 ? d->island_nv[island] : m->nv;
-  if (!nb || !d->efm_active || ncol < 3 || mj_stackBytesAvailable(d) < mj_effFoldScratch(ncol)) {
+  if ((!nblk && !ntw) || !d->efm_active || ncol <= 0 ||
+      (nblk && ncol < 3) || mj_stackBytesAvailable(d) < mj_effFoldScratch(ncol)) {
     return 0;
   }
   int idofadr = island >= 0 ? d->island_idofadr[island] : 0;
@@ -1470,7 +1733,9 @@ int mj_effPrecFold(const mjModel* m, mjData* d, mjtNum* L, int island, int nefc,
     blk[c] = -1;
   }
   int nfold = 0;
-  if (island < 0) {
+  if (!nblk) {
+    nfold = 0;
+  } else if (island < 0) {
     for (int k=0; k < nb; k++) {
       int i = d->efm_dofid[k];
       blk[i] = blk[i+1] = blk[i+2] = k;
@@ -1505,12 +1770,17 @@ int mj_effPrecFold(const mjModel* m, mjData* d, mjtNum* L, int island, int nefc,
       }
     }
   }
-  if (!nfold) {
+  if (!nfold && !ntw) {
     mj_freeStack(d);
     return 0;
   }
+  mjtNum* tw_diag = ntw ? (L + 9*nblk) : NULL;
+  if (tw_diag) {
+    mju_zero(tw_diag, ntw);
+  }
 
-  // rank-1 classes: scale * v v', restricted to each folded triple
+  // rank-1 classes: scale * v v', restricted to each folded triple (and passive-contact diagonal
+  // on 1D DER rod twist chains)
   mjEffRank1Iter it = {0};
   mjEffRank1 e;
   while (mj_effRank1Next(m, d, &it, &e, /*flg_contact=*/1)) {
@@ -1519,6 +1789,9 @@ int mj_effPrecFold(const mjModel* m, mjData* d, mjtNum* L, int island, int nefc,
     }
     for (int a=0; a < e.nnz; a++) {
       int la = island >= 0 ? d->map_dof2idof[e.colind[a]] - idofadr : e.colind[a];
+      if (tw_diag && it.cls == 2) {
+        tw_diag[la] += e.scale * e.val[a] * e.val[a];
+      }
       int p = blk[la];
       if (p < 0) {
         continue;
@@ -1547,7 +1820,11 @@ int mj_effPrecFold(const mjModel* m, mjData* d, mjtNum* L, int island, int nefc,
     if (is_sparse) {
       int adr = J_rowadr[r], nnz = J_rownnz[r];
       for (int a=0; a < nnz; a++) {
-        int la = J_colind[adr+a], p = blk[la];
+        int la = J_colind[adr+a];
+        if (tw_diag) {
+          tw_diag[la] += D * J[adr+a] * J[adr+a];
+        }
+        int p = blk[la];
         if (p < 0) {
           continue;
         }
@@ -1562,6 +1839,13 @@ int mj_effPrecFold(const mjModel* m, mjData* d, mjtNum* L, int island, int nefc,
       }
     } else {
       const mjtNum* Jr = J + (size_t)r*ncol;
+      if (tw_diag) {
+        for (int c=0; c < ncol; c++) {
+          if (Jr[c]) {
+            tw_diag[c] += D * Jr[c] * Jr[c];
+          }
+        }
+      }
       for (int p=0; p < nfold; p++) {
         const mjtNum* Jk = Jr + fold_li[p];
         for (int a=0; a < 3; a++) {
@@ -1577,10 +1861,10 @@ int mj_effPrecFold(const mjModel* m, mjData* d, mjtNum* L, int island, int nefc,
   }
 
   for (int p=0; p < nfold; p++) {
-    mju_cholFactor(L + 9*p, 3, mjMINVAL);
+    mju_cholFactor(L + 9*p, 3, effPivotFloor(L + 9*p, 3));
   }
   mj_freeStack(d);
-  return nfold;
+  return nfold ? nfold : 1;
 }
 
 
@@ -1639,8 +1923,19 @@ static size_t effCholApplyScratch(const mjModel* m, const mjData* d) {
 // stack bytes of mj_effPrec and mj_effPrecIsland, at most
 size_t mj_effPrecScratch(const mjModel* m, const mjData* d) {
   size_t sn = sizeof(mjtNum), an = _Alignof(mjtNum);
+  size_t twist_apply = 0;
+  for (int f = 0; f < m->nflex; f++) {
+    if (!m->flex_rigid[f] && mj_rodHasTwist(m, f)) {
+      int ntw = (int)m->flex_bending[m->flex_bendingadr[f]] + 1;
+      if (ntw >= 1) {
+        size_t req = mj_stackFrameBytes() + effIntBytes(ntw) + 2*effNumBytes(ntw) +
+                     (ntw > 1 ? effNumBytes(ntw - 1) : 0);
+        twist_apply = mjMAX(twist_apply, req);
+      }
+    }
+  }
   size_t apply = mj_stackFrameBytes() + mj_stackBytes(sn*m->nv, an) +
-                 effCholApplyScratch(m, d);
+                 mjMAX(effCholApplyScratch(m, d), twist_apply);
   if (m->nefm0dof && !d->nefmdof) {
     apply += 2*mj_stackBytes(sn*m->nefm0dof, an);
   }
@@ -1660,8 +1955,9 @@ static int dofDampPossible(const mjModel* m, int i) {
 }
 
 
-// fill efm_ck with h * d(spring force)/d(displacement) per dof, clamped PSD-safe;
-// mirrors the joint-spring structure of mj_springdamper; returns any-nonzero
+// fill efm_ck with h * d(spring force)/d(displacement) per joint dof, clamped PSD-safe,
+// mirroring the joint-spring structure of mj_springdamper (1D DER rod twist bending stiffness
+// is filled by mj_flexPassiveBend1D in the passive pass before mj_effShift); returns any-nonzero
 static int effDiagStiff(const mjModel* m, mjData* d) {
   int any = 0, njnt = m->njnt;
   mjtNum h = m->opt.timestep;
@@ -1726,16 +2022,6 @@ static int effDiagStiff(const mjModel* m, mjData* d) {
     }
   }
 
-  // twist hinges of 1D rods: series torsional stiffness of the chain
-  for (int f=0; f < m->nflex; f++) {
-    int dof;
-    mjtNum k = mj_rodTwistStiffness(m, f, &dof);
-    if (k > 0) {
-      d->efm_ck[dof] += h*k;
-      any = 1;
-    }
-  }
-
   return any;
 }
 
@@ -1778,6 +2064,36 @@ void mj_effShift(const mjModel* m, mjData* d) {
     mjd_flexInterp_mul(m, d, d->efm_c, d->qvel, h, 0, d->flexelem_krot);
     mjd_flexBend_mul(m, d, d->efm_c, d->qvel, -h, 0);
     mjd_flexStretch_mul(m, d, d->efm_c, d->qvel, -h, 0);
+
+    // 1D DER rod torsional coupling shift: -h * 2*kt * (qvel[dof1] - qvel[dof0]); the bending
+    // stiffness of the twist angles is diagonal, in efm_ck
+    if (mj_effCouplings(m)) {
+      int sleep_filter = mjENABLED(mjENBL_SLEEP) && d->ntree_awake < m->ntree;
+      for (int f = 0; f < m->nflex; f++) {
+        if (m->flex_rigid[f] || !mj_rodHasTwist(m, f) ||
+            (sleep_filter && mj_sleepState(m, d, mjOBJ_FLEX, f) != mjS_AWAKE)) {
+          continue;
+        }
+        const mjtNum* b = m->flex_bending + m->flex_bendingadr[f];
+        int nhinge = (int)b[0];
+        for (int hi = 0; hi < nhinge; hi++) {
+          int dof0, dof1;
+          mjtNum hk = effTwistHinge(m, f, hi, h, 0, &dof0, &dof1);
+          if (!hk) {
+            continue;
+          }
+          mjtNum w0 = (dof0 >= 0) ? d->qvel[dof0] : 0;
+          mjtNum w1 = (dof1 >= 0) ? d->qvel[dof1] : 0;
+          mjtNum ckv = hk * (w1 - w0);
+          if (dof1 >= 0) {
+            d->efm_c[dof1] -= ckv;
+          }
+          if (dof0 >= 0) {
+            d->efm_c[dof0] += ckv;
+          }
+        }
+      }
+    }
   }
 
   // contact: -h*K_contact*v from the packed rank-1 rows (see effContactBuild), so the shift
@@ -1969,6 +2285,15 @@ void mj_effActuation(const mjModel* m, mjData* d, int flg_factor) {
         }
       }
     }
+    // 1D DER rod torsional coupling diagonal
+    mjEffRank1Iter it_tw = {.cls = 3};
+    mjEffRank1 e_tw;
+    while (mj_effRank1Next(m, d, &it_tw, &e_tw, /*flg_contact=*/0)) {
+      for (int j=0; j < e_tw.nnz; j++) {
+        int c = e_tw.colind[j];
+        d->qH[m->M_rowadr[c] + m->M_rownnz[c] - 1] += e_tw.scale * e_tw.val[j] * e_tw.val[j];
+      }
+    }
     // fluid drag blocks share M's sparsity: add the full pattern
     if (d->efm_fluid) {
       mju_addTo(d->qH, d->efm_fluid, m->nC);
@@ -2000,6 +2325,18 @@ static int flexIsland(const mjModel* m, const mjData* d, int f) {
     int tree = m->body_treeid[bodyid[adr + j]];
     if (tree >= 0 && d->tree_island[tree] >= 0) {
       return d->tree_island[tree];
+    }
+  }
+  if (mj_rodHasTwist(m, f)) {
+    int nedge = (int)m->flex_bending[m->flex_bendingadr[f]] + 1;
+    for (int e = 0; e < nedge; e++) {
+      int jnt = mj_rodChainTwistJnt(m, f, e);
+      if (jnt >= 0) {
+        int tree = m->body_treeid[m->jnt_bodyid[jnt]];
+        if (tree >= 0 && d->tree_island[tree] >= 0) {
+          return d->tree_island[tree];
+        }
+      }
     }
   }
   return -1;
@@ -2336,9 +2673,18 @@ void mj_effPrecIsland(const mjModel* m, mjData* d, mjtNum* x, const mjtNum* b, i
     }
   }
   int has_bend = flg_bend && has_isl && (isl.bend_adr[island] < isl.bend_adr[island + 1]);
+  int has_twist = 0;
+  if (d->efm_sdiag) {
+    for (int f = 0; f < m->nflex; f++) {
+      if (!m->flex_rigid[f] && mj_rodHasTwist(m, f) && flexIsland(m, d, f) == island) {
+        has_twist = 1;
+        break;
+      }
+    }
+  }
 
-  // no covered or bending-only flex blocks in this island: the gathered backbone factor is all
-  if (!has_cov && !has_bend) {
+  // no covered, bending-only, or rod-twist blocks in this island: the gathered backbone factor is all
+  if (!has_cov && !has_bend && !has_twist) {
     if (x != b) {
       mju_copy(x, b, nv);
     }
@@ -2377,6 +2723,11 @@ void mj_effPrecIsland(const mjModel* m, mjData* d, mjtNum* x, const mjtNum* b, i
     }
   }
   mj_solveLD(x, qLD, qLDiagInv, nv, 1, M_rownnz, M_rowadr, M_colind, NULL);
+  if (has_twist) {
+    const mjtNum* tw_diag = (L && mj_effTwistDiagSize(m, d, island)) ?
+                            (L + 9*mj_effFoldBlocks(d, island)) : NULL;
+    effTwistSolve(m, d, x, rhs, island, tw_diag);
+  }
 
   // folded blocks, else the sparse factor or the per-step 3x3 blocks, on the island's covered
   // triples
@@ -2621,7 +2972,16 @@ void mj_effBuild(const mjModel* m, mjData* d, int active, int flg_factor) {
   // skips them, like every passive force, when both the spring and damper forces are disabled
   int passive = !(mjDISABLED(mjDSBL_SPRING) && mjDISABLED(mjDSBL_DAMPER));
   int any_fluid = passive && (m->opt.viscosity > 0 || m->opt.density > 0);
-  d->efm_diag = (any_diag || d->nefmT || any_act || any_fluid) ? EFMALLOC(mjtNum, nv) : NULL;
+  int any_twist = 0;
+  if (passive && mj_effCouplings(m)) {
+    for (int f=0; f < m->nflex; f++) {
+      if (!m->flex_rigid[f] && mj_rodHasTwist(m, f)) {
+        any_twist = 1;
+        break;
+      }
+    }
+  }
+  d->efm_diag = (any_diag || d->nefmT || any_act || any_fluid || any_twist) ? EFMALLOC(mjtNum, nv) : NULL;
   d->efm_sdiag = d->efm_diag ? EFMALLOC(mjtNum, nv) : NULL;
   d->efm_fluid = any_fluid ? EFMALLOC(mjtNum, m->nC) : NULL;
 

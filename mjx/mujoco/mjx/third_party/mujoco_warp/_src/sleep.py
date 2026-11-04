@@ -16,9 +16,11 @@
 import warp as wp
 
 from mujoco.mjx.third_party.mujoco_warp._src import types
+from mujoco.mjx.third_party.mujoco_warp._src.types import ContactType
 from mujoco.mjx.third_party.mujoco_warp._src.types import DeterminismType
 from mujoco.mjx.third_party.mujoco_warp._src.types import DisableBit
 from mujoco.mjx.third_party.mujoco_warp._src.types import EqType
+from mujoco.mjx.third_party.mujoco_warp._src.types import IntegratorType
 from mujoco.mjx.third_party.mujoco_warp._src.types import ObjType
 from mujoco.mjx.third_party.mujoco_warp._src.types import SleepPolicy
 from mujoco.mjx.third_party.mujoco_warp._src.types import SleepState
@@ -383,39 +385,214 @@ def _wake_kernel(
 
 
 @wp.kernel
+def _wake_non_metric_flex(
+  # Model:
+  ntree: int,
+  nflex: int,
+  body_treeid: wp.array[int],
+  jnt_bodyid: wp.array[int],
+  flex_interp: wp.array[int],
+  flex_nodeadr: wp.array[int],
+  flex_nodenum: wp.array[int],
+  flex_vertadr: wp.array[int],
+  flex_vertnum: wp.array[int],
+  flex_nodebodyid: wp.array[int],
+  flex_vertbodyid: wp.array[int],
+  flex_edgeequality: wp.array[int],
+  flex_rod_has_twist: wp.array[bool],
+  flex_eff_possible: wp.array[bool],
+  flex_rod_edgeadr: wp.array[int],
+  flex_rod_edgenum: wp.array[int],
+  flex_rodedge_jnt: wp.array[int],
+  # Data in:
+  ntree_awake_in: wp.array[int],
+  # In:
+  flg_wake: int,
+  # Data out:
+  tree_asleep_out: wp.array2d[int],  # kernel_analyzer: ignore
+):
+  worldid = wp.tid()
+  if flg_wake != 0 and ntree_awake_in[worldid] >= ntree:
+    return
+  for f in range(nflex):
+    if flex_edgeequality[f] != 0 or not flex_eff_possible[f]:
+      continue
+    if flex_interp[f] != 0:
+      num = flex_nodenum[f]
+      adr = flex_nodeadr[f]
+      for j in range(num):
+        t = body_treeid[flex_nodebodyid[adr + j]]
+        if t >= 0:
+          if tree_asleep_out[worldid, t] >= 0:
+            if flg_wake != 0:
+              _wake_tree(ntree, worldid, t, K_AWAKE_VAL, tree_asleep_out)
+          else:
+            tree_asleep_out[worldid, t] = K_AWAKE_VAL
+    else:
+      num = flex_vertnum[f]
+      adr = flex_vertadr[f]
+      for j in range(num):
+        t = body_treeid[flex_vertbodyid[adr + j]]
+        if t >= 0:
+          if tree_asleep_out[worldid, t] >= 0:
+            if flg_wake != 0:
+              _wake_tree(ntree, worldid, t, K_AWAKE_VAL, tree_asleep_out)
+          else:
+            tree_asleep_out[worldid, t] = K_AWAKE_VAL
+    if flex_rod_has_twist[f]:
+      eadr = flex_rod_edgeadr[f]
+      nedge = flex_rod_edgenum[f]
+      for e in range(nedge):
+        jnt = flex_rodedge_jnt[eadr + e]
+        if jnt < 0:
+          continue
+        t = body_treeid[jnt_bodyid[jnt]]
+        if t < 0:
+          continue
+        if tree_asleep_out[worldid, t] >= 0:
+          if flg_wake != 0:
+            _wake_tree(ntree, worldid, t, K_AWAKE_VAL, tree_asleep_out)
+        else:
+          tree_asleep_out[worldid, t] = K_AWAKE_VAL
+
+
+@wp.func
+def _flex_contact_body(
+  # Model:
+  body_treeid: wp.array[int],
+  flex_dim: wp.array[int],
+  flex_interp: wp.array[int],
+  flex_nodeadr: wp.array[int],
+  flex_nodenum: wp.array[int],
+  flex_vertadr: wp.array[int],
+  flex_elemdataadr: wp.array[int],
+  flex_nodebodyid: wp.array[int],
+  flex_vertbodyid: wp.array[int],
+  flex_elem: wp.array[int],
+  # In:
+  f: int,
+  elem: int,
+  vert: int,
+) -> int:
+  if vert >= 0 and flex_interp[f] == 0:
+    return flex_vertbodyid[flex_vertadr[f] + vert]
+  if elem >= 0 and flex_interp[f] == 0:
+    dim = flex_dim[f]
+    edata = flex_elemdataadr[f] + elem * (dim + 1)
+    vadr = flex_vertadr[f]
+    for j in range(dim + 1):
+      b = flex_vertbodyid[vadr + flex_elem[edata + j]]
+      if body_treeid[b] >= 0:
+        return b
+    return flex_vertbodyid[vadr + flex_elem[edata]]
+  nodenum = flex_nodenum[f]
+  nadr = flex_nodeadr[f]
+  for j in range(nodenum):
+    b = flex_nodebodyid[nadr + j]
+    if body_treeid[b] >= 0:
+      return b
+  return flex_nodebodyid[nadr]
+
+
+@wp.kernel
 def _wake_collision_kernel(
   # Model:
   ntree: int,
   body_treeid: wp.array[int],
   geom_bodyid: wp.array[int],
+  flex_dim: wp.array[int],
+  flex_interp: wp.array[int],
+  flex_nodeadr: wp.array[int],
+  flex_nodenum: wp.array[int],
+  flex_vertadr: wp.array[int],
+  flex_elemdataadr: wp.array[int],
+  flex_nodebodyid: wp.array[int],
+  flex_vertbodyid: wp.array[int],
+  flex_elem: wp.array[int],
   # Data in:
   tree_awake_in: wp.array2d[int],
+  body_awake_in: wp.array2d[int],
   contact_geom_in: wp.array[wp.vec2i],
+  contact_flex_in: wp.array[wp.vec2i],
+  contact_elem_in: wp.array[wp.vec2i],
+  contact_vert_in: wp.array[wp.vec2i],
   contact_worldid_in: wp.array[int],
+  contact_type_in: wp.array[int],
   nacon_in: wp.array[int],
-  # Out:
+  # Data out:
   tree_asleep_out: wp.array2d[int],  # kernel_analyzer: ignore
 ):
   conid = wp.tid()
   if conid >= nacon_in[0]:
+    return
+  ctype = contact_type_in[conid]
+  if ctype != 0 and not (ctype & (ContactType.CONSTRAINT | ContactType.PASSIVE)):
     return
 
   geom_pair = contact_geom_in[conid]
   g1 = geom_pair[0]
   g2 = geom_pair[1]
 
-  if g1 < 0 or g2 < 0:
-    return
-
-  b1 = geom_bodyid[g1]
-  b2 = geom_bodyid[g2]
+  if g1 >= 0 and g2 >= 0:
+    b1 = geom_bodyid[g1]
+    b2 = geom_bodyid[g2]
+  else:
+    if contact_flex_in.shape[0] == 0:
+      return
+    flex_pair = contact_flex_in[conid]
+    elem_pair = contact_elem_in[conid]
+    vert_pair = contact_vert_in[conid]
+    if (g1 < 0 and flex_pair[0] < 0) or (g2 < 0 and flex_pair[1] < 0):
+      return
+    b1 = (
+      geom_bodyid[g1]
+      if g1 >= 0
+      else _flex_contact_body(
+        body_treeid,
+        flex_dim,
+        flex_interp,
+        flex_nodeadr,
+        flex_nodenum,
+        flex_vertadr,
+        flex_elemdataadr,
+        flex_nodebodyid,
+        flex_vertbodyid,
+        flex_elem,
+        flex_pair[0],
+        elem_pair[0],
+        vert_pair[0],
+      )
+    )
+    b2 = (
+      geom_bodyid[g2]
+      if g2 >= 0
+      else _flex_contact_body(
+        body_treeid,
+        flex_dim,
+        flex_interp,
+        flex_nodeadr,
+        flex_nodenum,
+        flex_vertadr,
+        flex_elemdataadr,
+        flex_nodebodyid,
+        flex_vertbodyid,
+        flex_elem,
+        flex_pair[1],
+        elem_pair[1],
+        vert_pair[1],
+      )
+    )
   tree1 = body_treeid[b1]
   tree2 = body_treeid[b2]
+  worldid = contact_worldid_in[conid]
 
   if tree1 < 0 or tree2 < 0:
+    tree = tree2 if tree1 < 0 else tree1
+    b = b1 if tree1 < 0 else b2
+    if tree >= 0 and tree_awake_in[worldid, tree] == 0 and body_awake_in[worldid, b] == SleepState.AWAKE:
+      _wake_tree(ntree, worldid, tree, K_AWAKE_VAL, tree_asleep_out)
     return
 
-  worldid = contact_worldid_in[conid]
   awake1 = tree_awake_in[worldid, tree1]
   awake2 = tree_awake_in[worldid, tree2]
 
@@ -612,6 +789,13 @@ def _wake_equality_kernel(
   jnt_bodyid: wp.array[int],
   geom_bodyid: wp.array[int],
   site_bodyid: wp.array[int],
+  flex_interp: wp.array[int],
+  flex_nodeadr: wp.array[int],
+  flex_nodenum: wp.array[int],
+  flex_vertadr: wp.array[int],
+  flex_vertnum: wp.array[int],
+  flex_nodebodyid: wp.array[int],
+  flex_vertbodyid: wp.array[int],
   eq_type: wp.array[int],
   eq_obj1id: wp.array[int],
   eq_obj2id: wp.array[int],
@@ -620,6 +804,10 @@ def _wake_equality_kernel(
   tendon_num: wp.array[int],
   wrap_type: wp.array[int],
   wrap_objid: wp.array[int],
+  flex_rod_has_twist: wp.array[bool],
+  flex_rod_edgeadr: wp.array[int],
+  flex_rod_edgenum: wp.array[int],
+  flex_rodedge_jnt: wp.array[int],
   # Data in:
   eq_active_in: wp.array2d[bool],  # kernel_analyzer: ignore
   tree_awake_in: wp.array2d[int],
@@ -742,12 +930,89 @@ def _wake_equality_kernel(
         tree_asleep_out,
       )
 
-  # TODO(team): Implement waking for EqType.FLEX constraints.
+  elif eqtype == EqType.FLEX or eqtype == EqType.FLEXSTRAIN:
+    f = id1
+    any_awake = int(0)
+    wakeval = int(0)
+    if flex_interp[f] != 0:
+      num = flex_nodenum[f]
+      adr = flex_nodeadr[f]
+      for j in range(num):
+        treeid = body_treeid[flex_nodebodyid[adr + j]]
+        if treeid >= 0 and tree_awake_in[worldid, treeid] != 0:
+          any_awake = 1
+          wakeval = wp.min(wakeval, tree_asleep_out[worldid, treeid])
+    else:
+      num = flex_vertnum[f]
+      adr = flex_vertadr[f]
+      for j in range(num):
+        treeid = body_treeid[flex_vertbodyid[adr + j]]
+        if treeid >= 0 and tree_awake_in[worldid, treeid] != 0:
+          any_awake = 1
+          wakeval = wp.min(wakeval, tree_asleep_out[worldid, treeid])
+
+    nedge = flex_rod_edgenum[f] if flex_rod_has_twist[f] else 0
+    eadr = flex_rod_edgeadr[f]
+    for e in range(nedge):
+      jnt = flex_rodedge_jnt[eadr + e]
+      treeid = body_treeid[jnt_bodyid[jnt]] if jnt >= 0 else -1
+      if treeid >= 0 and tree_awake_in[worldid, treeid] != 0:
+        any_awake = 1
+        wakeval = wp.min(wakeval, tree_asleep_out[worldid, treeid])
+
+    if any_awake != 0:
+      if flex_interp[f] != 0:
+        num = flex_nodenum[f]
+        adr = flex_nodeadr[f]
+        for j in range(num):
+          treeid = body_treeid[flex_nodebodyid[adr + j]]
+          if treeid >= 0 and tree_asleep_out[worldid, treeid] >= 0:
+            _wake_tree(ntree, worldid, treeid, wakeval, tree_asleep_out)
+      else:
+        num = flex_vertnum[f]
+        adr = flex_vertadr[f]
+        for j in range(num):
+          treeid = body_treeid[flex_vertbodyid[adr + j]]
+          if treeid >= 0 and tree_asleep_out[worldid, treeid] >= 0:
+            _wake_tree(ntree, worldid, treeid, wakeval, tree_asleep_out)
+      for e in range(nedge):
+        jnt = flex_rodedge_jnt[eadr + e]
+        treeid = body_treeid[jnt_bodyid[jnt]] if jnt >= 0 else -1
+        if treeid >= 0 and tree_asleep_out[worldid, treeid] >= 0:
+          _wake_tree(ntree, worldid, treeid, wakeval, tree_asleep_out)
 
 
 @event_scope
 def wake(m: types.Model, d: types.Data):
   """Wakes sleeping trees due to user changes/perturbations."""
+  if m.nflex > 0 and m.opt.integrator != IntegratorType.DISCRETE:
+    wp.launch(
+      _wake_non_metric_flex,
+      dim=d.nworld,
+      inputs=[
+        m.ntree,
+        m.nflex,
+        m.body_treeid,
+        m.jnt_bodyid,
+        m.flex_interp,
+        m.flex_nodeadr,
+        m.flex_nodenum,
+        m.flex_vertadr,
+        m.flex_vertnum,
+        m.flex_nodebodyid,
+        m.flex_vertbodyid,
+        m.flex_edgeequality,
+        m.flex_rod_has_twist,
+        m.flex_eff_possible,
+        m.flex_rod_edgeadr,
+        m.flex_rod_edgenum,
+        m.flex_rodedge_jnt,
+        d.ntree_awake,
+        1,
+      ],
+      outputs=[d.tree_asleep],
+    )
+
   wp.launch(
     _wake_kernel,
     dim=(d.nworld, m.ntree),
@@ -778,9 +1043,23 @@ def wake_collision(m: types.Model, d: types.Data):
       m.ntree,
       m.body_treeid,
       m.geom_bodyid,
+      m.flex_dim,
+      m.flex_interp,
+      m.flex_nodeadr,
+      m.flex_nodenum,
+      m.flex_vertadr,
+      m.flex_elemdataadr,
+      m.flex_nodebodyid,
+      m.flex_vertbodyid,
+      m.flex_elem,
       d.tree_awake,
+      d.body_awake,
       d.contact.geom,
+      d.contact.flex,
+      d.contact.elem,
+      d.contact.vert,
       d.contact.worldid,
+      d.contact.type,
       d.nacon,
     ],
     outputs=[d.tree_asleep],
@@ -835,6 +1114,13 @@ def wake_equality(m: types.Model, d: types.Data):
       m.jnt_bodyid,
       m.geom_bodyid,
       m.site_bodyid,
+      m.flex_interp,
+      m.flex_nodeadr,
+      m.flex_nodenum,
+      m.flex_vertadr,
+      m.flex_vertnum,
+      m.flex_nodebodyid,
+      m.flex_vertbodyid,
       m.eq_type,
       m.eq_obj1id,
       m.eq_obj2id,
@@ -843,6 +1129,10 @@ def wake_equality(m: types.Model, d: types.Data):
       m.tendon_num,
       m.wrap_type,
       m.wrap_objid,
+      m.flex_rod_has_twist,
+      m.flex_rod_edgeadr,
+      m.flex_rod_edgenum,
+      m.flex_rodedge_jnt,
       d.eq_active,
       d.tree_awake,
     ],
@@ -994,6 +1284,34 @@ def sleep(m: types.Model, d: types.Data):
     ],
     outputs=[d.tree_asleep],
   )
+
+  if m.nflex > 0 and m.opt.integrator != IntegratorType.DISCRETE:
+    wp.launch(
+      _wake_non_metric_flex,
+      dim=d.nworld,
+      inputs=[
+        m.ntree,
+        m.nflex,
+        m.body_treeid,
+        m.jnt_bodyid,
+        m.flex_interp,
+        m.flex_nodeadr,
+        m.flex_nodenum,
+        m.flex_vertadr,
+        m.flex_vertnum,
+        m.flex_nodebodyid,
+        m.flex_vertbodyid,
+        m.flex_edgeequality,
+        m.flex_rod_has_twist,
+        m.flex_eff_possible,
+        m.flex_rod_edgeadr,
+        m.flex_rod_edgenum,
+        m.flex_rodedge_jnt,
+        d.ntree_awake,
+        0,
+      ],
+      outputs=[d.tree_asleep],
+    )
 
   # 2. Check which constraint islands can sleep (all trees in island must be asleep)
   island_can_sleep = wp.ones((d.nworld, m.ntree), dtype=int)

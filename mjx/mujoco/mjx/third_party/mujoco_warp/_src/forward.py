@@ -28,11 +28,13 @@ from mujoco.mjx.third_party.mujoco_warp._src import sensor
 from mujoco.mjx.third_party.mujoco_warp._src import sleep
 from mujoco.mjx.third_party.mujoco_warp._src import smooth
 from mujoco.mjx.third_party.mujoco_warp._src import solver
+from mujoco.mjx.third_party.mujoco_warp._src import support
 from mujoco.mjx.third_party.mujoco_warp._src import util_misc
 from mujoco.mjx.third_party.mujoco_warp._src.support import mat33_to_quat_polar
 from mujoco.mjx.third_party.mujoco_warp._src.support import next_act
 from mujoco.mjx.third_party.mujoco_warp._src.support import xfrc_accumulate
 from mujoco.mjx.third_party.mujoco_warp._src.types import MJ_MINVAL
+from mujoco.mjx.third_party.mujoco_warp._src.types import ROD_HINGE_SIZE
 from mujoco.mjx.third_party.mujoco_warp._src.types import BiasType
 from mujoco.mjx.third_party.mujoco_warp._src.types import Data
 from mujoco.mjx.third_party.mujoco_warp._src.types import DeterminismType
@@ -86,7 +88,7 @@ def check_discrete(m: Model):
   if m.opt.enableflags & EnableBit.SLEEP:
     if m.opt.disableflags & DisableBit.ISLAND:
       raise ValueError("Discrete integrator: sleep without islands not yet supported")
-    if m.nefmK > 0 or m.has_non_simple_flex or m.has_flex_passive or not m.flex_interp_assemblable:
+    if m.nefmK > 0 or m.nflexrodhinge > 0 or m.has_non_simple_flex or m.has_flex_passive or not m.flex_interp_assemblable:
       raise ValueError("Discrete integrator: sleep with flex not yet supported")
 
 
@@ -191,10 +193,7 @@ def _wrap_period(
     and biastype == BiasType.AFFINE
     and gainprm[0] == -biasprm[1]
     and (
-      dyntype == DynType.NONE
-      or dyntype == DynType.INTEGRATOR
-      or dyntype == DynType.FILTER
-      or dyntype == DynType.FILTEREXACT
+      dyntype == DynType.NONE or dyntype == DynType.INTEGRATOR or dyntype == DynType.FILTER or dyntype == DynType.FILTEREXACT
     )
   )
   if not is_servo:
@@ -406,66 +405,156 @@ def _next_time_builder(warn_overflow: int):
 @wp.kernel
 def _next_rod_twist(
   # Model:
-  qpos0: wp.array2d[float],
-  body_parentid: wp.array[int],
-  body_pos: wp.array2d[wp.vec3],
-  body_quat: wp.array2d[wp.quat],
-  jnt_qposadr: wp.array[int],
-  jnt_dofadr: wp.array[int],
-  flex_dim: wp.array[int],
+  opt_enableflags: int,
+  jnt_bodyid: wp.array[int],
   flex_vertadr: wp.array[int],
-  flex_bendingadr: wp.array[int],
+  flex_vertnum: wp.array[int],
   flex_plasticadr: wp.array[int],
   flex_vertbodyid: wp.array[int],
-  flex_vert: wp.array[wp.vec3],
-  flex_bending: wp.array[float],
+  flex_rod_is_chain: wp.array[bool],
+  flex_rod_root_clamped: wp.array[bool],
+  flex_rod_tail_clamped: wp.array[bool],
+  flex_rod_edgeadr: wp.array[int],
+  flex_rod_edgenum: wp.array[int],
+  flex_rodedge_vert: wp.array[wp.vec2i],
+  flex_rodedge_jnt: wp.array[int],
   # Data in:
-  qpos_in: wp.array2d[float],
   plastic_in: wp.array2d[float],
-  xpos_in: wp.array2d[wp.vec3],
-  xquat_in: wp.array2d[wp.quat],
   xmat_in: wp.array2d[wp.mat33],
   flexvert_xpos_in: wp.array2d[wp.vec3],
+  body_awake_in: wp.array2d[int],
+  flex_rod_ref_ok_in: wp.array2d[bool],
+  flex_rod_frame0_loc_in: wp.array3d[wp.vec3],
+  flex_rod_frame0_ref_in: wp.array3d[wp.vec3],
+  flex_rod_tail_loc_in: wp.array3d[wp.vec3],
   # Data out:
   plastic_out: wp.array2d[float],
 ):
-  """Carries the twist reference of 1D rods to the configuration of this step, see mjROD_STATE_SIZE."""
+  """Carries per-edge (t_e, u_e) reference directors and unwrapped dpsi_h of 1D DER rods."""
   worldid, flexid = wp.tid()
-  padr = flex_plasticadr[flexid]
-  bendingadr = flex_bendingadr[flexid]
-  if flex_dim[flexid] != 1 or padr < 0 or bendingadr < 0:
+  if wp.static(ROD_HINGE_SIZE != 10) or not flex_rod_is_chain[flexid] or not flex_rod_ref_ok_in[worldid, flexid]:
     return
-  ok, _g, _Wk, _Wd, _f0, _f1, _f2, _tb0, _tdof, _tfrc, state_t, state_a, state_psi = passive._rod_chain_hinge(
-    qpos0,
-    body_parentid,
-    body_pos,
-    body_quat,
-    jnt_qposadr,
-    jnt_dofadr,
+  padr = flex_plasticadr[flexid]
+  eadr = flex_rod_edgeadr[flexid]
+  nedge = flex_rod_edgenum[flexid]
+  nhinge = nedge - 1
+  if padr < 0 or eadr < 0 or nhinge <= 0:
+    return
+
+  vbase = flex_vertadr[flexid]
+  if opt_enableflags & EnableBit.SLEEP:
+    any_awake = bool(False)
+    for v in range(flex_vertnum[flexid]):
+      bid = flex_vertbodyid[vbase + v]
+      if bid >= 0 and body_awake_in[worldid, bid] == SleepState.AWAKE:
+        any_awake = bool(True)
+    for e in range(nedge):
+      jnt = flex_rodedge_jnt[eadr + e]
+      if jnt >= 0 and body_awake_in[worldid, jnt_bodyid[jnt]] == SleepState.AWAKE:
+        any_awake = bool(True)
+    if not any_awake:
+      return
+
+  # Pass 1: validate all edges and hinge parallel transports before mutating plastic_out.
+  z3 = wp.vec3(0.0)
+  ok0, _anc0, _tp0, t_prev, u_prev, _vp0, _l0 = support.rod_chain_edge_director(
     flex_vertadr,
-    flex_bendingadr,
     flex_plasticadr,
     flex_vertbodyid,
-    flex_vert,
-    flex_bending,
-    qpos_in,
+    flex_rod_root_clamped,
+    flex_rod_tail_clamped,
+    flex_rod_edgeadr,
+    flex_rod_edgenum,
+    flex_rodedge_vert,
     plastic_in,
-    xpos_in,
-    xquat_in,
     xmat_in,
     flexvert_xpos_in,
+    flex_rod_frame0_loc_in,
+    flex_rod_frame0_ref_in,
+    flex_rod_tail_loc_in,
     worldid,
     flexid,
-    bendingadr + 1,
-    False,
-    False,
+    0,
+    z3,
+    z3,
   )
-  if not ok:
+  if not ok0:
     return
-  for i in range(3):
-    plastic_out[worldid, padr + i] = state_t[i]
-    plastic_out[worldid, padr + 3 + i] = state_a[i]
-  plastic_out[worldid, padr + 6] = state_psi
+  for h in range(nhinge):
+    ok1, _anc1, _tp1, t_cur, u_cur, _vp1, _l1 = support.rod_chain_edge_director(
+      flex_vertadr,
+      flex_plasticadr,
+      flex_vertbodyid,
+      flex_rod_root_clamped,
+      flex_rod_tail_clamped,
+      flex_rod_edgeadr,
+      flex_rod_edgenum,
+      flex_rodedge_vert,
+      plastic_in,
+      xmat_in,
+      flexvert_xpos_in,
+      flex_rod_frame0_loc_in,
+      flex_rod_frame0_ref_in,
+      flex_rod_tail_loc_in,
+      worldid,
+      flexid,
+      h + 1,
+      t_prev,
+      u_prev,
+    )
+    if not ok1:
+      return
+    ok_pth, _ut, _vt = support.rod_parallel_transport(t_prev, t_cur, u_prev)
+    if not ok_pth:
+      return
+    t_prev = t_cur
+    u_prev = u_cur
+
+  # Pass 2: write [6*nedge (t_e, u_e) | nhinge unwrapped dpsi_h].
+  # Read-before-write per slot keeps in-place plastic_in == plastic_out safe.
+  anc_prev = bool(False)
+  t_prev = z3
+  u_prev = z3
+  for e in range(nedge):
+    _ok_e, anc_cur, _tp_e, t_cur, u_cur, _v_cur, _l_e = support.rod_chain_edge_director(
+      flex_vertadr,
+      flex_plasticadr,
+      flex_vertbodyid,
+      flex_rod_root_clamped,
+      flex_rod_tail_clamped,
+      flex_rod_edgeadr,
+      flex_rod_edgenum,
+      flex_rodedge_vert,
+      plastic_in,
+      xmat_in,
+      flexvert_xpos_in,
+      flex_rod_frame0_loc_in,
+      flex_rod_frame0_ref_in,
+      flex_rod_tail_loc_in,
+      worldid,
+      flexid,
+      e,
+      t_prev,
+      u_prev,
+    )
+    if e > 0:
+      h = e - 1
+      _ok_pth, u_trans, v_trans = support.rod_parallel_transport(t_prev, t_cur, u_prev)
+      dpsi_h = wp.atan2(wp.dot(u_cur, v_trans), wp.dot(u_cur, u_trans))
+      if anc_prev and anc_cur:
+        psi_prev = plastic_in[worldid, padr + 6 * nedge + h]
+        jump = dpsi_h - psi_prev
+        dpsi_h -= 2.0 * wp.pi * wp.round(jump / (2.0 * wp.pi))
+      plastic_out[worldid, padr + 6 * nedge + h] = dpsi_h
+    plastic_out[worldid, padr + 6 * e + 0] = t_cur[0]
+    plastic_out[worldid, padr + 6 * e + 1] = t_cur[1]
+    plastic_out[worldid, padr + 6 * e + 2] = t_cur[2]
+    plastic_out[worldid, padr + 6 * e + 3] = u_cur[0]
+    plastic_out[worldid, padr + 6 * e + 4] = u_cur[1]
+    plastic_out[worldid, padr + 6 * e + 5] = u_cur[2]
+    anc_prev = anc_cur
+    t_prev = t_cur
+    u_prev = u_cur
 
 
 @wp.kernel
@@ -1230,30 +1319,32 @@ def _advance(m: Model, d: Data, qacc: wp.array, qvel: Optional[wp.array] = None)
   )
 
   # carry the twist reference of 1D rods to the configuration of this step (flexvert_xpos)
-  if m.nplastic > 0 and m.nflexrodhinge > 0:
+  if m.nplastic > 0 and m.nflexrodedge > 0:
     wp.launch(
       _next_rod_twist,
       dim=(d.nworld, m.nflex),
       inputs=[
-        m.qpos0,
-        m.body_parentid,
-        m.body_pos,
-        m.body_quat,
-        m.jnt_qposadr,
-        m.jnt_dofadr,
-        m.flex_dim,
+        m.opt.enableflags,
+        m.jnt_bodyid,
         m.flex_vertadr,
-        m.flex_bendingadr,
+        m.flex_vertnum,
         m.flex_plasticadr,
         m.flex_vertbodyid,
-        m.flex_vert,
-        m.flex_bending,
-        d.qpos,
+        m.flex_rod_is_chain,
+        m.flex_rod_root_clamped,
+        m.flex_rod_tail_clamped,
+        m.flex_rod_edgeadr,
+        m.flex_rod_edgenum,
+        m.flex_rodedge_vert,
+        m.flex_rodedge_jnt,
         d.plastic,
-        d.xpos,
-        d.xquat,
         d.xmat,
         d.flexvert_xpos,
+        d.body_awake,
+        d.flex_rod_ref_ok,
+        d.flex_rod_frame0_loc,
+        d.flex_rod_frame0_ref,
+        d.flex_rod_tail_loc,
       ],
       outputs=[d.plastic],
     )
@@ -1714,16 +1805,8 @@ def rungekutta4(m: Model, d: Data):
     act_t0 = None
     act_dot_rk = None
 
-  save_len = bool(
-    m.na
-    and not (m.opt.disableflags & DisableBit.ACTUATION)
-    and m.has_actuator_wrap
-  )
-  save_vel = bool(
-    m.na
-    and not (m.opt.disableflags & DisableBit.ACTUATION)
-    and m.has_actuator_dcmotor
-  )
+  save_len = bool(m.na and not (m.opt.disableflags & DisableBit.ACTUATION) and m.has_actuator_wrap)
+  save_vel = bool(m.na and not (m.opt.disableflags & DisableBit.ACTUATION) and m.has_actuator_dcmotor)
   actuator_length_t0 = wp.clone(d.actuator_length) if save_len else None
   actuator_velocity_t0 = wp.clone(d.actuator_velocity) if save_vel else None
 

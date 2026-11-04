@@ -21,6 +21,7 @@
 #include <mujoco/mjsan.h>  // IWYU pragma: keep
 #include "engine/engine_collision_convex.h"
 #include "engine/engine_collision_primitive.h"
+#include "engine/engine_core_util.h"
 #include "engine/engine_inline.h"
 #include "engine/engine_util_blas.h"
 #include "engine/engine_util_spatial.h"
@@ -222,6 +223,10 @@ int mjc_PlaneFlex(const mjModel* m, mjData* d, mjPreContact* con, int* vert, int
 
   // prepare contact parameters (same for all vertices)
   int flex_vertnum = m->flex_vertnum[f];
+  int elemnum = m->flex_elemnum[f];
+  mjtNum box[2];
+  int is_box = (elemnum > 0 && mj_rodBoxSize(m, f, box));
+  mjtNum bound = is_box ? mju_norm(box, 2) : radius;
 
   // collide all flex vertices with plane
   int ncon = 0;
@@ -231,6 +236,49 @@ int mjc_PlaneFlex(const mjModel* m, mjData* d, mjPreContact* con, int* vert, int
     // distance from plane to vertex
     mjtNum dif[3] = {v[0] - pos[0], v[1] - pos[1], v[2] - pos[2]};
     mjtNum dist = mju_dot3(dif, normal);
+
+    // quick reject by bounding radius
+    if (dist > margin + bound) {
+      continue;
+    }
+
+    if (is_box) {
+      int e = mj_rodVertElem(m, f, i);
+      mjtNum bpos[3], em[9], bsize[3];
+      if (e >= 0 && mj_rodBoxElem(m, d, f, e, bpos, em, bsize)) {
+        mjtNum m1[3] = {em[0], em[3], em[6]};
+        mjtNum m2[3] = {em[1], em[4], em[7]};
+        mjtNum n1 = mju_dot3(normal, m1);
+        mjtNum n2 = mju_dot3(normal, m2);
+        mjtNum s1 = (n1 >= 0) ? -1 : 1;
+        mjtNum s2 = (n2 >= 0) ? -1 : 1;
+        mjtNum c1[2] = {s1 * box[0], s1 * box[0]};
+        mjtNum c2[2] = {s2 * box[1], s2 * box[1]};
+        if (box[0] * mju_abs(n1) <= box[1] * mju_abs(n2)) {
+          c1[1] = -c1[0];
+        } else {
+          c2[1] = -c2[0];
+        }
+        for (int k = 0; k < 2; k++) {
+          mjtNum corner[3];
+          for (int r = 0; r < 3; r++) {
+            corner[r] = c1[k] * m1[r] + c2[k] * m2[r];
+          }
+          mjtNum ldist = mju_dot3(corner, normal);
+          if (dist + ldist > margin || (k == 1 && ldist > 0)) {
+            continue;
+          }
+          con[ncon].dist = dist + ldist;
+          mju_add3(con[ncon].pos, v, corner);
+          mji_addToScl3(con[ncon].pos, normal, -0.5 * con[ncon].dist);
+          mju_copy3(con[ncon].normal, normal);
+          mju_zero3(con[ncon].tangent);
+          vert[ncon] = i;
+          ncon++;
+        }
+        continue;
+      }
+    }
 
     // no contact
     if (dist > margin + radius) {
@@ -318,8 +366,29 @@ int mjc_GeomElem(const mjModel* m, mjData* d, mjPreContact* con, int g, int f, i
     }
   }
 
-  // sphere/capsule/box : capsule
+  // sphere/capsule/box : 1D element (box or capsule)
   if (dim == 1 && (type == mjGEOM_SPHERE || type == mjGEOM_CAPSULE || type == mjGEOM_BOX)) {
+    mjtNum bpos[3], bmat[9], bsize[3];
+    if (mj_rodBoxElem(m, d, f, e, bpos, bmat, bsize)) {
+      switch (type) {
+        case mjGEOM_SPHERE:
+          ncon = mjraw_SphereBox(con, margin, d->geom_xpos + 3*g, d->geom_xmat + 9*g,
+                                 m->geom_size + 3*g, bpos, bmat, bsize);
+          break;
+        case mjGEOM_CAPSULE:
+          ncon = mjraw_CapsuleBox(con, margin, d->geom_xpos + 3*g, d->geom_xmat + 9*g,
+                                  m->geom_size + 3*g, bpos, bmat, bsize);
+          break;
+        case mjGEOM_BOX:
+          ncon = mjraw_BoxBox(con, margin, d->geom_xpos + 3*g, d->geom_xmat + 9*g,
+                              m->geom_size + 3*g, bpos, bmat, bsize);
+          break;
+        default:
+          ncon = 0;
+      }
+      return ncon;
+    }
+
     // make capsule from vertices
     mjtNum pos[3], mat[9], size[2];
     makeCapsule(m, d, f, m->flex_elem + m->flex_elemdataadr[f] + e*2, pos, mat, size);
@@ -488,11 +557,32 @@ int mjc_ElemElem(const mjModel* m, mjData* d, mjPreContact* con, int f1, int e1,
     }
   }
 
-  // capsule : capsule
+  // 1D : 1D (box or capsule)
   if (dim1 == 1 && dim2 == 1) {
-    // make capsules from vertices
+    mjtNum bpos1[3], bmat1[9], bsize1[3];
+    mjtNum bpos2[3], bmat2[9], bsize2[3];
+    int box1 = mj_rodBoxElem(m, d, f1, e1, bpos1, bmat1, bsize1);
+    int box2 = mj_rodBoxElem(m, d, f2, e2, bpos2, bmat2, bsize2);
+    if (box1 && box2) {
+      return mjraw_BoxBox(con, margin, bpos1, bmat1, bsize1, bpos2, bmat2, bsize2);
+    }
+
     mjtNum pos1[3], mat1[9], size1[2];
     mjtNum pos2[3], mat2[9], size2[2];
+    if (box1) {
+      makeCapsule(m, d, f2, m->flex_elem + m->flex_elemdataadr[f2] + e2*2, pos2, mat2, size2);
+      ncon = mjraw_CapsuleBox(con, margin, pos2, mat2, size2, bpos1, bmat1, bsize1);
+      for (int i = 0; i < ncon; i++) {
+        mju_scl3(con[i].normal, con[i].normal, -1);
+      }
+      return ncon;
+    }
+    if (box2) {
+      makeCapsule(m, d, f1, m->flex_elem + m->flex_elemdataadr[f1] + e1*2, pos1, mat1, size1);
+      return mjraw_CapsuleBox(con, margin, pos1, mat1, size1, bpos2, bmat2, bsize2);
+    }
+
+    // make capsules from vertices
     makeCapsule(m, d, f1, m->flex_elem + m->flex_elemdataadr[f1] + e1*2,
                 pos1, mat1, size1);
     makeCapsule(m, d, f2, m->flex_elem + m->flex_elemdataadr[f2] + e2*2,

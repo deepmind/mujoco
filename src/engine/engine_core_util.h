@@ -240,11 +240,13 @@ void mj_flexHessianMul(const mjModel* m, const mjData* d, int f, mjtNum* res,
 
 // per-record data layout in flex_bending for 1D flexes, after a leading record count; a record is a
 // single hinge (v0, v1, v2) or a pair of adjacent curved hinges (v0, v1, v2) and (v1, v2, v3):
-//   single: [v0, v1, v2, -1, k1, k2 - k1, kb0, twist_jnt, kt, psi0], energy k (|kb| - kb0)^2, with
+//   single: [v0, v1, v2, -1, k1, k2 - k1, kb0, twist_jnt, kt, box_b], energy k (|kb| - kb0)^2, with
 //           kb0 = |kb| in the reference (0 if straight, then the energy is k |kb|^2); k2 - k1 != 0
-//           for anisotropic sections, twist_jnt is the twist hinge of the chain (-1: none; only
-//           read on the first hinge), kt = GJ / (l0 + l1) the torsional stiffness, and psi0 the
-//           angle of the weak bending axis of the first edge (only read on the first hinge)
+//           for anisotropic sections, twist_jnt is the twist hinge of edge h + 1 (edge 0's joint
+//           when free is twist_jnt[0] - 1, validated by the compiler; use mj_rodChainTwistJnt),
+//           kt = GJ / (l0 + l1) is the torsional stiffness, and
+//           box_b encodes the box section minor half-size b and initial weak-axis angle psi0
+//           (0 for circle, +b for psi0 = 0, -b for psi0 = pi/2)
 //   pair:   [v0, v1, v2, v3, w0, w1, kb0_a, kb0_b, kt cos(dphi0), kt sin(dphi0)], energy
 //           w0 (|om_a| - kb0_a)^2 + w1 (|om_b| - kb0_b)^2 + kt |R(dphi0) n_a - n_b|^2, with
 //           om_a, om_b the curvature binormals of both hinges in a frame orthogonal to the shared
@@ -288,23 +290,57 @@ int mj_rodPair(const mjtNum x0[3], const mjtNum x1[3], const mjtNum x2[3], const
 void mj_rodPairWeights(mjtNum g[4], mjtNum Wk[16], mjtNum Wd[16],
                        const mjtNum om[4], mjtNum w0, mjtNum w1, const mjtNum prm[4]);
 
-// evaluate a 1D DER rod chain of single hinges with Bishop frame, optional twist hinge DOF, and
-// tridiagonal quasistatic twist solve for anisotropic cross-sections; returns 1 if handled
-//   the geometric twist of the chain is measured against a reference director on the last edge,
-//   carried in time by parallel transport in d->plastic + flex_plasticadr[f] (see
-//   mjROD_STATE_SIZE) so that it stays continuous when the chain coils; state_out (optional)
-//   receives the updated state for the current configuration
+// evaluate a 1D DER rod chain of single hinges with time-parallel reference directors and per-edge
+// twist hinge DOFs; returns 1 if handled
+//   each edge carries its tangent (3) and reference director (3) across steps by minimal-rotation
+//   parallel transport in d->plastic + flex_plasticadr[f] (6*nedge numbers), followed by the
+//   unwrapped reference twist of each hinge (nhinge numbers); ktheta_out (optional, nedge numbers)
+//   receives the bending stiffness d2E/dtheta_e^2 of each twist angle, clamped at 0 per hinge side;
+//   state_out (optional) receives the updated state for the current configuration
 MJAPI int mj_rodChain(const mjModel* m, mjData* d, int f, mjtNum* energy_out,
                       mjtNum* frc, mjtNum* qfrc_out,
-                      mjtNum* Wk_out, mjtNum* Wd_out, mjtNum* state_out);
+                      mjtNum* Wk_out, mjtNum* Wd_out, mjtNum* ktheta_out,
+                      mjtNum* state_out);
 
-// size of the twist state of a 1D rod in d->plastic: tangent (3) and reference director (3) of the
-// last edge in the frame of the body of the first vertex, and the unwrapped geometric twist (1);
-// a zero tangent selects the reference configuration
-#define mjROD_STATE_SIZE 7
+// size of the time-parallel state of a 1D DER rod in d->plastic (6*nedge + nhinge, or 0 if none)
+int mj_rodStateSize(const mjModel* m, int f);
 
-// effective torsional stiffness 2 kt_eff of the twist hinge of a 1D rod chain, 0 if none
-mjtNum mj_rodTwistStiffness(const mjModel* m, int f, int* twist_dof);
+// return 1 if 1D flex f is an open DER rod chain with per-edge twist DOFs or box section, 0 else
+MJAPI int mj_rodHasTwist(const mjModel* m, int f);
+
+// cross-section half-sizes (a >= b) of a 1D DER rod with a box section; returns 1 if box, 0 else
+MJAPI int mj_rodBoxSize(const mjModel* m, int f, mjtNum size[2]);
+
+// per-element 3x3 rotation matrices [m1, m2, t] and half-sizes (a >= b) of a 1D box-section rod;
+// returns 1 if handled, 0 otherwise
+MJAPI int mj_rodBoxEdge(const mjModel* m, const mjData* d, int f, mjtNum* elem_mat, mjtNum size[2]);
+
+// center, 3x3 rotation matrix [m1, m2, t], and half-sizes (a, b, L/2) of element e of a 1D
+// box-section rod; returns 1 if handled, 0 otherwise
+MJAPI int mj_rodBoxElem(const mjModel* m, const mjData* d, int f, int e,
+                        mjtNum pos[3], mjtNum mat[9], mjtNum size[3]);
+
+// twist hinge joint ID of element e of a 1D rod (-1 if none), and optional orientation sign (+-1)
+MJAPI int mj_rodEdgeTwistJnt(const mjModel* m, int f, int e, int* sgn_out);
+
+// clamped first (root) and last (tail) edges of the 1D DER rod chain of flex f: both vertices of
+// the edge on one body (the tail needs at least two hinges)
+void mj_rodClampedEnds(const mjModel* m, int f, int* root, int* tail);
+
+// twist hinge joint ID of chain edge c (0 <= c <= nhinge) of a 1D rod, or -1 if none
+MJAPI int mj_rodChainTwistJnt(const mjModel* m, int f, int c);
+
+// dof address of the twist hinge of chain edge c of a 1D rod, or -1 if none
+int mj_rodChainTwistDof(const mjModel* m, int f, int c);
+
+// element of 1D flex f incident to its flex-local vertex v (for a DER rod chain, the element of
+// the chain edge leaving v, or the last one at the far end), -1 if none
+MJAPI int mj_rodVertElem(const mjModel* m, int f, int v);
+
+// add rotational lever-arm Jacobian terms (axial twist roll, and the pitch/yaw vertex couple of the
+// cross-section) for a 1D DER rod on side (0 or 1) of a contact
+void mj_rodContactJac(const mjModel* m, const mjData* d, const mjContact* con, int side,
+                      int NV, const int* chain, mjtNum* jacdifp, mjtNum* jacdifr);
 
 // element-local geometry, quadratic edge response, and stiffness contractions shared by
 // passive forces and both solver paths; keep the helpers visible to the compiler so the

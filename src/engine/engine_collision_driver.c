@@ -1486,7 +1486,10 @@ static void makeAAMM(const mjModel* m, mjData* d,
     // correct for flex radius and margin
     mjtNum margin = override_margin ? override_margin
                                      : m->flex_margin[f] + m->flex_gap[f];
-    mjtNum bound = m->flex_radius[f] + margin;
+    mjtNum box[2];
+    mjtNum pad = mj_rodBoxSize(m, f, box) ? mju_max(m->flex_radius[f], mju_norm(box, 2))
+                                          : m->flex_radius[f];
+    mjtNum bound = pad + margin;
     aamm[0] -= bound;
     aamm[1] -= bound;
     aamm[2] -= bound;
@@ -1992,7 +1995,10 @@ static inline int pairMaxContact(const mjModel* m, const mjcPair* pair) {
     case mjCPAIR_GEOM_FLEX: {
       int g = pair->geom_flex.g;
       int f = pair->geom_flex.f;
-      return (m->geom_type[g] == mjGEOM_PLANE) ? m->flex_vertnum[f] : mjMAXCONPAIR;
+      if (m->geom_type[g] == mjGEOM_PLANE) {
+        return m->flex_vertnum[f] * (mj_rodBoxSize(m, f, NULL) ? 2 : 1);
+      }
+      return mjMAXCONPAIR;
     }
 
     case mjCPAIR_GEOM_ELEM: {
@@ -2004,6 +2010,9 @@ static inline int pairMaxContact(const mjModel* m, const mjcPair* pair) {
           (dim == 2 && (type == mjGEOM_BOX || type == mjGEOM_CAPSULE))) {
         return mjMAXCONPAIR;
       }
+      if (dim == 1 && type == mjGEOM_BOX && mj_rodBoxSize(m, f, NULL)) {
+        return mjMAXCONPAIR;
+      }
       if (dim == 1 && (type == mjGEOM_CAPSULE || type == mjGEOM_BOX)) {
         return 2;
       }
@@ -2011,8 +2020,13 @@ static inline int pairMaxContact(const mjModel* m, const mjcPair* pair) {
     }
 
     case mjCPAIR_ELEM_ELEM: {
-      int dim1 = m->flex_dim[pair->elem_elem.f1];
-      int dim2 = m->flex_dim[pair->elem_elem.f2];
+      int f1 = pair->elem_elem.f1;
+      int f2 = pair->elem_elem.f2;
+      int dim1 = m->flex_dim[f1];
+      int dim2 = m->flex_dim[f2];
+      if (dim1 == 1 && dim2 == 1 && mj_rodBoxSize(m, f1, NULL) && mj_rodBoxSize(m, f2, NULL)) {
+        return mjMAXCONPAIR;
+      }
       return (dim1 == 1 && dim2 == 1) ? 2 : 1;
     }
 

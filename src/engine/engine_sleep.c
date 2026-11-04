@@ -300,6 +300,26 @@ static int wakeNonMetricFlex(const mjModel* m, mjData* d, int flg_wake) {
         d->tree_asleep[t] = kAwake;
       }
     }
+    if (mj_rodHasTwist(m, f)) {
+      int nedge = (int)m->flex_bending[m->flex_bendingadr[f]] + 1;
+      for (int e = 0; e < nedge; e++) {
+        int jnt = mj_rodChainTwistJnt(m, f, e);
+        if (jnt < 0) {
+          continue;
+        }
+        int t = m->body_treeid[m->jnt_bodyid[jnt]];
+        if (t < 0) {
+          continue;
+        }
+        if (d->tree_asleep[t] >= 0) {
+          if (flg_wake) {
+            nwoke += mj_wakeIsland(d->tree_asleep, m->ntree, t, kAwake, "perturbation", d->time);
+          }
+        } else {
+          d->tree_asleep[t] = kAwake;
+        }
+      }
+    }
   }
   return nwoke;
 }
@@ -559,10 +579,20 @@ int mj_wakeEquality(const mjModel* m, mjData* d) {
         bodyid = m->flex_vertbodyid;
       }
 
+      int nedge = mj_rodHasTwist(m, f) ? (int)m->flex_bending[m->flex_bendingadr[f]] + 1 : 0;
+
       // check if any dynamic tree is awake and track most-awake countdown
       int any_awake = 0, wakeval = 0;
       for (int j = 0; j < num; j++) {
         int treeid = m->body_treeid[bodyid[adr+j]];
+        if (treeid >= 0 && d->tree_awake[treeid]) {
+          any_awake = 1;
+          wakeval = mjMIN(wakeval, d->tree_asleep[treeid]);
+        }
+      }
+      for (int e = 0; e < nedge; e++) {
+        int jnt = mj_rodChainTwistJnt(m, f, e);
+        int treeid = jnt >= 0 ? m->body_treeid[m->jnt_bodyid[jnt]] : -1;
         if (treeid >= 0 && d->tree_awake[treeid]) {
           any_awake = 1;
           wakeval = mjMIN(wakeval, d->tree_asleep[treeid]);
@@ -573,6 +603,14 @@ int mj_wakeEquality(const mjModel* m, mjData* d) {
       if (any_awake) {
         for (int j = 0; j < num; j++) {
           int treeid = m->body_treeid[bodyid[adr+j]];
+          if (treeid >= 0 && d->tree_asleep[treeid] >= 0) {
+            nwoke += mj_wakeIsland(d->tree_asleep, m->ntree, treeid, wakeval,
+                                   "flex equality", d->time);
+          }
+        }
+        for (int e = 0; e < nedge; e++) {
+          int jnt = mj_rodChainTwistJnt(m, f, e);
+          int treeid = jnt >= 0 ? m->body_treeid[m->jnt_bodyid[jnt]] : -1;
           if (treeid >= 0 && d->tree_asleep[treeid] >= 0) {
             nwoke += mj_wakeIsland(d->tree_asleep, m->ntree, treeid, wakeval,
                                    "flex equality", d->time);
@@ -1023,6 +1061,21 @@ mjtSleepState mj_sleepState(const mjModel* m, const mjData* d, mjtObj type, int 
           return mjS_AWAKE;
         }
         has_asleep = 1;
+      }
+    }
+    if (mj_rodHasTwist(m, i)) {
+      int nedge = (int)m->flex_bending[m->flex_bendingadr[i]] + 1;
+      for (int e = 0; e < nedge; e++) {
+        int jnt = mj_rodChainTwistJnt(m, i, e);
+        if (jnt >= 0) {
+          int b = m->jnt_bodyid[jnt];
+          if (m->body_treeid[b] >= 0) {
+            if (d->body_awake[b] == mjS_AWAKE) {
+              return mjS_AWAKE;
+            }
+            has_asleep = 1;
+          }
+        }
       }
     }
     return has_asleep ? mjS_ASLEEP : mjS_STATIC;

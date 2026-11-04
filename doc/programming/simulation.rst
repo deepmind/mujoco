@@ -290,8 +290,9 @@ Plastic state: ``plastic``
   When joints or tendons have a positive :at:`springyield` attribute (:ref:`joints<body-joint-springyield>`,
   :ref:`tendons<tendon-spatial-springyield>`) or flexes have a positive :at:`yield` attribute
   (:ref:`flexes<flex-elasticity-yield>`), this buffer stores the mutable plastic spring reference configurations,
-  resting lengths, and element plastic strains, updated via return mapping at each step. For 1D elastic rods with a
-  twist joint (:ref:`elasticity<flex-elasticity>`), it also stores the parallel-transported twist reference frame.
+  resting lengths, and element plastic strains, updated via return mapping at each step. For 1D elastic rods with
+  twist joints (:ref:`elasticity<flex-elasticity>`), it also stores the per-edge time-parallel reference frames and the
+  unwrapped reference twists of the interior vertices.
 
 .. _siFullPhysics:
 
