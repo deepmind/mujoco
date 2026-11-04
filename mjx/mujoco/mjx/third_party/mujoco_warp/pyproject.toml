@@ -34,6 +34,10 @@ dependencies = [
 ]
 
 [[tool.uv.index]]
+url = "https://pypi.org/simple"
+default = true
+
+[[tool.uv.index]]
 name = "nvidia"
 url = "https://pypi.nvidia.com/"
 explicit = true
@@ -41,7 +45,6 @@ explicit = true
 [[tool.uv.index]]
 name = "mujoco"
 url = "https://py.mujoco.org/"
-explicit = true
 
 [tool.uv.sources]
 warp-lang = {index = "nvidia"}
