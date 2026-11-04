@@ -1725,9 +1725,11 @@ void inline ComputeBending(double* bending, double* pos, const int v[4], double 
     }
   }
 
+  // curved reference coefficient, F/L^2: it multiplies cross products of edges in the engine
   double n[3];
   mjuu_crossvec(n, e0, e1);
-  bending[16] = mjuu_dot3(n, e2) * (a01 - a03) * (a04 - a02) * stiffness / (sqr * sqrt(sqr));
+  double c23  = c[2] * c[3];
+  bending[16] = -mjuu_dot3(n, e2) * c23 * c23 * stiffness / (sqr * sqr);
 }
 
 // bend angle tolerance of a straight 1D flex vertex in the reference configuration

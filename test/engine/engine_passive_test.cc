@@ -526,6 +526,123 @@ TEST_F(ElasticityTest, CurvedShell) {
   EXPECT_NEAR(d->qfrc_spring[10], 0, 1e-6);
 }
 
+// curved non-isosceles diamond with interior hinge (0, 1), all lengths
+// (including the thickness) scaled by s
+static MjModelPtr CurvedDiamond(double s, const char* elasticity_extra,
+                                bool pin) {
+  const double point[12] = {0, 0, 0, 1, 0, 0, 0.3, 0.45, 0.15, 0.65, -0.5, 0.2};
+  std::string points;
+  for (double x : point) points += " " + std::to_string(s * x);
+  std::string xml = R"(
+  <mujoco>
+    <option gravity="0 0 0" integrator="Euler" timestep="0"/>
+    <worldbody>
+      <flexcomp name="shell" type="direct" dim="2" mass="1" point=")" +
+                    points + R"(" element="0 1 2  0 3 1">
+        <contact contype="0" conaffinity="0" selfcollide="none"/>
+        <elasticity young="1000" poisson="0.3" thickness=")" +
+                    std::to_string(0.02 * s) + R"(" elastic2d="bend" )" +
+                    elasticity_extra + R"(/>)" +
+                    (pin ? R"(<pin id="0 1 2"/>)" : "") + R"(
+      </flexcomp>
+    </worldbody>
+  </mujoco>
+  )";
+  char error[1024] = {0};
+  MjModelPtr m = LoadModelFromString(xml.c_str(), error, sizeof(error));
+  EXPECT_THAT(m.get(), NotNull()) << error;
+  return m;
+}
+
+// the bending forces of a curved shell, including its curved reference term,
+// scale as s^2 when all lengths are scaled by s
+TEST_F(ElasticityTest, CurvedShellBendingScaleInvariance) {
+  MjModelPtr m1 = CurvedDiamond(1, "", false);
+  ASSERT_THAT(m1.get(), NotNull());
+
+  // the curved reference term of the interior hinge is active
+  int interior = -1;
+  for (int e = 0; e < m1->flex_edgenum[0]; e++) {
+    if (m1->flex_edgeflap[2 * e + 1] != -1) interior = e;
+  }
+  ASSERT_GE(interior, 0);
+  ASSERT_NE(m1->flex_bending[17 * interior + 16], 0);
+
+  MjDataPtr d1 = MakeData(m1);
+  mj_forward(m1.get(), d1.get());
+  std::vector<mjtNum> frc1(d1->qfrc_spring, d1->qfrc_spring + m1->nv);
+  mjtNum frc1_norm = mju_norm(frc1.data(), m1->nv);
+  EXPECT_GT(frc1_norm, 0);
+
+  // at the curved rest shape, the quadratic and cubic terms cancel along the
+  // out-of-plane triangle normals at the flap vertices v2 and v3 (leaving only
+  // in-plane residual forces, as in Garg et al. 2007)
+  const mjtNum* x0 = d1->flexvert_xpos;
+  mjtNum e0[3], e1[3], e2[3], n0[3], n1[3];
+  mju_sub3(e0, x0 + 3, x0);
+  mju_sub3(e1, x0 + 6, x0);
+  mju_sub3(e2, x0 + 9, x0);
+  mju_cross(n0, e0, e1);
+  mju_normalize3(n0);
+  mju_cross(n1, e2, e0);
+  mju_normalize3(n1);
+  EXPECT_NEAR(mju_dot3(frc1.data() + 6, n0), 0, MjTol(1e-8, 1e-4) * frc1_norm);
+  EXPECT_NEAR(mju_dot3(frc1.data() + 9, n1), 0, MjTol(1e-8, 1e-4) * frc1_norm);
+
+  // without the curved reference term, the out-of-plane forces do not cancel
+  mjtNum b16 = m1->flex_bending[17 * interior + 16];
+  m1->flex_bending[17 * interior + 16] = 0;
+  mj_forward(m1.get(), d1.get());
+  EXPECT_GT(std::abs(mju_dot3(d1->qfrc_spring + 6, n0)), 0.1 * frc1_norm);
+  EXPECT_GT(std::abs(mju_dot3(d1->qfrc_spring + 9, n1)), 0.1 * frc1_norm);
+  m1->flex_bending[17 * interior + 16] = b16;
+
+  for (double s : {0.1, 10.0}) {
+    MjModelPtr m = CurvedDiamond(s, "", false);
+    ASSERT_THAT(m.get(), NotNull());
+    ASSERT_EQ(m->nv, m1->nv);
+    MjDataPtr d = MakeData(m);
+    mj_forward(m.get(), d.get());
+    for (int i = 0; i < m->nv; i++) {
+      EXPECT_NEAR(d->qfrc_spring[i] / (s * s), frc1[i],
+                  MjTol(1e-8, 1e-4) * frc1_norm)
+          << "scale " << s << ", dof " << i;
+    }
+  }
+}
+
+// the bending return mapping of a curved shell is scale invariant: folding the
+// flap by the same angle gives the same plastic state at every length scale
+TEST_F(ElasticityTest, CurvedShellBendingPlasticScaleInvariance) {
+  auto fold = [](double s) -> std::vector<mjtNum> {
+    MjModelPtr m = CurvedDiamond(s, R"(yield="0.002")", true);
+    EXPECT_THAT(m.get(), NotNull());
+    if (!m) return {};
+    EXPECT_EQ(m->nplastic, m->flex_edgenum[0]);
+    MjDataPtr d = MakeData(m);
+
+    // rotate the free flap vertex v3 by 0.3 rad around the hinge (x-axis)
+    double y = -0.5 * s, z = 0.2 * s, a = 0.3;
+    d->qpos[1] = y * std::cos(a) - z * std::sin(a) - y;
+    d->qpos[2] = y * std::sin(a) + z * std::cos(a) - z;
+    mj_step(m.get(), d.get());
+    return std::vector<mjtNum>(d->plastic, d->plastic + m->nplastic);
+  };
+
+  std::vector<mjtNum> p1 = fold(1);
+  ASSERT_FALSE(p1.empty());
+  mjtNum p1_norm = mju_norm(p1.data(), p1.size());
+  EXPECT_GT(p1_norm, 0);
+  for (double s : {0.1, 10.0}) {
+    std::vector<mjtNum> p = fold(s);
+    ASSERT_EQ(p.size(), p1.size());
+    for (int i = 0; i < (int)p.size(); i++) {
+      EXPECT_NEAR(p[i], p1[i], MjTol(1e-8, 1e-4) * p1_norm)
+          << "scale " << s << ", entry " << i;
+    }
+  }
+}
+
 // -------------------------------- membrane -----------------------------------
 TEST_F(ElasticityTest, ElasticEnergyMembrane) {
   static constexpr char cantilever_xml[] = R"(

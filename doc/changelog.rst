@@ -358,6 +358,9 @@ Bug fixes
   pool instead of dropping and leaking it.
 - ``mju_mat2Rot`` now normalizes the input quaternion and escapes 180-degree stationary points (saddles and minima)
   that do not maximize :math:`\operatorname{tr}(R^\top M)`.
+- Fixed the cotangent weight and length scale of the curved reference term of 2D :ref:`flex<deformable-flex>` bending
+  (:ref:`elastic2d<flex-elasticity-elastic2d>` **bend** or **both**), so out-of-plane bending forces vanish at curved
+  rest configurations and scale consistently with model size.
 - Fixed several bugs when editing or copying an :ref:`mjSpec`:
 
   - :ref:`mjs_delete` (``MjSpec.delete`` in Python) now removes deleted default classes from the class lookup map
