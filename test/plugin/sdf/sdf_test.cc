@@ -200,5 +200,93 @@ TEST_F(SdfPluginTest, VisualizerCapacityTailSinglePointDoesNotReadOob) {
   mjv_freeScene(&scn);
 }
 
+TEST_F(SdfPluginTest, ConcurrentCollisionAndVisualizeThreadSafe) {
+  static constexpr char kMultiBoltXml[] = R"(
+  <mujoco>
+    <option sdf_iterations="5" sdf_initpoints="8"/>
+    <extension>
+      <plugin plugin="mujoco.sdf.bolt">
+        <instance name="bolt"/>
+      </plugin>
+    </extension>
+    <asset>
+      <mesh name="bolt">
+        <plugin instance="bolt"/>
+      </mesh>
+    </asset>
+    <worldbody>
+      <geom name="bolt0" type="sdf" mesh="bolt" pos="0 0 0">
+        <plugin instance="bolt"/>
+      </geom>
+      <geom name="bolt1" type="sdf" mesh="bolt" pos="0.4 0 0">
+        <plugin instance="bolt"/>
+      </geom>
+      <body pos="0.1 0.1 0.2">
+        <freejoint/>
+        <geom type="sphere" size="0.25"/>
+      </body>
+      <body pos="-0.1 0.1 0.2">
+        <freejoint/>
+        <geom type="sphere" size="0.25"/>
+      </body>
+      <body pos="0.1 -0.1 0.2">
+        <freejoint/>
+        <geom type="sphere" size="0.25"/>
+      </body>
+      <body pos="-0.1 -0.1 0.2">
+        <freejoint/>
+        <geom type="sphere" size="0.25"/>
+      </body>
+      <body pos="0.5 0.1 0.2">
+        <freejoint/>
+        <geom type="sphere" size="0.25"/>
+      </body>
+      <body pos="0.3 0.1 0.2">
+        <freejoint/>
+        <geom type="sphere" size="0.25"/>
+      </body>
+      <body pos="0.5 -0.1 0.2">
+        <freejoint/>
+        <geom type="sphere" size="0.25"/>
+      </body>
+      <body pos="0.3 -0.1 0.2">
+        <freejoint/>
+        <geom type="sphere" size="0.25"/>
+      </body>
+    </worldbody>
+  </mujoco>
+  )";
+
+  char error[1024] = {0};
+  MjModelPtr m = LoadModelFromString(kMultiBoltXml, error, sizeof(error));
+  ASSERT_THAT(m.get(), NotNull()) << error;
+  MjDataPtr d = MakeData(m);
+  mju_threadpool(d.get(), 4);
+
+  const mjpPlugin* bolt = mjp_getPluginAtSlot(m->plugin[0]);
+  ASSERT_THAT(bolt, NotNull());
+
+  mjvOption opt;
+  mjv_defaultOption(&opt);
+  opt.flags[mjVIS_SDFITER] = 1;
+
+  mjvScene scn;
+  mjv_defaultScene(&scn);
+  mjv_makeScene(m.get(), &scn, 10000);
+
+  for (int step = 0; step < 5; ++step) {
+    bolt->reset(m.get(), nullptr, reinterpret_cast<void*>(d->plugin_data[0]),
+                0);
+    mj_step(m.get(), d.get());
+    EXPECT_GT(d->ncon, 0);
+
+    scn.ngeom = 0;
+    bolt->visualize(m.get(), d.get(), &opt, &scn, 0);
+    EXPECT_GT(scn.ngeom, 0);
+  }
+
+  mjv_freeScene(&scn);
+}
+
 }  // namespace
 }  // namespace mujoco
