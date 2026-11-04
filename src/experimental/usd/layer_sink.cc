@@ -14,6 +14,7 @@
 
 #include <mujoco/experimental/usd/layer_sink.h>
 
+#include <unordered_map>
 #include <vector>
 
 #include <mujoco/mujoco.h>
@@ -30,10 +31,12 @@
 #include <pxr/usd/sdf/attributeSpec.h>
 #include <pxr/usd/sdf/changeBlock.h>
 #include <pxr/usd/sdf/childrenPolicies.h>
+#include <pxr/usd/sdf/path.h>
 #include <pxr/usd/sdf/primSpec.h>
 #include <pxr/usd/sdf/types.h>
 #include <pxr/usd/sdf/valueTypeName.h>
 #include <pxr/usd/usd/common.h>
+#include <pxr/usd/usd/prim.h>
 #include <pxr/usd/usd/stage.h>
 #include <pxr/usd/usd/timeCode.h>
 #include <pxr/usd/usdGeom/tokens.h>
@@ -71,19 +74,76 @@ void LayerSink::Update(const mjData* const data,
   pxr::UsdTimeCode timecode = data->time * layer->GetTimeCodesPerSecond();
   pxr::UsdGeomXformCache xform_cache(timecode);
 
+  // Compute world transforms for all valid body prims.
+  std::unordered_map<pxr::SdfPath, pxr::GfMatrix4d, pxr::SdfPath::Hash>
+      world_transforms;
+  std::vector<pxr::GfMatrix4d> body_world_xforms(body_paths.size());
+  for (int i = 0; i < body_paths.size(); i++) {
+    const pxr::SdfPath& path = body_paths[i];
+    // Some bodies such as the world body don't have mapped USD prims to
+    // transform.
+    if (path.IsEmpty()) {
+      continue;
+    }
+
+    // Convert pose data.
+    const mjtNum* xpos = &data->xpos[i * 3];
+    const mjtNum* xquat = &data->xquat[i * 4];
+    pxr::GfVec3d translation(xpos[0], xpos[1], xpos[2]);
+    pxr::GfVec3d imag_part(xquat[1], xquat[2], xquat[3]);
+    pxr::GfQuaternion quat(xquat[0], imag_part);
+    pxr::GfRotation rotation(quat);
+
+    // Identities
+    pxr::GfVec3d scale(1.0);
+    pxr::GfVec3d pivot_position(0);
+    pxr::GfRotation pivot_rotation(pxr::GfQuaternion::GetIdentity());
+
+    pxr::GfTransform xform(translation, rotation, scale, pivot_position,
+                           pivot_rotation);
+    pxr::GfMatrix4d world_xform = xform.GetMatrix();
+    body_world_xforms[i] = world_xform;
+    world_transforms[path] = world_xform;
+  }
+
+  // Compute relative transforms outside of SdfChangeBlock. Use MuJoCo world
+  // poses directly for ancestor bodies, and query static ancestor prims before
+  // authoring layer edits.
+  std::vector<pxr::GfMatrix4d> relative_xforms(body_paths.size());
+  for (int i = 0; i < body_paths.size(); i++) {
+    const pxr::SdfPath& path = body_paths[i];
+    if (path.IsEmpty()) {
+      continue;
+    }
+
+    pxr::GfMatrix4d parent_xform(1.0);
+    for (pxr::SdfPath ancestor_path = path.GetParentPath();
+         !ancestor_path.IsEmpty() &&
+         ancestor_path != pxr::SdfPath::AbsoluteRootPath();
+         ancestor_path = ancestor_path.GetParentPath()) {
+      auto it = world_transforms.find(ancestor_path);
+      if (it != world_transforms.end()) {
+        parent_xform *= it->second;
+        break;
+      }
+      pxr::UsdPrim ancestor_prim = stage_->GetPrimAtPath(ancestor_path);
+      if (!ancestor_prim) {
+        break;
+      }
+      bool resets_xform_stack = false;
+      parent_xform *= xform_cache.GetLocalTransformation(ancestor_prim,
+                                                         &resets_xform_stack);
+      if (resets_xform_stack) {
+        break;
+      }
+    }
+    relative_xforms[i] = body_world_xforms[i] * parent_xform.GetInverse();
+  }
+
   pxr::SdfChangeBlock change_block;
   // TODO(shaves) this can be parallelised.
   for (int i = 0; i < body_paths.size(); i++) {
     const pxr::SdfPath& path = body_paths[i];
-
-    // Author transform timesample
-    // Convert pose data.
-    mjtNum* xpos = &data->xpos[i * 3];
-    mjtNum* xquat = &data->xquat[i * 4];
-    pxr::GfVec3d translation(xpos[0], xpos[1], xpos[2]);
-    pxr::GfVec3d imag_part(xquat[1], xquat[2], xquat[3]);
-    // Some bodies such as the world body don't have mapped USD prims to
-    // transform.
     if (path.IsEmpty()) {
       continue;
     }
@@ -95,23 +155,9 @@ void LayerSink::Update(const mjData* const data,
         layer, prim_spec, path, pxr::_layer_sink_tokens->xformOpTransform,
         pxr::SdfValueTypeNames->Matrix4d, pxr::SdfVariabilityVarying);
 
-    pxr::GfQuaternion quat(xquat[0], imag_part);
-    pxr::GfRotation rotation(quat);
-
-    // Identities
-    pxr::GfVec3d scale(1.0);
-    pxr::GfVec3d pivot_position(0);
-    pxr::GfRotation pivot_rotation(pxr::GfQuaternion::GetIdentity());
-
     // Set time sample
-    pxr::GfTransform xform(translation, rotation, scale, pivot_position,
-                           pivot_rotation);
-    pxr::GfMatrix4d parent_xform =
-        xform_cache.GetParentToWorldTransform(stage_->GetPrimAtPath(path));
-    pxr::GfMatrix4d relative_xform =
-        xform.GetMatrix() * parent_xform.GetInverse();
     layer->SetTimeSample(xform_attr->GetPath(), timecode.GetValue(),
-                         relative_xform);
+                         relative_xforms[i]);
 
     // Create xformop_order attribute if missing.
     pxr::SdfAttributeSpecHandle op_order_attr = GetOrCreateAttribute(

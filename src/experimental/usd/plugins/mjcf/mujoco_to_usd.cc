@@ -370,20 +370,21 @@ class ModelWriter {
                              const pxr::VtArray<pxr::TfToken> &order) {
     auto xform_op_order_path =
         prim_spec->GetPath().AppendProperty(pxr::UsdGeomTokens->xformOpOrder);
-    if (!prim_spec->HasField(pxr::UsdGeomTokens->xformOpOrder)) {
+    auto attr_spec = layer_->GetAttributeAtPath(xform_op_order_path);
+    if (!attr_spec || !attr_spec->HasDefaultValue()) {
       WriteXformOpOrder(prim_spec, order);
       return;
     }
 
     auto existing_order =
-        prim_spec->GetField(pxr::UsdGeomTokens->xformOpOrder).Get<pxr::VtArray<pxr::TfToken>>();
+        attr_spec->GetDefaultValue().Get<pxr::VtArray<pxr::TfToken>>();
 
     pxr::VtArray<pxr::TfToken> new_order(order.size() + existing_order.size());
     std::copy(order.begin(), order.end(), new_order.begin());
     std::copy(existing_order.begin(), existing_order.end(),
               new_order.begin() + order.size());
 
-    SetAttributeDefault(layer_, layer_->GetAttributeAtPath(xform_op_order_path), new_order);
+    SetAttributeDefault(layer_, attr_spec, new_order);
   }
 
   void WriteMesh(const mjsMesh *mesh, const pxr::SdfPath &parent_path) {
@@ -652,6 +653,16 @@ class ModelWriter {
     WriteUniformAttribute(physics_scene_spec,
                           pxr::SdfValueTypeNames->DoubleArray,
                           MjcPhysicsTokens->mjcOptionO_friction, o_friction);
+
+    pxr::VtArray<int> actuatorgroupdisable;
+    for (int i = 0; i < mjNGROUP; ++i) {
+      if (spec_->option.disableactuator & (1 << i)) {
+        actuatorgroupdisable.push_back(i);
+      }
+    }
+    WriteUniformAttribute(physics_scene_spec, pxr::SdfValueTypeNames->IntArray,
+                          MjcPhysicsTokens->mjcOptionActuatorgroupdisable,
+                          actuatorgroupdisable);
 
     auto integrator_attr = CreateAttributeSpec(
         layer_, physics_scene_spec, MjcPhysicsTokens->mjcOptionIntegrator,
@@ -2253,8 +2264,19 @@ class ModelWriter {
         CreatePrimSpec(layer_, body_path, name, pxr::UsdLuxTokens->SphereLight);
 
     int light_id = mjs_getId(light->element);
-    auto transform = MujocoPosQuatToTransform(&model_->light_pos[3 * light_id],
-                                              &model_->light_dir[4 * light_id]);
+    pxr::GfVec3d dir(model_->light_dir[3 * light_id],
+                     model_->light_dir[3 * light_id + 1],
+                     model_->light_dir[3 * light_id + 2]);
+    pxr::GfRotation rotation;
+    rotation.SetIdentity();
+    if (dir.GetLengthSq() > 1e-12) {
+      rotation = pxr::GfRotation(pxr::GfVec3d(0, 0, -1), dir);
+    }
+    pxr::GfVec3d translation(model_->light_pos[3 * light_id],
+                             model_->light_pos[3 * light_id + 1],
+                             model_->light_pos[3 * light_id + 2]);
+    pxr::GfMatrix4d transform;
+    transform.SetTransform(rotation, translation);
     WriteTransformXformOp(light_spec, transform);
     WriteXformOpOrder(light_spec,
                       pxr::VtArray<pxr::TfToken>{kTokens->xformOpTransform});

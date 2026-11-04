@@ -1209,5 +1209,130 @@ def PhysicsSphericalJoint "loop_joint" {
   EXPECT_MJTNUM_EQ(model->eq_data[2], 3.0);
 }
 
+TEST_F(UsdPreservationSemanticsTest, CylinderAndCapsuleAxisAndScale) {
+  auto stage = pxr::UsdStage::CreateInMemory();
+  ASSERT_TRUE(stage->GetRootLayer()->ImportFromString(R"(#usda 1.0
+(metersPerUnit = 1)
+def Xform "body" (prepend apiSchemas = ["PhysicsRigidBodyAPI"]) {
+    def Cylinder "cyl_z" (prepend apiSchemas = ["PhysicsCollisionAPI"]) {
+        uniform token axis = "Z"
+        double radius = 0.4
+        double height = 1.6
+        quatf xformOp:orient = (0.70710678, 0.70710678, 0, 0)
+        float3 xformOp:scale = (2, 2, 3)
+        uniform token[] xformOpOrder = ["xformOp:orient", "xformOp:scale"]
+    }
+    def Cylinder "cyl_x" (prepend apiSchemas = ["PhysicsCollisionAPI"]) {
+        uniform token axis = "X"
+        double radius = 0.4
+        double height = 1.6
+        quatf xformOp:orient = (0.70710678, 0, 0, 0.70710678)
+        float3 xformOp:scale = (3, 2, 2)
+        uniform token[] xformOpOrder = ["xformOp:orient", "xformOp:scale"]
+    }
+    def Cylinder "cyl_y" (prepend apiSchemas = ["PhysicsCollisionAPI"]) {
+        uniform token axis = "Y"
+        double radius = 0.4
+        double height = 1.6
+        quatf xformOp:orient = (0.70710678, 0, 0, 0.70710678)
+        float3 xformOp:scale = (2, 3, 2)
+        uniform token[] xformOpOrder = ["xformOp:orient", "xformOp:scale"]
+    }
+    def Capsule "cap_z" (prepend apiSchemas = ["PhysicsCollisionAPI"]) {
+        uniform token axis = "Z"
+        double radius = 0.4
+        double height = 1.6
+        quatf xformOp:orient = (0.70710678, 0.70710678, 0, 0)
+        float3 xformOp:scale = (1, 2.5, 3)
+        uniform token[] xformOpOrder = ["xformOp:orient", "xformOp:scale"]
+    }
+    def Capsule "cap_x" (prepend apiSchemas = ["PhysicsCollisionAPI"]) {
+        uniform token axis = "X"
+        double radius = 0.4
+        double height = 1.6
+        quatf xformOp:orient = (0.70710678, 0, 0, 0.70710678)
+        float3 xformOp:scale = (3, 2, 2)
+        uniform token[] xformOpOrder = ["xformOp:orient", "xformOp:scale"]
+    }
+    def Capsule "cap_y" (prepend apiSchemas = ["PhysicsCollisionAPI"]) {
+        uniform token axis = "Y"
+        double radius = 0.4
+        double height = 1.6
+        quatf xformOp:orient = (0.70710678, 0, 0, 0.70710678)
+        float3 xformOp:scale = (2, 3, 2)
+        uniform token[] xformOpOrder = ["xformOp:orient", "xformOp:scale"]
+    }
+    def Cylinder "site_cyl_x" (prepend apiSchemas = ["MjcSiteAPI"]) {
+        uniform token axis = "X"
+        double radius = 0.25
+        double height = 1.2
+        float3 xformOp:scale = (4, 2, 2)
+        uniform token[] xformOpOrder = ["xformOp:scale"]
+    }
+}
+)"));
+
+  mock_warning_handler.ExpectWarnings("Non-uniform radial scale");
+  auto spec = Parse(stage);
+  ASSERT_NE(spec, nullptr);
+  MjModelPtr model(mj_compile(spec.get(), nullptr));
+  ASSERT_NE(model, nullptr) << mjs_getError(spec.get());
+  auto data = MakeData(model);
+  ASSERT_NE(data, nullptr);
+  mj_forward(model.get(), data.get());
+
+  struct GeomExpectation {
+    const char* name;
+    mjtGeom type;
+    double radius;
+    double half_height;
+    double world_axis[3];
+  };
+  const GeomExpectation kExpected[] = {
+      {"/body/cyl_z", mjGEOM_CYLINDER, 0.8, 2.4, {0.0, -1.0, 0.0}},
+      {"/body/cyl_x", mjGEOM_CYLINDER, 0.8, 2.4, {0.0, 1.0, 0.0}},
+      {"/body/cyl_y", mjGEOM_CYLINDER, 0.8, 2.4, {-1.0, 0.0, 0.0}},
+      {"/body/cap_z", mjGEOM_CAPSULE, 1.0, 2.4, {0.0, -1.0, 0.0}},
+      {"/body/cap_x", mjGEOM_CAPSULE, 0.8, 2.4, {0.0, 1.0, 0.0}},
+      {"/body/cap_y", mjGEOM_CAPSULE, 0.8, 2.4, {-1.0, 0.0, 0.0}},
+  };
+
+  for (const auto& expected : kExpected) {
+    SCOPED_TRACE(expected.name);
+    int id = mj_name2id(model.get(), mjOBJ_GEOM, expected.name);
+    ASSERT_GE(id, 0);
+    EXPECT_EQ(model->geom_type[id], expected.type);
+    EXPECT_NEAR(model->geom_size[3 * id + 0], expected.radius, 1e-6);
+    EXPECT_NEAR(model->geom_size[3 * id + 1], expected.half_height, 1e-6);
+    // MuJoCo cylinders and capsules are aligned with local +Z (column 2 of
+    // geom_xmat).
+    EXPECT_NEAR(data->geom_xmat[9 * id + 2], expected.world_axis[0], 1e-5);
+    EXPECT_NEAR(data->geom_xmat[9 * id + 5], expected.world_axis[1], 1e-5);
+    EXPECT_NEAR(data->geom_xmat[9 * id + 8], expected.world_axis[2], 1e-5);
+  }
+
+  int site_id = mj_name2id(model.get(), mjOBJ_SITE, "/body/site_cyl_x");
+  ASSERT_GE(site_id, 0);
+  EXPECT_EQ(model->site_type[site_id], mjGEOM_CYLINDER);
+  EXPECT_NEAR(model->site_size[3 * site_id + 0], 0.5, 1e-6);
+  EXPECT_NEAR(model->site_size[3 * site_id + 1], 2.4, 1e-6);
+  EXPECT_NEAR(data->site_xmat[9 * site_id + 2], 1.0, 1e-5);
+  EXPECT_NEAR(data->site_xmat[9 * site_id + 5], 0.0, 1e-5);
+  EXPECT_NEAR(data->site_xmat[9 * site_id + 8], 0.0, 1e-5);
+}
+
+TEST_F(UsdPreservationSemanticsTest, ActuatorGroupDisableOptionParsed) {
+  auto stage = pxr::UsdStage::CreateInMemory();
+  ASSERT_TRUE(stage->GetRootLayer()->ImportFromString(R"(#usda 1.0
+(metersPerUnit = 1)
+def PhysicsScene "PhysicsScene" (prepend apiSchemas = ["MjcSceneAPI"]) {
+    uniform int[] mjc:option:actuatorgroupdisable = [0, 2]
+}
+)"));
+  auto spec = Parse(stage);
+  ASSERT_NE(spec, nullptr);
+  EXPECT_EQ(spec->option.disableactuator, (1 << 0) | (1 << 2));
+}
+
 }  // namespace
 }  // namespace mujoco

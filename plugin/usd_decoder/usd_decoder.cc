@@ -200,6 +200,62 @@ bool IsUniformScale(const pxr::GfVec3d& scale) {
          fabs(scale[1] - scale[2]) < epsilon;
 }
 
+template <typename Shape, typename Element>
+bool ParseAxialPrimitive(const Shape& shape, const char* name,
+                         mjtGeom geom_type, const pxr::GfVec3d& scale,
+                         Element* element) {
+  element->type = geom_type;
+  double radius;
+  if (!shape.GetRadiusAttr().template Get<double>(&radius)) {
+    mju_error("Could not get %s radius attr.", name);
+    return false;
+  }
+
+  double height;
+  if (!shape.GetHeightAttr().template Get<double>(&height)) {
+    mju_error("Could not get %s height attr.", name);
+    return false;
+  }
+
+  TfToken axis = pxr::UsdGeomTokens->z;
+  shape.GetAxisAttr().Get(&axis);
+
+  // Scale radius and half-height using the radial and axial components for the
+  // authored USD axis, and rotate local +Z to align with X or Y when needed.
+  double radial_scale_a = std::abs(scale[0]);
+  double radial_scale_b = std::abs(scale[1]);
+  double axial_scale = std::abs(scale[2]);
+  pxr::GfQuatd axis_rot = pxr::GfQuatd::GetIdentity();
+  if (axis == pxr::UsdGeomTokens->x) {
+    radial_scale_a = std::abs(scale[1]);
+    radial_scale_b = std::abs(scale[2]);
+    axial_scale = std::abs(scale[0]);
+    axis_rot =
+        pxr::GfRotation(pxr::GfVec3d::ZAxis(), pxr::GfVec3d::XAxis()).GetQuat();
+  } else if (axis == pxr::UsdGeomTokens->y) {
+    radial_scale_a = std::abs(scale[0]);
+    radial_scale_b = std::abs(scale[2]);
+    axial_scale = std::abs(scale[1]);
+    axis_rot =
+        pxr::GfRotation(pxr::GfVec3d::ZAxis(), pxr::GfVec3d::YAxis()).GetQuat();
+  }
+  if (std::abs(radial_scale_a - radial_scale_b) >= 1e-6) {
+    mju_warning(
+        "Non-uniform radial scale on %s prim %s; using max radial scale.", name,
+        shape.GetPath().GetText());
+  }
+  double radial_scale = std::max(radial_scale_a, radial_scale_b);
+
+  element->size[0] = radial_scale * radius;
+  element->size[1] = axial_scale * height / 2.0;
+  element->size[2] = 0;
+
+  pxr::GfQuatd current_rot(element->quat[0], element->quat[1], element->quat[2],
+                           element->quat[3]);
+  SetDoubleArrFromGfQuatd(element->quat, current_rot * axis_rot);
+  return true;
+}
+
 template <typename T>
 bool MaybeParseGeomPrimitive(const pxr::UsdPrim& prim, T* element,
                              pxr::UsdGeomXformCache& xform_cache) {
@@ -225,58 +281,11 @@ bool MaybeParseGeomPrimitive(const pxr::UsdPrim& prim, T* element,
       element->size[2] = scale[2] * radius;
     }
   } else if (prim.IsA<pxr::UsdGeomCylinder>()) {
-    auto cylinder = pxr::UsdGeomCylinder(prim);
-    element->type = mjGEOM_CYLINDER;
-    double radius;
-    if (!cylinder.GetRadiusAttr().Get<double>(&radius)) {
-      mju_error("Could not get cylinder radius attr.");
-      return false;
-    }
-
-    double height;
-    if (!cylinder.GetHeightAttr().Get<double>(&height)) {
-      mju_error("Could not get cylinder height attr.");
-      return false;
-    }
-    element->size[0] = scale[0] * radius;
-    element->size[1] = scale[1] * height / 2.0f;
-    element->size[2] = 0;
+    return ParseAxialPrimitive(pxr::UsdGeomCylinder(prim), "cylinder",
+                               mjGEOM_CYLINDER, scale, element);
   } else if (prim.IsA<pxr::UsdGeomCapsule>()) {
-    auto capsule = pxr::UsdGeomCapsule(prim);
-    element->type = mjGEOM_CAPSULE;
-    double radius;
-    if (!capsule.GetRadiusAttr().Get<double>(&radius)) {
-      mju_error("Could not get capsule radius attr.");
-      return false;
-    }
-
-    double height;
-    if (!capsule.GetHeightAttr().Get<double>(&height)) {
-      mju_error("Could not get capsule height attr.");
-      return false;
-    }
-    element->size[0] = scale[0] * radius;
-    element->size[1] = scale[1] * height / 2.0f;
-    element->size[2] = 0;
-
-    TfToken axis;
-    capsule.GetAxisAttr().Get(&axis);
-
-    // Mujoco (and USD) capsules are aligned with Z by default.
-    // When USD axis is X or Y, we apply a rotation to align with the Z axis.
-    pxr::GfQuatd axis_rot(1.0);
-    if (axis == pxr::UsdGeomTokens->x) {
-      axis_rot = pxr::GfRotation(pxr::GfVec3d::XAxis(), pxr::GfVec3d::ZAxis())
-                     .GetQuat();
-    } else if (axis == pxr::UsdGeomTokens->y) {
-      axis_rot = pxr::GfRotation(pxr::GfVec3d::YAxis(), pxr::GfVec3d::ZAxis())
-                     .GetQuat();
-    }
-
-    pxr::GfQuatd current_rot(element->quat[0], element->quat[1],
-                             element->quat[2], element->quat[3]);
-    pxr::GfQuatd new_rot = current_rot * axis_rot;
-    SetDoubleArrFromGfQuatd(element->quat, new_rot);
+    return ParseAxialPrimitive(pxr::UsdGeomCapsule(prim), "capsule",
+                               mjGEOM_CAPSULE, scale, element);
   } else if (prim.IsA<pxr::UsdGeomCube>()) {
     element->type = mjGEOM_BOX;
     auto cube = pxr::UsdGeomCube(prim);
@@ -790,6 +799,14 @@ void ParseUsdPhysicsScene(mjSpec* spec,
   bool multiccd_flag;
   mjc_physics_scene.GetMultiCCDFlagAttr().Get(&multiccd_flag);
   spec->option.disableflags |= (!multiccd_flag ? mjDSBL_MULTICCD : 0);
+
+  pxr::VtArray<int> actuatorgroupdisable;
+  mjc_physics_scene.GetActuatorGroupDisableAttr().Get(&actuatorgroupdisable);
+  for (int group : actuatorgroupdisable) {
+    if (group >= 0 && group < mjNGROUP) {
+      spec->option.disableactuator |= (1 << group);
+    }
+  }
 
   // Compiler attributes
   auto auto_limits_attr = mjc_physics_scene.GetAutoLimitsAttr();
