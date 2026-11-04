@@ -2643,6 +2643,7 @@ void Simulate::LoadOnRenderThread() {
   }
 
   // set keyframe range and divisions
+  this->key = (this->m_->nkey > 0) ? mjMIN(this->key, this->m_->nkey - 1) : -1;
   this->ui0.sect[SECT_SIMULATION].item[6].slider.range[0]  = 0;
   this->ui0.sect[SECT_SIMULATION].item[6].slider.range[1]  = mjMAX(0, this->m_->nkey - 1);
   this->ui0.sect[SECT_SIMULATION].item[6].slider.divisions = mjMAX(1, this->m_->nkey - 1);
@@ -2660,6 +2661,7 @@ void Simulate::LoadOnRenderThread() {
   // full ui update
   UiModify(&this->ui0, &this->uistate, &this->platform_ui->mjr_context());
   UiModify(&this->ui1, &this->uistate, &this->platform_ui->mjr_context());
+  this->pending_.ui_remake_ctrl = false;
   UpdateSettings(this, this->m_);
 
   // clear request
@@ -2835,8 +2837,8 @@ void Simulate::Render() {
       MakeControlSection(this);
       this->ui1.nsect = NSECT1;
       UiModify(&this->ui1, &this->uistate, &this->platform_ui->mjr_context());
+      pending_.ui_remake_ctrl = false;
     }
-    pending_.ui_remake_ctrl = false;
   }
 
   if (pending_.ui_update_ctrl) {
@@ -3213,7 +3215,7 @@ void Simulate::InjectNoise(int key) {
     }
 
     // overwrite midpoint with keyframe, if given
-    if (key >= 0) { midpoint = m_->key_ctrl[key * m_->nu + i]; }
+    if (key >= 0 && key < m_->nkey) { midpoint = m_->key_ctrl[key * m_->nu + i]; }
 
     // exponential convergence to midpoint at ctrl_noise_rate
     d_->ctrl[i] = rate * d_->ctrl[i] + (1 - rate) * midpoint;
