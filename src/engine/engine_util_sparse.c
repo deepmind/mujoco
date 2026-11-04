@@ -1614,3 +1614,205 @@ void mju_blockDiagSparse(mjtNum* restrict res, int* restrict res_rownnz,
                     res2 ? res2 + res_adr : NULL, mat2);
   }
 }
+
+
+// sort sparse row (colind, val) of length nnz ascending by colind
+void mju_sortSparseRow(int nnz, int* restrict colind, mjtNum* restrict val) {
+  int gap0 = nnz > 24 ? (nnz >> 1) : 1;
+  for (int gap=gap0; gap > 0; gap >>= 1) {
+    for (int a=gap; a < nnz; a++) {
+      int c = colind[a];
+      mjtNum v = val[a];
+      int b = a - gap;
+      while (b >= 0 && colind[b] > c) {
+        colind[b+gap] = colind[b];
+        val[b+gap] = val[b];
+        b -= gap;
+      }
+      colind[b+gap] = c;
+      val[b+gap] = v;
+    }
+  }
+}
+
+
+// permute lower-triangular + diagonal CSR matrix into sorted lower-triangular + diagonal CSR
+void mju_permuteLowerCSR(int nv, const int* restrict perm,
+                         int* restrict dst_rownnz, int* restrict dst_rowadr,
+                         int* restrict dst_colind, mjtNum* restrict dst_val,
+                         const int* restrict src_rownnz, const int* restrict src_rowadr,
+                         const int* restrict src_colind, const mjtNum* restrict src_val) {
+  mju_zeroInt(dst_rownnz, nv);
+  for (int r=0; r < nv; r++) {
+    int pr = perm[r];
+    int end = src_rowadr[r] + src_rownnz[r];
+    for (int j=src_rowadr[r]; j < end; j++) {
+      int pc = perm[src_colind[j]];
+      dst_rownnz[pr >= pc ? pr : pc]++;
+    }
+  }
+  int adr = 0;
+  for (int r=0; r < nv; r++) {
+    dst_rowadr[r] = adr;
+    adr += dst_rownnz[r];
+    dst_rownnz[r] = 0;
+  }
+  for (int r=0; r < nv; r++) {
+    int pr = perm[r];
+    int end = src_rowadr[r] + src_rownnz[r];
+    for (int j=src_rowadr[r]; j < end; j++) {
+      int pc = perm[src_colind[j]];
+      int row = pr >= pc ? pr : pc;
+      int col = pr >= pc ? pc : pr;
+      int w = dst_rowadr[row] + dst_rownnz[row]++;
+      dst_colind[w] = col;
+      dst_val[w] = src_val[j];
+    }
+  }
+  for (int r=0; r < nv; r++) {
+    mju_sortSparseRow(dst_rownnz[r], dst_colind+dst_rowadr[r], dst_val+dst_rowadr[r]);
+  }
+}
+
+
+// degree-bucketed greedy minimum-degree ordering on undirected bitset graph adj (nb x words,
+// modified in-place); writes reverse-Cholesky block permutation bperm[v] in [0, nb).
+// If bsz is non-NULL, accumulates block-supernode Cholesky nL and flops, and aborts early
+// (returns 0) if 5 * (*flops_out) >= 4 * max_flops.
+// Scratch: deg_scratch has length 5*nb + words, nz_bits has length words.
+int mju_minDegree(int* restrict bperm, uint64_t* restrict adj, int nb,
+                  const int* restrict bsz, size_t* nL_out, mjtSize* flops_out, mjtSize max_flops,
+                  int* restrict deg_scratch, uint64_t* restrict nz_bits) {
+  int words = (nb + 63) / 64;
+  int* deg  = deg_scratch;
+  int* head = deg + nb;
+  int* next = head + nb;
+  int* prev = next + nb;
+  int* nbr  = prev + nb;
+  int* nz_w = nbr + nb;
+
+  for (int d=0; d < nb; d++) {
+    head[d] = -1;
+  }
+
+  // initialize degrees and insert into degree buckets in descending k so bucket heads start ascending
+  int mindeg = nb;
+  for (int k=nb-1; k >= 0; k--) {
+    uint64_t* ak = adj + (size_t)k*words;
+    ak[k>>6] &= ~(1ULL << (k & 63));
+    int dg = 0;
+    for (int w=0; w < words; w++) {
+      dg += mju_popcount64(ak[w]);
+    }
+    deg[k] = dg;
+    int h = head[dg];
+    prev[k] = -1;
+    next[k] = h;
+    if (h >= 0) {
+      prev[h] = k;
+    }
+    head[dg] = k;
+    if (dg < mindeg) {
+      mindeg = dg;
+    }
+  }
+
+  size_t nL = 0;
+  mjtSize flops = 0;
+  for (int step=0; step < nb; step++) {
+    while (head[mindeg] < 0) {
+      mindeg++;
+    }
+    int v = head[mindeg];
+    int nxt = next[v];
+    head[mindeg] = nxt;
+    if (nxt >= 0) {
+      prev[nxt] = -1;
+    }
+    deg[v] = -1;
+
+    // extract alive neighbors of v and accumulate block-supernode Cholesky flops if requested
+    const uint64_t* av = adj + (size_t)v*words;
+    int nw = 0, nnbr = 0, w_off = 0;
+    for (int w=0; w < words; w++) {
+      uint64_t bits = av[w];
+      if (bits) {
+        nz_w[nw] = w;
+        nz_bits[nw++] = bits;
+        while (bits) {
+          int u = (w << 6) + mju_ctz64(bits);
+          bits &= bits - 1;
+          nbr[nnbr++] = u;
+          if (bsz) {
+            w_off += bsz[u];
+          }
+        }
+      }
+    }
+    if (bsz) {
+      int sv = bsz[v];
+      for (int a=1; a <= sv; a++) {
+        mjtSize lnnz = w_off + a;
+        nL += (size_t)lnnz;
+        flops += lnnz * lnnz;
+      }
+      if (max_flops && 5 * flops >= 4 * max_flops) {
+        if (nL_out) *nL_out = nL;
+        if (flops_out) *flops_out = flops;
+        return 0;
+      }
+    }
+
+    bperm[v] = nb - 1 - step;
+
+    // remove v from neighbors' adjacency rows and add fill clique among v's neighbors
+    int vw = v >> 6;
+    uint64_t vmask = ~(1ULL << (v & 63));
+    for (int idx=0; idx < nnbr; idx++) {
+      int u = nbr[idx];
+      int old_dg = deg[u];
+      int p = prev[u], n = next[u];
+      if (p >= 0) {
+        next[p] = n;
+      } else {
+        head[old_dg] = n;
+      }
+      if (n >= 0) {
+        prev[n] = p;
+      }
+
+      uint64_t* au = adj + (size_t)u*words;
+      au[vw] &= vmask;
+      int dg = old_dg - 1;
+      int uw = u >> 6;
+      uint64_t ubit = 1ULL << (u & 63);
+      for (int i=0; i < nw; i++) {
+        int w = nz_w[i];
+        uint64_t add = nz_bits[i] & ~au[w];
+        if (w == uw) {
+          add &= ~ubit;
+        }
+        if (add) {
+          au[w] |= add;
+          dg += mju_popcount64(add);
+        }
+      }
+
+      deg[u] = dg;
+      int h = head[dg];
+      prev[u] = -1;
+      next[u] = h;
+      if (h >= 0) {
+        prev[h] = u;
+      }
+      head[dg] = u;
+      if (dg < mindeg) {
+        mindeg = dg;
+      }
+    }
+  }
+
+  if (nL_out) *nL_out = nL;
+  if (flops_out) *flops_out = flops;
+  return 1;
+}

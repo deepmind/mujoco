@@ -3421,7 +3421,9 @@ TEST_F(ElasticityTest, RodTwistCoilingBelt) {
   EXPECT_LT(fmax, 1.5 * ctrl);
   EXPECT_NEAR(d->qfrc_passive[dof], -ctrl, 0.02 * ctrl);
   EXPECT_NEAR(fsum / nsteady, -ctrl, 0.12 * ctrl);
-  EXPECT_NEAR(d->qfrc_spring[dof], -ctrl, 0.12 * ctrl);
+  // the coiled belt still drifts slowly, so the spring torque at one step
+  // wanders around the motor torque (in float, from -0.99 to -0.81 times it)
+  EXPECT_NEAR(d->qfrc_spring[dof], -ctrl, MjTol(0.12, 0.25) * ctrl);
 }
 
 // rigid 1D flexes carry no rod bending, so their reference need not be straight

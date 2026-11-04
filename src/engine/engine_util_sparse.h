@@ -15,6 +15,7 @@
 #ifndef MUJOCO_SRC_ENGINE_ENGINE_UTIL_SPARSE_H_
 #define MUJOCO_SRC_ENGINE_ENGINE_UTIL_SPARSE_H_
 
+#include <stdint.h>
 #include <string.h>
 
 #include <mujoco/mjdata.h>
@@ -191,7 +192,50 @@ MJAPI void mju_blockDiagSparse(
   const int* block_r, const int* block_c,
   mjtNum* res2, const mjtNum* mat2);
 
+// sort sparse row (colind, val) of length nnz ascending by colind
+MJAPI void mju_sortSparseRow(int nnz, int* colind, mjtNum* val);
+
+// permute lower-triangular + diagonal CSR matrix into sorted lower-triangular + diagonal CSR
+MJAPI void mju_permuteLowerCSR(int nv, const int* perm,
+                               int* dst_rownnz, int* dst_rowadr, int* dst_colind, mjtNum* dst_val,
+                               const int* src_rownnz, const int* src_rowadr,
+                               const int* src_colind, const mjtNum* src_val);
+
+// degree-bucketed greedy minimum-degree ordering on undirected bitset graph adj (nb x words,
+// modified in-place); writes reverse-Cholesky block permutation bperm[v] in [0, nb).
+// If bsz is non-NULL, accumulates block-supernode Cholesky nL and flops, and aborts early
+// (returns 0) if 5 * (*flops_out) >= 4 * max_flops.
+// Scratch: deg_scratch has length 5*nb + words, nz_bits has length words.
+MJAPI int mju_minDegree(int* bperm, uint64_t* adj, int nb, const int* bsz,
+                        size_t* nL_out, mjtSize* flops_out, mjtSize max_flops,
+                        int* deg_scratch, uint64_t* nz_bits);
+
 // ------------------------------ inlined functions ------------------------------------------------
+
+// count set bits in 64-bit integer
+static inline
+int mju_popcount64(uint64_t x) {
+#if defined(__GNUC__) || defined(__clang__)
+  return __builtin_popcountll(x);
+#else
+  x = x - ((x >> 1) & 0x5555555555555555ULL);
+  x = (x & 0x3333333333333333ULL) + ((x >> 2) & 0x3333333333333333ULL);
+  x = (x + (x >> 4)) & 0x0F0F0F0F0F0F0F0FULL;
+  return (int)((x * 0x0101010101010101ULL) >> 56);
+#endif
+}
+
+// count trailing zeros in 64-bit integer
+static inline
+int mju_ctz64(uint64_t x) {
+#if defined(__GNUC__) || defined(__clang__)
+  return __builtin_ctzll(x);
+#else
+  int b = 0;
+  while (!((x >> b) & 1ULL)) b++;
+  return b;
+#endif
+}
 
 // dot-product, first vector is sparse
 static inline

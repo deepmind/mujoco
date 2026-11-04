@@ -271,8 +271,9 @@ static void effBlockRaw(const mjModel* m, const mjData* d, int i, mjtNum* Bk) {
 //------------------ sparse Cholesky metric preconditioner ----------------------------------------
 // When every covered flex is a 1D rod or a 2D flex (effChol12D), the covered block of M + K is
 // factored by a reverse-order sparse Cholesky, blocked by vertex, rather than by its 3x3 diagonal
-// blocks only. 2D flexes take the factor only where the constraint solver folds into it (IPC, or
-// monolithic CG: effCholApplies, mj_effFoldMonolithic); 3D flexes keep the blocks.
+// blocks only. 2D flexes take the factor under Newton (for qacc_smooth and the convergence
+// certificate) or where the constraint solver folds into it (IPC, or monolithic CG:
+// effCholApplies, mj_effFoldMonolithic); 3D flexes keep the blocks.
 // The ordering is the model's: mj_setConst orders the vertices of the model's efm_K pattern by
 // minimum degree (mj_effCholSetConst, into efmC_perm). Each step analyses the pattern it
 // assembled under that ordering (effCholReserve), on the vertex graph
@@ -325,27 +326,6 @@ static int* effInts(mjData* d, size_t n) {
 
 static uint64_t* effBits(mjData* d, size_t n) {
   return mjSTACKALLOC(d, n > 0 ? n : 1, uint64_t);
-}
-
-static int effPopcount(uint64_t x) {
-#if defined(__GNUC__) || defined(__clang__)
-  return __builtin_popcountll(x);
-#else
-  x = x - ((x >> 1) & 0x5555555555555555ULL);
-  x = (x & 0x3333333333333333ULL) + ((x >> 2) & 0x3333333333333333ULL);
-  x = (x + (x >> 4)) & 0x0F0F0F0F0F0F0F0FULL;
-  return (int)((x * 0x0101010101010101ULL) >> 56);
-#endif
-}
-
-static int effCtz64(uint64_t x) {
-#if defined(__GNUC__) || defined(__clang__)
-  return __builtin_ctzll(x);
-#else
-  int b = 0;
-  while (!((x >> b) & 1ULL)) b++;
-  return b;
-#endif
 }
 
 // off-diagonal 3x3 blocks of a blocked factor with nL values: row r of vertex p holds 3 values per
@@ -464,61 +444,28 @@ static void effCovered(int nv, int nb, const int* dofid, int* cov) {
   }
 }
 
-// greedy minimum-degree elimination on the vertex graph (symmetric CSR adr/cnt/nbr), with dense
-// bitset adjacency; the first eliminated vertex goes last (reverse-order Cholesky)
-static void effCholMinDegree(mjData* d, int nb, const int* adr, const int* cnt, const int* nbr,
-                             int* perm) {
+// greedy minimum-degree elimination on the full vertex graph (K stencil kadr/knbr plus allowed
+// edge CSR eadr/enbr), with dense bitset adjacency; the first eliminated vertex goes last
+static void effCholMinDegree(mjData* d, int nb, const int* kadr, const int* knbr,
+                             const int* eadr, const int* enbr, int* perm) {
   int words = (nb + 63) / 64;
   uint64_t* adj = effBits(d, (size_t)nb*words);
-  uint64_t* alive = effBits(d, words);
-  int* deg = effInts(d, nb);
+  uint64_t* nz_bits = effBits(d, words);
+  int* scratch = effInts(d, 5*(size_t)nb + words);
   memset(adj, 0, sizeof(uint64_t)*(size_t)nb*words);
-  memset(alive, 0, sizeof(uint64_t)*words);
   for (int k=0; k < nb; k++) {
-    alive[k/64] |= 1ULL << (k%64);
-    for (int j=0; j < cnt[k]; j++) {
-      int q = nbr[adr[k]+j];
-      adj[(size_t)k*words+q/64] |= 1ULL << (q%64);
-      adj[(size_t)q*words+k/64] |= 1ULL << (k%64);
+    for (int j=kadr[k]; j < kadr[k+1]; j++) {
+      int q = knbr[j];
+      adj[(size_t)k*words+(q>>6)] |= 1ULL << (q&63);
+      adj[(size_t)q*words+(k>>6)] |= 1ULL << (k&63);
+    }
+    for (int j=eadr[k]; j < eadr[k+1]; j++) {
+      int q = enbr[j];
+      adj[(size_t)k*words+(q>>6)] |= 1ULL << (q&63);
+      adj[(size_t)q*words+(k>>6)] |= 1ULL << (k&63);
     }
   }
-  for (int k=0; k < nb; k++) {
-    adj[(size_t)k*words+k/64] &= ~(1ULL << (k%64));
-    int dg = 0;
-    for (int w=0; w < words; w++) dg += effPopcount(adj[(size_t)k*words+w]);
-    deg[k] = dg;
-  }
-  for (int step=0; step < nb; step++) {
-    int v = -1;
-    for (int w=0; w < words; w++) {
-      uint64_t aw = alive[w];
-      while (aw) {
-        int b = effCtz64(aw);
-        aw &= aw - 1;
-        int k = 64*w + b;
-        if (v < 0 || deg[k] < deg[v]) v = k;
-      }
-    }
-    perm[v] = nb - 1 - step;
-    alive[v/64] &= ~(1ULL << (v%64));
-    uint64_t* av = adj + (size_t)v*words;
-    for (int w=0; w < words; w++) {
-      uint64_t bits = av[w] & alive[w];
-      while (bits) {
-        int b = effCtz64(bits);
-        bits &= bits - 1;
-        int u = 64*w + b;
-        uint64_t* au = adj + (size_t)u*words;
-        int dg = 0;
-        for (int x=0; x < words; x++) {
-          au[x] |= av[x];
-          if (x == u/64) au[x] &= ~(1ULL << (u%64));
-          dg += effPopcount(au[x] & alive[x]);
-        }
-        deg[u] = dg;
-      }
-    }
-  }
+  mju_minDegree(perm, adj, nb, NULL, NULL, NULL, 0, scratch, nz_bits);
 }
 
 static int effCholFind(const int* L_rownnz, const int* L_rowadr, const int* L_colind, int r,
@@ -737,7 +684,7 @@ static int effCholBegin(const mjModel* m, mjData* d, int nb, const int* dofid, c
     cnt[k] = tot - adr[k];
   }
   if (order == 1 || (order == 2 && p->nnew)) {
-    effCholMinDegree(d, nb, adr, cnt, nbr, perm);
+    effCholMinDegree(d, nb, kadr, knbr, p->eadr, p->enbr, perm);
   }
   p->rownnz = effInts(d, nb);
   p->rowadr = effInts(d, nb);
@@ -784,10 +731,10 @@ static int effFoldPossible(const mjModel* m, int solver) {
   return solver == mjSOL_CG && m->opt.cone != mjCONE_ELLIPTIC && !mjENABLED(mjENBL_SLEEP);
 }
 
-// return 1 if every covered flex qualifies for the sparse Cholesky factor: 1D rods and, if
-// allow2d, 2D flexes, not interpolated (currently all-or-nothing across covered flexes since
-// efm_dofid and nefmCvert index all covered triples together)
-static int effChol12D(const mjModel* m, int allow2d) {
+// return 1 if every covered flex qualifies for the sparse Cholesky factor or ordering: 1D rods,
+// 2D flexes if allow2d, and 3D flexes if allow3d, not interpolated (currently all-or-nothing
+// across covered flexes since efm_dofid and nefmCvert index all covered triples together)
+static int effCholDimOk(const mjModel* m, int allow2d, int allow3d) {
   for (int f=0; f < m->nflex; f++) {
     int covered = mjd_flexStiff_active(m, f, /*flg_bend=*/1, /*flg_stretch=*/1) ||
                   mjd_flexInterp_processed(m, f) || mj_effFlexContactPossible(m, f);
@@ -797,20 +744,23 @@ static int effChol12D(const mjModel* m, int allow2d) {
     if (m->flex_interp[f]) {
       return 0;
     }
-    if (m->flex_dim[f] != 1 && !(allow2d && m->flex_dim[f] == 2)) {
+    if (m->flex_dim[f] != 1 && !(allow2d && m->flex_dim[f] == 2) &&
+        !(allow3d && m->flex_dim[f] == 3)) {
       return 0;
     }
   }
   return 1;
 }
 
-// the step uses the sparse factor. 2D flexes need a consumer that folds the contact rows into it:
-// on its own the factor makes each constraint-solver iteration costlier than the iterations it
-// saves, so 2D flexes take it under IPC or when CG folds, and keep the 3x3 blocks otherwise
+// the step uses the sparse factor. 2D flexes need a consumer that folds the contact rows into it
+// or does not iterate on the metric in the constraint loop: on its own the factor makes each CG
+// iteration costlier than the iterations it saves, so 2D flexes take it under Newton, IPC, or
+// when CG folds, and keep the 3x3 blocks otherwise
 static int effCholApplies(const mjModel* m, int nb, const int* dofid) {
-  int allow2d = mjENABLED(mjENBL_IPC) || effFoldPossible(m, m->opt.solver);
+  int allow2d = mjENABLED(mjENBL_IPC) || effFoldPossible(m, m->opt.solver)
+                || m->opt.solver == mjSOL_NEWTON;
   if (!nb || nb > EFF_CHOL_MAXVERT || !m->nefmCvert || m->efmC_perm[0] < 0 ||
-      !effChol12D(m, allow2d)) {
+      !effCholDimOk(m, allow2d, /*allow3d=*/0)) {
     return 0;
   }
   if (mjd_flexInterpAssemblable(m)) {
@@ -836,7 +786,7 @@ static size_t effCholAnalysisBytes(const mjModel* m, size_t nb, size_t kcap, siz
   return mj_stackFrameBytes() + 2*effIntBytes(nb + 1) + effIntBytes(kcap) + 2*effIntBytes(2*ne) +
          (nx ? effIntBytes(nb + 1) + effIntBytes(2*ne) + effIntBytes(nb) : 0) +
          effIntBytes(nb) + 4*effIntBytes(nb) + effIntBytes(nnbr) + effBitBytes(nb*words) +
-         effBitBytes(words) + effIntBytes(nb) + 2*effIntBytes(nb) + effIntBytes(nnbr) +
+         effBitBytes(words) + effIntBytes(5*nb + words) + 2*effIntBytes(nb) + effIntBytes(nnbr) +
          effIntBytes(3*nb) + 2*effIntBytes(3*nb) + effIntBytes(nb + 1);
 }
 
@@ -857,16 +807,16 @@ static size_t effCholReserveBytes(int nb, int nv, int nL, size_t npack) {
          effConScratchBytes(nb) + effFillBytes(nb, nv);
 }
 
-// compute the model's minimum-degree vertex ordering for 1D rod and 2D flex metric stencils
+// compute the model's minimum-degree vertex ordering for 1D rod and 2D/3D flex stencils
 void mj_effCholSetConst(mjModel* m, mjData* d) {
   int ncap = m->nefmCvert, nv = m->nv;
   if (!ncap) {
     return;
   }
   for (int t=0; t < ncap; t++) m->efmC_perm[t] = -1;
-  // the ordering is structural: computed for every model that can use the factor, whatever the
-  // solver options (effCholApplies decides per step)
-  if (!effChol12D(m, /*allow2d=*/1)) {
+  // the ordering is structural: computed for every model with non-interpolated flexes, whatever
+  // the solver options (effCholApplies decides per step whether the metric factor is used)
+  if (!effCholDimOk(m, /*allow2d=*/1, /*allow3d=*/1)) {
     return;
   }
   mj_markStack(d);
@@ -880,12 +830,27 @@ void mj_effCholSetConst(mjModel* m, mjData* d) {
     blk = effInts(d, nv);
     dofid = effInts(d, ncap + 1);
     nK = mjd_flexStiff_assemble(m, d, K_rownnz, K_rowadr, NULL, NULL, 0, 0, 1, 1, NULL);
-    nb = effCoveredBlocks(nv, K_rownnz, NULL);
+    for (int i=0; i < nv; i++) blk[i] = K_rownnz[i];
+    for (int f=0; f < m->nflex; f++) {
+      // edge equality (mjEQ_FLEX) on a non-interpolated 2D/3D flex
+      if (m->flex_edgeequality[f] != 1 || m->flex_interp[f] || m->flex_rigid[f] ||
+          m->flex_dim[f] < 2) {
+        continue;
+      }
+      for (int v=0; v < m->flex_vertnum[f]; v++) {
+        int b = m->flex_vertbodyid[m->flex_vertadr[f]+v];
+        if (b >= 0 && m->body_dofnum[b] == 3) {
+          int da = m->body_dofadr[b];
+          blk[da] = blk[da+1] = blk[da+2] = 1;
+        }
+      }
+    }
+    nb = effCoveredBlocks(nv, blk, NULL);
     if (!nb || nb > ncap || nb > EFF_CHOL_MAXVERT) {
       mj_freeStack(d);
       return;
     }
-    effCoveredBlocks(nv, K_rownnz, dofid);
+    effCoveredBlocks(nv, blk, dofid);
     if (dofid[nb-1] + 3 > nv) {
       mj_freeStack(d);
       return;
@@ -1801,6 +1766,8 @@ void mj_effSolve(const mjModel* m, mjData* d, mjtNum* x, const mjtNum* b) {
       }
       mj_warning(d, mjWARN_INERTIA, worst);
     }
+  } else if (d->threadpool) {
+    effCholEnsure(m, d);
   }
   mj_freeStack(d);
 }
@@ -2857,6 +2824,9 @@ static int effCholSolveIsland(const mjModel* m, mjData* d, int island, mjtNum* x
                               const mjtNum* rhs) {
   int nb = d->nefmdof;
   if (!effCholReserved(d)) {
+    return 0;
+  }
+  if (d->efm_L[9*nb] == EFF_CHOL_PENDING && d->threadlock) {
     return 0;
   }
   effCholEnsure(m, d);
