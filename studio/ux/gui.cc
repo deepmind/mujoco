@@ -1413,7 +1413,18 @@ void StateGui(const mjModel* model, mjData* data, std::vector<mjtNum>& state, in
       {"MOCAP_QUAT", "Orientations of mocap bodies"},
       {"USERDATA", "User data"},
       {"PLUGIN", "Plugin state"},
+      {"PLASTIC", "Plastic state"},
   };
+  static_assert(
+      [] {
+        for (const auto& row : name_and_tooltip) {
+          if (row[0] == nullptr || row[1] == nullptr) return false;
+        }
+        return true;
+      }(),
+      "name_and_tooltip is missing a row for an mjtState component");
+  static_assert(mjSTATE_INTEGRATION == (1 << mjNSTATE) - 1,
+                "mjNSTATE does not match the number of mjtState components");
 
   int prev_state_sig = state_sig;
 
