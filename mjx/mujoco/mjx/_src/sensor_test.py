@@ -207,7 +207,7 @@ class SensorTest(parameterized.TestCase):
           'geom1="sphere1" geom2="sphere2"',
           'geom1="sphere2" geom2="sphere1"',
       ]:
-        for reduce in ['mindist', 'maxforce']:
+        for reduce in ['none', 'mindist', 'maxforce']:
           contact_sensors += (
               f'<contact {match} num="2" data="{data}" reduce="{reduce}"/>\n'
           )
@@ -240,6 +240,51 @@ class SensorTest(parameterized.TestCase):
     dx = jax.jit(mjx.forward)(mx, dx)
 
     self.assertTrue(np.any(d.sensordata != 0))
+    _assert_eq(dx.sensordata, d.sensordata, 'sensordata')
+
+  def test_sensor_contact_unsorted(self):
+    """Tests reduce="none" skips unmatched and inactive contacts."""
+    data = 'data="found force torque dist pos normal tangent"'
+    m = mujoco.MjModel.from_xml_string(f"""
+      <mujoco>
+        <worldbody>
+          <geom name="plane" type="plane" size="10 10 .001"/>
+          <body pos="0 0 .5">
+            <freejoint/>
+            <geom name="inactive" type="sphere" size=".1"/>
+          </body>
+          <body pos="1 0 .09">
+            <freejoint/>
+            <geom name="shallow" type="sphere" size=".1"/>
+          </body>
+          <body pos="2 0 .05">
+            <freejoint/>
+            <geom name="deep" type="sphere" size=".1"/>
+          </body>
+        </worldbody>
+        <sensor>
+          <contact {data}/>
+          <contact num="3" {data}/>
+          <contact geom1="plane" num="3" {data}/>
+          <contact geom1="inactive" {data}/>
+          <contact geom1="shallow" {data}/>
+          <contact geom1="deep" {data}/>
+          <contact geom2="deep" {data}/>
+          <contact geom1="plane" geom2="deep" {data}/>
+          <contact geom1="deep" geom2="plane" {data}/>
+          <contact geom1="deep" data="found dist pos normal"/>
+        </sensor>
+      </mujoco>
+    """)
+    d = mujoco.MjData(m)
+
+    mx = mjx.put_model(m)
+    dx = mjx.put_data(m, d)
+
+    mujoco.mj_forward(m, d)
+    dx = jax.jit(mjx.forward)(mx, dx)
+
+    self.assertEqual(d.ncon, 2)
     _assert_eq(dx.sensordata, d.sensordata, 'sensordata')
 
   def test_unsupported_sensor(self):
