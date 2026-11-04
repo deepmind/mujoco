@@ -296,7 +296,7 @@ static const mjXDefaultEntry kDefaults_mjsFlex[] = {
   {"shear", (int)offsetof(mjsFlex, shear), 0, 1, 0, 0, {0}},
   {"damping", (int)offsetof(mjsFlex, damping), 0, 1, 0, 0, {0}},
   {"thickness", (int)offsetof(mjsFlex, thickness), 0, 1, 1, 0, {-1.0}},
-  {"yield", (int)offsetof(mjsFlex, stressyield), 0, 1, 0, 0, {0}},
+  {"yield", (int)offsetof(mjsFlex, stressyield), 0, 2, 0, 0, {0}},
   {"elastic2d", (int)offsetof(mjsFlex, elastic2d), 2, 1, 0, 0, {0}},
   {"section", (int)offsetof(mjsFlex, section), 2, 1, 0, 0, {0}},
   {"sectionsize", (int)offsetof(mjsFlex, sectionsize), 0, 2, 0, 0, {0}},

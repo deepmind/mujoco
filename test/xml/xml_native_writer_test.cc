@@ -1730,6 +1730,51 @@ TEST_F(XMLWriterTest, WritesPinnedFlexNodes) {
   EXPECT_EQ(SaveAndReadXml(mtemp.get()), saved_xml);
 }
 
+TEST_F(XMLWriterTest, WritesFlexYield) {
+  static constexpr char xml[] = R"(
+  <mujoco>
+    <worldbody>
+      <flexcomp name="one" type="grid" count="3 3 1" spacing=".1 .1 .1" dim="2">
+        <elasticity young="1000" thickness="0.01" elastic2d="both" yield="0.02"/>
+      </flexcomp>
+      <flexcomp name="two" type="grid" count="3 3 1" spacing=".1 .1 .1" dim="2">
+        <elasticity young="1000" thickness="0.01" elastic2d="both" yield="0 0.004"/>
+      </flexcomp>
+      <flexcomp name="none" type="grid" count="3 3 1" spacing=".1 .1 .1" dim="2">
+        <elasticity young="1000" thickness="0.01" elastic2d="both"/>
+      </flexcomp>
+      <flexcomp name="box" type="grid" count="2 2 2" spacing=".1 .1 .1" dim="3">
+        <elasticity young="1000" yield="0.05"/>
+      </flexcomp>
+    </worldbody>
+  </mujoco>
+  )";
+
+  MjModelPtr model = LoadModelFromString(xml);
+  ASSERT_THAT(model.get(), NotNull());
+
+  // yield strains are saved as one value if it gives the bending yield strain
+  // (equal in 2D, zero in 3D), else as two, and zeros not at all
+  std::string saved_xml = SaveAndReadXml(model.get());
+  EXPECT_THAT(saved_xml, HasSubstr("yield=\"0.02\""));
+  EXPECT_THAT(saved_xml, HasSubstr("yield=\"0 0.004\""));
+  EXPECT_THAT(saved_xml, HasSubstr("yield=\"0.05\""));
+  EXPECT_THAT(saved_xml, Not(HasSubstr("yield=\"0\"")));
+
+  char error[1024];
+  MjModelPtr mtemp = LoadModelFromString(saved_xml, error, sizeof(error));
+  ASSERT_THAT(mtemp.get(), NotNull()) << error;
+  ASSERT_EQ(mtemp->nflex, model->nflex);
+  for (int i = 0; i < 2 * model->nflex; i++) {
+    EXPECT_EQ(mtemp->flex_yield[i], model->flex_yield[i]);
+  }
+  for (int i = 0; i < model->nflex; i++) {
+    EXPECT_EQ(mtemp->flex_plasticmode[i], model->flex_plasticmode[i]);
+  }
+  EXPECT_EQ(mtemp->nplastic, model->nplastic);
+  EXPECT_EQ(SaveAndReadXml(mtemp.get()), saved_xml);
+}
+
 TEST_F(XMLWriterTest, KeepsEmptyFlexCells) {
   // no element uses the last point, which widens the grid: cells 1 and 2 are
   // empty and have no stiffness; the second flexcomp is in a rotated body

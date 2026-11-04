@@ -607,6 +607,12 @@ void mjXReader::OneFlex(XMLElement* elem, mjsFlex* flex) {
   XMLElement* elasticity = FirstChildElement(elem, "elasticity");
   if (elasticity) {
     ReadAttrTable(elasticity, flex, flex->element, kElasticityAttrs, kElasticityAttrsN);
+
+    // a single yield strain is also the bending yield strain of non-interpolated 2D flexes
+    if (ReadAttr(elasticity, "yield", 2, flex->stressyield, text, false, false) == 1) {
+      bool shell           = flex->dim == 2 && flex->nodebody->empty();
+      flex->stressyield[1] = shell ? flex->stressyield[0] : 0;
+    }
   }
 
   // write error info
@@ -1464,7 +1470,10 @@ void mjXReader::OneFlexcomp(XMLElement* elem, mjsBody* body, mjsFrame* frame, co
     ReadAttr(elasticity, "shear", 1, &dflex.shear, text);
     ReadAttr(elasticity, "damping", 1, &dflex.damping, text);
     ReadAttr(elasticity, "thickness", 1, &dflex.thickness, text);
-    ReadAttr(elasticity, "yield", 1, &dflex.stressyield, text);
+    if (ReadAttr(elasticity, "yield", 2, dflex.stressyield, text, false, false) == 1) {
+      dflex.stressyield[1] = dflex.stressyield[0];  // reset in Make() if not a 2D shell
+      fcomp.yield_single   = true;
+    }
     MapValue(elasticity, "elastic2d", &dflex.elastic2d, elastic2d_map, 4);
     MapValue(elasticity, "section", &dflex.section, flexsection_map, flexsection_sz);
     ReadAttr(elasticity, "sectionsize", 2, dflex.sectionsize, text);

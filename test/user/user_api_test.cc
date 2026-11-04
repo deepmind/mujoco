@@ -10204,6 +10204,70 @@ TEST_F(MujocoTest, KeyframePlasticExpandAttachScale) {
   mj_deleteSpec(spec);
 }
 
+TEST_F(MujocoTest, KeyframePlasticScaleFlexModes) {
+  // a shell with bending plasticity only, in a scaled frame, followed by a
+  // second plastic flex: the shell's keyframe entries are all bending entries,
+  // scaled as such, and the second flex is untouched; a reference shell which
+  // also has stretching plasticity gives the bending scale factor
+  auto compile = [](const char* yield, bool second, int nplastic) -> mjModel* {
+    std::string tet = second ? R"(
+      <flexcomp name="tet" type="direct" dim="3" mass="1"
+                point="0 0 0  1 0 0  0 1 0  0 0 1" element="0 1 2 3">
+        <elasticity young="1000" poisson="0.25" yield="0.05"/>
+      </flexcomp>)"
+                             : "";
+    std::string ones;
+    for (int i = 0; i < nplastic; i++) ones += " 1";
+    std::string xml = std::string(R"(
+    <mujoco>
+      <worldbody>
+        <frame scale="2" scaling="geometry">
+          <body name="b">
+            <flexcomp name="shell" type="grid" count="3 3 1" spacing=".1 .1 .1" dim="2">
+              <elasticity young="1000" thickness="0.01" elastic2d="both" yield=")") +
+                      yield + R"("/>
+            </flexcomp>
+          </body>
+        </frame>)" + tet +
+                      R"(
+      </worldbody>
+      <keyframe>
+        <key plastic=")" +
+                      ones + R"("/>
+      </keyframe>
+    </mujoco>
+    )";
+    std::array<char, 1024> er;
+    mjModel* m =
+        LoadModelFromString(xml.c_str(), er.data(), er.size()).release();
+    EXPECT_THAT(m, NotNull()) << er.data();
+    return m;
+  };
+
+  // reference: 3 * 8 stretching entries, then 16 bending entries
+  mjModel* ref = compile("0.01 0.01", false, 40);
+  ASSERT_THAT(ref, NotNull());
+  ASSERT_EQ(ref->nplastic, 40);
+  double fb = ref->key_plastic[24];
+  EXPECT_NEAR(ref->key_plastic[0], 4, 1e-6);  // f^2 for the metric offsets
+  EXPECT_NE(fb, ref->key_plastic[0]);
+  mj_deleteModel(ref);
+
+  for (bool second : {true, false}) {
+    mjModel* m = compile("0 0.01", second, second ? 16 + 6 : 16);
+    ASSERT_THAT(m, NotNull());
+    ASSERT_EQ(m->flex_plasticmode[0], 1);
+    ASSERT_EQ(m->nplastic, second ? 16 + 6 : 16);
+    for (int j = 0; j < 16; j++) {
+      EXPECT_EQ(m->key_plastic[j], fb) << j;
+    }
+    for (int j = 16; j < m->nplastic; j++) {
+      EXPECT_EQ(m->key_plastic[j], 1.0) << j;
+    }
+    mj_deleteModel(m);
+  }
+}
+
 TEST_F(MujocoTest, FindChildDoesNotReturnSelf) {
   static constexpr char xml[] = R"(
   <mujoco>

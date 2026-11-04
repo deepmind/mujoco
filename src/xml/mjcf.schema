@@ -1236,7 +1236,7 @@ element elasticity : mjsFlex {
   shear              : double (dim="M L^-1 T^-2")
   damping            : double (dim=T)
   thickness          : double = -1 (dim=L)
-  yield              : double (field=stressyield, dim=1)
+  yield              : double[1..2] (field=stressyield, reading=custom, dim=1)  # stretch, bend; 1 value: both
   elastic2d          : enum<elastic2d>
   section            : enum<flexsection>
   sectionsize        : double[2] (dim=L)

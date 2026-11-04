@@ -4026,7 +4026,11 @@
     <xs:attribute name="shear" type="xs:double"/>
     <xs:attribute name="damping" type="xs:double"/>
     <xs:attribute name="thickness" type="xs:double" default="-1"/>
-    <xs:attribute name="yield" type="xs:double"/>
+    <xs:attribute name="yield" type="double1to2">
+      <xs:annotation>
+        <xs:documentation>stretch, bend; 1 value: both</xs:documentation>
+      </xs:annotation>
+    </xs:attribute>
     <xs:attribute name="elastic2d" type="kw_elastic2d"/>
     <xs:attribute name="section" type="kw_flexsection"/>
     <xs:attribute name="sectionsize" type="double2"/>

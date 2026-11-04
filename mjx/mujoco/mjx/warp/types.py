@@ -280,6 +280,7 @@ class ModelWarp(PyTreeNode):
   flex_node: np.ndarray
   flex_passive: np.ndarray
   flex_plasticadr: np.ndarray
+  flex_plasticmode: np.ndarray
   flex_priority: np.ndarray
   flex_radius: np.ndarray
   flex_rigid: np.ndarray
@@ -1122,6 +1123,7 @@ _NDIM = {
         'flex_nodenum': 1,
         'flex_passive': 1,
         'flex_plasticadr': 1,
+        'flex_plasticmode': 1,
         'flex_priority': 1,
         'flex_radius': 1,
         'flex_rigid': 1,
@@ -1158,7 +1160,7 @@ _NDIM = {
         'flex_vertcell': 1,
         'flex_vertflexid': 1,
         'flex_vertnum': 1,
-        'flex_yield': 1,
+        'flex_yield': 2,
         'flexedge_J_colind': 1,
         'flexedge_J_rowadr': 1,
         'flexedge_J_rownnz': 1,
@@ -1972,6 +1974,7 @@ _BATCH_DIM = {
         'flex_nodenum': False,
         'flex_passive': False,
         'flex_plasticadr': False,
+        'flex_plasticmode': False,
         'flex_priority': False,
         'flex_radius': False,
         'flex_rigid': False,

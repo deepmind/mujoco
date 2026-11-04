@@ -836,6 +836,47 @@ TEST_F(ValidateReferencesTest, BodyExcludes) {
   EXPECT_THAT(mj_validateReferences(model.get()), HasSubstr("exclude_body2"));
 }
 
+TEST_F(ValidateReferencesTest, FlexPlasticMode) {
+  static const char xml[] = R"(
+  <mujoco>
+    <worldbody>
+      <flexcomp name="shell" type="grid" count="3 3 1" spacing=".1 .1 .1" dim="2">
+        <elasticity young="1000" thickness="0.01" elastic2d="both" yield="0 0.01"/>
+      </flexcomp>
+      <flexcomp name="rope" type="grid" count="4 1 1" spacing=".1 .1 .1" dim="1"/>
+    </worldbody>
+  </mujoco>
+  )";
+
+  std::array<char, 1024> error;
+  MjModelPtr model = LoadModelFromString(xml, error.data(), error.size());
+  ASSERT_THAT(model.get(), NotNull())
+      << "Failed to load model: " << error.data();
+  int shell = mj_name2id(model.get(), mjOBJ_FLEX, "shell");
+  int rope = mj_name2id(model.get(), mjOBJ_FLEX, "rope");
+  ASSERT_EQ(model->flex_plasticmode[shell], 1);
+  ASSERT_EQ(model->flex_plasticadr[rope], -1);
+  EXPECT_THAT(mj_validateReferences(model.get()), IsNull());
+
+  // unknown mode bits
+  model->flex_plasticmode[shell] = 4;
+  EXPECT_THAT(mj_validateReferences(model.get()),
+              HasSubstr("flex_plasticmode"));
+  model->flex_plasticmode[shell] = 1;
+
+  // plastic modes without plastic state
+  model->flex_plasticadr[shell] = -1;
+  EXPECT_THAT(mj_validateReferences(model.get()),
+              HasSubstr("flex_plasticmode"));
+  model->flex_plasticadr[shell] = 0;
+
+  // stretching plasticity of a 1D flex
+  model->flex_plasticmode[rope] = 2;
+  model->flex_plasticadr[rope] = 0;
+  EXPECT_THAT(mj_validateReferences(model.get()),
+              HasSubstr("flex_plasticmode"));
+}
+
 TEST_F(ValidateReferencesTest, EqualityConstraints) {
   static const char xml[] = R"(
   <mujoco>

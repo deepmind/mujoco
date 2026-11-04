@@ -1586,7 +1586,9 @@ static void advanceFinish(const mjModel* m, mjData* d, const mjtNum* qvel) {
         continue;
       }
 
-      mjtNum yield = mju_max(0, m->flex_yield[f]);
+      mjtNum yield = mju_max(0, m->flex_yield[2*f]);
+      mjtNum yield_bend = mju_max(0, m->flex_yield[2*f + 1]);
+      int mode = m->flex_plasticmode[f];  // 1: bending, 2: stretching
       mjtNum* plastic = d->plastic + m->flex_plasticadr[f];
 
       // interpolated flex: cell-center / face-center corotational strain return mapping
@@ -1790,9 +1792,8 @@ static void advanceFinish(const mjModel* m, mjData* d, const mjtNum* qvel) {
 
       // element stretch return mapping (von Mises / J2 deviatoric strain)
       int stiffnessadr = m->flex_stiffnessadr[f];
-      int stretch_pnum = 0;
-      if (stiffnessadr >= 0 && m->flex_stiffness[stiffnessadr] != 0 && elemnum > 0) {
-        stretch_pnum = nedge * elemnum;
+      int stretch_pnum = (mode & 2) ? nedge * elemnum : 0;
+      if (stretch_pnum > 0) {
         const mjtNum* k = m->flex_stiffness + stiffnessadr;
         const int* eelem = m->flex_elemedge + m->flex_elemedgeadr[f];
         const int* edges = m->flex_edge + 2 * m->flex_edgeadr[f];
@@ -1922,14 +1923,14 @@ static void advanceFinish(const mjModel* m, mjData* d, const mjtNum* qvel) {
 
       // 2D shell bending return mapping in dihedral angle space
       int bendingadr = m->flex_bendingadr[f];
-      if (dim == 2 && bendingadr >= 0 && stiffnessadr >= 0) {
+      if ((mode & 1) && dim == 2 && bendingadr >= 0 && stiffnessadr >= 0) {
         // 2D shell thickness is stored in stiffness[6] (stiffness[0:6] holds the 2D stretch metric)
         mjtNum thickness = m->flex_stiffness[stiffnessadr + 6];
         if (thickness > mjMINVAL) {
           mjtNum* bend_plastic = plastic + stretch_pnum;
           const mjtNum* b = m->flex_bending + bendingadr;
           const mjtNum* rest = m->flexedge_length0 + m->flex_edgeadr[f];
-          mjtNum kappa_yield = 2 * yield / thickness;
+          mjtNum kappa_yield = 2 * yield_bend / thickness;
 
           for (int e = 0; e < edgenum; e++) {
             const int* edge = m->flex_edge + 2 * (e + m->flex_edgeadr[f]);

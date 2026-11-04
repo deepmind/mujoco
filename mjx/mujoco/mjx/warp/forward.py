@@ -219,6 +219,7 @@ def _forward_shim(
     flex_nodenum: wp.array[int],
     flex_passive: wp.array[int],
     flex_plasticadr: wp.array[int],
+    flex_plasticmode: wp.array[int],
     flex_priority: wp.array[int],
     flex_radius: wp.array[float],
     flex_rigid: wp.array[bool],
@@ -920,6 +921,7 @@ def _forward_shim(
   _m.flex_nodenum = flex_nodenum
   _m.flex_passive = flex_passive
   _m.flex_plasticadr = flex_plasticadr
+  _m.flex_plasticmode = flex_plasticmode
   _m.flex_priority = flex_priority
   _m.flex_radius = flex_radius
   _m.flex_rigid = flex_rigid
@@ -2490,6 +2492,7 @@ def _forward_jax_impl(m: types.Model, d: types.Data):
       m.flex_nodenum,
       m._impl.flex_passive,
       m._impl.flex_plasticadr,
+      m._impl.flex_plasticmode,
       m._impl.flex_priority,
       m._impl.flex_radius,
       m._impl.flex_rigid,
@@ -3393,6 +3396,7 @@ def _step_shim(
     flex_nodenum: wp.array[int],
     flex_passive: wp.array[int],
     flex_plasticadr: wp.array[int],
+    flex_plasticmode: wp.array[int],
     flex_priority: wp.array[int],
     flex_radius: wp.array[float],
     flex_rigid: wp.array[bool],
@@ -3424,7 +3428,7 @@ def _step_shim(
     flex_vertcell: wp.array[int],
     flex_vertflexid: wp.array[int],
     flex_vertnum: wp.array[int],
-    flex_yield: wp.array[float],
+    flex_yield: wp.array[wp.vec2],
     flexedge_J_colind: wp.array[int],
     flexedge_J_rowadr: wp.array[int],
     flexedge_J_rownnz: wp.array[int],
@@ -4111,6 +4115,7 @@ def _step_shim(
   _m.flex_nodenum = flex_nodenum
   _m.flex_passive = flex_passive
   _m.flex_plasticadr = flex_plasticadr
+  _m.flex_plasticmode = flex_plasticmode
   _m.flex_priority = flex_priority
   _m.flex_radius = flex_radius
   _m.flex_rigid = flex_rigid
@@ -5723,6 +5728,7 @@ def _step_jax_impl(m: types.Model, d: types.Data):
       m.flex_nodenum,
       m._impl.flex_passive,
       m._impl.flex_plasticadr,
+      m._impl.flex_plasticmode,
       m._impl.flex_priority,
       m._impl.flex_radius,
       m._impl.flex_rigid,

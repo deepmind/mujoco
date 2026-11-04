@@ -944,6 +944,7 @@ typedef struct mjModel_ {
   int*      flex_elemedgeadr;     // first element edge id address            (nflex x 1)
   int*      flex_bendingadr;      // first bending data address               (nflex x 1)
   int*      flex_plasticadr;      // plastic state address; -1: elastic       (nflex x 1)
+  int*      flex_plasticmode;     // plastic state bits; 1: bend, 2: stretch  (nflex x 1)
   int*      flex_shellnum;        // number of shells                         (nflex x 1)
   int*      flex_shelldataadr;    // first shell data address                 (nflex x 1)
   int*      flex_texcoordadr;     // address in flex_texcoord; -1: none       (nflex x 1)
@@ -974,7 +975,7 @@ typedef struct mjModel_ {
   mjtNum*   efm0_L;               // factor of M + (dt^2+dt*d)*K_bend         (nefm0L x 1)
   int*      efmC_perm;            // sparse factor order: vertex dof or -1    (nefmCvert x 1)
   mjtNum*   flex_damping;         // Rayleigh's damping coefficient           (nflex x 1)
-  mjtNum*   flex_yield;           // yield strain threshold; 0: elastic       (nflex x 1)
+  mjtNum*   flex_yield;           // yield strain (stretch, bend); 0: elastic (nflex x 2)
   mjtNum*   flex_edgestiffness;   // edge stiffness                           (nflex x 1)
   mjtNum*   flex_edgedamping;     // edge damping                             (nflex x 1)
   int*      flex_edgeequality;    // 0:none, 1:edges, 3:strain                (nflex x 1)
@@ -2147,7 +2148,7 @@ typedef struct mjsFlex_ {          // flex specification
   double shear;                    // 1D torsion shear modulus; 0: young / (2 (1 + poisson))
   double damping;                  // Rayleigh's damping
   double thickness;                // thickness (2D only)
-  double stressyield;              // yield strain threshold; 0: elastic
+  double stressyield[2];           // yield strain thresholds (stretch, bend); 0: elastic
   int elastic2d;                   // 2D passive forces; 0: none, 1: bending, 2: stretching, 3: both
   int elastic3d;  // experimental 3D material (mjSpec only); 0: Saint
                   // Venant-Kirchhoff, 1: Stable Neo-Hookean

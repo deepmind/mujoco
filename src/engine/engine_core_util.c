@@ -2043,7 +2043,8 @@ void mj_flexHessian(const mjModel* m, mjData* d, int f) {
   const mjtNum* xpos = d->flexvert_xpos + 3*va;
   const mjtNum* length = d->flexedge_length + ea;
   const mjtNum* rest = m->flexedge_length0 + ea;
-  const mjtNum* plastic = m->flex_plasticadr[f] >= 0 ? d->plastic + m->flex_plasticadr[f] : NULL;
+  const mjtNum* plastic = m->flex_plasticadr[f] >= 0 && (m->flex_plasticmode[f] & 2) ?
+                          d->plastic + m->flex_plasticadr[f] : NULL;
 
   for (int t=0; t < m->flex_elemnum[f]; t++) {
     const int* vert = elem + (dim+1)*t;

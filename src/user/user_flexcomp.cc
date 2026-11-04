@@ -82,6 +82,7 @@ mjCFlexcomp::mjCFlexcomp(void) {
   has_dim      = false;
   has_origin   = false;
   has_flatskin = false;
+  yield_single = false;
   file_or_mesh = false;
 
   mjs_defaultPlugin(&plugin);
@@ -567,6 +568,10 @@ bool mjCFlexcomp::Make(mjsBody* body, char* error, int error_sz, const mjVFS* vf
 
   *flex = def.Flex();
   flex->PointToLocal();
+
+  // a single yield strain is also the bending yield strain only of non-interpolated 2D flexes
+  bool interp = doftype == mjFCOMPDOF_TRILINEAR || doftype == mjFCOMPDOF_QUADRATIC;
+  if (yield_single && (pf->dim != 2 || interp)) { pf->stressyield[1] = 0; }
 
   flex->model = model;
   flex->id    = id;
@@ -2565,7 +2570,7 @@ int mjCFlex::PlasticNum() const {
   bool compiled  = !stiffness.empty() || !bending.empty();
   bool is_interp = compiled ? interpolated : !spec_nodebody_.empty();
   if (is_interp) {
-    double yld  = compiled ? stressyield : spec.stressyield;
+    double yld  = compiled ? stressyield[0] : spec.stressyield[0];  // no bending plasticity
     double yng  = compiled ? young : spec.young;
     int    el2d = compiled ? elastic2d : spec.elastic2d;
     double thk  = compiled ? thickness : spec.thickness;
@@ -2594,12 +2599,7 @@ int mjCFlex::PlasticNum() const {
          bending[1 + mjROD_HINGE_SIZE * ((int)bending[0] - 1) + 7] >= 0)) {
       return 6 * ((int)bending[0] + 1) + (int)bending[0];
     }
-    int pnum = 0;
-    if (stressyield > 0 && !interpolated && !rigid && dim >= 2) {
-      if (!stiffness.empty() && stiffness[0] != 0) { pnum += (dim == 2 ? 3 : 6) * nelem; }
-      if (dim == 2 && !bending.empty() && thickness > 0) { pnum += nedge; }
-    }
-    return pnum;
+    return PlasticStretchNum() + (PlasticMode() & 1 ? nedge : 0);
   }
   bool rgd = !spec_vert_.empty() && spec_vertbody_.size() == 1;
   if (!rgd && spec.dim == 1 && spec.young > 0 && spec_nodebody_.empty() && model) {
@@ -2632,16 +2632,12 @@ int mjCFlex::PlasticNum() const {
       }
     }
   }
-  if (rgd || spec.stressyield <= 0 || !spec_nodebody_.empty() || spec.dim < 2 || spec.young <= 0) {
-    return 0;
-  }
-  int num_elem = (int)spec_elem_.size() / (spec.dim + 1);
-  if (num_elem <= 0) { return 0; }
-  int pnum = 0;
-  if ((spec.dim == 2 && spec.elastic2d >= 2 && spec.thickness > 0) || spec.dim == 3) {
-    pnum += (spec.dim == 2 ? 3 : 6) * num_elem;
-  }
-  if (spec.dim == 2 && (spec.elastic2d == 1 || spec.elastic2d == 3) && spec.thickness > 0) {
+  if (rgd || !spec_nodebody_.empty() || spec.dim < 2 || spec.young <= 0) { return 0; }
+  int  pnum = PlasticStretchNum();
+  bool bend =
+      spec.dim == 2 && spec.thickness > 0 && (spec.elastic2d & 1) && spec.stressyield[1] > 0;
+  if (bend) {
+    int num_elem = (int)spec_elem_.size() / (spec.dim + 1);
     std::unordered_set<std::pair<int, int>, PairHash> unique_edges;
     for (int f = 0; f < num_elem; f++) {
       const int* v = spec_elem_.data() + 3 * f;
@@ -2654,6 +2650,30 @@ int mjCFlex::PlasticNum() const {
     pnum += (int)unique_edges.size();
   }
   return pnum;
+}
+
+// number of stretching plastic state entries of a non-interpolated flex, compiled or not; they come
+// first, followed by the bending entries
+int mjCFlex::PlasticStretchNum() const {
+  if (!stiffness.empty() || !bending.empty()) {
+    return !interpolated && (PlasticMode() & 2) ? (dim == 2 ? 3 : 6) * nelem : 0;
+  }
+  bool rgd = !spec_vert_.empty() && spec_vertbody_.size() == 1;
+  if (rgd || !spec_nodebody_.empty() || spec.young <= 0 || spec.stressyield[0] <= 0) { return 0; }
+  bool shell = spec.dim == 2 && spec.thickness > 0 && spec.elastic2d >= 2;
+  if (!shell && spec.dim != 3) { return 0; }
+  return (spec.dim == 2 ? 3 : 6) * ((int)spec_elem_.size() / (spec.dim + 1));
+}
+
+// plastic modes of a compiled flex (1: bending, 2: stretching): a mode has plastic state,
+// stretching first, if and only if its yield strain is positive
+int mjCFlex::PlasticMode() const {
+  if (rigid || dim < 2) { return 0; }
+  if (interpolated) { return PlasticNum() > 0 ? 2 : 0; }
+  int mode = 0;
+  if (!stiffness.empty() && stiffness[0] != 0 && stressyield[0] > 0) { mode |= 2; }
+  if (dim == 2 && !bending.empty() && thickness > 0 && stressyield[1] > 0) { mode |= 1; }
+  return mode;
 }
 
 void mjCFlex::PointToLocal() {
@@ -3302,9 +3322,14 @@ void mjCFlex::Compile(const mjVFS* vfs) {
   }
 
   // yield checks
-  if (stressyield < 0) { throw mjCError(this, "yield cannot be negative"); }
-  if (stressyield > 0 && dim < 2 && !interpolated) {
+  if (stressyield[0] < 0 || stressyield[1] < 0) {
+    throw mjCError(this, "yield cannot be negative");
+  }
+  if ((stressyield[0] > 0 || stressyield[1] > 0) && dim < 2 && !interpolated) {
     throw mjCError(this, "flex plasticity requires a 2d or 3d flex");
+  }
+  if (stressyield[1] > 0 && (dim != 2 || interpolated)) {
+    throw mjCError(this, "bending yield requires a non-interpolated 2d flex");
   }
 
   // set nvert, rigid, centered; check size
@@ -3819,7 +3844,7 @@ void mjCFlex::Compile(const mjVFS* vfs) {
       }
       // store 2D shell thickness in unused slot stiffness[6] (stiffness[0:6] holds 2D stretch
       // metric)
-      if (stressyield > 0 && !stiffness.empty()) { stiffness[6] = thickness; }
+      if (stressyield[1] > 0 && !stiffness.empty()) { stiffness[6] = thickness; }
     }
   }
 

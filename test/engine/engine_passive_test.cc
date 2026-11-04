@@ -6245,9 +6245,10 @@ TEST_F(PlasticityTest, Flex3DStretchPlasticity) {
     spec->option.integrator = mjINT_DISCRETE;
     mjsFlex* flex = mjs_asFlex(mjs_findElement(spec, mjOBJ_FLEX, "tet"));
     ASSERT_THAT(flex, NotNull());
-    EXPECT_NEAR(flex->stressyield, 0.05, MjTol(1e-12, 1e-5));
+    EXPECT_NEAR(flex->stressyield[0], 0.05, MjTol(1e-12, 1e-5));
+    EXPECT_EQ(flex->stressyield[1], 0);  // single value: stretching only in 3D
     flex->elastic3d = 1;
-    flex->stressyield = 0.04;
+    flex->stressyield[0] = 0.04;
     MjModelPtr m_snh(mj_compile(spec, nullptr));
     mj_deleteSpec(spec);
     ASSERT_THAT(m_snh.get(), NotNull());
@@ -6479,7 +6480,7 @@ TEST_F(PlasticityTest, Flex2DBendPlasticity) {
   // Near-zero yield threshold with pure out-of-plane rotation of v3 around the
   // hinge edge (y = -0.5 * cos(theta), z = 0.5 * sin(theta), so A_1 == A_2):
   // tangential bending torque around the hinge drops to zero after one step
-  m->flex_yield[0] = 1e-12;
+  m->flex_yield[1] = 1e-12;
   mj_resetData(m.get(), d.get());
   mjtNum theta = 0.2;
   d->qpos[1] = 0.5 * (1.0 - std::cos(theta));
@@ -6526,6 +6527,148 @@ TEST_F(PlasticityTest, Flex2DBendPlasticity) {
   mjtNum z3 = dd->qpos[2];
   mjtNum theta_final = std::atan2(z3, -y3);
   EXPECT_GT(theta_final, 0.65);
+}
+
+TEST_F(PlasticityTest, Flex2DSeparateStretchAndBendYield) {
+  // Two triangles sharing interior hinge edge (0, 1) along the x-axis, with
+  // stretching and bending: yield="stretch bend" yields each mode independently
+  static constexpr char xml[] = R"(
+  <mujoco>
+    <option gravity="0 0 0" integrator="Euler" timestep="0"/>
+    <worldbody>
+      <flexcomp name="shell" type="direct" dim="2" mass="1"
+                point="0 0 0  1 0 0  0.5 0.5 0  0.5 -0.5 0"
+                element="0 1 2  0 3 1">
+        <contact contype="0" conaffinity="0" selfcollide="none"/>
+        <elasticity young="1000" poisson="0.3" thickness="0.02" elastic2d="both" yield="YIELD"/>
+        <pin id="0 1 2"/>
+      </flexcomp>
+    </worldbody>
+  </mujoco>
+  )";
+
+  // plastic state after one step of pure folding (rotating v3 by 0.4 rad around
+  // the hinge, no stretching) and of pure in-plane stretching (v3 pulled to
+  // y=-0.7), with optional runtime yield strains
+  struct Flow {
+    int mode, nplastic;
+    mjtNum fold_stretch, fold_bend, pull_stretch, pull_bend;
+  };
+  auto flow = [&](const char* yield, mjtNum runtime_stretch = -1,
+                  mjtNum runtime_bend = -1) -> Flow {
+    std::string model_xml(xml);
+    model_xml.replace(model_xml.find("YIELD"), 5, yield);
+    char error[1024];
+    MjModelPtr m = LoadModelFromString(model_xml.c_str(), error, sizeof(error));
+    EXPECT_THAT(m.get(), NotNull()) << error;
+    if (!m) return {};
+    if (runtime_stretch >= 0) m->flex_yield[0] = runtime_stretch;
+    if (runtime_bend >= 0) m->flex_yield[1] = runtime_bend;
+
+    // only the modes with a positive yield strain have plastic state
+    int mode = m->flex_plasticmode[0];
+    int stretch_pnum = (mode & 2) ? 3 * m->flex_elemnum[0] : 0;
+    int bend_pnum = (mode & 1) ? m->flex_edgenum[0] : 0;
+    EXPECT_EQ(m->nplastic, stretch_pnum + bend_pnum);
+
+    Flow result = {mode, (int)m->nplastic, 0, 0, 0, 0};
+    MjDataPtr d = MakeData(m);
+    mjtNum theta = 0.4;
+    d->qpos[1] = 0.5 * (1.0 - std::cos(theta));
+    d->qpos[2] = 0.5 * std::sin(theta);
+    mj_step(m.get(), d.get());
+    result.fold_stretch = mju_norm(d->plastic, stretch_pnum);
+    result.fold_bend = mju_norm(d->plastic + stretch_pnum, bend_pnum);
+
+    mj_resetData(m.get(), d.get());
+    d->qpos[1] = -0.2;
+    mj_step(m.get(), d.get());
+    result.pull_stretch = mju_norm(d->plastic, stretch_pnum);
+    result.pull_bend = mju_norm(d->plastic + stretch_pnum, bend_pnum);
+    return result;
+  };
+  mjtNum tol = MjTol(1e-12, 1e-5);
+
+  // one value: both modes are plastic and yield, same as two equal values
+  Flow both = flow("0.002");
+  EXPECT_EQ(both.mode, 3);
+  EXPECT_EQ(both.nplastic, 11);
+  EXPECT_NEAR(both.fold_stretch, 0.0, tol);
+  EXPECT_GT(both.fold_bend, 1e-4);
+  EXPECT_GT(both.pull_stretch, 0.01);
+  EXPECT_NEAR(both.pull_bend, 0.0, tol);
+  Flow both2 = flow("0.002 0.002");
+  EXPECT_EQ(both2.mode, 3);
+  EXPECT_EQ(both2.fold_bend, both.fold_bend);
+  EXPECT_EQ(both2.pull_stretch, both.pull_stretch);
+
+  // large stretching and small bending threshold: yields in bending only
+  Flow bend_only = flow("1 0.002");
+  EXPECT_EQ(bend_only.mode, 3);
+  EXPECT_NEAR(bend_only.fold_stretch, 0.0, tol);
+  EXPECT_EQ(bend_only.fold_bend, both.fold_bend);
+  EXPECT_NEAR(bend_only.pull_stretch, 0.0, tol);
+  EXPECT_NEAR(bend_only.pull_bend, 0.0, tol);
+
+  // small stretching and large bending threshold: yields in stretching only
+  Flow stretch_only = flow("0.002 1");
+  EXPECT_EQ(stretch_only.mode, 3);
+  EXPECT_NEAR(stretch_only.fold_stretch, 0.0, tol);
+  EXPECT_NEAR(stretch_only.fold_bend, 0.0, tol);
+  EXPECT_EQ(stretch_only.pull_stretch, both.pull_stretch);
+  EXPECT_NEAR(stretch_only.pull_bend, 0.0, tol);
+
+  // a zero threshold at compile time: the mode has no plastic state and stays
+  // elastic, also if its yield strain is changed at runtime
+  Flow elastic_stretch = flow("0 0.002", /*runtime_stretch=*/0.001);
+  EXPECT_EQ(elastic_stretch.mode, 1);
+  EXPECT_EQ(elastic_stretch.nplastic, 5);
+  EXPECT_EQ(elastic_stretch.fold_bend, both.fold_bend);
+  Flow elastic_bend = flow("0.002 0", /*runtime_stretch=*/-1,
+                           /*runtime_bend=*/0.001);
+  EXPECT_EQ(elastic_bend.mode, 2);
+  EXPECT_EQ(elastic_bend.nplastic, 6);
+  EXPECT_EQ(elastic_bend.pull_stretch, both.pull_stretch);
+
+  // a zero threshold at runtime on a plastic mode is full plastic flow
+  Flow full_stretch = flow("1 1", /*runtime_stretch=*/0);
+  EXPECT_GT(full_stretch.pull_stretch, both.pull_stretch);
+  EXPECT_NEAR(full_stretch.fold_bend, 0.0, tol);
+  Flow full_bend = flow("1 1", /*runtime_stretch=*/-1, /*runtime_bend=*/0);
+  EXPECT_GT(full_bend.fold_bend, both.fold_bend);
+  EXPECT_NEAR(full_bend.pull_stretch, 0.0, tol);
+}
+
+TEST_F(PlasticityTest, FlexYieldOfAbsentModeAllocatesNoState) {
+  // a positive threshold for a mode the flex does not have allocates no plastic
+  // state: bending yield of a stretch-only 2D shell; a single value is only the
+  // stretching yield strain of a 3D flex
+  static constexpr char xml[] = R"(
+  <mujoco>
+    <worldbody>
+      <flexcomp name="shell" type="direct" dim="2" mass="1"
+                point="0 0 0  1 0 0  0.5 0.5 0" element="0 1 2">
+        <contact contype="0" conaffinity="0" selfcollide="none"/>
+        <elasticity young="1000" poisson="0.3" thickness="0.02" elastic2d="stretch" yield="0 0.1"/>
+      </flexcomp>
+      <flexcomp name="tet" type="direct" dim="3" mass="1"
+                point="0 0 0  1 0 0  0 1 0  0 0 1" element="0 1 2 3">
+        <contact contype="0" conaffinity="0" selfcollide="none"/>
+        <elasticity young="1000" poisson="0.25" yield="0.05"/>
+      </flexcomp>
+    </worldbody>
+  </mujoco>
+  )";
+  char error[1024];
+  MjModelPtr m = LoadModelFromString(xml, error, sizeof(error));
+  ASSERT_THAT(m.get(), NotNull()) << error;
+  EXPECT_EQ(m->nplastic, 6);
+  EXPECT_EQ(m->flex_plasticadr[0], -1);
+  EXPECT_EQ(m->flex_plasticmode[0], 0);
+  EXPECT_EQ(m->flex_plasticadr[1], 0);
+  EXPECT_EQ(m->flex_plasticmode[1], 2);
+  EXPECT_FLOAT_EQ(m->flex_yield[2], 0.05);
+  EXPECT_EQ(m->flex_yield[3], 0);
 }
 
 TEST_F(PlasticityTest, FlexInterpStretchPlasticity) {

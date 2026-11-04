@@ -3706,13 +3706,14 @@ void mjCModel::CopyObjects(mjModel* m) {
                    pfl->bending.data(),
                    pfl->bending.size());
     }
-    m->flex_damping[i]     = (mjtNum)pfl->damping;
-    m->flex_yield[i]       = (mjtNum)pfl->stressyield;
-    int flex_pnum          = pfl->PlasticNum();
-    m->flex_plasticadr[i]  = flex_pnum > 0 ? flex_padr : -1;
-    pfl->plasticadr_       = m->flex_plasticadr[i];
-    pfl->plasticnum_       = flex_pnum;
-    flex_padr             += flex_pnum;
+    m->flex_damping[i] = (mjtNum)pfl->damping;
+    mjuu_copyvec(m->flex_yield + 2 * i, pfl->stressyield, 2);
+    int flex_pnum           = pfl->PlasticNum();
+    m->flex_plasticadr[i]   = flex_pnum > 0 ? flex_padr : -1;
+    m->flex_plasticmode[i]  = flex_pnum > 0 ? pfl->PlasticMode() : 0;
+    pfl->plasticadr_        = m->flex_plasticadr[i];
+    pfl->plasticnum_        = flex_pnum;
+    flex_padr              += flex_pnum;
 
     // set fields: mesh-like
     m->flex_dim[i]          = pfl->dim;
@@ -6518,14 +6519,7 @@ void mjCModel::ScaleKeyframe(
       const mjCGauge g           = flex->BodyGauge();
       const double   f           = g.Shape(1);
       const double   fb          = g.Force(-1, 1);
-      int            stretch_num = 0;
-      if (!flex->stiffness.empty()) {
-        if (flex->stiffness[0] != 0) { stretch_num = (flex->dim == 2 ? 3 : 6) * flex->nelem; }
-      } else if ((flex->spec.dim == 2 && flex->spec.elastic2d >= 2 && flex->spec.thickness > 0) ||
-                 flex->spec.dim == 3) {
-        int num_elem = (int)flex->spec_elem_.size() / (flex->spec.dim + 1);
-        stretch_num  = (flex->spec.dim == 2 ? 3 : 6) * num_elem;
-      }
+      const int      stretch_num = flex->PlasticStretchNum();
       for (int j = 0; j < stretch_num; j++) { scale(plastic[flex->plasticadr_ + j], f * f); }
       for (int j = stretch_num; j < flex->plasticnum_; j++) {
         scale(plastic[flex->plasticadr_ + j], fb);

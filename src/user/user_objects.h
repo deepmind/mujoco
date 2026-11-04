@@ -1287,6 +1287,8 @@ class mjCFlex : public mjCFlex_, private mjsFlex {
 
   std::vector<double>& plastic(const std::string& state_name) { return plastic_[state_name]; }
   int                  PlasticNum() const;
+  int                  PlasticMode() const;
+  int                  PlasticStretchNum() const;
 
   // gauge of the lowest frame or body which contains the bodies of the vertices and nodes
   mjCGauge BodyGauge() const;

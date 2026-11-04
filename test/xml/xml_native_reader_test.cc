@@ -2777,6 +2777,174 @@ TEST_F(XMLReaderTest, MakePlateInvalidParameters) {
   EXPECT_THAT(error.data(), HasSubstr("resolutions must be positive"));
 }
 
+// ----------------------- test flex yield parsing ---------------------------
+
+TEST_F(XMLReaderTest, FlexYieldOneOrTwoValues) {
+  static constexpr char xml[] = R"(
+  <mujoco>
+    <worldbody>
+      <flexcomp name="one" type="grid" count="3 3 1" spacing=".1 .1 .1" dim="2">
+        <elasticity young="1000" thickness="0.01" elastic2d="both" yield="0.02"/>
+      </flexcomp>
+      <flexcomp name="two" type="grid" count="3 3 1" spacing=".1 .1 .1" dim="2">
+        <elasticity young="1000" thickness="0.01" elastic2d="both" yield="0.03 0.004"/>
+      </flexcomp>
+      <flexcomp name="box" type="grid" count="2 2 2" spacing=".1 .1 .1" dim="3">
+        <elasticity young="1000" yield="0.05"/>
+      </flexcomp>
+    </worldbody>
+    <deformable>
+      <flex name="direct" dim="2" body="world world world" vertex="0 0 0 1 0 0 0 1 0"
+            element="0 1 2">
+        <elasticity yield="0.5 0.25"/>
+      </flex>
+      <flex name="direct3d" dim="3" body="world world world world"
+            vertex="0 0 0 1 0 0 0 1 0 0 0 1" element="0 1 2 3">
+        <elasticity yield="0.5"/>
+      </flex>
+    </deformable>
+  </mujoco>
+  )";
+  std::array<char, 1024> error;
+  mjSpec* spec = mj_parseXMLString(xml, 0, error.data(), error.size());
+  ASSERT_THAT(spec, NotNull()) << error.data();
+
+  // a single value applies to both stretching and bending of 2D flexes, and is
+  // only the stretching yield strain of 3D flexes
+  mjsFlex* one = mjs_asFlex(mjs_findElement(spec, mjOBJ_FLEX, "one"));
+  mjsFlex* two = mjs_asFlex(mjs_findElement(spec, mjOBJ_FLEX, "two"));
+  mjsFlex* box = mjs_asFlex(mjs_findElement(spec, mjOBJ_FLEX, "box"));
+  mjsFlex* direct = mjs_asFlex(mjs_findElement(spec, mjOBJ_FLEX, "direct"));
+  mjsFlex* direct3d = mjs_asFlex(mjs_findElement(spec, mjOBJ_FLEX, "direct3d"));
+  ASSERT_THAT(one, NotNull());
+  ASSERT_THAT(two, NotNull());
+  ASSERT_THAT(box, NotNull());
+  ASSERT_THAT(direct, NotNull());
+  ASSERT_THAT(direct3d, NotNull());
+  EXPECT_THAT(one->stressyield, ElementsAre(0.02, 0.02));
+  EXPECT_THAT(two->stressyield, ElementsAre(0.03, 0.004));
+  EXPECT_THAT(box->stressyield, ElementsAre(0.05, 0));
+  EXPECT_THAT(direct->stressyield, ElementsAre(0.5, 0.25));
+  EXPECT_THAT(direct3d->stressyield, ElementsAre(0.5, 0));
+  mj_deleteSpec(spec);
+
+  // the compiled model has one row of (stretch, bend) yield strains per flex
+  static constexpr char xml_model[] = R"(
+  <mujoco>
+    <worldbody>
+      <flexcomp name="one" type="grid" count="3 3 1" spacing=".1 .1 .1" dim="2">
+        <elasticity young="1000" thickness="0.01" elastic2d="both" yield="0.02"/>
+      </flexcomp>
+      <flexcomp name="two" type="grid" count="3 3 1" spacing=".1 .1 .1" dim="2">
+        <elasticity young="1000" thickness="0.01" elastic2d="both" yield="0.03 0.004"/>
+      </flexcomp>
+    </worldbody>
+  </mujoco>
+  )";
+  MjModelPtr model = LoadModelFromString(xml_model, error.data(), error.size());
+  ASSERT_THAT(model.get(), NotNull()) << error.data();
+  int id1 = mj_name2id(model.get(), mjOBJ_FLEX, "one");
+  int id2 = mj_name2id(model.get(), mjOBJ_FLEX, "two");
+  EXPECT_FLOAT_EQ(model->flex_yield[2 * id1], 0.02);
+  EXPECT_FLOAT_EQ(model->flex_yield[2 * id1 + 1], 0.02);
+  EXPECT_FLOAT_EQ(model->flex_yield[2 * id2], 0.03);
+  EXPECT_FLOAT_EQ(model->flex_yield[2 * id2 + 1], 0.004);
+}
+
+TEST_F(XMLReaderTest, FlexYieldErrors) {
+  std::array<char, 1024> error;
+
+  // at most two values
+  static constexpr char xml_three[] = R"(
+  <mujoco>
+    <worldbody>
+      <flexcomp name="f" type="grid" count="3 3 1" spacing=".1 .1 .1" dim="2">
+        <elasticity young="1000" thickness="0.01" yield="0.1 0.2 0.3"/>
+      </flexcomp>
+    </worldbody>
+  </mujoco>
+  )";
+  MjModelPtr model = LoadModelFromString(xml_three, error.data(), error.size());
+  EXPECT_THAT(model.get(), IsNull());
+  EXPECT_THAT(error.data(), HasSubstr("has too much data"));
+
+  // the bending yield strain cannot be negative
+  static constexpr char xml_negative[] = R"(
+  <mujoco>
+    <worldbody>
+      <flexcomp name="f" type="grid" count="3 3 1" spacing=".1 .1 .1" dim="2">
+        <elasticity young="1000" thickness="0.01" yield="0.1 -0.2"/>
+      </flexcomp>
+    </worldbody>
+  </mujoco>
+  )";
+  model = LoadModelFromString(xml_negative, error.data(), error.size());
+  EXPECT_THAT(model.get(), IsNull());
+  EXPECT_THAT(error.data(), HasSubstr("yield cannot be negative"));
+
+  // 3D and interpolated flexes have no bending plasticity: a positive bending
+  // yield strain is an error
+  static constexpr char xml_3d[] = R"(
+  <mujoco>
+    <worldbody>
+      <flexcomp name="f" type="grid" count="2 2 2" spacing=".1 .1 .1" dim="3">
+        <elasticity young="1000" yield="0.05 0.05"/>
+      </flexcomp>
+    </worldbody>
+  </mujoco>
+  )";
+  model = LoadModelFromString(xml_3d, error.data(), error.size());
+  EXPECT_THAT(model.get(), IsNull());
+  EXPECT_THAT(error.data(),
+              HasSubstr("bending yield requires a non-interpolated 2d flex"));
+  static constexpr char xml_interp[] = R"(
+  <mujoco>
+    <worldbody>
+      <flexcomp name="f" type="grid" count="2 2 2" spacing=".1 .1 .1" dim="3"
+                dof="trilinear">
+        <elasticity young="1000" yield="0.05 0.01"/>
+      </flexcomp>
+    </worldbody>
+  </mujoco>
+  )";
+  model = LoadModelFromString(xml_interp, error.data(), error.size());
+  EXPECT_THAT(model.get(), IsNull());
+  EXPECT_THAT(error.data(),
+              HasSubstr("bending yield requires a non-interpolated 2d flex"));
+
+  // a single value on an interpolated flex is only the stretching yield strain
+  static constexpr char xml_interp_single[] = R"(
+  <mujoco>
+    <worldbody>
+      <flexcomp name="f" type="grid" count="2 2 2" spacing=".1 .1 .1" dim="3"
+                dof="trilinear">
+        <elasticity young="1000" yield="0.05"/>
+      </flexcomp>
+    </worldbody>
+  </mujoco>
+  )";
+  model = LoadModelFromString(xml_interp_single, error.data(), error.size());
+  ASSERT_THAT(model.get(), NotNull()) << error.data();
+  EXPECT_FLOAT_EQ(model->flex_yield[0], 0.05);
+  EXPECT_EQ(model->flex_yield[1], 0);
+  EXPECT_EQ(model->flex_plasticmode[0], 2);
+
+  // 1D flexes have no plasticity: a positive bending yield strain is an error
+  static constexpr char xml_1d[] = R"(
+  <mujoco>
+    <worldbody>
+      <flexcomp name="f" type="grid" count="4 1 1" spacing=".1 .1 .1" dim="1">
+        <elasticity yield="0 0.2"/>
+      </flexcomp>
+    </worldbody>
+  </mujoco>
+  )";
+  model = LoadModelFromString(xml_1d, error.data(), error.size());
+  EXPECT_THAT(model.get(), IsNull());
+  EXPECT_THAT(error.data(),
+              HasSubstr("flex plasticity requires a 2d or 3d flex"));
+}
+
 // ----------------------- test skin parsing --------------------------------
 
 TEST_F(XMLReaderTest, ReadsSkinGroups) {

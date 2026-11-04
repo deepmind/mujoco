@@ -35,7 +35,8 @@ Significant new features
   - Ideal elasto-plasticity for joint (:ref:`springyield<body-joint-springyield>`) and tendon
     (:ref:`spatial<tendon-spatial-springyield>`, :ref:`fixed<tendon-fixed-springyield>`) springs (left).
   - Continuum elasto-plasticity (:ref:`yield<flex-elasticity-yield>`) for 2D and 3D :ref:`flexes<deformable-flex>`,
-    with volumetric-deviatoric (von Mises :math:`J_2`) stretching and 2D shell bending return mapping (right).
+    with separate stretching and bending yield strains for 2D shells, volumetric-deviatoric (von Mises :math:`J_2`)
+    stretching and 2D shell bending return mapping (right).
 
   .. image:: https://www.gstatic.com/mujoco/doc/images/changelog/wire.gif
      :align: left

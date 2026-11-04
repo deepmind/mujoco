@@ -94,6 +94,7 @@ class mjCFlexcomp {
   bool         has_dim;       // whether dim was explicitly specified
   bool         has_origin;    // whether origin was explicitly specified
   bool         has_flatskin;  // whether flatskin was explicitly specified
+  bool         yield_single;  // whether yield has one value, for stretching and bending
   bool         file_or_mesh;  // file could also have been a mesh name (mjs_makeFlex)
 
   // pin specifications

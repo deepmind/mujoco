@@ -596,6 +596,8 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
       m.tendon_plasticadr = np.full(mjm.ntendon, -1, dtype=np.int32)
     if not hasattr(mjm, "flex_plasticadr"):
       m.flex_plasticadr = np.full(mjm.nflex, -1, dtype=np.int32)
+    if not hasattr(mjm, "flex_plasticmode"):
+      m.flex_plasticmode = np.zeros(mjm.nflex, dtype=np.int32)
 
   m.opt = opt
   m.callback = types.Callback()

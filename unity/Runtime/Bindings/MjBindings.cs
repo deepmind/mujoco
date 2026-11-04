@@ -1382,6 +1382,7 @@ public unsafe struct mjModel_ {
   public int* flex_elemedgeadr;
   public int* flex_bendingadr;
   public int* flex_plasticadr;
+  public int* flex_plasticmode;
   public int* flex_shellnum;
   public int* flex_shelldataadr;
   public int* flex_texcoordadr;

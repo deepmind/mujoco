@@ -3995,7 +3995,9 @@ element is used to adjust the properties of all edges in the flex.
 
 |body/flexcomp/elasticity attrib list|
    Same as in :ref:`flex/elasticity<flex-elasticity>`.
-   All attributes are passed through to the automatically-generated flex.
+   All attributes are passed through to the automatically-generated flex. In particular, :at:`yield` takes one or two
+   values, for stretching and bending; a single value is also the bending yield strain only if the generated flex is a
+   non-interpolated 2D flex.
 
 .. _flexcomp-pin:
 
@@ -4664,22 +4666,31 @@ except for 1D flexes with zero :ref:`damping<flex-elasticity-damping>`.
 
 .. _flex-elasticity-yield:
 
-:at:`yield`: :at-val:`real(1), "0"`
-   Dimensionless plastic yield strain threshold :math:`\varepsilon_y` for 2D and 3D flexes. If zero, the flex is purely
-   elastic. If positive, each element's (or interpolated cell's/face's) elastic stretching strain tensor is bounded by
-   the von Mises (:math:`J_2`) yield criterion (3D isochoric in 3D, plane-stress with out-of-plane thinning in tension
-   in 2D) via radial return mapping, and for non-interpolated 2D shells with bending enabled
-   (:ref:`elastic2d<flex-elasticity-elastic2d>` **bend** or **both**), each interior hinge's outer-fiber bending strain
-   :math:`\frac{t}{2} |\Delta\kappa_e| \le \varepsilon_y` is bounded via return mapping in dihedral angle space
-   (assuming an initially flat rest configuration). In ``mjData.plastic`` at ``flex_plasticadr[f]``, a non-interpolated
-   flex stores its stretching plastic metric offsets first (``3 * elemnum`` entries in 2D or ``6 * elemnum`` entries in
-   3D when stretching is active), followed by ``edgenum`` bending plastic entries in 2D when bending is active. An
+:at:`yield`: :at-val:`real(1 or 2), "0"`
+   Dimensionless plastic yield strain thresholds :math:`\varepsilon_y` for stretching and bending of 2D and 3D flexes.
+   For non-interpolated 2D flexes, a single value applies to both, e.g., ``yield="0.01"`` is equivalent to
+   ``yield="0.01 0.01"``; for other flexes, a single value is the stretching threshold. A mode (stretching or bending)
+   is plastic if its threshold is positive at compile time; its plastic state is then allocated in ``mjData.plastic``
+   and the bit of the mode is set in ``mjModel.flex_plasticmode[f]`` (1: bending, 2: stretching). A mode whose threshold
+   is zero has no plastic state and remains purely elastic, e.g., ``yield="0.01 0"`` makes only stretching plastic. As
+   for joints and tendons, setting the threshold of a plastic mode to zero at runtime in ``mjModel.flex_yield`` (which
+   has two columns) corresponds to zero yield strain (full plastic flow). If the stretching (first) threshold is
+   positive, each element's (or interpolated cell's/face's) elastic stretching strain tensor is bounded by the von Mises
+   (:math:`J_2`) yield criterion (3D isochoric in 3D, plane-stress with out-of-plane thinning in tension in 2D) via
+   radial return mapping. If the bending (second) threshold is positive, which requires a non-interpolated 2D flex (a
+   compiler error otherwise), for shells with bending enabled (:ref:`elastic2d<flex-elasticity-elastic2d>` **bend** or
+   **both**), each interior hinge's outer-fiber bending strain :math:`\frac{t}{2} |\Delta\kappa_e| \le \varepsilon_y` is
+   bounded via return mapping in dihedral angle space (assuming an initially flat rest configuration). For example,
+   ``yield="0 0.001"`` makes a shell yield in bending while its stretching remains elastic. 1D flexes do not support
+   plasticity (both values must be zero). In ``mjData.plastic`` at ``flex_plasticadr[f]``, a non-interpolated flex
+   stores its stretching plastic metric offsets first (``3 * elemnum`` entries in 2D or ``6 * elemnum`` entries in 3D
+   when stretching is plastic), followed by ``edgenum`` bending plastic entries in 2D when bending is plastic. An
    interpolated flex with :ref:`cellcount<body-flexcomp-cellcount>` :math:`(c_x, c_y, c_z)` stores one dimensionless
    plastic stretching strain per grid cell (``6 * cx * cy * cz`` entries in 3D) or per outer grid face in 2D shell mode
    (``3 * 2 * (cy*cz + cx*cz + cx*cy)`` entries); the elastic strain is measured in the corotated frame of the polar
    decomposition of the physical deformation gradient :math:`J_e = \partial x / \partial X`. Bending plasticity is not
-   supported for interpolated flexes: with :ref:`elastic2d<flex-elasticity-elastic2d>` **bend**, :at:`yield` is
-   ignored and the flex remains purely elastic.
+   supported for interpolated flexes: with :ref:`elastic2d<flex-elasticity-elastic2d>` **bend**, :at:`yield` is ignored
+   and the flex remains purely elastic.
 
 .. _flex-elasticity-elastic2d:
 

@@ -642,6 +642,13 @@ void mjXWriter::OneFlex(XMLElement* elem, const mjCFlex* flex) {
                  kElasticityAttrs,
                  kElasticityAttrsN);
 
+  // yield strains: a single value if it gives the bending yield strain, which is the stretching
+  // yield strain for non-interpolated 2D flexes and zero otherwise
+  const double* yield  = values->stressyield;
+  bool          shell  = values->dim == 2 && nodebody.empty();
+  bool          single = yield[1] == (shell ? yield[0] : 0);
+  WriteAttr(elastic, "yield", single ? 1 : 2, yield, defflex.spec.stressyield);
+
   // edge subelement
   XMLElement* edge = InsertEnd(elem, "edge");
   WriteAttrTable(edge,

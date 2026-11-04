@@ -741,12 +741,13 @@ def _next_plastic_flex_stretch(
   flex_stiffnessadr: wp.array[int],
   flex_elemedgeadr: wp.array[int],
   flex_plasticadr: wp.array[int],
+  flex_plasticmode: wp.array[int],
   flex_vertbodyid: wp.array[int],
   flex_elem: wp.array[int],
   flex_elemedge: wp.array[int],
   flexedge_length0: wp.array[float],
   flex_stiffness: wp.array[float],
-  flex_yield: wp.array[float],
+  flex_yield: wp.array[wp.vec2],
   flex_elemflexid: wp.array[int],
   # Data in:
   qvel_in: wp.array2d[float],
@@ -764,9 +765,9 @@ def _next_plastic_flex_stretch(
   padr_base = flex_plasticadr[f]
   if padr_base < 0:
     return
-  yield_ = wp.max(0.0, flex_yield[f])
+  yield_ = wp.max(0.0, flex_yield[f][0])
   dim = flex_dim[f]
-  if (dim != 2 and dim != 3) or flex_interp[f] != 0:
+  if (dim != 2 and dim != 3) or flex_interp[f] != 0 or (flex_plasticmode[f] & 2) == 0:
     return
   stiffness_adr_base = flex_stiffnessadr[f]
   if stiffness_adr_base < 0 or flex_stiffness[stiffness_adr_base] == 0.0:
@@ -912,13 +913,14 @@ def _next_plastic_flex_bend(
   flex_stiffnessadr: wp.array[int],
   flex_bendingadr: wp.array[int],
   flex_plasticadr: wp.array[int],
+  flex_plasticmode: wp.array[int],
   flex_vertbodyid: wp.array[int],
   flex_edge: wp.array[wp.vec2i],
   flex_edgeflap: wp.array[wp.vec2i],
   flexedge_length0: wp.array[float],
   flex_stiffness: wp.array[float],
   flex_bending: wp.array[float],
-  flex_yield: wp.array[float],
+  flex_yield: wp.array[wp.vec2],
   flex_edgeflexid: wp.array[int],
   # Data in:
   qvel_in: wp.array2d[float],
@@ -935,7 +937,7 @@ def _next_plastic_flex_bend(
   padr_base = flex_plasticadr[f]
   if padr_base < 0:
     return
-  if flex_dim[f] != 2 or flex_interp[f] != 0:
+  if flex_dim[f] != 2 or flex_interp[f] != 0 or (flex_plasticmode[f] & 1) == 0:
     return
   bending_adr_base = flex_bendingadr[f]
   stiffness_adr_base = flex_stiffnessadr[f]
@@ -1000,13 +1002,13 @@ def _next_plastic_flex_bend(
   if denom <= MJ_MINVAL or l0 <= MJ_MINVAL:
     return
 
-  yield_ = wp.max(0.0, flex_yield[f])
+  yield_ = wp.max(0.0, flex_yield[f][1])
   kappa_yield = 2.0 * yield_ / thickness
   omega = wp.dot(ed2, frc3)
   theta = wp.atan2(omega * l0, wp.dot(frc2, frc3))
   theta_yield = 0.5 * (two_a1 + two_a2) / l0 * kappa_yield
 
-  stretch_pnum = 3 * flex_elemnum[f] if flex_stiffness[stiffness_adr_base] != 0.0 else 0
+  stretch_pnum = 3 * flex_elemnum[f] if (flex_plasticmode[f] & 2) != 0 else 0
   padr = padr_base + stretch_pnum + eid
   b16_0 = flex_bending[bbase + 16]
   b_p = plastic_in[worldid, padr]
@@ -1037,7 +1039,7 @@ def _next_plastic_flex_interp(
   flex_nodebodyid: wp.array[int],
   flex_node0: wp.array[wp.vec3],
   flex_stiffness: wp.array[float],
-  flex_yield: wp.array[float],
+  flex_yield: wp.array[wp.vec2],
   flex_faceadr: wp.array[int],
   flex_cell_map: wp.array[wp.vec4i],
   flex_face: wp.array2d[int],
@@ -1152,7 +1154,7 @@ def _next_plastic_flex_interp(
       f1 += xpos_j * (phi_x * dphi_y * phi_z)
       f2 += xpos_j * (phi_x * phi_y * dphi_z)
 
-  yield_ = wp.max(0.0, flex_yield[f])
+  yield_ = wp.max(0.0, flex_yield[f][0])
   if shell_mode:
     normal_axis = 0 if ci < 2 * cy * cz else (1 if ci < 2 * (cy * cz + cx * cz) else 2)
     axis0 = (normal_axis + 1) % 3
@@ -1417,6 +1419,7 @@ def _advance(m: Model, d: Data, qacc: wp.array, qvel: Optional[wp.array] = None)
         m.flex_stiffnessadr,
         m.flex_elemedgeadr,
         m.flex_plasticadr,
+        m.flex_plasticmode,
         m.flex_vertbodyid,
         m.flex_elem,
         m.flex_elemedge,
@@ -1453,6 +1456,7 @@ def _advance(m: Model, d: Data, qacc: wp.array, qvel: Optional[wp.array] = None)
         m.flex_stiffnessadr,
         m.flex_bendingadr,
         m.flex_plasticadr,
+        m.flex_plasticmode,
         m.flex_vertbodyid,
         m.flex_edge,
         m.flex_edgeflap,

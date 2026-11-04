@@ -554,7 +554,7 @@ typedef struct mjsFlex_ {          // flex specification
   double shear;                    // 1D torsion shear modulus; 0: young / (2 (1 + poisson))
   double damping;                  // Rayleigh's damping
   double thickness;                // thickness (2D only)
-  double stressyield;              // yield strain threshold; 0: elastic
+  double stressyield[2];           // yield strain thresholds (stretch, bend); 0: elastic
   int elastic2d;                   // 2D passive forces; 0: none, 1: bending, 2: stretching, 3: both
   int elastic3d;  // experimental 3D material (mjSpec only); 0: Saint
                   // Venant-Kirchhoff, 1: Stable Neo-Hookean

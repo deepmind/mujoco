@@ -477,10 +477,8 @@ static void mj_flexPassiveBend(const mjModel* m, mjData* d, int f,
   mjtNum* xpos = d->flexvert_xpos + 3*m->flex_vertadr[f];
   mjtNum* b = m->flex_bending + bendingadr;
   const mjtNum* bend_plastic = NULL;
-  if (m->flex_plasticadr[f] >= 0) {
-    int stiffnessadr = m->flex_stiffnessadr[f];
-    int stretch_pnum = (stiffnessadr >= 0 && m->flex_stiffness[stiffnessadr] != 0)
-                       ? 3 * m->flex_elemnum[f] : 0;
+  if (m->flex_plasticadr[f] >= 0 && (m->flex_plasticmode[f] & 1)) {
+    int stretch_pnum = (m->flex_plasticmode[f] & 2) ? 3 * m->flex_elemnum[f] : 0;
     bend_plastic = d->plastic + m->flex_plasticadr[f] + stretch_pnum;
   }
 
@@ -777,7 +775,8 @@ static void mj_flexPassiveStretch(const mjModel* m, mjData* d, int f,
   mjtNum* vel = d->flexedge_velocity + m->flex_edgeadr[f];
   mjtNum* deformed = d->flexedge_length + m->flex_edgeadr[f];
   mjtNum* reference = m->flexedge_length0 + m->flex_edgeadr[f];
-  const mjtNum* plastic = m->flex_plasticadr[f] >= 0 ? d->plastic + m->flex_plasticadr[f] : NULL;
+  const mjtNum* plastic = m->flex_plasticadr[f] >= 0 && (m->flex_plasticmode[f] & 2) ?
+                          d->plastic + m->flex_plasticadr[f] : NULL;
 
   mj_markStack(d);
   mjtNum* frc = mjSTACKALLOC(d, 3*m->flex_vertnum[f], mjtNum);
