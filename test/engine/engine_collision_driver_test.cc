@@ -1587,5 +1587,63 @@ TEST_F(MjCollisionTest, NarrowphaseCCDBuffer) {
   EXPECT_LT(custom - prim, 10 * ccd_buf);
 }
 
+TEST_F(MjCollisionTest, FlexSapElementIndexAboveSignBit) {
+  // SAP ids at 0x8000 used to become negative when packed into a signed int
+  constexpr int kFirstHighIndex = 1 << 15;
+  constexpr int kNumVert = kFirstHighIndex + 1;
+  std::string body, vertex, element;
+  for (int i = 0; i < kNumVert; i++) {
+    body += "b0 ";
+    vertex += std::to_string(i) + " 0 0 ";
+    if (i) element += std::to_string(i - 1) + " " + std::to_string(i) + " ";
+  }
+
+  // make the first target element id 0x8000, the first id with the old sign bit
+  body += "b0 b0 b1 b1 ";
+  vertex += "-100 0 0  -99 0 0  -100 .1 0  -99 .1 0 ";
+  for (int i = kNumVert; i < kNumVert + 4; i++) {
+    element += std::to_string(i) + " ";
+  }
+
+  // use movable attachment bodies so the flex self-collision pass stays active
+  std::string xml = R"(
+  <mujoco>
+    <worldbody>
+      <body name="b0">
+        <freejoint/>
+        <inertial pos="0 0 0" mass="1" diaginertia="1 1 1"/>
+      </body>
+      <body name="b1">
+        <freejoint/>
+        <inertial pos="0 0 0" mass="1" diaginertia="1 1 1"/>
+      </body>
+    </worldbody>
+    <deformable>
+      <flex name="chain" dim="1" radius=".2" body=")" + body +
+      R"(" vertex=")" + vertex + R"(" element=")" + element + R"(">
+        <contact selfcollide="sap"/>
+      </flex>
+    </deformable>
+  </mujoco>
+  )";
+  char error[1024];
+  mock_warning_handler.ExpectWarnings("is not rigid");
+  MjModelPtr m = LoadModelFromString(xml, error, sizeof(error));
+  ASSERT_THAT(m.get(), NotNull()) << error;
+  ASSERT_EQ(m->flex_elemnum[0], kNumVert + 1);
+  ASSERT_EQ(m->flex_selfcollide[0], mjFLEXSELF_SAP);
+  MjDataPtr d = MakeData(m);
+  ASSERT_THAT(d.get(), NotNull());
+
+  mj_forward(m.get(), d.get());
+
+  ASSERT_EQ(d->ncon, 2);
+  for (int i = 0; i < d->ncon; i++) {
+    EXPECT_EQ(d->contact[i].elem[0], kNumVert - 1);
+    EXPECT_EQ(d->contact[i].elem[1], kNumVert);
+    EXPECT_THAT(d->contact[i].dist, MjNear(-.3, 1e-15, 1e-5));
+  }
+}
+
 }  // namespace
 }  // namespace mujoco
