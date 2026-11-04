@@ -648,29 +648,27 @@ target_link_libraries(
 
 add_subdirectory(studio)
 
-set(LIBRARIES_FOR_WHEEL
-    "$<TARGET_FILE:_batch>"
-    "$<TARGET_FILE:_callbacks>"
-    "$<TARGET_FILE:_constants>"
-    "$<TARGET_FILE:_enums>"
-    "$<TARGET_FILE:_errors>"
-    "$<TARGET_FILE:_functions>"
-    "$<TARGET_FILE:_render>"
-    "$<TARGET_FILE:_rollout>"
-    "$<TARGET_FILE:_simulate>"
-    "$<TARGET_FILE:_specs>"
-    "$<TARGET_FILE:_structs>"
-    "$<TARGET_FILE:mujoco>"
+set(MUJOCO_CORE_WHEEL_TARGETS
+    _batch
+    _callbacks
+    _constants
+    _enums
+    _errors
+    _functions
+    _render
+    _rollout
+    _simulate
+    _specs
+    _structs
 )
-
-if(MUJOCO_STUDIO_TARGETS)
-  foreach(target IN LISTS MUJOCO_STUDIO_TARGETS)
-    list(APPEND LIBRARIES_FOR_WHEEL "$<TARGET_FILE:${target}>")
-  endforeach()
-endif()
 if(TARGET _render_filament)
-  list(APPEND LIBRARIES_FOR_WHEEL "$<TARGET_FILE:_render_filament>")
+  list(APPEND MUJOCO_CORE_WHEEL_TARGETS _render_filament)
 endif()
+
+set(LIBRARIES_FOR_WHEEL "$<TARGET_FILE:mujoco>")
+foreach(target IN LISTS MUJOCO_CORE_WHEEL_TARGETS MUJOCO_STUDIO_TARGETS)
+  list(APPEND LIBRARIES_FOR_WHEEL "$<TARGET_FILE:${target}>")
+endforeach()
 
 if(APPLE)
   add_executable(mjpython mjpython/mjpython.mm)
@@ -695,25 +693,10 @@ if(MUJOCO_PYTHON_MAKE_WHEEL)
 
   add_dependencies(
     wheel
-    _batch
-    _callbacks
-    _constants
-    _enums
-    _errors
-    _functions
-    _render
-    _rollout
-    _simulate
-    _specs
-    _structs
     mujoco
+    ${MUJOCO_CORE_WHEEL_TARGETS}
+    ${MUJOCO_STUDIO_TARGETS}
   )
-  if(MUJOCO_STUDIO_TARGETS)
-    add_dependencies(wheel ${MUJOCO_STUDIO_TARGETS})
-  endif()
-  if(TARGET _render_filament)
-    add_dependencies(wheel _render_filament)
-  endif()
   if(APPLE)
     add_dependencies(wheel mjpython)
   endif()
