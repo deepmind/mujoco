@@ -81,6 +81,7 @@ cc_library(
         "//:libmujoco_hdrs",
         "//src/engine",  # buildcleaner: keep
         "//src/user:user_model",  # buildcleaner: keep
+        "//src/user:user_util",
         "//src/xml:xml_api",  # buildcleaner: keep
         "@miniz",
         "@tinyxml2",

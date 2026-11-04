@@ -37,6 +37,7 @@
 #endif
 
 #include <mujoco/mujoco.h>
+#include "user/user_util.h"
 #include "tinyxml2.h"
 
 namespace {
@@ -57,9 +58,12 @@ struct AssetEntry {
 // Using (tag, file, name) allows disambiguation of unnamed elements and
 // individual cubemap face files on the same texture element.
 struct RewriteKey {
-  std::string_view tag;
-  std::string_view file;
-  std::string_view name;
+  std::string tag;
+  std::string file;
+  std::string name;
+
+  RewriteKey(std::string_view t, std::string_view f, std::string_view n)
+      : tag(t), file(f), name(n) {}
 
   bool operator==(const RewriteKey&) const = default;
 };
@@ -220,14 +224,20 @@ std::unordered_map<std::string, AssetEntry> CollectAssets(const mjSpec* spec,
               elem_name->c_str());
         }
 
-        auto rewrite_key = RewriteKey{tag_name, *raw_file, *elem_name};
+        const std::string file_str     = spec->strippath ? mjuu_strippath(*raw_file) : *raw_file;
+        auto              add_rewrites = [&](const fs::path& target) {
+          AddRewrite(xml_rewrites, RewriteKey{tag_name, *raw_file, *elem_name}, target);
+          if (file_str != *raw_file) {
+            AddRewrite(xml_rewrites, RewriteKey{tag_name, file_str, *elem_name}, target);
+          }
+        };
 
         const fs::path owning_spec_dir{owning_spec->modelfiledir ? *owning_spec->modelfiledir : ""};
-        const fs::path raw_path{*raw_file};
+        const fs::path raw_path{file_str};
         const fs::path prefix_dir{use_meshdir ? *comp->meshdir : *comp->texturedir};
         const fs::path& root_dir = use_meshdir ? mesh_dir : texture_dir;
 
-        const char* ch     = std::strchr(raw_file->c_str(), ':');
+        const char* ch     = std::strchr(file_str.c_str(), ':');
         const bool  is_uri = ch != nullptr;
 
         // full path of the asset relative to its spec, or absolute/URI if the raw path is not
@@ -249,7 +259,7 @@ std::unordered_map<std::string, AssetEntry> CollectAssets(const mjSpec* spec,
         // If this file was already archived, we may still need to add a rewrite if raw_file was
         // sanitized or collision-renamed for the first occurrence, or is spelled differently here.
         if (auto it = archived_paths.find({root_dir, full_path}); it != archived_paths.end()) {
-          AddRewrite(xml_rewrites, rewrite_key, it->second);
+          add_rewrites(it->second);
           return;
         }
 
@@ -264,7 +274,7 @@ std::unordered_map<std::string, AssetEntry> CollectAssets(const mjSpec* spec,
           file                 = parent / new_name;
         }
 
-        AddRewrite(xml_rewrites, rewrite_key, file);
+        add_rewrites(file);
 
         // path relative to the root XML in the archive, named with '/' separators on every platform
         const fs::path archive_path           = root_dir / file;
