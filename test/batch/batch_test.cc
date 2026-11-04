@@ -2143,7 +2143,7 @@ TEST_F(BatchTest, CallerModelsChecks) {
 TEST_F(BatchTest, IpcNeedsPersistent) {
   static constexpr char xml[] = R"(
   <mujoco>
-    <option integrator="discrete" solver="CG">
+    <option integrator="discrete">
       <flag ipc="enable"/>
     </option>
     <worldbody>

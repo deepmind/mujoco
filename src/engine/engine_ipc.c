@@ -1210,10 +1210,9 @@ void mj_ipc(const mjModel* m, mjData* d) {
         }
         int savednefc = d->nefc;
         nefc_qp = d->nefc;
-        // The subproblem is solved by MuJoCo's nonlinear CG on the shared primal path, with no
-        // factorization to go rank-deficient under stiff contact. A fully converged direction per
-        // outer iteration is wasted, since the outer AL converges at the same rate with a loosely
-        // solved subproblem; the iteration cap is the model's opt.iterations.
+        // The subproblem is solved on the shared primal path (Newton or CG) over the monolithic
+        // problem. A loosely solved subproblem suffices per outer AL iteration; the iteration cap
+        // is the model's opt.iterations.
         // solver_niter is zeroed per solve; accumulate it so the step reports its total
         int niter[mjNISLAND];
         for (int i=0; i < mjNISLAND; i++) niter[i] = d->solver_niter[i];
@@ -1221,7 +1220,7 @@ void mj_ipc(const mjModel* m, mjData* d) {
         ipcEfcRows saved;
         ipc_efcPublish(m, d, &saved, npair, esnpt, esbase, esw, esD, esref, esxadr, esxnum, esxdof,
                        esxval);
-        mj_fwdConstraintCG(m, d);  // CG over the monolithic problem, whatever the model's solver
+        mj_fwdConstraint(m, d);  // monolithic primal solve (islands disabled under IPC)
         ipc_efcRowForce(m, d, saved.nefc, qfrc_rows);  // the pairs' share of the solve's force
         ipc_efcRestore(d, &saved);
         for (int i=0; i < mjNISLAND; i++) d->solver_niter[i] += niter[i];

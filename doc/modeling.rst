@@ -557,15 +557,15 @@ general guidelines and observations:
 -  The Newton algorithm is the best choice for most models. It has quadratic convergence near the global minimum and
    gets there in surprisingly few iterations -- usually around 5, and rarely more than 20. It should be used with
    aggressive tolerance values, say 1e-10, because it is capable of achieving high accuracy without added delay (due to
-   quadratic convergence at the end). The only situation where we have seen it slow down are large models with elliptic
-   cones and many slipping contacts. In that regime the Hessian factorization needs a lot of updates. It may also slow
-   down in some large models when the ordering of bodies in the scene causes high fill-in during sparse Hessian
-   factorization; see :ref:`Body ordering and fill-in <CBodyOrdering>` below. Note that the number of non-zeros in the
-   factorized Hessian can be monitored in the profiler.
--  The CG algorithm works well in the situation described above where Newton slows down. In general CG shows linear
-   convergence with a good rate, but it cannot compete with Newton in terms of number of iterations, especially when
-   high accuracy is desired. However its iterations are much faster, and are not affected by fill-in or increased
-   complexity due to elliptic cones. If Newton proves to be too slow, try CG next.
+   quadratic convergence at the end). Sparse Newton folds elliptic friction cones into the Hessian, batches Cholesky
+   updates, and automatically reorders :el:`flex` DOFs, so slowdowns mainly occur in very large scenes where sparse
+   Cholesky fill-in still dominates (for instance, un-reordered rigid hub bodies; see
+   :ref:`Body ordering and fill-in <CBodyOrdering>` below) or under heavy active-set churn across many slipping
+   contacts. Note that the number of non-zeros in the factorized Hessian can be monitored in the profiler.
+-  The CG algorithm can be faster in those very large or high-fill-in regimes. In general CG shows linear convergence
+   with a good rate, though it requires many more iterations than Newton, especially when high accuracy is desired.
+   However each iteration is cheap and unaffected by Cholesky fill-in or elliptic-cone Hessian updates, making CG a
+   useful alternative when Hessian factorization dominates step time.
 -  The PGS solver is best when the number of degrees of freedom is larger than the number of constraints. PGS solves a
    constrained optimization problem and has sub-linear convergence in our experience, however it usually makes rapid
    progress on the first few iterations. So it is a good choice when inaccurate solutions can be tolerated. For systems
@@ -609,7 +609,9 @@ first (low DOFs) and :math:`N` free bodies are declared after it (high DOFs), th
 only fill into the tray's DOFs, giving an arrowhead sparsity pattern with zero fill-in and :math:`O(N)` factorization
 cost. If the tray is declared *last*, it is eliminated first and couples all :math:`N` bodies into a single dense block
 with :math:`O(N^3)` cost. Static geoms attached directly to :el:`worldbody` or to welded bodies have no DOFs and are
-unaffected by ordering.
+unaffected by ordering. When a model contains :el:`flex` elements, sparse ``Newton`` automatically computes a
+minimum-degree DOF permutation whenever it lowers factorization cost enough to amortize the reordering overhead, so
+manual XML ordering of flex bodies or vertices is unnecessary.
 
 .. _CActuators:
 
@@ -1963,14 +1965,13 @@ Global options
       :ref:`Integrators <geIntegrators>` for details and current limitations.
 
 **Solver, iterations, and tolerance** (:ref:`solver <option-solver>`: ``"Newton"``, :ref:`iterations <option-iterations>`: ``"100"``, :ref:`tolerance <option-tolerance>`: ``"1e-8"``):
-   See :ref:`Solver settings <CAlgorithms>`. ``Newton`` is the best choice for small-medium-sized models, converging
-   quadratically in ~2--3 iterations. With :ref:`warmstart <option-flag-warmstart>` and early termination enabled by
-   default, the ``100``-iteration cap is rarely reached: tightening :at:`tolerance` (e.g. ``1e-10``) improves constraint
-   accuracy cheaply, while capping :at:`iterations` to ``2–4`` (or loosening :at:`tolerance`) skips the final polishing
-   step when maximizing speed. Switch to ``CG`` when ``Newton`` slows down, typically on large deformable (:el:`flex`)
-   or particle scenes, or large models with many slipping elliptic contacts where sparse Hessian updates become
-   expensive. ``PGS`` is rarely warranted, with the exception of reduced-contact scenes (roughly ``ncon < nv``) like
-   legged locomotion.
+   See :ref:`Solver settings <CAlgorithms>`. ``Newton`` is the best choice for most models, converging quadratically in
+   ~2--3 iterations. With :ref:`warmstart <option-flag-warmstart>` and early termination enabled by default, the
+   ``100``-iteration cap is rarely reached: tightening :at:`tolerance` (e.g. ``1e-10``) improves constraint accuracy
+   cheaply, while capping :at:`iterations` to ``2–4`` (or loosening :at:`tolerance`) skips the final polishing step when
+   maximizing speed. Switch to ``CG`` only when Hessian factorization dominates step time, such as on very large
+   particle or high-fill-in scenes, or under heavy active-set churn across many slipping contacts. ``PGS`` is rarely
+   warranted, with the exception of reduced-contact scenes (roughly ``ncon < nv``) like legged locomotion.
 
 **Friction cones, impratio, and NoSlip** (:ref:`cone <option-cone>`: ``"pyramidal"``, :ref:`impratio <option-impratio>`: ``"1"``, :ref:`noslip_iterations <option-noslip_iterations>`: ``"0"``):
    ``elliptic`` cones model isotropic Coulomb friction and decouple tangential from normal impedance at modest extra
@@ -1983,8 +1984,9 @@ Global options
 
 **Jacobian sparsity** (:ref:`jacobian <option-jacobian>`: ``"auto"``):
    ``dense`` and ``sparse`` compute identical physics. The ``auto`` threshold (``nv = 60``) is usually fine, though
-   medium-sized models are worth timing both ways. With ``sparse`` ``Newton``, declare moving bodies that contact many
-   objects (such as a tray) *before* those objects in :el:`worldbody` to avoid Cholesky fill-in; see
+   medium-sized models are worth timing both ways. With ``sparse`` ``Newton`` on rigid scenes, declare moving bodies
+   that contact many objects (such as a tray) *before* those objects in :el:`worldbody` to avoid Cholesky fill-in
+   (models with :el:`flex` elements reorder DOFs automatically when beneficial); see
    :ref:`Body ordering and fill-in <CBodyOrdering>`.
 
 **Situational flags and overrides**:
@@ -2085,13 +2087,18 @@ Deformables
    which are far cheaper than 3D volumes. Flexes whose parent body has joints must :ref:`pin <flexcomp-pin>` at least
    one vertex to it.
 
-**Integrator and solver** (:ref:`integrator <option-integrator>`: ``"discrete"``, :ref:`solver <option-solver>`: ``"CG"``):
+**Integrator and solver** (:ref:`integrator <option-integrator>`: ``"discrete"``, :ref:`solver <option-solver>`: ``"Newton"``):
    Flex :ref:`elasticity <flex-elasticity>` is usually the stiffest force in a deformable model, and only ``discrete``
    integrates it implicitly in position. Under ``implicit`` and ``implicitfast`` it raises a runtime error, while
-   ``Euler`` integrates it explicitly and needs sub-millisecond timesteps; with ``discrete``, ``1–4 ms`` is typical. Use
-   ``CG`` with :at:`tolerance` ``1e-5``--``1e-6`` and raise :at:`iterations` (``150–400``) in contact-rich scenes;
-   ``Newton`` also works when flex vertices are pinned to static or slide-jointed bodies. ``PGS`` and
-   :at:`noslip_iterations` are not supported with flex; see :ref:`Integrators <geIntegrators>` for current limitations.
+   ``Euler`` integrates it explicitly and needs sub-millisecond timesteps; with ``discrete``, ``1–4 ms`` is typical.
+   ``Newton`` (the default) is the best choice under ``discrete`` -- especially for stiff rods, shells, cloth, and
+   :ref:`ipc <option-flag-ipc>` contact -- typically with :at:`tolerance` ``1e-6`` (raising :at:`iterations` to
+   ``150–400`` only in very contact-rich scenes). Prefer ``CG`` (typically with :at:`tolerance` ``1e-5``--``1e-6``) in
+   three cases: multi-cell ``equality="strain"`` grids (whose dense per-cell constraint blocks cause heavy Cholesky
+   fill-in), large but relatively soft 3D meshes (where ``CG`` converges in a few cheap matrix-free iterations without
+   3D fill-in), and general articulated attachments under ``discrete`` (``Newton`` requires fixed or world-aligned
+   slide-jointed attachments). ``PGS`` and :at:`noslip_iterations` are not supported with flex; see
+   :ref:`Integrators <geIntegrators>` for current limitations.
 
 **Stiffness and damping** (:ref:`elasticity <flex-elasticity>`, :ref:`edge <flexcomp-edge-equality>`):
    For quick but approximate simulations, edge equality constraints (``true``, or ``strain`` for interpolated flexes)
@@ -2106,7 +2113,7 @@ Deformables
    Set ``selfcollide="none"`` unless the flex folds onto itself. ``passive="true"`` replaces flex-flex, self and
    static-geom contact rows with an implicit penalty force, cheaper and more stable in piled cloth, but frictionless,
    so keep it off where grip or resting friction matters. The experimental :ref:`ipc <option-flag-ipc>` flag gives
-   intersection-free (but also frictionless) contact for thin 2D flexes, and requires ``CG``.
+   intersection-free (but also frictionless) contact for thin 2D flexes, and requires ``Newton``.
 
 .. _CTuningSysid:
 

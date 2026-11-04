@@ -765,13 +765,14 @@ from its default.
    This flag selects the IPC contact mode of the ``discrete`` :ref:`integrator<option-integrator>`; it is an error
    with any other integrator. The mode is experimental. It keeps contact multipliers in :ref:`mjData` across steps
    that no :ref:`state specification<mjtState>` covers, so :ref:`mj_getState` and :ref:`mj_setState` do not capture
-   its full state and exact replay from a saved state is not supported. The mode solves its subproblems with
-   matrix-free conjugate gradient, so :ref:`solver<option-solver>` must be ``CG``, and it cannot be combined with
-   the ``fwdinv`` or ``sleep`` flags. It applies model-wide: every flex the mode supports has its contact solved this
-   way. Contacts between two supported flexes, and between a supported flex and a static plane, sphere, capsule, box
-   or mesh, are resolved by the mode and the collision pipeline does not generate them; contacts with moving bodies
-   and with the other geom types keep their constraint rows. The pairs the mode resolves are frictionless: they carry
-   normal forces only, and the friction parameters of the flexes and geoms involved do not apply to them.
+   its full state and exact replay from a saved state is not supported. The mode solves its subproblems with a primal
+   solver (``Newton`` by default, or ``CG``), so :ref:`solver<option-solver>` cannot be ``PGS``, and it cannot be
+   combined with the ``fwdinv`` or ``sleep`` flags. It applies model-wide: every flex the mode supports has its contact
+   solved this way. Contacts between two supported flexes, and between a supported flex and a static plane, sphere,
+   capsule, box or mesh, are resolved by the mode and the collision pipeline does not generate them; contacts with
+   moving bodies and with the other geom types keep their constraint rows. The pairs the mode resolves are
+   frictionless: they carry normal forces only, and the friction parameters of the flexes and geoms involved do not
+   apply to them.
    The usual collision filtering applies to the pairs the mode resolves: none with the ``contact`` flag disabled, the
    contype/conaffinity rule of contact :ref:`selection<coSelection>` between a flex and a geom or between two flexes,
    and each flex's ``selfcollide`` for its self-contact. A pinned flex vertex may ride a static body or a body reached
@@ -4586,10 +4587,11 @@ and cross-section given by :ref:`section<flex-elasticity-section>` (see :ref:`Ro
 
 Non-interpolated flex elasticity supports vertices attached to articulated bodies, including jointless welded children.
 A vertex pinned to a moving body follows that body's motion and applies its reaction force and torque to the body.
-With the :ref:`discrete<option-integrator>` integrator, use :ref:`solver<option-solver>` **CG** for general attachments.
-Newton supports fixed attachments and independent slide bodies with local positive X, Y and Z joints in that order
-and fixed ancestors. Mocap attachments are not supported for non-rigid flexes with elasticity because mocap poses do
-not provide velocities for elastic damping, except for 1D flexes with zero :ref:`damping<flex-elasticity-damping>`.
+With the :ref:`discrete<option-integrator>` integrator, the default :ref:`solver<option-solver>` **Newton** supports
+fixed attachments and independent slide bodies with local positive X, Y, and Z joints in that order and fixed ancestors
+(for both standard and interpolated flexes); use **CG** for general articulated attachments. Mocap attachments are not
+supported for non-rigid flexes with elasticity because mocap poses do not provide velocities for elastic damping, except
+for 1D flexes with zero :ref:`damping<flex-elasticity-damping>`.
 
 .. _flex-elasticity-young:
 

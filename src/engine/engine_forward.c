@@ -1228,10 +1228,10 @@ static void fwdConstraint(const mjModel* m, mjData* d, mjtSolver solver, int flg
   warmstart(m, d);
   mju_zeroInt(d->solver_niter, mjNISLAND);
 
-  // check if islands are supported: IPC folds its subproblem monolithically, and so does CG when it
-  // folds into the step's sparse flex factor
+  // check if islands are supported: IPC solves its subproblem monolithically, and so does CG
+  // when the step holds the sparse flex factor (mj_effCGMonolithic)
   int islands_supported = flg_island && nisland > 0 && !mjENABLED(mjENBL_IPC) &&
-                          !mj_effFoldMonolithic(m, d, solver);
+                          !mj_effCGMonolithic(m, d, solver);
 
   // run solver over constraint islands
   if (islands_supported) {
@@ -1301,21 +1301,12 @@ static void fwdConstraint(const mjModel* m, mjData* d, mjtSolver solver, int flg
 
 // forward constraint solve, using the model's own solver and island policy
 void mj_fwdConstraint(const mjModel* m, mjData* d) {
-  // check for invalid solver type, on the entry callers invoke (mj_fwdConstraintCG pins a valid
-  // one); the condition mirrors fwdConstraint's early-out
+  // check for invalid solver type; the condition mirrors fwdConstraint's early-out
   if (d->nefc && m->opt.solver != mjSOL_PGS &&
       m->opt.solver != mjSOL_CG && m->opt.solver != mjSOL_NEWTON) {
     mjERROR("unknown solver type %d", m->opt.solver);
   }
   fwdConstraint(m, d, (mjtSolver)m->opt.solver, !mjDISABLED(mjDSBL_ISLAND));
-}
-
-
-// forward constraint solve pinned to matrix-free CG over the monolithic problem, for the IPC
-// mode's inner subproblem: the metric operators have no island-local form, and engine_ipc
-// should not have to mutate m->opt to say so
-void mj_fwdConstraintCG(const mjModel* m, mjData* d) {
-  fwdConstraint(m, d, mjSOL_CG, 0);
 }
 
 
@@ -2385,10 +2376,9 @@ void mj_checkDiscrete(const mjModel* m) {
     mjERROR("flag ipc requires integrator='discrete'");
   }
 
-  // the inner solves are matrix-free CG: the metric operators are never factored, which keeps
-  // them well defined under stiff contact
-  if (mjENABLED(mjENBL_IPC) && m->opt.solver != mjSOL_CG) {
-    mjERROR("flag ipc requires solver='CG'");
+  // the inner solves use a primal solver (Newton or CG) over the monolithic problem
+  if (mjENABLED(mjENBL_IPC) && m->opt.solver != mjSOL_NEWTON && m->opt.solver != mjSOL_CG) {
+    mjERROR("flag ipc requires solver='Newton' or 'CG'");
   }
 
   // inverse dynamics is not supported under the flag (mj_discreteAcc), and this option runs it

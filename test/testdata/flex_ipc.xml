@@ -1,5 +1,5 @@
 <mujoco model="flex_ipc">
-  <option timestep="0.005" integrator="discrete" solver="CG">
+  <option timestep="0.005" integrator="discrete">
     <flag ipc="enable"/>
   </option>
 

@@ -227,7 +227,7 @@ TEST_F(IpcTest, MeshFeatures) {
 // every free vertex)
 constexpr char kClothXml[] = R"(
 <mujoco>
-  <option timestep="0.002" integrator="discrete" solver="CG"><flag ipc="enable"/></option>
+  <option timestep="0.002" integrator="discrete" solver="Newton"><flag ipc="enable"/></option>
   <worldbody>
     <flexcomp name="cloth" type="grid" dim="2" count="3 3 1" spacing="0.05 0.05 1"
               radius="0.005" mass="0.05" pos="0 0 0.5"/>
@@ -242,7 +242,7 @@ constexpr char kClothXml[] = R"(
 TEST_F(IpcTest, FlagOverridesPassiveContact) {
   static constexpr char kWith[] = R"(
   <mujoco>
-    <option timestep="0.002" integrator="discrete" solver="CG" iterations="400">
+    <option timestep="0.002" integrator="discrete" solver="Newton" iterations="400">
       <flag ipc="enable"/>
     </option>
     <worldbody>
@@ -299,7 +299,7 @@ TEST_F(IpcTest, FlagOverridesPassiveContact) {
 TEST_F(IpcTest, ConstraintForceReported) {
   static constexpr char kXml[] = R"(
   <mujoco>
-    <option timestep="0.002" integrator="discrete" solver="CG" iterations="400">
+    <option timestep="0.002" integrator="discrete" solver="Newton" iterations="400">
       <flag ipc="enable"/>
     </option>
     <worldbody>
@@ -346,7 +346,7 @@ TEST_F(IpcTest, ConstraintForceReported) {
 // geoms and flex contact attributes
 static constexpr char kClothOverFloorXml[] = R"(
 <mujoco>
-  <option timestep="0.002" integrator="discrete" solver="CG" iterations="400">
+  <option timestep="0.002" integrator="discrete" solver="Newton" iterations="400">
     <flag ipc="enable" %s/>
   </option>
   <worldbody>
@@ -439,7 +439,7 @@ TEST_F(IpcTest, FreeFall) {
 TEST_F(IpcTest, SharedVertexBodyMakesNoContact) {
   constexpr char xml[] = R"(
   <mujoco>
-    <option timestep="0.002" integrator="discrete" solver="CG" iterations="400">
+    <option timestep="0.002" integrator="discrete" solver="Newton" iterations="400">
       <flag ipc="enable"/>
     </option>
     <default>
@@ -504,7 +504,7 @@ TEST_F(IpcTest, SharedVertexBodyMakesNoContact) {
 TEST_F(IpcTest, ContactBlocksTunneling) {
   constexpr char xml[] = R"(
   <mujoco>
-    <option timestep="0.002" integrator="discrete" solver="CG"><flag ipc="enable"/></option>
+    <option timestep="0.002" integrator="discrete" solver="Newton"><flag ipc="enable"/></option>
     <worldbody>
       <geom name="floor" type="plane" size="0 0 1" pos="0 0 0"/>
       <flexcomp name="cloth" type="grid" dim="2" count="3 3 1" spacing="0.05 0.05 1"
@@ -549,7 +549,7 @@ TEST_F(IpcTest, ContactBlocksTunneling) {
 // option flags, the arm's joint and a second flex
 static constexpr char kPaddleXml[] = R"(
 <mujoco>
-  <option timestep="0.002" integrator="discrete" solver="CG" iterations="400">%s</option>
+  <option timestep="0.002" integrator="discrete" solver="Newton" iterations="400">%s</option>
   <worldbody>
     <geom name="floor" type="plane" size="0 0 1"/>
     <body name="arm" pos="0 0 0.2">
@@ -663,7 +663,7 @@ TEST_F(IpcTest, PinnedPaddleCarriesCloth) {
 TEST_F(IpcTest, SlideCarrierMovesOnce) {
   static constexpr char kXml[] = R"(
   <mujoco>
-    <option timestep="0.002" integrator="discrete" solver="CG" gravity="0 0 0">
+    <option timestep="0.002" integrator="discrete" solver="Newton" gravity="0 0 0">
       %s
     </option>
     <worldbody>
@@ -754,7 +754,7 @@ TEST_F(IpcTest, PinnedPaddleStopsOnPlane) {
 TEST_F(IpcTest, NativeCollisionSkipsTheModesPairs) {
   static constexpr char kXml[] = R"(
   <mujoco>
-    <option timestep="0.002" integrator="discrete" solver="CG" iterations="400">%s</option>
+    <option timestep="0.002" integrator="discrete" solver="Newton" iterations="400">%s</option>
     <worldbody>
       <geom name="floor" type="plane" size="0 0 1"/>
       <flexcomp name="cloth" type="grid" dim="2" count="5 5 1" spacing="0.04 0.04 1"
@@ -805,7 +805,7 @@ TEST_F(IpcTest, NativeCollisionSkipsTheModesPairs) {
 TEST_F(IpcTest, SmoothGeomsCoverTriangleInterior) {
   static constexpr char kXml[] = R"(
   <mujoco>
-    <option timestep="0.002" integrator="discrete" solver="CG" iterations="400">
+    <option timestep="0.002" integrator="discrete" solver="Newton" iterations="400">
       <flag ipc="enable"/>
     </option>
     <worldbody>
@@ -904,7 +904,7 @@ static mjtNum FlexMomentum(const mjModel* m, const mjData* d, mjtNum P[3]) {
 TEST_F(IpcTest, SelfContactConservesMomentum) {
   constexpr char xml[] = R"(
   <mujoco>
-    <option timestep="0.002" integrator="discrete" solver="CG"><flag ipc="enable"/></option>
+    <option timestep="0.002" integrator="discrete" solver="Newton"><flag ipc="enable"/></option>
     <worldbody>
       <flexcomp name="lower" type="grid" dim="2" count="3 3 1" spacing="0.04 0.04 1"
                 radius="0.004" mass="0.02" pos="0 0 0.5"/>
@@ -966,7 +966,7 @@ TEST_F(IpcTest, SelfContactConservesMomentum) {
 TEST_F(IpcTest, ContactRecoversFromPenetration) {
   constexpr char xml[] = R"(
   <mujoco>
-    <option timestep="0.002" integrator="discrete" solver="CG"><flag ipc="enable"/></option>
+    <option timestep="0.002" integrator="discrete" solver="Newton"><flag ipc="enable"/></option>
     <worldbody>
       <geom name="floor" type="plane" size="0 0 1" pos="0 0 0"/>
       <flexcomp name="cloth" type="grid" dim="2" count="3 3 1" spacing="0.05 0.05 1"
@@ -1035,11 +1035,11 @@ TEST_F(IpcTest, RigidNoContactMatchesDiscrete) {
     mjModel* mi = Load(s.xml);
     mi->opt.integrator = mjINT_DISCRETE;
     mi->opt.solver =
-        mjSOL_CG;  // required under the flag; the reference matches it
+        mjSOL_NEWTON;  // required under the flag; the reference matches it
     mi->opt.enableflags |= mjENBL_IPC;
     mjModel* me = Load(s.xml);
     me->opt.integrator = mjINT_DISCRETE;
-    me->opt.solver = mjSOL_CG;
+    me->opt.solver = mjSOL_NEWTON;
     mjData* di = mj_makeData(mi);
     mjData* de = mj_makeData(me);
     if (mi->nkey > 0) {
@@ -1081,7 +1081,7 @@ TEST_F(IpcTest, RigidNoContactMatchesDiscrete) {
 TEST_F(IpcTest, DelayedSensorsMatchDiscrete) {
   static constexpr char xml[] = R"(
   <mujoco>
-    <option timestep="0.002" gravity="0 0 -9.81" integrator="discrete" solver="CG"/>
+    <option timestep="0.002" gravity="0 0 -9.81" integrator="discrete" solver="Newton"/>
     <worldbody>
       <body pos="0 0 1">
         <joint name="j1" type="hinge" axis="0 1 0"/>
@@ -1127,7 +1127,7 @@ TEST_F(IpcTest, DelayedSensorsMatchDiscrete) {
 TEST_F(IpcTest, AccelerationSensorsSeeContact) {
   static constexpr char xml[] = R"(
   <mujoco>
-    <option timestep="0.002" integrator="discrete" solver="CG"/>
+    <option timestep="0.002" integrator="discrete" solver="Newton"/>
     <worldbody>
       <geom type="plane" size="0 0 1"/>
       <body name="ball" pos="0 0 0.1">
@@ -1201,7 +1201,7 @@ TEST_F(IpcTest, RigidContactMatchesEuler) {
     mjModel* mi = Load(s.xml);
     mi->opt.integrator = mjINT_DISCRETE;
     mi->opt.solver =
-        mjSOL_CG;  // required under the flag; the reference matches it
+        mjSOL_NEWTON;  // required under the flag; the reference matches it
     mi->opt.enableflags |= mjENBL_IPC;
     mjModel* me = Load(s.xml);
     me->opt.integrator = mjINT_EULER;
@@ -1250,7 +1250,7 @@ TEST_F(IpcTest, RigidContactMatchesEuler) {
 // linear DOFs" path missed.
 TEST_F(IpcTest, ArticulatedCapsuleDoesNotTunnel) {
   mjModel* m = Load(R"(
-    <mujoco><option timestep="0.002" gravity="0 0 -9.81" integrator="discrete" solver="CG"><flag ipc="enable"/></option>
+    <mujoco><option timestep="0.002" gravity="0 0 -9.81" integrator="discrete" solver="Newton"><flag ipc="enable"/></option>
       <worldbody><geom type="plane" size="3 3 0.1"/>
         <body pos="0 0 0.3"><joint type="hinge" axis="0 1 0"/>
           <geom type="capsule" fromto="0 0 0 0.4 0 0" size="0.05" mass="1"/>
@@ -1290,11 +1290,11 @@ TEST_F(IpcTest, ArticulatedCapsuleDoesNotTunnel) {
 // appended-articulated-kinetic machinery.
 TEST_F(IpcTest, ArticulatedKineticInFlexMatchesTree) {
   mjModel* m1 = Load(R"(
-    <mujoco><option timestep="0.002" gravity="0 0 -9.81" integrator="discrete" solver="CG"><flag ipc="enable"/></option>
+    <mujoco><option timestep="0.002" gravity="0 0 -9.81" integrator="discrete" solver="Newton"><flag ipc="enable"/></option>
       <worldbody><body pos="0 0 1"><joint type="hinge" axis="0 1 0"/>
         <geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.03" mass="1"/></body></worldbody></mujoco>)");
   mjModel* m2 = Load(R"(
-    <mujoco><option timestep="0.002" gravity="0 0 -9.81" integrator="discrete" solver="CG"><flag ipc="enable"/></option>
+    <mujoco><option timestep="0.002" gravity="0 0 -9.81" integrator="discrete" solver="Newton"><flag ipc="enable"/></option>
       <worldbody><body pos="0 0 1"><joint type="hinge" axis="0 1 0"/>
         <geom type="capsule" fromto="0 0 0 0.3 0 0" size="0.03" mass="1"/></body>
         <flexcomp name="cloth" type="grid" dim="2" count="3 3 1" spacing="0.05 0.05 1" radius="0.005" mass="0.05"
@@ -1327,7 +1327,7 @@ TEST_F(IpcTest, ArticulatedKineticInFlexMatchesTree) {
 // of the step, with the other settings valid
 TEST_F(IpcTest, RejectsIncompatibleOptions) {
   mjModel* m = Load(R"(
-    <mujoco><option timestep="0.002" integrator="discrete" solver="CG"><flag ipc="enable"/></option>
+    <mujoco><option timestep="0.002" integrator="discrete" solver="Newton"><flag ipc="enable"/></option>
       <worldbody><body pos="0 0 1"><freejoint/><geom type="sphere" size="0.1" mass="1"/></body></worldbody></mujoco>)");
   mjData* d = mj_makeData(m);
   auto forward_error = MjuErrorMessageFrom(mj_forward);
@@ -1338,10 +1338,12 @@ TEST_F(IpcTest, RejectsIncompatibleOptions) {
               testing::HasSubstr("flag ipc requires integrator='discrete'"));
   m->opt.integrator = mjINT_DISCRETE;
 
-  m->opt.solver = mjSOL_NEWTON;
-  EXPECT_THAT(forward_error(m, d),
-              testing::HasSubstr("flag ipc requires solver='CG'"));
   m->opt.solver = mjSOL_CG;
+  EXPECT_EQ(forward_error(m, d), "");
+  m->opt.solver = mjSOL_PGS;
+  EXPECT_THAT(forward_error(m, d),
+              testing::HasSubstr("flag ipc requires solver='Newton' or 'CG'"));
+  m->opt.solver = mjSOL_NEWTON;
 
   m->opt.enableflags |= mjENBL_FWDINV;
   EXPECT_THAT(forward_error(m, d),
@@ -1358,13 +1360,49 @@ TEST_F(IpcTest, RejectsIncompatibleOptions) {
   mj_deleteModel(m);
 }
 
+// IPC inner solves run under either primal solver (Newton or CG)
+TEST_F(IpcTest, NewtonAndCGAgreeOnContactStep) {
+  constexpr char kXml[] = R"(
+  <mujoco>
+    <option timestep="0.002" integrator="discrete" iterations="200" tolerance="1e-10">
+      <flag ipc="enable"/>
+    </option>
+    <worldbody>
+      <geom name="floor" type="plane" size="0 0 1" pos="0 0 0"/>
+      <flexcomp name="cloth" type="grid" dim="2" count="3 3 1" spacing="0.05 0.05 1"
+                radius="0.005" mass="0.05" pos="0 0 0.004">
+        <elasticity young="1e4" damping="0.01" thickness="0.005"/>
+      </flexcomp>
+    </worldbody>
+  </mujoco>)";
+  mjModel* mn = Load(kXml);
+  mjModel* mc = Load(kXml);
+  ASSERT_THAT(mn, NotNull());
+  ASSERT_THAT(mc, NotNull());
+  mn->opt.solver = mjSOL_NEWTON;
+  mc->opt.solver = mjSOL_CG;
+  mjData* dn = mj_makeData(mn);
+  mjData* dc = mj_makeData(mc);
+  for (int s = 0; s < 5; s++) {
+    mj_step(mn, dn);
+    mj_step(mc, dc);
+  }
+  for (int i = 0; i < mn->nq; i++) {
+    EXPECT_NEAR(dn->qpos[i], dc->qpos[i], MjTol(1e-6, 1e-4));
+  }
+  mj_deleteData(dc);
+  mj_deleteData(dn);
+  mj_deleteModel(mc);
+  mj_deleteModel(mn);
+}
+
 // under the flag the collision pipeline does not generate the contacts the
 // IPC step handles (dim-2 flex against static geometry, dim-2 flex against
 // dim-2 flex), while flex against a moving body stays: a sheet resting on a
 // static box with a ball on top
 TEST_F(IpcTest, NativeRowsExcludedForIpcPairs) {
   mjModel* m = Load(R"(
-    <mujoco><option timestep="0.002" integrator="discrete" solver="CG"><flag ipc="enable"/></option>
+    <mujoco><option timestep="0.002" integrator="discrete" solver="Newton"><flag ipc="enable"/></option>
       <worldbody>
         <geom name="table" type="box" size=".3 .3 .05" pos="0 0 .05"/>
         <flexcomp name="sheet" type="grid" dim="2" count="8 8 1" spacing=".04 .04 1" radius=".004"
@@ -1401,7 +1439,7 @@ TEST_F(IpcTest, NativeRowsExcludedForIpcPairs) {
 // still rests on them
 TEST_F(IpcTest, NativeRowsKeptForUnsupportedGeoms) {
   static constexpr char kModel[] = R"(
-    <mujoco><option timestep="0.002" integrator="discrete" solver="CG"><flag ipc="enable"/></option>
+    <mujoco><option timestep="0.002" integrator="discrete" solver="Newton"><flag ipc="enable"/></option>
       <asset><hfield name="hf" nrow="2" ncol="2" elevation="1 1 1 1" size=".2 .2 .1 .1"/></asset>
       <worldbody>
         <geom name="drum" type="%s" %s/>
@@ -1437,450 +1475,13 @@ TEST_F(IpcTest, NativeRowsKeptForUnsupportedGeoms) {
   }
 }
 
-//------------------------ dense uncovered-dof blocks ------------------------
-
-// a stretch-only sheet, whose efm_K couples flex edges only (no dropped pairs),
-// with the bodies %s before it, and sparse Jacobians
-static constexpr char kStretchSheet[] = R"(
-<mujoco>
-  <option timestep="0.002" integrator="discrete" solver="CG" iterations="400"
-          jacobian="sparse">
-    <flag ipc="enable"/>
-  </option>
-  <worldbody>
-    %s
-    <flexcomp name="sheet" type="grid" dim="2" count="9 9 1" spacing=".04 .04 1"
-              radius=".004" mass=".3" pos="0 0 .5">
-      <contact selfcollide="none"/>
-      <elasticity young="29166.6666666667" poisson=".4" thickness="2e-3"
-                  elastic2d="stretch"/>
-      <pin id="0 8"/>
-    </flexcomp>
-  </worldbody>
-</mujoco>
-)";
-
-// a free body at x
-static std::string FreeBody(mjtNum x) {
-  char body[256];
-  snprintf(body, sizeof(body), R"(
-    <body pos="%g 0 .5">
-      <joint type="free" damping=".01"/>
-      <geom type="box" size=".05 .03 .02" pos=".02 .01 0" mass=".2"/>
-    </body>)",
-           x);
-  return body;
-}
-
-// a hinge body
-static constexpr char kHingeBody[] = R"(
-    <body pos="-1 0 .5">
-      <joint type="hinge" axis="0 1 0" damping=".02"/>
-      <geom type="capsule" fromto="0 0 0 .2 0 0" size=".02" mass=".3"/>
-    </body>)";
-
-// rows to fold into the solver's preconditioner, as CSR
-struct FoldRows {
-  std::vector<mjtNum> D;
-  std::vector<int> rownnz, rowadr, colind;
-  std::vector<mjtNum> J;
-
-  void Add(mjtNum d, const std::vector<int>& cols,
-           const std::vector<mjtNum>& vals) {
-    D.push_back(d);
-    rownnz.push_back(static_cast<int>(cols.size()));
-    rowadr.push_back(static_cast<int>(colind.size()));
-    colind.insert(colind.end(), cols.begin(), cols.end());
-    J.insert(J.end(), vals.begin(), vals.end());
-  }
-
-  // res += J' D J vec
-  void MulAdd(mjtNum* res, const mjtNum* vec) const {
-    for (int r = 0; r < static_cast<int>(D.size()); r++) {
-      mjtNum jv = 0;
-      for (int k = rowadr[r]; k < rowadr[r] + rownnz[r]; k++) {
-        jv += J[k] * vec[colind[k]];
-      }
-      for (int k = rowadr[r]; k < rowadr[r] + rownnz[r]; k++) {
-        res[colind[k]] += D[r] * J[k] * jv;
-      }
-    }
-  }
-};
-
-// a fold's dense-block layout
-struct FoldLayout {
-  int nu = 0, ncomp = 0, nS = 0, partial = 0, S_valid = 0;
-  std::vector<int> U, Uadr, Sadr;
-};
-
-// the solver's preconditioner folded with rows (mj_effPrecFold), its dense
-// blocks sized by mj_effFoldDenseSize, applied to b into x (mj_effPrecBlocks),
-// and into xnull with the same folded blocks but no dense blocks
-static FoldLayout FoldApply(const mjModel* m, mjData* d, const FoldRows& rows,
-                            const mjtNum* b, mjtNum* x, mjtNum* xnull) {
-  FoldLayout f;
-  int nefc = static_cast<int>(rows.D.size());
-  f.nS = mj_effFoldDenseSize(m, d, nefc, rows.D.data(), /*is_sparse=*/1,
-                             rows.rownnz.data(), rows.rowadr.data(),
-                             rows.colind.data(), &f.nu, &f.ncomp);
-  std::vector<mjtNum> L(d->efm_L, d->efm_L + d->nefmL), S(f.nS);
-  f.U.resize(f.nu);
-  f.Uadr.resize(f.ncomp + 1);
-  f.Sadr.resize(f.ncomp + 1);
-  mjEffFold fold = {};
-  fold.L = L.data();
-  fold.nu = f.nu;
-  fold.ncomp = f.ncomp;
-  fold.nS = f.nS;
-  fold.U = f.U.data();
-  fold.Uadr = f.Uadr.data();
-  fold.Sadr = f.Sadr.data();
-  fold.S = S.data();
-  EXPECT_TRUE(mj_effPrecFold(m, d, &fold, nefc, rows.D.data(),
-                             /*is_sparse=*/1, rows.J.data(), rows.rownnz.data(),
-                             rows.rowadr.data(), rows.colind.data()));
-  mj_effPrecBlocks(m, d, x, b, &fold);
-  mjEffFold blocks = {};
-  blocks.L = L.data();
-  mj_effPrecBlocks(m, d, xnull, b, &blocks);
-  f.partial = fold.partial;
-  f.S_valid = fold.S_valid;
-  return f;
-}
-
-// the dense reference S^-1 b on the dofs 0..n-1, one dense block over all of
-// them: S = M + B + J' D J restricted to them, with B's columns (the diagonal,
-// fluid and rank-1 classes, contact included) from mj_effMulAdd
-static std::vector<mjtNum> DenseSolve(const mjModel* m, mjData* d,
-                                      const FoldRows& rows, const mjtNum* b,
-                                      int n) {
-  int nv = m->nv;
-  std::vector<mjtNum> M(nv * nv), S(n * n), x(b, b + n), e(nv), Be(nv);
-  mj_fullM(m, d, M.data());
-  for (int j = 0; j < n; j++) {
-    e[j] = 1;
-    mju_zero(Be.data(), nv);
-    mj_effMulAdd(m, d, Be.data(), e.data(), /*flg_contact=*/1);
-    e[j] = 0;
-    for (int i = 0; i < n; i++) {
-      S[i * n + j] = M[i * nv + j] + Be[i];
-    }
-  }
-  for (int r = 0; r < static_cast<int>(rows.D.size()); r++) {
-    for (int p = rows.rowadr[r]; p < rows.rowadr[r] + rows.rownnz[r]; p++) {
-      for (int q = rows.rowadr[r]; q < rows.rowadr[r] + rows.rownnz[r]; q++) {
-        int i = rows.colind[p], j = rows.colind[q];
-        if (i < n && j < n) {
-          S[i * n + j] += rows.D[r] * rows.J[p] * rows.J[q];
-        }
-      }
-    }
-  }
-  EXPECT_EQ(mju_cholFactor(S.data(), n, mjMINVAL), n);
-  mju_cholSolve(x.data(), S.data(), x.data(), n);
-  return x;
-}
-
-// the uncovered dofs (two free bodies, a hinge and a third free body before
-// the sheet) split into the components of S = M_uu + diag + J_u' D J_u: the
-// bodies a row couples, the hinge, the untouched body. Each gets its own dense
-// factor, which together invert S exactly where the folded blocks alone use the
-// backbone solve, and the sheet keeps the same 3x3 blocks
-TEST_F(IpcTest, FoldDenseComponents) {
-  std::string bodies = FreeBody(1) + FreeBody(1.5) + kHingeBody + FreeBody(2);
-  char xml[4096];
-  snprintf(xml, sizeof(xml), kStretchSheet, bodies.c_str());
-  mjModel* m = Load(xml);
-  ASSERT_THAT(m, NotNull());
-  mjData* d = mj_makeData(m);
-  mj_step(m, d);
-  ASSERT_TRUE(d->efm_active);
-  int nv = m->nv, nb = d->nefmdof;
-  constexpr int nu = 19;
-  ASSERT_EQ(nv, 3 * nb + nu);
-  ASSERT_EQ(d->efm_dofid[0], nu);
-
-  // a row coupling the first two bodies, one on the first alone, one coupling
-  // the hinge to a vertex: only J_u' D J_u reaches S, the vertex part reaches
-  // the 3x3 blocks
-  int a = d->efm_dofid[nb / 2];
-  FoldRows rows;
-  rows.Add(0.03, {1, 4, 7, 10}, {0.5, -0.4, 0.7, 0.2});
-  rows.Add(0.05, {0, 1, 2, 3, 4, 5}, {0.4, -0.3, 0.8, 0.1, -0.2, 0.05});
-  rows.Add(0.02, {12, a, a + 1, a + 2}, {1, -0.6, 0.2, 0.5});
-  int nu0, ncomp0;
-  EXPECT_EQ(mj_effFoldDenseSize(m, d, 3, rows.D.data(), /*is_sparse=*/0,
-                                rows.rownnz.data(), rows.rowadr.data(),
-                                rows.colind.data(), &nu0, &ncomp0),
-            0)
-      << "dense Jacobians fold no dense blocks";
-
-  std::vector<mjtNum> b(nv), x(nv), xnull(nv);
-  for (int i = 0; i < nv; i++) {
-    b[i] = std::cos(0.5 + i);
-  }
-  FoldLayout f = FoldApply(m, d, rows, b.data(), x.data(), xnull.data());
-  EXPECT_EQ(f.nu, nu);
-  EXPECT_EQ(f.ncomp, 3);
-  EXPECT_EQ(f.nS, 12 * 12 + 1 + 6 * 6);
-  EXPECT_EQ(f.Uadr, (std::vector<int>{0, 12, 13, 19}));
-  EXPECT_EQ(f.Sadr, (std::vector<int>{0, 144, 145, 181}));
-  for (int j = 0; j < nu; j++) {
-    EXPECT_EQ(f.U[j], j) << "the components, in the order of their dofs";
-  }
-  EXPECT_FALSE(f.partial);
-  EXPECT_TRUE(f.S_valid) << "the fold must factor the components";
-
-  // S is block diagonal over the components: its one dense inverse is theirs
-  std::vector<mjtNum> xu = DenseSolve(m, d, rows, b.data(), nu);
-  mjtNum scale = 0, diff = 0, backbone = 0;
-  for (int i = 0; i < nu; i++) {
-    scale = mju_max(scale, mju_abs(xu[i]));
-    diff = mju_max(diff, mju_abs(x[i] - xu[i]));
-    backbone = mju_max(backbone, mju_abs(xnull[i] - xu[i]));
-  }
-  EXPECT_LE(diff, MjTol(1e-10, 1e-4) * scale);
-  EXPECT_GT(backbone, 1e-3 * scale) << "the rows must matter";
-  for (int i = nu; i < nv; i++) {
-    EXPECT_EQ(x[i], xnull[i]) << "covered dof " << i;
-  }
-
-  mj_deleteData(d);
-  mj_deleteModel(m);
-}
-
-// a component over the 600-dof cap (101 free bodies a chain of rows couples)
-// keeps the backbone solve, the hinge's component its dense factor
-TEST_F(IpcTest, FoldDenseComponentOverCap) {
-  constexpr int nbody = 101;
-  std::string bodies = kHingeBody;
-  for (int k = 0; k < nbody; k++) {
-    bodies += FreeBody(1 + 0.2 * k);
-  }
-  std::vector<char> xml(bodies.size() + 2048);
-  snprintf(xml.data(), xml.size(), kStretchSheet, bodies.c_str());
-  mjModel* m = Load(xml.data());
-  ASSERT_THAT(m, NotNull());
-  mjData* d = mj_makeData(m);
-  mj_step(m, d);
-  ASSERT_TRUE(d->efm_active);
-  int nv = m->nv, nu = 1 + 6 * nbody;
-  ASSERT_EQ(d->efm_dofid[0], nu);
-
-  FoldRows rows;
-  rows.Add(0.04, {0}, {0.7});
-  for (int k = 0; k + 1 < nbody; k++) {
-    rows.Add(0.03, {1 + 6 * k, 7 + 6 * k}, {0.5, -0.4});
-  }
-  std::vector<mjtNum> b(nv), x(nv), xnull(nv);
-  for (int i = 0; i < nv; i++) {
-    b[i] = std::cos(0.5 + i);
-  }
-  FoldLayout f = FoldApply(m, d, rows, b.data(), x.data(), xnull.data());
-  EXPECT_EQ(f.nu, 1);
-  EXPECT_EQ(f.ncomp, 1);
-  EXPECT_EQ(f.nS, 1);
-  EXPECT_TRUE(f.partial);
-  EXPECT_TRUE(f.S_valid);
-
-  std::vector<mjtNum> xu = DenseSolve(m, d, rows, b.data(), 1);
-  EXPECT_NEAR(x[0], xu[0], MjTol(1e-10, 1e-4) * mju_abs(xu[0]));
-  EXPECT_GT(mju_abs(xnull[0] - xu[0]), 1e-3 * mju_abs(xu[0]));
-  for (int i = 1; i < nv; i++) {
-    EXPECT_EQ(x[i], xnull[i]) << "dof " << i << " keeps the backbone solve";
-  }
-
-  mj_deleteData(d);
-  mj_deleteModel(m);
-}
-
-// a sheet above two pairs of boxes resting on the floor, each pair coupled by a
-// stiff tendon at its rest length, in air: the boxes' contact rows, the
-// tendons and the drag make the uncovered block two coupled components
-static constexpr char kBoxPairs[] = R"(
-<mujoco>
-  <option timestep="0.002" integrator="discrete" solver="CG" iterations="2000"
-          tolerance="1e-12" jacobian="sparse" density="1.2" viscosity="2e-5">
-    <flag ipc="enable"/>
-  </option>
-  <worldbody>
-    <geom type="plane" size="0 0 1"/>
-    <body pos="-.4 0 .019">
-      <freejoint/>
-      <geom type="box" size=".04 .03 .02" mass=".2"/>
-      <site name="a"/>
-    </body>
-    <body pos="-.25 0 .019">
-      <freejoint/>
-      <geom type="box" size=".04 .03 .02" mass=".3"/>
-      <site name="b"/>
-    </body>
-    <body pos=".25 0 .019">
-      <freejoint/>
-      <geom type="box" size=".03 .03 .02" mass=".25"/>
-      <site name="c"/>
-    </body>
-    <body pos=".4 .05 .019">
-      <freejoint/>
-      <geom type="box" size=".03 .04 .02" mass=".15"/>
-      <site name="e"/>
-    </body>
-    <flexcomp name="sheet" type="grid" dim="2" count="7 7 1" spacing=".04 .04 1"
-              radius=".004" mass=".2" pos="0 0 .4">
-      <contact selfcollide="none"/>
-      <elasticity young="29166.6666666667" poisson=".4" thickness="2e-3"
-                  elastic2d="stretch"/>
-      <pin id="0 6"/>
-    </flexcomp>
-  </worldbody>
-  <tendon>
-    <spatial stiffness="1e5" damping="2" springlength=".15">
-      <site site="a"/>
-      <site site="b"/>
-    </spatial>
-    <spatial stiffness="1e5" damping="2" springlength=".158113883">
-      <site site="c"/>
-      <site site="e"/>
-    </spatial>
-  </tendon>
-</mujoco>
-)";
-
-// a run of kBoxPairs with an arena of narena bytes (0: the default)
-struct BoxPairsRun {
-  std::vector<mjtNum> qacc, qpos;
-  int niter = 0, nwarning = 0;
-  size_t maxuse = 0, narena = 0;
-};
-
-static BoxPairsRun RunBoxPairs(mjModel* m, size_t narena, int nstep) {
-  size_t narena0 = m->narena;
-  if (narena) {
-    m->narena = narena;
-  }
-  mjData* d = mj_makeData(m);
-  m->narena = narena0;
-  BoxPairsRun run;
-  for (int s = 0; s < nstep; s++) {
-    mj_step(m, d);
-    run.niter += d->solver_niter[0];
-    run.qacc.insert(run.qacc.end(), d->qacc, d->qacc + m->nv);
-  }
-  run.qpos.assign(d->qpos, d->qpos + m->nq);
-  run.nwarning = d->warning[mjWARN_CNSTRFULL].number;
-  run.maxuse = d->maxuse_arena;
-  run.narena = d->narena;
-  mj_deleteData(d);
-  return run;
-}
-
-// the CG solve with the dense blocks matches the solve without them to the
-// solver's tolerance, in fewer iterations. An arena that holds the step without
-// the blocks but not with them drops them, with a warning and no overflow; the
-// budget is exact, an arena a few kB over the run with them keeps them
-TEST_F(IpcTest, FoldDenseBlocksSolveMatches) {
-  mjModel* m = Load(kBoxPairs);
-  ASSERT_THAT(m, NotNull());
-  m->opt.tolerance = MjTol(1e-12, 1e-6);
-  constexpr int nstep = 10;
-
-  // the 3x3 blocks on the sheet, not the sparse factor: the dense blocks alone
-  // are the optional arrays the arena sizes below drop or keep
-  for (int t = 0; t < m->nefmCvert; t++) {
-    m->efmC_perm[t] = -1;
-  }
-
-  // with the blocks: two components of two boxes each
-  BoxPairsRun with = RunBoxPairs(m, 0, nstep);
-  EXPECT_EQ(with.nwarning, 0);
-  constexpr int nS = 2 * 12 * 12;
-  {
-    mjData* d = mj_makeData(m);
-    mj_step(m, d);
-    ASSERT_TRUE(d->efm_active);
-    int nu, ncomp;
-    EXPECT_EQ(mj_effFoldDenseSize(m, d, d->nefc, d->efc_D, /*is_sparse=*/1,
-                                  d->efc_J_rownnz, d->efc_J_rowadr,
-                                  d->efc_J_colind, &nu, &ncomp),
-              nS);
-    EXPECT_EQ(nu, 24);
-    EXPECT_EQ(ncomp, 2);
-
-    // the factors invert S exactly, the tendons and the drag included
-    FoldRows rows;
-    for (int r = 0; r < d->nefc; r++) {
-      int adr = d->efc_J_rowadr[r], nnz = d->efc_J_rownnz[r];
-      rows.Add(
-          d->efc_D[r],
-          std::vector<int>(d->efc_J_colind + adr, d->efc_J_colind + adr + nnz),
-          std::vector<mjtNum>(d->efc_J + adr, d->efc_J + adr + nnz));
-    }
-    int nv = m->nv;
-    std::vector<mjtNum> b(nv), x(nv), xnull(nv);
-    for (int i = 0; i < nv; i++) {
-      b[i] = std::cos(0.5 + i);
-    }
-    FoldLayout f = FoldApply(m, d, rows, b.data(), x.data(), xnull.data());
-    EXPECT_TRUE(f.S_valid);
-    std::vector<mjtNum> xu = DenseSolve(m, d, rows, b.data(), nu);
-    mjtNum scale = 0, diff = 0;
-    for (int i = 0; i < nu; i++) {
-      scale = mju_max(scale, mju_abs(xu[i]));
-      diff = mju_max(diff, mju_abs(x[i] - xu[i]));
-    }
-    EXPECT_LE(diff, MjTol(1e-10, 1e-4) * scale);
-    mj_deleteData(d);
-  }
-
-  // kept: the budget is exact up to alignment, the apply's frame and the
-  // per-allocation overhead of the stack (ASAN's red zones, none otherwise),
-  // which maxuse_arena leaves out, for up to 128 live allocations
-  size_t overhead = mj_stackBytes(1, 1) - 1;
-  size_t keep = with.maxuse + sizeof(mjtNum) * m->nv + 4096 + 128 * overhead;
-  BoxPairsRun kept = RunBoxPairs(m, keep, nstep);
-  ASSERT_EQ(kept.nwarning, 0);
-  EXPECT_EQ(kept.niter, with.niter);
-
-  // the smallest arena that keeps them, to within 64 bytes, in steps below the
-  // 8*nS bytes they take: every arena tried, and the one below, hold the step
-  // without them
-  mock_warning_handler.ExpectWarnings("Insufficient arena memory");
-  for (size_t step : {size_t{1024}, size_t{64}}) {
-    while (RunBoxPairs(m, keep - step, nstep).nwarning == 0) {
-      keep -= step;
-    }
-  }
-
-  // dropped at every step: half the factors short of that arena, which holds
-  // the step without them only
-  BoxPairsRun without = RunBoxPairs(m, keep - sizeof(mjtNum) * nS / 2, nstep);
-  EXPECT_EQ(without.nwarning, nstep);
-  EXPECT_LE(without.maxuse, without.narena);
-  EXPECT_LT(2 * with.niter, without.niter);
-
-  mjtNum scale = 0, diff = 0;
-  for (int i = 0; i < static_cast<int>(with.qacc.size()); i++) {
-    scale = mju_max(scale, mju_abs(with.qacc[i]));
-    diff = mju_max(diff, mju_abs(with.qacc[i] - without.qacc[i]));
-  }
-  EXPECT_LE(diff, MjTol(1e-6, 1e-2) * scale);
-  for (int i = 0; i < m->nq; i++) {
-    EXPECT_NEAR(with.qpos[i], without.qpos[i], MjTol(1e-8, 1e-4)) << i;
-  }
-
-  mj_deleteModel(m);
-}
-
 // mj_effMulAdd's measured stack use stays within mj_effMulAddScratch on both
 // matrix-free fallback paths: a bending-only 2D flex and a 3D trilinear
 // interpolated flex parented to a hinged body, neither assembled into efm_K
 TEST_F(IpcTest, MulAddScratchBounds) {
   static constexpr char kBendStretch[] = R"(
   <mujoco>
-    <option integrator="discrete" solver="CG" timestep=".002">
-      <flag ipc="enable"/>
-    </option>
+    <option integrator="discrete" solver="CG" timestep=".002"/>
     <worldbody>
       <flexcomp name="sheet" type="grid" dim="2" count="4 4 1"
                 spacing=".05 .05 1" radius=".005" mass=".1">
@@ -1892,9 +1493,7 @@ TEST_F(IpcTest, MulAddScratchBounds) {
   )";
   static constexpr char kInterp[] = R"(
   <mujoco>
-    <option integrator="discrete" solver="CG" timestep=".002">
-      <flag ipc="enable"/>
-    </option>
+    <option integrator="discrete" solver="CG" timestep=".002"/>
     <worldbody>
       <body name="root" pos="0 0 .5">
         <joint type="hinge"/>
@@ -1945,7 +1544,7 @@ TEST_F(IpcTest, MulAddScratchBounds) {
 // two 2D sheets that collide (the lower one pinned), under the IPC step
 static constexpr char kSheets[] = R"(
 <mujoco>
-  <option timestep="0.002" integrator="discrete" solver="CG" iterations="400">
+  <option timestep="0.002" integrator="discrete" solver="Newton" iterations="400">
     <flag ipc="enable"/>
   </option>
   <worldbody>
@@ -1967,7 +1566,7 @@ static constexpr char kSheets[] = R"(
 // one pinned sheet with no contact
 static constexpr char kHanging[] = R"(
 <mujoco>
-  <option timestep="0.002" integrator="discrete" solver="CG" iterations="400">
+  <option timestep="0.002" integrator="discrete" solver="Newton" iterations="400">
     <flag ipc="enable"/>
   </option>
   <worldbody>
@@ -2062,9 +1661,8 @@ TEST_F(IpcTest, SparseFactorMatchesBlocks) {
   mj_deleteModel(m);
 }
 
-// for a 2D flex the factor applies under the run-time IPC flag or when CG folds
-// into it: clearing the flag keeps the factor under CG, an elliptic cone (no
-// fold) switches to the blocks, restoring the pyramidal cone switches back
+// for a 2D flex the factor applies whatever the IPC flag, cone and solver: it
+// serves qacc_smooth, and CG preconditions with folded blocks of its own
 TEST_F(IpcTest, SparseFactorFollowsIpcFlagAndSolver) {
   mjModel* m = Load(kHanging);
   ASSERT_THAT(m, NotNull());
@@ -2077,8 +1675,12 @@ TEST_F(IpcTest, SparseFactorFollowsIpcFlagAndSolver) {
   EXPECT_TRUE(FactorUsed(d));
   m->opt.cone = mjCONE_ELLIPTIC;
   mj_step(m, d);
-  EXPECT_TRUE(BlocksUsed(d));
+  EXPECT_TRUE(FactorUsed(d));
   m->opt.cone = mjCONE_PYRAMIDAL;
+  m->opt.solver = mjSOL_CG;
+  mj_step(m, d);
+  EXPECT_TRUE(FactorUsed(d));
+  m->opt.solver = mjSOL_NEWTON;
   mj_step(m, d);
   EXPECT_TRUE(FactorUsed(d));
 
@@ -2130,56 +1732,6 @@ TEST_F(IpcTest, SparseFactorWithoutCompileTimeIpc) {
   EXPECT_TRUE(FactorUsed(d));
   EXPECT_FALSE(d->warning[mjWARN_BADQACC].number);
   mj_deleteData(d);
-  mj_deleteModel(m);
-}
-
-// without IPC, the CG fold into the sparse factor and the 3x3 blocks on the
-// island path precondition the same solves: from the same state, one step gives
-// the same accelerations up to the solver tolerances
-TEST_F(IpcTest, SparseFactorFoldMatchesBlocksWithoutIpc) {
-  std::string xml(kSheets);
-  xml.erase(xml.find("<flag ipc=\"enable\"/>"),
-            std::string("<flag ipc=\"enable\"/>").size());
-  size_t pos = xml.find("iterations=\"400\"");
-  xml.replace(pos, std::string("iterations=\"400\"").size(),
-              "iterations=\"4000\" tolerance=\"1e-12\"");
-  mjModel* m = Load(xml.c_str());
-  ASSERT_THAT(m, NotNull());
-  ASSERT_GT(OrderedVertices(m), 0);
-  mjModel* mb = BlocksCopy(m);
-  mjData* d = mj_makeData(m);
-  mjData* db = mj_makeData(mb);
-
-  bool contact = false;
-  mjtNum rel = 0, rel_smooth = 0;
-  for (int s = 0; s < 150; s++) {
-    mj_copyData(db, mb, d);
-    mj_step(m, d);
-    mj_step(mb, db);
-    ASSERT_TRUE(FactorUsed(d)) << "step " << s;
-    // the blocks copy runs on the island path, which appends the island lists
-    // after the blocks once there are contacts
-    ASSERT_FALSE(FactorUsed(db)) << "step " << s;
-    contact = contact || mju_norm(d->qfrc_constraint, m->nv) > 0;
-
-    mjtNum scale = 0, diff = 0, scale_s = 0, diff_s = 0;
-    for (int i = 0; i < m->nv; i++) {
-      scale = mju_max(scale, mju_abs(db->qacc[i]));
-      diff = mju_max(diff, mju_abs(d->qacc[i] - db->qacc[i]));
-      scale_s = mju_max(scale_s, mju_abs(db->qacc_smooth[i]));
-      diff_s = mju_max(diff_s, mju_abs(d->qacc_smooth[i] - db->qacc_smooth[i]));
-    }
-    rel = mju_max(rel, diff / scale);
-    rel_smooth = mju_max(rel_smooth, diff_s / scale_s);
-  }
-  EXPECT_LE(rel_smooth, MjTol(2e-11, 2e-4)) << "qacc_smooth";
-  EXPECT_LE(rel, MjTol(1e-4, 2e-4)) << "qacc";
-  EXPECT_TRUE(contact) << "the sheets must collide";
-  EXPECT_FALSE(d->warning[mjWARN_BADQACC].number);
-
-  mj_deleteData(db);
-  mj_deleteData(d);
-  mj_deleteModel(mb);
   mj_deleteModel(m);
 }
 
@@ -2352,9 +1904,9 @@ TEST_F(IpcTest, SparseFactorPatternChange) {
 
 // the coverage rules: the compiler sizes the ordering for models with a 2D flex
 // or an elastic rod, mj_setConst orders the vertices of the engine's own
-// stencils, and models with a covered 3D flex use the blocks. A 2D flex uses
-// the factor under IPC or when CG folds into it (pyramidal cone, no sleep), and
-// the blocks otherwise
+// stencils, and models with a covered 3D flex use the blocks for the metric. A
+// 2D flex uses the metric's sparse factor under Newton, and the 3x3 blocks
+// under CG
 TEST_F(IpcTest, SparseFactorCoverage) {
   static constexpr char kTemplate[] = R"(
   <mujoco>
@@ -2367,6 +1919,7 @@ TEST_F(IpcTest, SparseFactorCoverage) {
   </mujoco>
   )";
   static constexpr char kCG[] = R"(solver="CG")";
+  static constexpr char kNewton[] = R"(solver="Newton")";
   static constexpr char kIpc[] = R"(<flag ipc="enable"/>)";
   static constexpr char kSheet[] = R"(
       <flexcomp name="sheet" type="grid" dim="2" count="7 6 1" spacing=".04 .04 1"
@@ -2415,34 +1968,35 @@ TEST_F(IpcTest, SparseFactorCoverage) {
     bool used;   // the step uses the factor (efm_K is assembled)
   };
   std::vector<Case> cases = {
-      {"stretch and bending", kCG, kIpc, sheet("both", ""), true, true},
-      {"pins", kCG, kIpc, sheet("both", R"(<pin id="0 6 35 41"/>)"), true,
+      {"stretch and bending", kNewton, kIpc, sheet("both", ""), true, true},
+      {"pins", kNewton, kIpc, sheet("both", R"(<pin id="0 6 35 41"/>)"), true,
        true},
-      {"stretch only", kCG, kIpc, sheet("stretch", ""), true, true},
-      {"bending only", kCG, kIpc, sheet("bend", ""), true, false},
-      {"two sheets", kCG, kIpc, sheet("both", "") + kSecond, true, true},
-      {"joint before the sheet", kCG, kIpc,
+      {"stretch only", kNewton, kIpc, sheet("stretch", ""), true, true},
+      {"bending only", kNewton, kIpc, sheet("bend", ""), true, true},
+      {"two sheets", kNewton, kIpc, sheet("both", "") + kSecond, true, true},
+      {"joint before the sheet", kNewton, kIpc,
        std::string(kHinge) + sheet("both", ""), true, true},
-      {"sheet and cable", kCG, kIpc, sheet("both", "") + kCable, true, true},
-      {"sheet and elastic rod", kCG, kIpc, sheet("both", "") + kRod, true,
+      {"sheet and cable", kNewton, kIpc, sheet("both", "") + kCable, true,
+       true},
+      {"sheet and elastic rod", kNewton, kIpc, sheet("both", "") + kRod, true,
        true},
       {"elastic rod, no IPC", kCG, "", kRod, true, true},
       {"sheet and elastic rod, no IPC", kCG, "", sheet("both", "") + kRod, true,
        true},
-      {"sheet and solid", kCG, kIpc, sheet("both", "") + kSolid, true, false},
-      {"solid", kCG, kIpc, kSolid, true, false},
-      {"no IPC", kCG, "", sheet("both", ""), true, true},
-      {"no IPC, two sheets", kCG, "", sheet("both", "") + kSecond, true, true},
-      {"no IPC, Newton", R"(solver="Newton")", "", sheet("both", ""), true,
+      {"sheet and solid", kNewton, kIpc, sheet("both", "") + kSolid, true,
+       false},
+      {"solid", kNewton, kIpc, kSolid, true, false},
+      {"no IPC, CG", kCG, "", sheet("both", ""), true, true},
+      {"no IPC, two sheets, CG", kCG, "", sheet("both", "") + kSecond, true,
        true},
+      {"no IPC, Newton", kNewton, "", sheet("both", ""), true, true},
       {"no IPC, Newton elliptic", R"(solver="Newton" cone="elliptic")", "",
        sheet("both", ""), true, true},
       {"no IPC, elliptic", R"(solver="CG" cone="elliptic")", "",
-       sheet("both", ""), true, false},
+       sheet("both", ""), true, true},
       {"no IPC, sleep", kCG, R"(<flag sleep="enable"/>)", sheet("both", ""),
-       true, false},
-      {"elastic rod, no IPC, Newton", R"(solver="Newton")", "", kRod, true,
-       true},
+       true, true},
+      {"elastic rod, no IPC, Newton", kNewton, "", kRod, true, true},
   };
   for (const Case& c : cases) {
     SCOPED_TRACE(c.name);
@@ -2471,85 +2025,8 @@ TEST_F(IpcTest, SparseFactorCoverage) {
   }
 }
 
-// the solver's preconditioner folded with rows (mj_effPrecFold) with a copy of
-// the sparse factor (mjEffFold.F), applied to b into x (mj_effPrecBlocks);
-// returns whether the fold factored its copy (rows folded in)
-static bool SparseFoldApply(const mjModel* m, mjData* d, const FoldRows& rows,
-                            const mjtNum* b, mjtNum* x) {
-  std::vector<mjtNum> L(9 * d->nefmdof), F(mj_effCholFoldSize(d));
-  mjEffFold fold = {};
-  fold.L = L.data();
-  fold.F = F.empty() ? nullptr : F.data();
-  mj_markStack(d);
-  int nefc = static_cast<int>(rows.D.size());
-  mj_effCholFoldFactor(m, d, &fold, nefc, nefc ? rows.D.data() : nullptr,
-                       /*is_sparse=*/1, nefc ? rows.J.data() : nullptr,
-                       nefc ? rows.rownnz.data() : nullptr,
-                       nefc ? rows.rowadr.data() : nullptr,
-                       nefc ? rows.colind.data() : nullptr);
-  size_t pstack0 = d->pstack;
-  bool folded = mj_effPrecFold(
-      m, d, &fold, nefc, nefc ? rows.D.data() : nullptr,
-      /*is_sparse=*/1, nefc ? rows.J.data() : nullptr,
-      nefc ? rows.rownnz.data() : nullptr, nefc ? rows.rowadr.data() : nullptr,
-      nefc ? rows.colind.data() : nullptr);
-  EXPECT_TRUE(folded);
-  EXPECT_EQ(d->pstack, pstack0);
-  mj_effPrecBlocks(m, d, x, b, &fold);
-  mj_freeStack(d);
-  return fold.F && fold.F[0] == 1;
-}
-
-// a row coupling two vertices off the step's pattern (rows the step did not
-// see), folded on a sheet without dropped pairs, adds its complement
-// C = 2 D (J_k' J_k + J_q' J_q) >= J' D J, on the vertices' diagonal blocks, to
-// the factored matrix W of the fold without rows: x = (W + C)^-1 b satisfies
-// x + W^-1 C x = W^-1 b
-TEST_F(IpcTest, SparseFactorContactComplement) {
-  char xml[2048];
-  snprintf(xml, sizeof(xml), kStretchSheet, "");
-  mjModel* m = Load(xml);
-  ASSERT_THAT(m, NotNull());
-  mjData* d = mj_makeData(m);
-  mj_step(m, d);
-  ASSERT_TRUE(FactorUsed(d));
-  int nv = m->nv, nb = d->nefmdof;
-  ASSERT_EQ(nv, 3 * nb);
-
-  // the first and the last vertex, opposite corners of the sheet
-  int a0 = d->efm_dofid[0], a1 = d->efm_dofid[nb - 1];
-  FoldRows rows;
-  rows.Add(0.01, {a0, a0 + 1, a0 + 2, a1, a1 + 1, a1 + 2},
-           {0.3, -0.7, 1, -0.5, 0.2, 0.9});
-  std::vector<mjtNum> b(nv), x(nv), w(nv), cx(nv, 0), wcx(nv);
-  for (int i = 0; i < nv; i++) {
-    b[i] = std::sin(1.0 + i);
-  }
-  EXPECT_TRUE(SparseFoldApply(m, d, rows, b.data(), x.data()));
-
-  // W^-1 b and W^-1 C x, without rows
-  FoldRows none, parts;
-  parts.Add(0.02, {a0, a0 + 1, a0 + 2}, {0.3, -0.7, 1});
-  parts.Add(0.02, {a1, a1 + 1, a1 + 2}, {-0.5, 0.2, 0.9});
-  EXPECT_FALSE(SparseFoldApply(m, d, none, b.data(), w.data()));
-  parts.MulAdd(cx.data(), x.data());
-  SparseFoldApply(m, d, none, cx.data(), wcx.data());
-  mjtNum scale = 0, diff = 0, coupling = 0;
-  for (int i = 0; i < nv; i++) {
-    scale = mju_max(scale, mju_abs(w[i]));
-    diff = mju_max(diff, mju_abs(x[i] + wcx[i] - w[i]));
-    coupling = mju_max(coupling, mju_abs(wcx[i]));
-  }
-  EXPECT_GT(coupling, 1e-3 * scale) << "the row must matter";
-  EXPECT_LE(diff, MjTol(1e-10, 1e-4) * scale);
-
-  mj_deleteData(d);
-  mj_deleteModel(m);
-}
-
-// each budgeted frame (mj_effCholSetConst, effCholReserve/effCholEnsure, and
-// mj_effCholFoldFactor + mj_effPrecFold + mj_effPrecBlocks + mj_effMulAdd) fits
-// within the exact narena where its avail >= need gate first passes
+// each budgeted frame (mj_effCholSetConst and effCholReserve/effCholEnsure)
+// fits within the exact narena where its avail >= need gate first passes
 TEST_F(IpcTest, SparseFactorScratchBounds) {
   mock_warning_handler.ExpectWarnings("Insufficient arena memory");
   auto min_arena = [](mjModel* m, size_t lo, auto passes) {
@@ -2610,38 +2087,13 @@ TEST_F(IpcTest, SparseFactorScratchBounds) {
              d->warning[mjWARN_CNSTRFULL].number == 0;
     });
 
-    // 3. mj_effCholFoldFactor + mj_effPrecFold + mj_effPrecBlocks +
-    // mj_effMulAdd on a state with contact rows
+    // 3. sweep narena across the full mj_step solve path from blocks_peak up to
+    // the sparse-factor peak: warnings are expected, but no arena overflow
     mjData* ref = mj_makeData(m);
     for (int s = 0; s < 15; s++) {
       mj_step(m, ref);
     }
     ASSERT_TRUE(FactorUsed(ref));
-    int nv = m->nv, nb = ref->nefmdof;
-    int a0 = ref->efm_dofid[0], a1 = ref->efm_dofid[nb - 1];
-    FoldRows rows;
-    rows.Add(0.01, {a0, a0 + 1, a0 + 2, a1, a1 + 1, a1 + 2},
-             {0.3, -0.7, 1, -0.5, 0.2, 0.9});
-    if (nb > 2) {
-      int a2 = ref->efm_dofid[nb / 2];
-      rows.Add(0.02, {a0, a0 + 1, a0 + 2, a2, a2 + 1, a2 + 2},
-               {0.4, 0.2, -0.8, -0.4, -0.2, 0.8});
-    }
-    min_arena(m, blocks_peak, [&](mjModel* model, mjData* d) {
-      mju_copy(d->qpos, ref->qpos, model->nq);
-      mju_copy(d->qvel, ref->qvel, model->nv);
-      mj_forward(model, d);
-      if (!FactorUsed(d) || d->warning[mjWARN_CNSTRFULL].number) {
-        return false;
-      }
-      std::vector<mjtNum> b(nv, 1), x(nv, 0), y(nv, 0);
-      bool used = SparseFoldApply(model, d, rows, b.data(), x.data());
-      mj_effMulAdd(model, d, y.data(), x.data(), /*flg_contact=*/1);
-      return used && d->warning[mjWARN_CNSTRFULL].number == 0;
-    });
-
-    // 4. sweep narena across the full mj_step solve path from blocks_peak up to
-    // the sparse-factor peak: warnings are expected, but no arena overflow
     mjData* ds = mj_makeData(m);
     for (int s = 0; s < 15; s++) {
       mj_step(m, ds);
@@ -2671,7 +2123,7 @@ TEST_F(IpcTest, SparseFactorScratchBounds) {
 TEST_F(IpcTest, SingleAndMultiThreadedMatch) {
   static constexpr char kXml[] = R"(
     <mujoco>
-      <option timestep="0.002" integrator="discrete" solver="CG"
+      <option timestep="0.002" integrator="discrete" solver="Newton"
               iterations="50" tolerance="1e-10">
         <flag ipc="enable"/>
       </option>

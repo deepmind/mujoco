@@ -21,7 +21,7 @@
        two pull beads, which carry their apex: raise the actuator and the beads rise and converge,
        the ribbon slides out of the sleeve and the mouth gathers shut around the contents. Flex contact
        is resolved by the ipc mode of the discrete integrator. -->
-  <option timestep="0.002" solver="CG" tolerance="1e-5" iterations="150" integrator="discrete">
+  <option timestep="0.002" tolerance="1e-5" iterations="150" integrator="discrete">
     <flag ipc="enable"/>
   </option>
 

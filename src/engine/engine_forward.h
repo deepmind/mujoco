@@ -46,10 +46,6 @@ MJAPI void mj_forward(const mjModel* m, mjData* d);
 // forward dynamics with skip; skipstage is mjtStage
 MJAPI void mj_forwardSkip(const mjModel* m, mjData* d, int skipstage, int skipsensor);
 
-// forward constraint solve pinned to matrix-free CG over the monolithic (non-island) problem,
-// for the IPC contact mode's inner AL subproblem (see engine_forward.c)
-void mj_fwdConstraintCG(const mjModel* m, mjData* d);
-
 
 //-------------------------------- integrators -----------------------------------------------------
 

@@ -2,7 +2,7 @@
      a 2D flex with bending only and an interpolated flex with stiffness, under IPC, and an
      interpolated flex without stiffness, which may not sleep -->
 <mujoco>
-  <option integrator="discrete" solver="CG">
+  <option integrator="discrete">
     <flag ipc="enable"/>
   </option>
   <worldbody>

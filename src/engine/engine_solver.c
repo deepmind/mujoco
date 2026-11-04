@@ -1107,8 +1107,8 @@ typedef struct {
   int flg_metric;         // effective metric active for this solve
   const mjModel* fm;      // model, for the metric calls
   mjData* fd;             // data, for the metric calls
-  mjEffFold epfold;       // metric preconditioner with the contact class folded in
-  mjEffFold* ep;          // &epfold when folded, or NULL
+  mjtNum* epL;            // CG: metric blocks with the efc rows and rank-1 classes folded in
+                          // (mj_effPrecFold), 9*mj_effFoldBlocks, or NULL
 
   // Newton: lower-triangle view of the metric matrix S = diag(h*D+h^2*K) + K_csr, built by
   // MakeMetricLower on the solver stack, merged into the Hessian alongside M
@@ -1143,20 +1143,6 @@ typedef struct {
   int LSresult;           // linesearch result
   mjtNum LSslope;         // linesearch slope at solution
 } mjPrimalContext;
-
-
-// fold the efc rows in their quadratic zone (contact pairs among them) and the metric's rank-1
-// classes into a solver-owned copy of the metric blocks (mj_effPrecFold): monolithic solve with a
-// live metric, pyramidal cone. IPC folds for both primal solvers (Newton only for its
-// certificate); otherwise CG folds whenever the step holds a sparse factor of the covered flex
-// block (1D rods, 2D flexes), which mj_effFoldMonolithic keeps off the island path
-static int effFoldWanted(const mjModel* m, const mjData* d, int island, int is_elliptic,
-                         int flg_Newton) {
-  if (!d->efm_active || island >= 0 || is_elliptic) {
-    return 0;
-  }
-  return mjENABLED(mjENBL_IPC) || (!flg_Newton && mj_effFoldMonolithic(m, d, mjSOL_CG));
-}
 
 
 // set sizes and pointers to mjData arrays in mjPrimalContext
@@ -1332,49 +1318,22 @@ static void PrimalAllocate(const mjModel* m, mjData* d, mjPrimalContext* ctx, in
       nInt += (count);         \
   } while (0)
 
-  // metric fold, with the dense uncovered-dof blocks for CG (Newton folds only for its
-  // certificate, and its Hessian needs the stack). Sizing the blocks takes a frame that the
-  // fold's scratch bounds
-  int flg_fold = effFoldWanted(m, d, ctx->island, is_elliptic, flg_Newton);
-  int nu = 0, ncomp = 0, nS = 0;
-  if (flg_fold && !flg_Newton && mj_stackBytesAvailable(d) >= mj_effFoldScratch(m, d, 1)) {
-    nS = mj_effFoldDenseSize(m, d, nefc, ctx->efc_D, is_sparse, ctx->J_rownnz, ctx->J_rowadr,
-                             ctx->J_colind, &nu, &ncomp);
-    if (!nS) {
-      nu = ncomp = 0;
-    }
-  }
-
-  // CG also folds the sparse factor of the covered dofs, when the metric has one
-  int nF = flg_fold && !flg_Newton ? mj_effCholFoldSize(d) : 0;
+  // CG: the solver's copy of the metric blocks, for mj_effPrecFold
+  int nep = !flg_Newton ? 9*mj_effFoldBlocks(d, ctx->island) : 0;
 
   for (int pass = 0; pass < 2; pass++) {
     if (pass) {
-      // keep the sparse factor's copy and the dense blocks only if the stack holds them with the
-      // other arrays and the deepest frame the solve takes on top while they are alive: the fold,
-      // the preconditioner apply or the metric product. Else drop the copy, then the blocks, with
-      // a warning: the 3x3 blocks then precondition the covered dofs, the backbone solve the
-      // uncovered ones
-      if (nu || nF) {
-        size_t fold = mj_effFoldScratch(m, d, nu), mul = mj_effMulAddScratch(m, d);
-        size_t avail = mj_stackBytesAvailable(d), scratch = mjMAX(fold, mul);
+      // keep the folded blocks only if the stack holds them with the other arrays and the
+      // deepest frame the solve takes on top: the fold, the preconditioner or the metric
+      // product. Else the step's blocks precondition the solve, with a warning
+      if (nep) {
+        size_t fold = mj_effFoldScratch(nv);
+        size_t scratch = mjMAX(fold, mjMAX(mj_effPrecScratch(m, d), mj_effMulAddScratch(m, d)));
         size_t need = mj_stackBytes(sizeof(mjtNum)*nNum, _Alignof(mjtNum)) +
                       mj_stackBytes(sizeof(int)*nInt, _Alignof(int)) + scratch;
-        int dropped = 0;
-        if (nF && need > avail) {
-          nNum -= nF;
-          nF = 0;
-          dropped = 1;
-          need = mj_stackBytes(sizeof(mjtNum)*nNum, _Alignof(mjtNum)) +
-                 mj_stackBytes(sizeof(int)*nInt, _Alignof(int)) + scratch;
-        }
-        if (nu && need > avail) {
-          nNum -= nS;
-          nInt -= nu + 2*(ncomp + 1);
-          nu = ncomp = nS = 0;
-          dropped = 1;
-        }
-        if (dropped) {
+        if (need > mj_stackBytesAvailable(d)) {
+          nNum -= nep;
+          nep = 0;
           mj_warning(d, mjWARN_CNSTRFULL, d->narena);
         }
       }
@@ -1439,30 +1398,6 @@ static void PrimalAllocate(const mjModel* m, mjData* d, mjPrimalContext* ctx, in
     }
 
     // constraint state and Jacobian transpose (sparse)
-    // IPC: a solver-owned copy of the metric blocks with the contact class folded in
-    // (mj_effPrecFold), or none; CG also folds the sparse factor's copy and the dense
-    // uncovered-dof blocks when they fit
-    ctx->ep = NULL;
-    if (flg_fold) {
-      ctx->ep = &ctx->epfold;
-      CARVE_NUM(ctx->ep->L,    9*d->nefmdof);
-      CARVE_NUM(ctx->ep->S,    nS);
-      CARVE_INT(ctx->ep->U,    nu);
-      CARVE_INT(ctx->ep->Uadr, nu ? ncomp + 1 : 0);
-      CARVE_INT(ctx->ep->Sadr, nu ? ncomp + 1 : 0);
-      CARVE_NUM(ctx->ep->F,    nF);
-      ctx->ep->nu = nu;
-      ctx->ep->ncomp = ncomp;
-      ctx->ep->nS = nS;
-      ctx->ep->partial = 0;
-      ctx->ep->S_valid = 0;
-      if (!nF) {
-        ctx->ep->F = NULL;
-      } else if (pass) {
-        ctx->ep->F[0] = 0;
-      }
-    }
-
     CARVE_INT(ctx->oldstate, nefc);
     if (is_sparse) {
       CARVE_INT(ctx->JT_rownnz,   nv);
@@ -1492,6 +1427,10 @@ static void PrimalAllocate(const mjModel* m, mjData* d, mjPrimalContext* ctx, in
         CARVE_NUM(ctx->S_val,    nScap);
       }
       CARVE_NUM(qfrc_eff, nv);
+      ctx->epL = NULL;
+      if (nep) {
+        CARVE_NUM(ctx->epL, nep);
+      }
     }
   }
 
@@ -1617,16 +1556,6 @@ static void PrimalUpdateGrad(mjPrimalContext* ctx) {
 }
 
 
-// the metric preconditioner, against the contact-folded blocks where they were built
-static void PrimalMetricPrecond(mjPrimalContext* ctx, mjtNum* x, const mjtNum* b) {
-  if (ctx->ep) {
-    mj_effPrecBlocks(ctx->fm, ctx->fd, x, b, ctx->ep);
-  } else {
-    mj_effPrec(ctx->fm, ctx->fd, x, b);
-  }
-}
-
-
 // update Mgrad;  Newton: Mgrad = H \ grad,  CG: Mgrad = M \ grad
 static void PrimalUpdateMgrad(mjPrimalContext* ctx, int flg_Newton) {
   int nv = ctx->nv;
@@ -1655,12 +1584,16 @@ static void PrimalUpdateMgrad(mjPrimalContext* ctx, int flg_Newton) {
 
   // CG monolithic: Mgrad = Mtilde \ grad (approximate metric preconditioner)
   else if (ctx->flg_metric && ctx->island < 0) {
-    PrimalMetricPrecond(ctx, ctx->Mgrad, ctx->grad);
+    if (ctx->epL) {
+      mj_effPrecBlocks(ctx->fm, ctx->fd, ctx->Mgrad, ctx->grad, ctx->epL);
+    } else {
+      mj_effPrec(ctx->fm, ctx->fd, ctx->Mgrad, ctx->grad);
+    }
   }
 
   // CG island with metric: island-local metric preconditioner
   else if (ctx->flg_metric) {
-    mj_effPrecIsland(ctx->fm, ctx->fd, ctx->Mgrad, ctx->grad, ctx->island,
+    mj_effPrecIsland(ctx->fm, ctx->fd, ctx->Mgrad, ctx->grad, ctx->island, ctx->epL,
                      ctx->qLD, ctx->qLDiagInv, ctx->M_rownnz, ctx->M_rowadr, ctx->M_colind);
   }
 
@@ -2466,8 +2399,7 @@ static size_t primalSqrScratchBytes(int nv, int nefc) {
 static size_t primalLoopScratchBytes(const mjPrimalContext* ctx, const mjData* d) {
   size_t sqr_bytes = ctx->is_sparse ? primalSqrScratchBytes(ctx->nv, ctx->nefc) : 0;
   size_t mul_bytes = ctx->flg_metric ? mj_effMulAddScratch(ctx->fm, d) : 0;
-  size_t prec_bytes =
-      ctx->flg_metric ? mj_effFoldScratch(ctx->fm, d, ctx->ep ? ctx->ep->nu : 0) : 0;
+  size_t prec_bytes = ctx->flg_metric ? mj_effPrecScratch(ctx->fm, d) : 0;
   return mjMAX(sqr_bytes, mjMAX(mul_bytes, prec_bytes));
 }
 
@@ -3644,11 +3576,11 @@ static void mj_solPrimal(const mjModel* m, mjData* d, int island, int maxiter, i
   mjtNum scale = inertiaScale(m, d, island);
   ctx.scale = scale;
 
-  // IPC: fold the contact class and the efc rows into the solver-owned copy of the metric
-  // blocks, so the CG preconditioner sees the contact curvature the operator carries
-  if (ctx.ep && !mj_effPrecFold(m, d, ctx.ep, ctx.nefc, ctx.efc_D, ctx.is_sparse, ctx.J,
-                                ctx.J_rownnz, ctx.J_rowadr, ctx.J_colind)) {
-    ctx.ep = NULL;
+  // CG: fold the efc rows and the rank-1 classes into the solver's copy of the metric blocks, so
+  // the preconditioner sees the curvature the operator carries on the flex dofs
+  if (ctx.epL && !mj_effPrecFold(m, d, ctx.epL, island, nefc, ctx.efc_D, ctx.is_sparse, ctx.J,
+                                 ctx.J_rownnz, ctx.J_rowadr, ctx.J_colind)) {
+    ctx.epL = NULL;
   }
 
   // Mgrad = M \ grad: the CG preconditioned gradient, also the convergence certificate
@@ -3698,10 +3630,6 @@ static void mj_solPrimal(const mjModel* m, mjData* d, int island, int maxiter, i
         ctx.Mgraddif = cg_buf + nv;
       }
     }
-  } else if (!flg_done && ctx.ep && ctx.ep->F) {
-    mj_effCholFoldFactor(m, d, ctx.ep, ctx.nefc, ctx.efc_D, ctx.is_sparse, ctx.J, ctx.J_rownnz,
-                         ctx.J_rowadr, ctx.J_colind);
-    PrimalUpdateMgrad(&ctx, /*flg_Newton=*/0);
   }
 
   // start both with preconditioned gradient

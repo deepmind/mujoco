@@ -920,8 +920,9 @@ TEST_F(SolverTest, NewtonFallsBackToCGOnArenaExhaustion) {
   ASSERT_EQ(dense_full->warning[mjWARN_CNSTRFULL].number, 0);
 
   // set narena just above dense_full->maxuse_arena so PrimalAllocate + cg_buf
-  // fit, but MakeHessian's loop_bytes reserve check fails and falls back to CG
-  model_dense->narena = dense_full->maxuse_arena + 1024;
+  // fit, but MakeHessian's metric_bytes reserve check fails and falls back to
+  // CG (the margin scales with the precision, as the reserve does)
+  model_dense->narena = dense_full->maxuse_arena + 128 * sizeof(mjtNum);
   MjDataPtr dense_tight = MakeData(model_dense);
   mock_warning_handler.ExpectWarnings("Insufficient arena memory");
   mj_step(model_dense.get(), dense_tight.get());
@@ -952,9 +953,10 @@ TEST_F(SolverTest, NewtonFallsBackToCGOnArenaExhaustion) {
   mj_forward(model_disc.get(), disc_full.get());
   ASSERT_EQ(disc_full->warning[mjWARN_CNSTRFULL].number, 0);
 
-  model_disc->opt.solver = mjSOL_CG;
   MjDataPtr disc_cg = MakeData(model_disc);
   mj_forward(model_disc.get(), disc_cg.get());
+  model_disc->opt.solver = mjSOL_CG;
+  mj_fwdConstraint(model_disc.get(), disc_cg.get());
   ASSERT_EQ(disc_cg->warning[mjWARN_CNSTRFULL].number, 0);
 
   model_disc->opt.solver = mjSOL_NEWTON;

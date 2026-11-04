@@ -649,7 +649,7 @@ TEST_F(DerivativeTest, StepSkip) {
 TEST_F(DerivativeTest, StepSkipIPC) {
   static constexpr char kXml[] = R"(
   <mujoco>
-    <option integrator="discrete" solver="CG" timestep="0.005">
+    <option integrator="discrete" timestep="0.005">
       <flag ipc="enable" warmstart="disable"/>
     </option>
     <worldbody>
@@ -5361,6 +5361,231 @@ TEST_F(DerivativeTest, EffPrecIsSymmetric) {
     mjtNum b = mju_dot(u.data(), Pv.data(), nv);
     EXPECT_THAT(a, MjNear(b, 1e-10, 1e-4))
         << "preconditioner is not symmetric, trial " << trial;
+  }
+}
+
+// mj_effPrecFold adds the 3x3 diagonal blocks of J'*D*J to the step's blocks of
+// M + K: with no rows it reproduces them, and with every row A1 = A0 + Delta,
+// checked through the factors as A1^-1 (A0 y + Delta y) = y
+TEST_F(DerivativeTest, EffPrecFoldAddsRowBlocks) {
+  static constexpr char kXml[] = R"(
+  <mujoco>
+    <option solver="CG" integrator="discrete" jacobian="dense">
+      <flag island="disable"/>
+    </option>
+    <worldbody>
+      <geom type="plane" size="1 1 .01"/>
+      <flexcomp name="sheet" type="grid" dim="2" count="5 5 1" spacing=".04 .04 1"
+                radius=".005" mass=".1" pos="0 0 .004">
+        <contact selfcollide="none"/>
+        <elasticity young="1e4" poisson=".3" thickness="2e-3" elastic2d="stretch"/>
+      </flexcomp>
+    </worldbody>
+  </mujoco>
+  )";
+  char error[1024];
+  MjModelPtr model = LoadModelFromString(kXml, error, sizeof(error));
+  ASSERT_THAT(model.get(), NotNull()) << error;
+  MjDataPtr data = MakeData(model);
+  const mjModel* m = model.get();
+  mjData* d = data.get();
+  mj_forward(m, d);
+  int nb = d->nefmdof, nv = m->nv, nefc = d->nefc;
+  ASSERT_GT(nb, 0);
+  ASSERT_GT(nefc, 0);
+
+  // no rows: the step's own blocks
+  vector<mjtNum> L0(9 * nb), L1(9 * nb);
+  ASSERT_TRUE(mj_effPrecFold(m, d, L0.data(), -1, 0, d->efc_D, 0, d->efc_J,
+                             nullptr, nullptr, nullptr));
+  for (int i = 0; i < 9 * nb; i++) {
+    EXPECT_EQ(L0[i], d->efm_L[i]) << i;
+  }
+
+  // every row
+  ASSERT_TRUE(mj_effPrecFold(m, d, L1.data(), -1, nefc, d->efc_D, 0, d->efc_J,
+                             nullptr, nullptr, nullptr));
+  int folded = 0;
+  for (int k = 0; k < nb; k++) {
+    int base = d->efm_dofid[k];
+    mjtNum delta[9] = {0};
+    for (int r = 0; r < nefc; r++) {
+      const mjtNum* Jk = d->efc_J + r * nv + base;
+      for (int a = 0; a < 3; a++) {
+        for (int b = 0; b < 3; b++) {
+          delta[3 * a + b] += d->efc_D[r] * Jk[a] * Jk[b];
+        }
+      }
+    }
+    folded += mju_norm(delta, 9) > 0;
+    mjtNum v[3] = {static_cast<mjtNum>(mju_Halton(k, 2) - .5),
+                   static_cast<mjtNum>(mju_Halton(k, 3) - .5),
+                   static_cast<mjtNum>(mju_Halton(k, 5) - .5)};
+    mjtNum y[3], dy[3], rhs[3], x[3];
+    mju_cholSolve(y, L0.data() + 9 * k, v, 3);
+    mju_mulMatVec3(dy, delta, y);
+    mju_add3(rhs, v, dy);
+    mju_cholSolve(x, L1.data() + 9 * k, rhs, 3);
+    for (int a = 0; a < 3; a++) {
+      EXPECT_THAT(x[a], MjNear(y[a], 1e-8, 1e-3)) << "block " << k;
+    }
+  }
+  EXPECT_GT(folded, 0) << "the sheet must touch the plane";
+}
+
+// Per-island mj_effPrecFold writes compact blocks matching the island slice of
+// monolithic mj_effPrecFold (0 blocks on rigid islands), and island vs
+// monolithic CG agree for both 3D flexes (effIslandStep) and 2D flexes + sleep
+// (effCholReserved fallback).
+TEST_F(DerivativeTest, EffPrecFoldMultiIsland) {
+  static constexpr char kXml3D[] = R"(
+  <mujoco>
+    <option solver="CG" integrator="discrete" tolerance="1e-12" iterations="300"/>
+    <worldbody>
+      <geom type="plane" size="2 2 .01"/>
+      <flexcomp name="cube0" type="grid" dim="3" count="2 2 2" spacing=".05 .05 .05"
+                radius=".008" mass=".2" pos="-.3 0 .025">
+        <contact selfcollide="none"/>
+        <elasticity young="2e4" poisson=".3" damping=".01"/>
+      </flexcomp>
+      <flexcomp name="cube1" type="grid" dim="3" count="2 2 2" spacing=".05 .05 .05"
+                radius=".008" mass=".3" pos=".3 0 .025">
+        <contact selfcollide="none"/>
+        <elasticity young="5e4" poisson=".25" damping=".01"/>
+      </flexcomp>
+      <body name="box" pos="0 .4 .04">
+        <freejoint/>
+        <geom type="box" size=".05 .05 .05" mass=".4"/>
+      </body>
+    </worldbody>
+  </mujoco>
+  )";
+  char error[1024];
+  MjModelPtr model = LoadModelFromString(kXml3D, error, sizeof(error));
+  ASSERT_THAT(model.get(), NotNull()) << error;
+
+  for (mjtJacobian jac : {mjJAC_SPARSE, mjJAC_DENSE}) {
+    model->opt.jacobian = jac;
+    model->opt.disableflags &= ~mjDSBL_ISLAND;
+    MjDataPtr data = MakeData(model);
+    mjModel* m = model.get();
+    mjData* d = data.get();
+    mj_forward(m, d);
+
+    int is_sparse = mj_isSparse(m);
+    ASSERT_EQ(d->nisland, 3);
+    ASSERT_EQ(d->nefmdof, 16);
+
+    vector<mjtNum> L_mono(9 * d->nefmdof);
+    ASSERT_EQ(mj_effPrecFold(m, d, L_mono.data(), -1, d->nefc, d->efc_D,
+                             is_sparse, d->efc_J, d->efc_J_rownnz,
+                             d->efc_J_rowadr, d->efc_J_colind),
+              d->nefmdof);
+
+    int flex_islands = 0, rigid_islands = 0;
+    for (int isl = 0; isl < d->nisland; isl++) {
+      int inv = d->island_nv[isl];
+      int inefc = d->island_nefc[isl];
+      int idofadr = d->island_idofadr[isl];
+      int iefcadr = d->island_iefcadr[isl];
+
+      vector<int> isl_triples;
+      for (int k = 0; k < d->nefmdof; k++) {
+        if (d->dof_island[d->efm_dofid[k]] == isl) {
+          isl_triples.push_back(k);
+        }
+      }
+      int expected = static_cast<int>(isl_triples.size());
+      EXPECT_EQ(mj_effFoldBlocks(d, isl), expected);
+      if (expected == 0) {
+        rigid_islands++;
+      } else {
+        EXPECT_EQ(expected, 8);
+        flex_islands++;
+      }
+
+      vector<mjtNum> L_isl(std::max(1, 9 * expected), -123);
+      int nfold = 0;
+      if (is_sparse) {
+        int nJ = 0;
+        for (int r = 0; r < inefc; r++) {
+          nJ += d->efc_J_rownnz[d->map_iefc2efc[iefcadr + r]];
+        }
+        vector<mjtNum> iJ(std::max(1, nJ));
+        vector<int> iJ_rownnz(inefc), iJ_rowadr(inefc),
+            iJ_colind(std::max(1, nJ));
+        mju_blockSparse(iJ.data(), iJ_rownnz.data(), iJ_rowadr.data(),
+                        iJ_colind.data(), d->efc_J, d->efc_J_rownnz,
+                        d->efc_J_rowadr, d->efc_J_colind, inefc,
+                        d->map_iefc2efc + iefcadr, d->map_dof2idof, idofadr, 0,
+                        nullptr, nullptr);
+        nfold = mj_effPrecFold(
+            m, d, L_isl.data(), isl, inefc, d->iefc_D + iefcadr, 1, iJ.data(),
+            iJ_rownnz.data(), iJ_rowadr.data(), iJ_colind.data());
+      } else {
+        vector<mjtNum> iJ(std::max(1, inefc * inv));
+        mju_block(iJ.data(), d->efc_J, m->nv, inv, inefc,
+                  d->map_iefc2efc + iefcadr, d->map_idof2dof + idofadr);
+        nfold =
+            mj_effPrecFold(m, d, L_isl.data(), isl, inefc, d->iefc_D + iefcadr,
+                           0, iJ.data(), nullptr, nullptr, nullptr);
+      }
+      ASSERT_EQ(nfold, expected);
+      for (int p = 0; p < nfold; p++) {
+        int k = isl_triples[p];
+        for (int a = 0; a < 9; a++) {
+          EXPECT_THAT(L_isl[9 * p + a], MjNear(L_mono[9 * k + a], 1e-12, 1e-5))
+              << "jac=" << jac << " isl=" << isl << " p=" << p << " a=" << a;
+        }
+      }
+    }
+    EXPECT_EQ(flex_islands, 2);
+    EXPECT_EQ(rigid_islands, 1);
+
+    model->opt.disableflags |= mjDSBL_ISLAND;
+    MjDataPtr data_mono = MakeData(model);
+    mj_forward(m, data_mono.get());
+    for (int i = 0; i < m->nv; i++) {
+      EXPECT_THAT(d->qacc[i], MjNear(data_mono->qacc[i], 1e-4, 1e-2))
+          << "jac=" << jac << " dof=" << i;
+    }
+  }
+
+  // 2D flexes with sleep="enable": effCholReserved holds so per-island CG
+  // exercises the !has_isl fallback in mj_effPrecFold and mj_effPrecIsland.
+  static constexpr char kXml2DSleep[] = R"(
+  <mujoco>
+    <option solver="CG" integrator="discrete" tolerance="1e-12" iterations="300">
+      <flag sleep="enable"/>
+    </option>
+    <worldbody>
+      <geom type="plane" size="2 2 .01"/>
+      <flexcomp name="s0" type="grid" dim="2" count="3 3 1" spacing=".05 .05 1"
+                radius=".005" mass=".1" pos="-.3 0 .004">
+        <contact selfcollide="none"/>
+        <elasticity young="1e4" poisson=".3" thickness="2e-3" elastic2d="stretch"/>
+      </flexcomp>
+      <flexcomp name="s1" type="grid" dim="2" count="3 3 1" spacing=".05 .05 1"
+                radius=".005" mass=".15" pos=".3 0 .004">
+        <contact selfcollide="none"/>
+        <elasticity young="2e4" poisson=".3" thickness="2e-3" elastic2d="stretch"/>
+      </flexcomp>
+    </worldbody>
+  </mujoco>
+  )";
+  MjModelPtr model2d = LoadModelFromString(kXml2DSleep, error, sizeof(error));
+  ASSERT_THAT(model2d.get(), NotNull()) << error;
+  MjDataPtr data2d_isl = MakeData(model2d);
+  mj_forward(model2d.get(), data2d_isl.get());
+  ASSERT_EQ(data2d_isl->nisland, 2);
+
+  model2d->opt.enableflags &= ~mjENBL_SLEEP;
+  model2d->opt.disableflags |= mjDSBL_ISLAND;
+  MjDataPtr data2d_mono = MakeData(model2d);
+  mj_forward(model2d.get(), data2d_mono.get());
+  for (int i = 0; i < model2d->nv; i++) {
+    EXPECT_THAT(data2d_isl->qacc[i], MjNear(data2d_mono->qacc[i], 1e-4, 1e-2))
+        << "2d sleep dof=" << i;
   }
 }
 

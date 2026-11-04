@@ -165,8 +165,8 @@ MJAPI void mju_sqrMatTDSparseNumeric(
 MJAPI void mju_sqrMatTDUncompressedInit(int* res_rowadr, int nc);
 
 // extract a single block of a dense matrix
-void mju_block(mjtNum* res, const mjtNum* mat, int nc_mat, int nc_res, int nr,
-               const int* perm_r, const int* perm_c);
+MJAPI void mju_block(mjtNum* res, const mjtNum* mat, int nc_mat, int nc_res, int nr,
+                     const int* perm_r, const int* perm_c);
 
 // block-diagonalize a dense matrix
 MJAPI void mju_blockDiag(mjtNum* res, const mjtNum* mat, int nc_mat, int nc_res, int nb,
@@ -175,7 +175,7 @@ MJAPI void mju_blockDiag(mjtNum* res, const mjtNum* mat, int nc_mat, int nc_res,
                          const int* block_r, const int* block_c);
 
 // extract a single block of a sparse matrix
-void mju_blockSparse(
+MJAPI void mju_blockSparse(
   mjtNum* res, int* res_rownnz, int* res_rowadr, int* res_colind,
   const mjtNum* mat, const int* rownnz, const int* rowadr, const int* colind,
   int nr,

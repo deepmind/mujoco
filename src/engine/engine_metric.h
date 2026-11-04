@@ -87,85 +87,48 @@ MJAPI void mj_effSolve(const mjModel* m, mjData* d, mjtNum* x, const mjtNum* b);
 MJAPI void mj_effPrec(const mjModel* m, mjData* d, mjtNum* x, const mjtNum* b);
 
 // island-local metric preconditioner x ~= (M + B)_island^-1 b, vectors in
-// island-local dof coordinates; qLD/qLDiagInv/M_* are the island's gathered
-// backbone factor
+// island-local dof coordinates; L: folded blocks (mj_effPrecFold) or NULL for
+// the step's own factor; qLD/qLDiagInv/M_* are the island's gathered backbone
+// factor
 void mj_effPrecIsland(const mjModel* m, mjData* d, mjtNum* x, const mjtNum* b,
-                      int island, const mjtNum* qLD, const mjtNum* qLDiagInv,
+                      int island, const mjtNum* L, const mjtNum* qLD,
+                      const mjtNum* qLDiagInv,
                       const int* M_rownnz, const int* M_rowadr,
                       const int* M_colind);
-
-// caller-owned copy of the metric preconditioner, with the rank-1 classes and the efc rows
-// folded in (mj_effPrecFold): the covered 3x3 blocks, optionally a copy of the sparse factor of
-// the covered dofs, which then replaces the blocks, and optionally dense factors of the block S
-// of the uncovered (non-flex) dofs, one per connected component of S, which then replace the
-// backbone solve on the dofs they cover. The caller sizes the arrays with mj_effFoldDenseSize
-// and mj_effCholFoldSize and sets nu, ncomp and nS; mj_effPrecFold fills them (and
-// mj_effCholFoldFactor the sparse factor's copy F).
-typedef struct {
-  mjtNum* L;           // covered 3x3 blocks, factored                       (9*nefmdof)
-  int nu;              // uncovered dofs in the components, 0: no dense block
-  int ncomp;           // components
-  int nS;              // mjtNums of the packed factors
-  int* U;              // dofs by component, ascending within each            (nu)
-  int* Uadr;           // component c: U[Uadr[c]] .. U[Uadr[c+1]-1]           (ncomp+1)
-  int* Sadr;           // component c: its factor at S + Sadr[c], row-major   (ncomp+1)
-  mjtNum* S;           // packed dense factors                                (nS)
-  int partial;         // some uncovered dofs are in no component: backbone solve on them
-  int S_valid;         // S holds the factors, set by mj_effPrecFold
-  mjtNum* F;           // sparse factor: status, values, or NULL       (mj_effCholFoldSize)
-} mjEffFold;
 
 // the model's vertex ordering of the sparse factor, into efmC_perm (from mj_setConst)
 MJAPI void mj_effCholSetConst(mjModel* m, mjData* d);
 
-// length of a fold's copy of the sparse factor (mjEffFold.F), 0 when the step has none
-MJAPI int mj_effCholFoldSize(const mjData* d);
-
-// the constraint solve with this solver folds the efc rows into the step's sparse factor of the
-// covered flex block (1D rods, 2D flexes), which has no island-local form: run it monolithically
-int mj_effFoldMonolithic(const mjModel* m, const mjData* d, int solver);
-
-// factor the solve's copy of the sparse factor (fold->F) with the efc rows and the rank-1 classes
-// folded in, on the step's analysis, which holds the vertex pairs of the rows mj_makeConstraint
-// made; pairs off it are complemented on the diagonal
-MJAPI void mj_effCholFoldFactor(const mjModel* m, mjData* d, const mjEffFold* fold, int nefc,
-                                const mjtNum* efc_D, int is_sparse, const mjtNum* J,
-                                const int* J_rownnz, const int* J_rowadr, const int* J_colind);
-
-// size the dense blocks of a fold over the given efc rows: the uncovered dofs are partitioned
-// into the connected components of S (trees joined by an efc row with D > 0 or a rank-1 term
-// on uncovered dofs of both), and components of at most 600 dofs are factored. Returns the
-// mjtNums of their packed factors (mjEffFold.nS, the sum of their squared sizes), 0 when there
-// is no block: no covered dofs, a dense Jacobian or no component within the cap. *nu and *ncomp
-// receive the dofs and the components factored. Stack: at most mj_effFoldScratch(m, d, 1)
-MJAPI int mj_effFoldDenseSize(const mjModel* m, mjData* d, int nefc, const mjtNum* efc_D,
-                              int is_sparse, const int* J_rownnz, const int* J_rowadr,
-                              const int* J_colind, int* nu, int* ncomp);
-
-// stack bytes mj_effPrecFold and mj_effPrecBlocks take beyond the fold's own arrays, at most,
-// for a dense block of nu dofs (the sparse factor's optional scratch is checked where it is
-// taken)
-MJAPI size_t mj_effFoldScratch(const mjModel* m, const mjData* d, int nu);
-
 // stack bytes mj_effMulAdd takes, at most (the matrix-free flex operators)
 MJAPI size_t mj_effMulAddScratch(const mjModel* m, const mjData* d);
 
-// fold the rank-1 classes and the efc rows (quadratic zone) into fold: the per-vertex 3x3
-// diagonal of each term into a copy of the blocks, factored into fold->L, and when fold->nu > 0
-// (sizes from mj_effFoldDenseSize over the same rows) the dense blocks of the uncovered dofs
-//   S = M_uu + diag + fluid + rank-1 classes + J_u' D J_u   (rows with D > 0)
-// one per component, factored into fold->S, with U, Uadr, Sadr, partial and S_valid set.
-// Returns 0 if nothing is covered, leaving fold untouched
-MJAPI int mj_effPrecFold(const mjModel* m, mjData* d, mjEffFold* fold,
-                         int nefc, const mjtNum* efc_D, int is_sparse,
-                         const mjtNum* J, const int* J_rownnz, const int* J_rowadr,
-                         const int* J_colind);
+// stack bytes mj_effPrec and mj_effPrecIsland take, at most
+MJAPI size_t mj_effPrecScratch(const mjModel* m, const mjData* d);
 
-// apply the metric preconditioner using a fold from mj_effPrecFold: its sparse factor, else its
-// 3x3 blocks, on the covered dofs, if S_valid its dense factors on their components, the backbone
-// solve on the remaining dofs
+// number of covered 3x3 blocks mj_effPrecFold writes (island < 0: nefmdof; island >= 0: the
+// island's covered triples, at most island_nv/3)
+MJAPI int mj_effFoldBlocks(const mjData* d, int island);
+
+// stack bytes mj_effPrecFold takes for ncol columns (m->nv or island_nv[island])
+MJAPI size_t mj_effFoldScratch(int ncol);
+
+// fold the rank-1 classes and the efc rows (D > 0, active or not) into a solver-owned copy of the
+// covered 3x3 blocks: L (9*mj_effFoldBlocks) receives, for each folded triple in ascending dof
+// order, the factored 3x3 diagonal block of M + K + rank-1 classes + J'*D*J, with no sparse
+// factorization. island >= 0: J has the island's local columns and only the island's triples are
+// written compactly in L[0..9*nfold). Returns nfold (0, leaving L untouched, when no triple is
+// folded or the stack cannot hold the fold's frame)
+MJAPI int mj_effPrecFold(const mjModel* m, mjData* d, mjtNum* L, int island, int nefc,
+                         const mjtNum* efc_D, int is_sparse, const mjtNum* J,
+                         const int* J_rownnz, const int* J_rowadr, const int* J_colind);
+
+// mj_effPrec with the folded blocks L (mj_effPrecFold) in place of the step's factor
 MJAPI void mj_effPrecBlocks(const mjModel* m, mjData* d, mjtNum* x, const mjtNum* b,
-                            const mjEffFold* fold);
+                            const mjtNum* L);
+
+// a constraint solve with this solver runs monolithically: CG when the step's metric buffer holds
+// the sparse factor, which leaves no room for the per-island lists, and sleep is off
+int mj_effCGMonolithic(const mjModel* m, const mjData* d, int solver);
 
 
 #ifdef __cplusplus

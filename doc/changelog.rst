@@ -209,7 +209,8 @@ Deformables
 - Sparse ``Newton`` (:ref:`solver<option-solver>`) is 1.4-3x faster on :ref:`flex<deformable-flex>` models, using
   fill-reducing DOF ordering, incremental active-set Hessian updates, direct :ref:`elliptic cone<option-cone>` folding,
   and pre-ordered sparse Cholesky for the 2D ``discrete`` :ref:`integrator<option-integrator>` smooth solve. Most flex
-  models in ``model/flex`` now use ``solver="Newton"``.
+  models in ``model/flex`` now use ``solver="Newton"``, and the experimental :ref:`ipc<option-flag-ipc>` flag now
+  supports ``solver="Newton"`` in addition to ``solver="CG"``.
 - 1D rod bending :ref:`elasticity<flex-elasticity>` now supports curved reference configurations and torsional
   stiffness: vertices bent by more than :math:`10^{-4}` rad in ``qpos0`` keep their reference curvature and dihedral
   twist angle, so that rods such as rings, arcs, and coil springs are at rest in their compiled shape. Previously,
