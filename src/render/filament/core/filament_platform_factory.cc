@@ -24,7 +24,7 @@
 namespace mujoco {
 
 static filament::Engine::Backend ResolveBackend(int graphics_api) {
-#if defined(__EMSCRIPTEN__)
+#if defined(__EMSCRIPTEN__) || defined(__APPLE__)
   filament::Engine::Backend backend = filament::Engine::Backend::OPENGL;
 #else
   filament::Engine::Backend backend = filament::Engine::Backend::VULKAN;
