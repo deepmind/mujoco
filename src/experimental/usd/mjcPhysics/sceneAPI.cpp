@@ -340,6 +340,17 @@ UsdAttribute MjcPhysicsSceneAPI::CreateSDFInitPointsAttr(
       /* custom = */ false, SdfVariabilityUniform, defaultValue, writeSparsely);
 }
 
+UsdAttribute MjcPhysicsSceneAPI::GetSleepToleranceAttr() const {
+  return GetPrim().GetAttribute(MjcPhysicsTokens->mjcOptionSleep_tolerance);
+}
+
+UsdAttribute MjcPhysicsSceneAPI::CreateSleepToleranceAttr(
+    VtValue const& defaultValue, bool writeSparsely) const {
+  return UsdSchemaBase::_CreateAttr(
+      MjcPhysicsTokens->mjcOptionSleep_tolerance, SdfValueTypeNames->Double,
+      /* custom = */ false, SdfVariabilityUniform, defaultValue, writeSparsely);
+}
+
 UsdAttribute MjcPhysicsSceneAPI::GetActuatorGroupDisableAttr() const {
   return GetPrim().GetAttribute(
       MjcPhysicsTokens->mjcOptionActuatorgroupdisable);
@@ -617,6 +628,17 @@ UsdAttribute MjcPhysicsSceneAPI::CreateIslandFlagAttr(
       /* custom = */ false, SdfVariabilityUniform, defaultValue, writeSparsely);
 }
 
+UsdAttribute MjcPhysicsSceneAPI::GetSleepFlagAttr() const {
+  return GetPrim().GetAttribute(MjcPhysicsTokens->mjcFlagSleep);
+}
+
+UsdAttribute MjcPhysicsSceneAPI::CreateSleepFlagAttr(
+    VtValue const& defaultValue, bool writeSparsely) const {
+  return UsdSchemaBase::_CreateAttr(
+      MjcPhysicsTokens->mjcFlagSleep, SdfValueTypeNames->Bool,
+      /* custom = */ false, SdfVariabilityUniform, defaultValue, writeSparsely);
+}
+
 UsdAttribute MjcPhysicsSceneAPI::GetAutoLimitsAttr() const {
   return GetPrim().GetAttribute(MjcPhysicsTokens->mjcCompilerAutoLimits);
 }
@@ -812,6 +834,7 @@ const TfTokenVector& MjcPhysicsSceneAPI::GetSchemaAttributeNames(
       MjcPhysicsTokens->mjcOptionCcd_tolerance,
       MjcPhysicsTokens->mjcOptionSdf_iterations,
       MjcPhysicsTokens->mjcOptionSdf_initpoints,
+      MjcPhysicsTokens->mjcOptionSleep_tolerance,
       MjcPhysicsTokens->mjcOptionActuatorgroupdisable,
       MjcPhysicsTokens->mjcFlagConstraint,
       MjcPhysicsTokens->mjcFlagEquality,
@@ -837,6 +860,7 @@ const TfTokenVector& MjcPhysicsSceneAPI::GetSchemaAttributeNames(
       MjcPhysicsTokens->mjcFlagInvdiscrete,
       MjcPhysicsTokens->mjcFlagMulticcd,
       MjcPhysicsTokens->mjcFlagIsland,
+      MjcPhysicsTokens->mjcFlagSleep,
       MjcPhysicsTokens->mjcCompilerAutoLimits,
       MjcPhysicsTokens->mjcCompilerBoundMass,
       MjcPhysicsTokens->mjcCompilerBoundInertia,

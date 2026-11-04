@@ -314,6 +314,15 @@ class "MjcSceneAPI"
         Distance Field collisions."""
     )
 
+    uniform double mjc:option:sleep_tolerance = 0.001 (
+        customData = {
+            string apiName = "SleepTolerance"
+        }
+        displayName = "Sleep Tolerance"
+        doc = """Velocity tolerance used to determine when a tree of bodies may
+        fall asleep."""
+    )
+
     uniform int[] mjc:option:actuatorgroupdisable  = [] (
         customData = {
             string apiName = "ActuatorGroupDisable"
@@ -514,6 +523,15 @@ class "MjcSceneAPI"
         }
         displayName = "Constraint Island Discovery Toggle"
         doc = """Enables the discovery of constraint islands."""
+    )
+
+    uniform bool mjc:flag:sleep = False (
+        customData = {
+            string apiName = "SleepFlag"
+        }
+        displayName = "Sleeping Toggle"
+        doc = """Enables sleeping, which allows trees of bodies at rest to be
+        skipped by the simulation. See mjc:option:sleep_tolerance."""
     )
 
     uniform bool mjc:compiler:autoLimits = True (

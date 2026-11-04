@@ -161,6 +161,11 @@ class "MjcSceneAPI" (
         displayName = "Sensor Computations Toggle"
         doc = "Enables all computations related to sensors."
     )
+    uniform bool mjc:flag:sleep = 0 (
+        displayName = "Sleeping Toggle"
+        doc = """Enables sleeping, which allows trees of bodies at rest to be
+        skipped by the simulation. See mjc:option:sleep_tolerance."""
+    )
     uniform bool mjc:flag:spring = 1 (
         displayName = "Spring Forces Toggle"
         doc = "Enables the simulation of joint and tendon springs."
@@ -262,6 +267,11 @@ class "MjcSceneAPI" (
         displayName = "SDF Iterations"
         doc = """Number of iterations used for Signed Distance Field collisions
         (per initial point)."""
+    )
+    uniform double mjc:option:sleep_tolerance = 0.001 (
+        displayName = "Sleep Tolerance"
+        doc = """Velocity tolerance used to determine when a tree of bodies may
+        fall asleep."""
     )
     uniform token mjc:option:solver = "newton" (
         allowedTokens = ["pgs", "cg", "newton"]

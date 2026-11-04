@@ -569,6 +569,10 @@ void ParseUsdPhysicsScene(mjSpec* spec,
   mjc_physics_scene.GetCCDToleranceAttr().Get(&ccd_tolerance);
   spec->option.ccd_tolerance = ccd_tolerance;
 
+  double sleep_tolerance;
+  mjc_physics_scene.GetSleepToleranceAttr().Get(&sleep_tolerance);
+  spec->option.sleep_tolerance = sleep_tolerance;
+
   pxr::GfVec3d wind;
   mjc_physics_scene.GetWindAttr().Get(&wind);
   SetMjtNumArrFromGfVec3d(spec->option.wind, wind);
@@ -807,6 +811,10 @@ void ParseUsdPhysicsScene(mjSpec* spec,
       spec->option.disableactuator |= (1 << group);
     }
   }
+
+  bool sleep_flag;
+  mjc_physics_scene.GetSleepFlagAttr().Get(&sleep_flag);
+  spec->option.enableflags |= (sleep_flag ? mjENBL_SLEEP : 0);
 
   // Compiler attributes
   auto auto_limits_attr = mjc_physics_scene.GetAutoLimitsAttr();

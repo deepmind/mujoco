@@ -397,6 +397,10 @@ struct MjcPhysicsTokensType {
   ///
   /// MjcPhysicsSceneAPI
   const TfToken mjcFlagSensor;
+  /// \brief "mjc:flag:sleep"
+  ///
+  /// MjcPhysicsSceneAPI
+  const TfToken mjcFlagSleep;
   /// \brief "mjc:flag:spring"
   ///
   /// MjcPhysicsSceneAPI
@@ -562,6 +566,10 @@ struct MjcPhysicsTokensType {
   ///
   /// MjcPhysicsSceneAPI
   const TfToken mjcOptionSdf_iterations;
+  /// \brief "mjc:option:sleep_tolerance"
+  ///
+  /// MjcPhysicsSceneAPI
+  const TfToken mjcOptionSleep_tolerance;
   /// \brief "mjc:option:solver"
   ///
   /// MjcPhysicsSceneAPI
