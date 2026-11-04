@@ -91,6 +91,7 @@ static constexpr const char ICON_FA_CROSSHAIRS[] = "\xEF\x81\x9B";
 static constexpr const char ICON_FA_DIAMOND[] = "\xEF\x88\x99";
 static constexpr const char ICON_FA_DOWNLOAD[] = "\xEF\x80\x99";
 static constexpr const char ICON_FA_EJECT[] = "\xEF\x81\x92";
+static constexpr const char ICON_FA_EXCLAMATION_TRIANGLE[] = "\xEF\x81\xB1";
 static constexpr const char ICON_FA_FAST_FORWARD[] = "\xEF\x81\x90";
 static constexpr const char ICON_FA_FLASK[] = "\xEF\x83\x83";
 static constexpr const char ICON_FA_MAGIC[] = "\xEF\x83\x90";
@@ -780,8 +781,17 @@ struct ImPlotPairLayout {
 ImPlotPairLayout ImPlot_ComputePairLayout();
 
 // Draws text at the given screen coordinates in clip space (i.e. [-1,-1,-1] to
-// [1,1,1]).
+// [1,1,1]), mapped onto the whole display.
 void DrawTextAt(const char* text, float x, float y, float z);
+
+// Like DrawTextAt, but the clip-space coordinates map onto `rect` (x, y, width,
+// height in logical pixels) instead of the whole display: for a scene rendered
+// into part of the window.
+void DrawTextAtInRect(const char* text, float x, float y, float z, const ImVec4& rect);
+
+// Height of Studio's status bar (and of the web viewer's role bar, which
+// stands in for it) in logical pixels, before DPI and font scaling.
+constexpr float kStatusBarHeight = 32.0f;
 
 // Grid position for overlays within a viewport rectangle.
 enum class OverlayPos {

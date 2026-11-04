@@ -465,7 +465,7 @@ ImVec4 ConfigureDockingLayout(bool show_toolbar, bool show_status_bar) {
   const float kInspectorRelWidth = 0.22f;
   const float kPropertiesRelHeight = 0.3f;
   const float kToolsBarHeight = show_toolbar ? 36.f * scale * font_scale : 0.0f;
-  const float kStatusBarHeight = show_status_bar ? 32.f * scale * font_scale : 0.0f;
+  const float status_bar_height = show_status_bar ? kStatusBarHeight * scale * font_scale : 0.0f;
 
   // Lay out from the absolute viewport origin with an explicitly computed
   // menu bar height, NOT from WorkPos/WorkSize: the work area only reflects
@@ -477,7 +477,7 @@ ImVec4 ConfigureDockingLayout(bool show_toolbar, bool show_status_bar) {
   const ImVec2 toolbar_pos{viewport->Pos.x, viewport->Pos.y + menu_bar_height};
   const ImVec2 dockspace_pos{viewport->Pos.x, viewport->Pos.y + menu_bar_height + kToolsBarHeight};
   const ImVec2 dockspace_size{
-      viewport->Size.x, viewport->Size.y - menu_bar_height - kToolsBarHeight - kStatusBarHeight};
+      viewport->Size.x, viewport->Size.y - menu_bar_height - kToolsBarHeight - status_bar_height};
 
   ImGuiID root = ImGui::GetID("Root");
   const bool first_time = (ImGui::DockBuilderGetNode(root) == nullptr);
@@ -567,8 +567,8 @@ ImVec4 ConfigureDockingLayout(bool show_toolbar, bool show_status_bar) {
     style.Var(ImGuiStyleVar_WindowBorderSize, 1.0f);
     style.Var(ImGuiStyleVar_WindowRounding, 0.0f);
     style.Var(ImGuiStyleVar_WindowMinSize, ImVec2(1, 1));
-    ImGui::SetNextWindowPos(ImVec2(0, viewport->Size.y - kStatusBarHeight), ImGuiCond_Always);
-    ImGui::SetNextWindowSize(ImVec2(viewport->Size.x, kStatusBarHeight), ImGuiCond_Always);
+    ImGui::SetNextWindowPos(ImVec2(0, viewport->Size.y - status_bar_height), ImGuiCond_Always);
+    ImGui::SetNextWindowSize(ImVec2(viewport->Size.x, status_bar_height), ImGuiCond_Always);
     ImGui::Begin("StatusBar", nullptr, kFixedFlags);
     ImGui::End();
   }

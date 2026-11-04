@@ -15,7 +15,6 @@
 #include "web_client_local_ui.h"
 
 #include <algorithm>
-#include <cfloat>
 #include <cinttypes>
 #include <cmath>
 #include <cstdint>
@@ -30,19 +29,28 @@
 namespace mujoco::studio {
 namespace {
 
-const ImVec2 kFullWidth(-FLT_MIN, 0.0f);
-const ImVec4 kSpectatingColor(1.0f, 0.75f, 0.2f, 1.0f);
-const ImVec4 kControllingColor(0.3f, 0.9f, 0.4f, 1.0f);
-const ImVec4 kQueueColor(1.0f, 0.62f, 0.15f, 1.0f);
-const ImVec4 kConnectingColor(0.6f, 0.6f, 0.6f, 1.0f);
+// Semantic colours: grey = normal, green = you control, amber = attention,
+// red = destructive to someone else.
+const ImVec4 kNeutralColor(0.62f, 0.62f, 0.62f, 1.0f);
+const ImVec4 kControllingColor(0.30f, 0.85f, 0.40f, 1.0f);
+const ImVec4 kAttentionColor(1.00f, 0.68f, 0.15f, 1.0f);
+const ImVec4 kDangerColor(0.90f, 0.30f, 0.30f, 1.0f);
 
-// Draws one screen-centered DISCONNECTED window; empty lines are skipped.
+// The widest button label; every bar button is sized to it so the cluster
+// keeps its width across roles.
+constexpr char kButtonWidthText[] = "Request control";
+// Space between Steal control and the polite action next to it.
+constexpr float kStealGap = 8.0f;
+
+// Draws one DISCONNECTED window centred in the canvas above bottom_inset;
+// empty lines are skipped.
 void DrawDisconnectWindow(const char* window_id,
-                          std::initializer_list<const char*> lines) {
+                          std::initializer_list<const char*> lines,
+                          float bottom_inset) {
   const ImGuiIO& io = ImGui::GetIO();
-  ImGui::SetNextWindowPos(
-      ImVec2(io.DisplaySize.x * 0.5f, io.DisplaySize.y * 0.5f),
-      ImGuiCond_Always, ImVec2(0.5f, 0.5f));
+  ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.5f,
+                                 (io.DisplaySize.y - bottom_inset) * 0.5f),
+                          ImGuiCond_Always, ImVec2(0.5f, 0.5f));
   ImGui::Begin(window_id, nullptr,
                ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
                    ImGuiWindowFlags_NoMove | ImGuiWindowFlags_AlwaysAutoResize);
@@ -53,12 +61,48 @@ void DrawDisconnectWindow(const char* window_id,
   ImGui::End();
 }
 
+// A coloured status dot, vertically centred on the current frame line.
+void StatusDot(const ImVec4& color) {
+  constexpr float kRadius = 4.0f;
+  const ImVec2 pos = ImGui::GetCursorScreenPos();
+  const float h = ImGui::GetFrameHeight();
+  ImGui::GetWindowDrawList()->AddCircleFilled(
+      ImVec2(pos.x + kRadius + 2.0f, pos.y + h * 0.5f), kRadius,
+      ImGui::GetColorU32(color));
+  ImGui::Dummy(ImVec2(kRadius * 2.0f + 4.0f, h));
+}
+
+// The " · " between bar tokens.
+void DotSeparator() {
+  ImGui::SameLine(0.0f, 6.0f);
+  ImGui::AlignTextToFramePadding();
+  ImGui::TextDisabled("\xC2\xB7");
+  ImGui::SameLine(0.0f, 6.0f);
+}
+
+// A button tinted with color (nullptr for the default button colours).
+bool TintedButton(const char* label, const ImVec4* color, const ImVec2& size) {
+  if (color != nullptr) {
+    ImGui::PushStyleColor(ImGuiCol_Button,
+                          ImVec4(color->x, color->y, color->z, 0.35f));
+    ImGui::PushStyleColor(ImGuiCol_ButtonHovered,
+                          ImVec4(color->x, color->y, color->z, 0.6f));
+    ImGui::PushStyleColor(ImGuiCol_ButtonActive,
+                          ImVec4(color->x, color->y, color->z, 0.8f));
+  }
+  const bool clicked = ImGui::Button(label, size);
+  if (color != nullptr) {
+    ImGui::PopStyleColor(3);
+  }
+  return clicked;
+}
+
 }  // namespace
 
 void DisconnectNotice::Draw(int server_close_code,
                             const char* server_close_reason,
                             double seconds_since_last_payload,
-                            bool is_downloading) {
+                            bool is_downloading, float bottom_inset) {
   if (server_close_code != 0) {
     const char* what = "Disconnected by the viewer.";
     const char* detail = "";
@@ -71,7 +115,8 @@ void DisconnectNotice::Draw(int server_close_code,
       detail = server_close_reason;  // E.g. "RuntimeError: broken handler".
     }
     DrawDisconnectWindow("##disconnected_by_server",
-                         {what, detail, "Retrying; reconnects automatically."});
+                         {what, detail, "Retrying; reconnects automatically."},
+                         bottom_inset);
   }
 
   // The silence notice keys on state-stream staleness rather than socket
@@ -95,295 +140,194 @@ void DisconnectNotice::Draw(int server_close_code,
       "##disconnected",
       {"Viewer server is not reachable: the Python script may",
        "have stopped. This page reconnects automatically if the",
-       "viewer comes back."});
+       "viewer comes back."},
+      bottom_inset);
 }
 
 void RoleWindow::Draw(const SessionView& view, SessionActions& actions) {
-  ComputeAnchorPositions();
-  // While anchored, the window is re-pinned every frame (so it follows
-  // canvas resizes) for both the collapsed pill and the expanded window
-  // (same ImGui window, so one call covers whichever Begin runs this
-  // frame) — except while it is being dragged.
-  if (anchor_ != kAnchorFree && !dragging_) {
-    ImGui::SetNextWindowPos(anchor_pos_[anchor_ - kAnchorTopLeft],
-                            ImGuiCond_Always,
-                            kAnchorPivot[anchor_ - kAnchorTopLeft]);
-  }
+  const double now = ImGui::GetTime();
+  UpdateTransitions(view, now);
+  DrawBar(view, actions);
+  DrawToast(view, now);
+}
 
-  // While someone waits for control, the window background pulses toward
-  // a dark orange (the queue size itself is shown in the expanded form).
-  const bool pulse =
-      view.role == SessionRole::kControlling && view.queue_len > 0;
-  if (pulse) {
-    const float phase =
-        0.5f + 0.5f * sinf(static_cast<float>(ImGui::GetTime()) * 2.5f);
-    ImVec4 bg = ImGui::GetStyleColorVec4(ImGuiCol_WindowBg);
-    const ImVec4 orange(0.45f, 0.22f, 0.02f, bg.w);
-    const float blend = 0.6f * phase;
-    bg.x += (orange.x - bg.x) * blend;
-    bg.y += (orange.y - bg.y) * blend;
-    bg.z += (orange.z - bg.z) * blend;
-    ImGui::PushStyleColor(ImGuiCol_WindowBg, bg);
-  }
-
-  if (mode_ == Mode::kCollapsed) {
-    DrawCollapsed(view);
-  } else {
-    DrawExpanded(view, actions);
-  }
-
-  if (pulse) {
-    ImGui::PopStyleColor();
+// Hands the role to the transition detector and starts the toast it picks.
+void RoleWindow::UpdateTransitions(const SessionView& view, double now) {
+  if (const char* toast = transitions_.Update(view.role, now)) {
+    toast_text_ = toast;
+    toast_at_ = now;
   }
 }
 
-void RoleWindow::ComputeAnchorPositions() {
-  const ImVec2 canvas = ImGui::GetIO().DisplaySize;
-  anchor_pos_[0] = ImVec2(kEdgeMargin, kEdgeMargin);
-  anchor_pos_[1] = ImVec2(canvas.x * 0.5f, kEdgeMargin);
-  anchor_pos_[2] = ImVec2(canvas.x - kEdgeMargin, kEdgeMargin);
-  anchor_pos_[3] = ImVec2(kEdgeMargin, canvas.y - kEdgeMargin);
-  anchor_pos_[4] = ImVec2(canvas.x * 0.5f, canvas.y - kEdgeMargin);
-  anchor_pos_[5] = ImVec2(canvas.x - kEdgeMargin, canvas.y - kEdgeMargin);
+float RoleWindow::BarHeight() const {
+  const float scale =
+      ImGui::GetWindowDpiScale() * ImGui::GetIO().FontGlobalScale;
+  return std::floor(kStatusBarHeight * scale);
 }
 
-// Tracks a drag of the window and snaps on release: if the window was
-// dropped within max(20% of its size, 100px) of where an anchor would
-// place it, adopt that anchor; otherwise it floats Free where it was
-// dropped. Call between Begin and End of whichever form is visible.
-void RoleWindow::UpdateSnap() {
-  if (ImGui::IsMouseClicked(ImGuiMouseButton_Left) &&
-      ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem)) {
-    dragging_ = true;
-  } else if (dragging_ && !ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
-    dragging_ = false;
-    const ImVec2 pos = ImGui::GetWindowPos();
-    const ImVec2 size = ImGui::GetWindowSize();
-    const float threshold = std::max(0.2f * std::max(size.x, size.y), 100.0f);
-    int best = -1;
-    float best_d2 = threshold * threshold;
-    for (int i = 0; i < 6; ++i) {
-      // Per-axis distance to where this anchor would place the window,
-      // clamped to zero on the anchor's off-screen side: a window dropped
-      // past an edge or corner (mostly off-screen) still snaps to that
-      // anchor instead of being left stranded outside the canvas.
-      float dx = pos.x - (anchor_pos_[i].x - kAnchorPivot[i].x * size.x);
-      if (kAnchorPivot[i].x == 0.0f) {
-        dx = std::max(dx, 0.0f);  // Dropped past the left edge.
-      } else if (kAnchorPivot[i].x == 1.0f) {
-        dx = std::min(dx, 0.0f);  // Dropped past the right edge.
-      }
-      float dy = pos.y - (anchor_pos_[i].y - kAnchorPivot[i].y * size.y);
-      if (kAnchorPivot[i].y == 0.0f) {
-        dy = std::max(dy, 0.0f);  // Dropped past the top edge.
-      } else {
-        dy = std::min(dy, 0.0f);  // Dropped past the bottom edge.
-      }
-      const float d2 = dx * dx + dy * dy;
-      if (d2 <= best_d2) {
-        best_d2 = d2;
-        best = i;
-      }
-    }
-    anchor_ =
-        best >= 0 ? static_cast<Anchor>(kAnchorTopLeft + best) : kAnchorFree;
-  }
-}
+void RoleWindow::DrawBar(const SessionView& view, SessionActions& actions) {
+  const ImGuiIO& io = ImGui::GetIO();
+  const float bar_h = BarHeight();
+  ImGui::SetNextWindowPos(ImVec2(0.0f, io.DisplaySize.y - bar_h),
+                          ImGuiCond_Always);
+  ImGui::SetNextWindowSize(ImVec2(io.DisplaySize.x, bar_h), ImGuiCond_Always);
 
-// Data rates, shown to both roles (spectators receive no GUI stream, so
-// that line reads 0 for them). With more than one viewer, the number in
-// parentheses is the host's total outgoing sim bandwidth: every connected
-// browser receives the same sim stream.
-void RoleWindow::DataRateLines(const SessionView& view) {
-  ImGui::Text("GUI Data Rate: %" PRIu64 " KiB/s",
-              static_cast<uint64_t>(view.gui_bytes_per_sec / 1024));
-  if (view.role == SessionRole::kSpectating) {
-    ImGui::SetItemTooltip("The UI is not streamed to spectators.");
-  } else if (!view.have_remote_frame) {
-    ImGui::SameLine();
-    ImGui::TextColored(ImVec4(1.0f, 0.0f, 0.0f, 1.0f), "(Waiting...)");
-  }
-  ImGui::Text("Sim Data Rate: %" PRIu64 " KiB/s",
-              static_cast<uint64_t>(view.sim_bytes_per_sec / 1024));
-  if (view.viewers > 1) {
-    ImGui::SameLine();
-    ImGui::Text(
-        "(%" PRIu64 " KiB/s)",
-        static_cast<uint64_t>(view.sim_bytes_per_sec * view.viewers / 1024));
-    ImGui::SetItemTooltip("Total sim data sent across all viewers.");
-  }
-}
+  // Push FramePadding first: GetFrameHeight() depends on it, and the
+  // vertical window padding must centre the frames actually drawn.
+  ImGui::PushStyleVar(ImGuiStyleVar_FramePadding, ImVec2(6.0f, 2.0f));
+  const float border = 1.0f;
+  const float vpad = std::floor(std::max(
+      0.0f, (bar_h - 2.0f * border - ImGui::GetFrameHeight()) * 0.5f));
+  ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 0.0f);
+  ImGui::PushStyleVar(ImGuiStyleVar_WindowBorderSize, border);
+  ImGui::PushStyleVar(ImGuiStyleVar_WindowMinSize, ImVec2(1.0f, 1.0f));
+  ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(8.0f, vpad));
 
-void RoleWindow::DrawCollapsed(const SessionView& view) {
-  ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(6.0f, 6.0f));
-  ImGui::PushStyleVar(ImGuiStyleVar_WindowMinSize, ImVec2(16.0f, 16.0f));
+  // Opaque whatever the theme's window alpha: the scene is rendered right
+  // up to the bar (and, at a fractional DPI scale, a pixel under it) and
+  // must not show through.
+  ImVec4 bg = ImGui::GetStyleColorVec4(ImGuiCol_WindowBg);
+  bg.w = 1.0f;
+  ImGui::PushStyleColor(ImGuiCol_WindowBg, bg);
 
-  ImGui::Begin("Role", nullptr,
+  ImGui::Begin("##RoleBar", nullptr,
                ImGuiWindowFlags_NoTitleBar | ImGuiWindowFlags_NoResize |
-                   ImGuiWindowFlags_AlwaysAutoResize);
+                   ImGuiWindowFlags_NoMove | ImGuiWindowFlags_NoScrollbar |
+                   ImGuiWindowFlags_NoDocking |
+                   ImGuiWindowFlags_NoSavedSettings |
+                   ImGuiWindowFlags_NoBringToFrontOnFocus);
   if (view.is_downloading) {
-    bool done_downloading =
-        view.total_bytes > 0 && view.bytes_downloaded >= view.total_bytes;
-    ImGui::TextColored(kConnectingColor,
-                       done_downloading ? "PARSING..." : "DOWNLOADING...");
-  } else if (view.role == SessionRole::kSpectating) {
-    ImGui::TextColored(kSpectatingColor, "SPECTATING");
-  } else if (view.role == SessionRole::kControlling) {
-    ImGui::TextColored(kControllingColor, "CONTROLLING");
+    DrawDownloading(view);
   } else {
-    ImGui::TextColored(kConnectingColor, "CONNECTING...");
+    DrawRoleChip(view);
+    if (view.role == SessionRole::kSpectating) {
+      DotSeparator();
+      DrawCameraToken(view, actions);
+    } else if (view.role == SessionRole::kControlling) {
+      DotSeparator();
+      DrawCapacityToken(view, actions);
+    }
+    DotSeparator();
+    DrawDataRate(view);
+
+    // The right-aligned cluster of buttons: placed with last frame's width,
+    // measured again as it draws. Never starts left of the chip's tokens.
+    const float right_edge =
+        ImGui::GetWindowWidth() - ImGui::GetStyle().WindowPadding.x;
+    const float start_x = std::max(ImGui::GetCursorPosX() + 14.0f,
+                                   right_edge - cluster_width_);
+    ImGui::SameLine(start_x, 0.0f);
+    const float origin = ImGui::GetCursorScreenPos().x;
+    DrawActions(view, actions);
+    cluster_width_ = ImGui::GetItemRectMax().x - origin;
   }
-  // Keep the window expanded while focused or being dragged, so dragging out
-  // of the collapsed bounds doesn't instantly collapse it midway through
-  // a move (which drops drag capture in ImGui).
-  if (ImGui::IsWindowFocused() ||
-      ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem)) {
-    mode_ = Mode::kExpanded;
-  }
-  UpdateSnap();
   ImGui::End();
 
-  ImGui::PopStyleVar(2);
+  ImGui::PopStyleColor();
+  ImGui::PopStyleVar(5);
 }
 
-void RoleWindow::DrawExpanded(const SessionView& view,
-                              SessionActions& actions) {
-  // No title bar; the window is still movable by dragging empty space
-  // (ImGui's default when ConfigWindowsMoveFromTitleBarOnly is off).
-  ImGui::Begin("Role", nullptr,
-               ImGuiWindowFlags_AlwaysAutoResize | ImGuiWindowFlags_NoTitleBar);
-
-  if (view.is_downloading) {
-    bool done_downloading =
-        view.total_bytes > 0 && view.bytes_downloaded >= view.total_bytes;
-    CenteredBanner(done_downloading ? "PARSING..." : "DOWNLOADING...",
-                             kConnectingColor);
-    if (!done_downloading) {
-      float progress = view.total_bytes > 0
-                           ? static_cast<float>(view.bytes_downloaded) /
+void RoleWindow::DrawDownloading(const SessionView& view) {
+  const bool done_downloading =
+      view.total_bytes > 0 && view.bytes_downloaded >= view.total_bytes;
+  StatusDot(kNeutralColor);
+  ImGui::SameLine(0.0f, 2.0f);
+  ImGui::AlignTextToFramePadding();
+  if (done_downloading) {
+    ImGui::TextColored(kNeutralColor, "Parsing model...");
+    return;
+  }
+  ImGui::TextUnformatted("Downloading model");
+  ImGui::SameLine(0.0f, 10.0f);
+  const float progress =
+      view.total_bytes > 0 ? static_cast<float>(view.bytes_downloaded) /
                                  static_cast<float>(view.total_bytes)
                            : 0.0f;
-      char buf[128];
-      if (view.total_bytes > 0) {
-        snprintf(buf, sizeof(buf), "%.1f / %.1f MB (%.0f%%)",
-                 view.bytes_downloaded / (1024.0 * 1024.0),
-                 view.total_bytes / (1024.0 * 1024.0), progress * 100.0f);
-      } else {
-        snprintf(buf, sizeof(buf), "Connecting...");
-      }
-      ImGui::ProgressBar(progress, ImVec2(-1, 0), buf);
-      if (view.retry_count > 0) {
-        ImGui::TextColored(ImVec4(1.0f, 0.8f, 0.2f, 1.0f),
-                           "Retrying chunk (%d)...", view.retry_count);
-      }
-    }
-  } else if (view.role == SessionRole::kClaiming) {
-    // The first roster or /ui claim outcome resolves this within a few
-    // hundred milliseconds of page load.
-    CenteredBanner("CONNECTING...", kConnectingColor);
-    ImGui::Separator();
-    DataRateLines(view);
+  char buf[32];
+  snprintf(buf, sizeof(buf), "%.0f%%", progress * 100.0f);
+  ImGui::ProgressBar(progress, ImVec2(220.0f, 0.0f), buf);
+  if (view.retry_count > 0) {
+    ImGui::SameLine(0.0f, 10.0f);
+    ImGui::AlignTextToFramePadding();
+    ImGui::TextColored(kAttentionColor, "Retrying chunk (%d)...",
+                       view.retry_count);
+  }
+}
+
+// Left: me. The dot answers "am I controlling?" (green = yes, grey =
+// spectating, amber = spectating but waiting in the queue).
+void RoleWindow::DrawRoleChip(const SessionView& view) {
+  const char* word = "Connecting...";
+  ImVec4 color = kNeutralColor;
+  if (view.role == SessionRole::kControlling) {
+    word = "Controlling";
+    color = kControllingColor;
   } else if (view.role == SessionRole::kSpectating) {
-    DrawSpectatorContents(view, actions);
-  } else {
-    DrawControllerContents(view, actions);
+    word = "Spectating";
+    if (view.queue_pos > 0) color = kAttentionColor;
   }
-
-  UpdateSnap();
-  UpdateCollapse();
-  ImGui::End();
+  StatusDot(color);
+  ImGui::SameLine(0.0f, 2.0f);
+  ImGui::AlignTextToFramePadding();
+  ImGui::TextColored(color, "%s", word);
 }
 
-void RoleWindow::DrawSpectatorContents(const SessionView& view,
-                                       SessionActions& actions) {
-  // Control group.
-  CenteredBanner("SPECTATING", kSpectatingColor);
-  char queue_text[64];
-  if (view.queue_pos > 0) {
-    snprintf(queue_text, sizeof(queue_text), "Control Queue: Position %d of %d",
-             view.queue_pos, view.queue_len);
-  } else if (view.queue_len > 0) {
-    snprintf(queue_text, sizeof(queue_text), "Control Queue: %d waiting",
-             view.queue_len);
-  } else {
-    snprintf(queue_text, sizeof(queue_text), "Control Queue: (empty)");
+// The spectator's camera: a combo drawn as plain text (no arrow; the hover
+// highlight is affordance enough) followed by the word "camera", so it
+// reads "Controller camera". Sized to its widest option so nothing shifts
+// on selection. The indices are [SpectatorCamMode].
+// TODO(matijak): Use the studio camera-selection UI here in future, so
+// a spectator can also pick any camera defined in the model.
+void RoleWindow::DrawCameraToken(const SessionView& view,
+                                 SessionActions& actions) {
+  static constexpr const char* kModes[] = {"Tumble", "WASD", "Controller"};
+  constexpr int kNumModes = 3;
+  float widest = 0.0f;
+  for (const char* mode : kModes) {
+    widest = std::max(widest, ImGui::CalcTextSize(mode).x);
   }
-  CenteredLine(queue_text, nullptr);
-  if (view.queue_pos == 0) {
-    if (ImGui::Button("Request control", kFullWidth)) {
-      actions.RequestControl();
+  ImGui::SetNextItemWidth(widest + 2.0f * ImGui::GetStyle().FramePadding.x);
+  const int current = std::clamp(view.camera_mode, 0, kNumModes - 1);
+  if (ImGui::BeginCombo("##camera", kModes[current],
+                        ImGuiComboFlags_NoArrowButton)) {
+    for (int i = 0; i < kNumModes; ++i) {
+      if (ImGui::Selectable(kModes[i], i == current)) {
+        actions.SetCameraMode(i);
+      }
     }
-  } else {
-    const float half_width =
-        (ImGui::GetContentRegionAvail().x - ImGui::GetStyle().ItemSpacing.x) *
-        0.5f;
-    if (ImGui::Button("Leave Queue", ImVec2(half_width, 0.0f))) {
-      actions.LeaveQueue();
-    }
-    ImGui::SetItemTooltip("Abandons the control request.");
-    ImGui::SameLine();
-    ImGui::PushStyleColor(ImGuiCol_Button, ImVec4(0.65f, 0.15f, 0.15f, 1.0f));
-    ImGui::PushStyleColor(ImGuiCol_ButtonHovered,
-                          ImVec4(0.80f, 0.20f, 0.20f, 1.0f));
-    ImGui::PushStyleColor(ImGuiCol_ButtonActive,
-                          ImVec4(0.50f, 0.10f, 0.10f, 1.0f));
-    if (ImGui::Button("Steal Control", ImVec2(half_width, 0.0f))) {
-      actions.StealControl();
-    }
-    ImGui::PopStyleColor(3);
-    ImGui::SetItemTooltip("Takes control immediately, jumping the queue.");
+    ImGui::EndCombo();
   }
-
-  // Data rate group.
-  ImGui::Separator();
-  DataRateLines(view);
-
-  // Camera group.
-  ImGui::Separator();
-  // TODO(matijak): Use the studio camera-selection UI here in future, so
-  // a spectator can also pick any camera defined in the model.
-  // Sized to its longest option; the default width would stretch the
-  // window past the CONTROLLING layout's size.
-  ImGui::SetNextItemWidth(ImGui::CalcTextSize("Follow Controller").x +
-                          ImGui::GetFrameHeight() * 2.0f);
-  int cam_mode = view.camera_mode;
-  if (ImGui::Combo("Camera", &cam_mode,
-                   "Free: tumble\0Free: wasd\0Follow Controller\0")) {
-    actions.SetCameraMode(cam_mode);
-  }
+  ImGui::SameLine(0.0f, 4.0f);
+  ImGui::AlignTextToFramePadding();
+  ImGui::TextDisabled("camera");
 }
 
-void RoleWindow::DrawControllerContents(const SessionView& view,
-                                        SessionActions& actions) {
-  // Control group.
-  CenteredBanner("CONTROLLING", kControllingColor);
-  if (view.queue_len > 0) {
-    char queue_text[64];
-    snprintf(queue_text, sizeof(queue_text), ">> Control Queue: %d waiting <<",
-             view.queue_len);
-    CenteredLine(queue_text, &kQueueColor);
-  } else {
-    CenteredLine("Control Queue: (empty)", nullptr);
-  }
-  if (ImGui::Button("Release control", kFullWidth)) {
-    actions.ReleaseControl();
-  }
-
-  // Data rate group.
-  ImGui::Separator();
-  DataRateLines(view);
-
-  // Session settings group.
-  ImGui::Separator();
+// The controller's "3/[16] spectators": the count, then the limit as an
+// always-visible input box. Amber once the session is full.
+void RoleWindow::DrawCapacityToken(const SessionView& view,
+                                   SessionActions& actions) {
+  const int spectators = std::max(0, view.viewers - 1);
   // Local edits win for a grace period (the roster round trip takes a
   // few frames and typing takes longer); afterwards the server's value
   // is the truth.
   if (max_spectators_edit_ < 0 ||
-      ImGui::GetTime() - max_spectators_edit_time_ > 1.5) {
+      ImGui::GetTime() - max_spectators_edit_time_ > kEditGraceSec) {
     max_spectators_edit_ = view.max_spectators;
   }
-  ImGui::SetNextItemWidth(100.0f);
-  if (ImGui::InputInt("Max Spectators", &max_spectators_edit_)) {
+  const bool full = spectators >= max_spectators_edit_;
+  const ImVec4 color = full
+                           ? kAttentionColor
+                           : ImGui::GetStyleColorVec4(ImGuiCol_TextDisabled);
+
+  ImGui::AlignTextToFramePadding();
+  ImGui::TextColored(color, "%d/", spectators);
+  ImGui::SameLine(0.0f, 2.0f);
+
+  // Two digits (the limit is clamped to 32) plus frame padding.
+  ImGui::SetNextItemWidth(ImGui::CalcTextSize("00").x +
+                          2.0f * ImGui::GetStyle().FramePadding.x + 2.0f);
+  if (ImGui::InputInt("##max_spectators", &max_spectators_edit_, 0, 0,
+                      ImGuiInputTextFlags_AutoSelectAll)) {
     max_spectators_edit_time_ = ImGui::GetTime();
     max_spectators_edit_ = std::clamp(max_spectators_edit_, 0, 32);
     actions.SetMaxSpectators(max_spectators_edit_);
@@ -391,32 +335,156 @@ void RoleWindow::DrawControllerContents(const SessionView& view,
   if (ImGui::IsItemActive()) {
     max_spectators_edit_time_ = ImGui::GetTime();
   }
+  ImGui::SetItemTooltip(
+      "Maximum number of spectators; only you can change it.");
+
+  ImGui::SameLine(0.0f, 4.0f);
+  ImGui::AlignTextToFramePadding();
+  ImGui::TextColored(color, "spectators");
 }
 
-// Collapse when the mouse leaves the window, with a short grace period.
-// A popup (e.g. the camera combo's dropdown) is a separate window, so
-// moving the mouse into it unhovers this one; keep the window expanded
-// while one of its popups is open, and give brief excursions time to
-// come back before snapping shut. On page load the window instead stays
-// expanded for a few seconds (the intro); the first hover ends the
-// intro, so a quick swipe over the window dismisses it early.
-void RoleWindow::UpdateCollapse() {
-  const bool popup_open = ImGui::IsPopupOpen(
-      "", ImGuiPopupFlags_AnyPopupId | ImGuiPopupFlags_AnyPopupLevel);
-  if (popup_open || dragging_ ||
-      ImGui::IsWindowFocused(ImGuiFocusedFlags_RootAndChildWindows) ||
-      ImGui::IsWindowHovered(ImGuiHoveredFlags_AllowWhenBlockedByActiveItem)) {
-    mode_ = Mode::kExpanded;  // The first hover ends the intro.
-    hover_time_ = ImGui::GetTime();
-  } else if (mode_ == Mode::kIntro) {
-    if (intro_start_ == 0) {
-      intro_start_ = ImGui::GetTime();
-    } else if (ImGui::GetTime() - intro_start_ > kIntroExpandedSec) {
-      mode_ = Mode::kCollapsed;
+// Fixed-width buttons: spectators get Steal then Request / Cancel; the
+// controller gets Release, with the number of spectators waiting for it
+// to its left. A click also records the toast to show once the role
+// actually flips (see UpdateTransitions).
+void RoleWindow::DrawActions(const SessionView& view, SessionActions& actions) {
+  const ImVec2 size(ImGui::CalcTextSize(kButtonWidthText).x +
+                        2.0f * ImGui::GetStyle().FramePadding.x + 8.0f,
+                    0.0f);
+  if (view.role == SessionRole::kSpectating) {
+    // The queue is told in the tooltips: the amber dot is the only inline
+    // cue that this page is in it.
+    char queue_line[96];
+    if (TintedButton("Steal control", &kDangerColor, size)) {
+      transitions_.ExpectToast("You took control", ImGui::GetTime());
+      actions.StealControl();
     }
-  } else if (ImGui::GetTime() - hover_time_ > kCollapseGraceSec) {
-    mode_ = Mode::kCollapsed;
+    // Slower tooltip: it reads as a warning, not a label.
+    if (ImGui::IsItemHovered(ImGuiHoveredFlags_ForTooltip |
+                             ImGuiHoveredFlags_DelayNormal)) {
+      if (view.queue_pos > 0) {
+        snprintf(queue_line, sizeof(queue_line),
+                 "\nYou are #%d in the queue.", view.queue_pos);
+      } else if (view.queue_len > 0) {
+        snprintf(queue_line, sizeof(queue_line),
+                 "\n%d spectator%s waiting.", view.queue_len,
+                 view.queue_len == 1 ? " is" : "s are");
+      } else {
+        queue_line[0] = '\0';
+      }
+      ImGui::SetTooltip(
+          "Take control immediately\nfrom the current controller.%s",
+          queue_line);
+    }
+    ImGui::SameLine(0.0f, kStealGap);
+    if (view.queue_pos == 0) {
+      if (TintedButton("Request control", nullptr, size)) {
+        // A steal the server ignored is moot now.
+        transitions_.ClearExpectedToast();
+        actions.RequestControl();
+      }
+      if (view.queue_len == 0) {
+        snprintf(queue_line, sizeof(queue_line), "No one is waiting.");
+      } else {
+        snprintf(queue_line, sizeof(queue_line),
+                 "%d spectator%s already waiting.", view.queue_len,
+                 view.queue_len == 1 ? " is" : "s are");
+      }
+      ImGui::SetItemTooltip("Join the queue for control.\n%s", queue_line);
+    } else {
+      if (TintedButton("Cancel request", nullptr, size)) {
+        transitions_.ClearExpectedToast();
+        actions.LeaveQueue();
+      }
+      if (view.queue_pos == 1) {
+        snprintf(queue_line, sizeof(queue_line),
+                 "You're next — waiting for\nthe controller to release.");
+      } else {
+        snprintf(queue_line, sizeof(queue_line),
+                 "%d ahead of you (the controller\nand %d queued spectator%s).",
+                 view.queue_pos, view.queue_pos - 1,
+                 view.queue_pos - 1 == 1 ? "" : "s");
+      }
+      ImGui::SetItemTooltip("Leave the queue.\n%s", queue_line);
+    }
+  } else if (view.role == SessionRole::kControlling) {
+    // The queue sits right next to the button that serves it, growing
+    // leftwards (the cluster is right-aligned as a whole).
+    if (view.queue_len > 0) {
+      ImGui::AlignTextToFramePadding();
+      ImGui::TextColored(kAttentionColor, "%d waiting", view.queue_len);
+      ImGui::SetItemTooltip("Spectators waiting for control.");
+      ImGui::SameLine(0.0f, 10.0f);
+    }
+    if (TintedButton("Release control", nullptr, size)) {
+      transitions_.ExpectToast(view.queue_len > 0
+                                   ? "Control passed to the next in queue"
+                                   : "You released control",
+                               ImGui::GetTime());
+      actions.ReleaseControl();
+    }
+  } else {
+    ImGui::Dummy(size);  // Connecting: keep the cluster's width.
   }
+}
+
+// The download rate, after the role's own token: dim, at its natural
+// width, and amber only when the state stream has gone quiet.
+void RoleWindow::DrawDataRate(const SessionView& view) {
+  const uint64_t sim_kib = view.sim_bytes_per_sec / 1024;
+  const uint64_t gui_kib = view.gui_bytes_per_sec / 1024;
+  ImGui::AlignTextToFramePadding();
+  if (view.seconds_since_last_payload > kStallAfterSec) {
+    ImGui::TextColored(kAttentionColor, "%s stalled %.0fs",
+                       ICON_FA_EXCLAMATION_TRIANGLE,
+                       view.seconds_since_last_payload);
+  } else {
+    ImGui::TextDisabled("%" PRIu64 " KiB/s", sim_kib + gui_kib);
+  }
+  ImGui::SetItemTooltip("Sim data rate: %" PRIu64 " KiB/s\n"
+                        "GUI data rate: %" PRIu64 " KiB/s",
+                        sim_kib, gui_kib);
+}
+
+// The transition moment: a small rounded toast at the top centre of the
+// canvas that drops in, holds, and fades out. Takes no input and no
+// focus so it never gets in the way of the scene or the remote UI.
+void RoleWindow::DrawToast(const SessionView& view, double now) {
+  const double age = now - toast_at_;
+  if (toast_text_ == nullptr || age > kToastSec) {
+    return;
+  }
+  // Drop in over the first 0.18s (eased), fade out over the last 20%.
+  const double drop_linear = std::min(1.0, age / 0.18);
+  const float drop =
+      static_cast<float>(1.0 - std::pow(1.0 - drop_linear, 3.0));
+  const double hold_until = kToastSec * 0.8;
+  const float alpha =
+      age < hold_until
+          ? 1.0f
+          : static_cast<float>(1.0 - (age - hold_until) / (kToastSec * 0.2));
+  const ImGuiIO& io = ImGui::GetIO();
+  const float y = ImGui::GetFrameHeight() + 10.0f + 26.0f * drop;
+  ImGui::SetNextWindowPos(ImVec2(io.DisplaySize.x * 0.5f, y), ImGuiCond_Always,
+                          ImVec2(0.5f, 0.0f));
+  ImGui::SetNextWindowBgAlpha(0.92f * alpha);
+  ImGui::PushStyleVar(ImGuiStyleVar_WindowRounding, 6.0f);
+  ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(12.0f, 6.0f));
+  ImGui::PushStyleVar(ImGuiStyleVar_Alpha, alpha);
+  ImGui::Begin("##RoleToast", nullptr,
+               ImGuiWindowFlags_NoDecoration |
+                   ImGuiWindowFlags_AlwaysAutoResize |
+                   ImGuiWindowFlags_NoSavedSettings |
+                   ImGuiWindowFlags_NoFocusOnAppearing |
+                   ImGuiWindowFlags_NoNav | ImGuiWindowFlags_NoInputs |
+                   ImGuiWindowFlags_NoDocking);
+  StatusDot(view.role == SessionRole::kControlling ? kControllingColor
+                                                   : kNeutralColor);
+  ImGui::SameLine(0.0f, 4.0f);
+  ImGui::AlignTextToFramePadding();
+  ImGui::TextUnformatted(toast_text_);
+  ImGui::End();
+  ImGui::PopStyleVar(3);
 }
 
 }  // namespace mujoco::studio

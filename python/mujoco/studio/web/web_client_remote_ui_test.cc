@@ -133,7 +133,7 @@ class RemoteUiTest : public ::testing::Test {
     ImGui::SetCurrentContext(context_);
     NetImgui::Internal::Network::g_test_ready_state = ReadyState::kOpen;
     NetImgui::Internal::Network::g_test_close_code = 0;
-    remote_ui_.SetMaxClip(1920.0f, 1080.0f);
+    remote_ui_.SetScreenArea(1920.0f, 1080.0f);
   }
 
   ~RemoteUiTest() override {
@@ -405,7 +405,7 @@ TEST_F(RemoteUiTest, ProcessesADrawFrameWithoutDraws) {
 TEST_F(RemoteUiTest,
        BuildsOneDrawListPerWindowClampsClipRectAndSkipsUnmappedTextures) {
   RegisterDummyTexture(/*tex_id=*/1);
-  remote_ui_.SetMaxClip(120.0f, 80.0f);
+  remote_ui_.SetScreenArea(120.0f, 80.0f);
 
   // Two windows produce two draw groups; each gets its own ImDrawList with its
   // 0-based indices copied unchanged.
@@ -508,9 +508,12 @@ TEST_F(RemoteUiTest, SocketHandshakeReceiveAndInputRoundTrip) {
   EXPECT_EQ(remote_ui_.ConsumeByteCount(), expected_bytes);
   EXPECT_EQ(remote_ui_.ConsumeByteCount(), 0u);
 
-  // CaptureAndSendInput sends a CmdInput packet back to the peer.
+  // CaptureAndSendInput sends a CmdInput packet back to the peer. The screen
+  // size it reports is the screen area (the canvas minus the local role
+  // bar), not the display size.
   ImGuiIO& io = ImGui::GetIO();
   io.DisplaySize = ImVec2(1280, 720);
+  remote_ui_.SetScreenArea(1280.0f, 688.0f);
   io.MousePos = ImVec2(100, 200);
   io.WantCaptureMouse = false;
   io.WantCaptureKeyboard = false;
@@ -522,7 +525,7 @@ TEST_F(RemoteUiTest, SocketHandshakeReceiveAndInputRoundTrip) {
             static_cast<ssize_t>(sizeof(input_cmd)));
   EXPECT_EQ(input_cmd.mType, CmdHeader::eCommands::Input);
   EXPECT_EQ(input_cmd.mScreenSize[0], 1280u);
-  EXPECT_EQ(input_cmd.mScreenSize[1], 720u);
+  EXPECT_EQ(input_cmd.mScreenSize[1], 688u);
   EXPECT_EQ(input_cmd.mMousePos[0], 100);
   EXPECT_EQ(input_cmd.mMousePos[1], 200);
   EXPECT_TRUE(input_cmd.mCompressionUse);

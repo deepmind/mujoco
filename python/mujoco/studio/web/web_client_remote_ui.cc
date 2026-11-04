@@ -603,13 +603,13 @@ void RemoteUi::ProcessCmdDrawFrame(CmdDrawFrame* cmd_draw_frame) {
       }
 
       float cx = std::max(
-          0.f, std::min(max_clip_[0], draw_src[draw_idx].mClipRect[0]));
+          0.f, std::min(screen_area_[0], draw_src[draw_idx].mClipRect[0]));
       float cy = std::max(
-          0.f, std::min(max_clip_[1], draw_src[draw_idx].mClipRect[1]));
-      float cz =
-          std::max(cx, std::min(max_clip_[0], draw_src[draw_idx].mClipRect[2]));
-      float cw =
-          std::max(cy, std::min(max_clip_[1], draw_src[draw_idx].mClipRect[3]));
+          0.f, std::min(screen_area_[1], draw_src[draw_idx].mClipRect[1]));
+      float cz = std::max(
+          cx, std::min(screen_area_[0], draw_src[draw_idx].mClipRect[2]));
+      float cw = std::max(
+          cy, std::min(screen_area_[1], draw_src[draw_idx].mClipRect[3]));
 
       command_dst[draw_idx].ClipRect.x = cx;
       command_dst[draw_idx].ClipRect.y = cy;
@@ -685,8 +685,10 @@ void RemoteUi::CaptureAndSendInput() {
   }
 
   CmdInput cmd_input;
-  cmd_input.mScreenSize[0] = static_cast<uint16_t>(io.DisplaySize.x);
-  cmd_input.mScreenSize[1] = static_cast<uint16_t>(io.DisplaySize.y);
+  // The remote client lays out for the screen area (the canvas minus the
+  // local role bar), not the whole display.
+  cmd_input.mScreenSize[0] = static_cast<uint16_t>(screen_area_[0]);
+  cmd_input.mScreenSize[1] = static_cast<uint16_t>(screen_area_[1]);
   // An unstable screen size forces the remote UI to relayout every frame
   // (visible as UI flicker), so make changes loud.
   if (cmd_input.mScreenSize[0] != last_screen_size_[0] ||

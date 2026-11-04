@@ -12,7 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// The web viewer's local (browser-drawn) UI: the role window and the
+// The web viewer's local (browser-drawn) UI: the role bar and the
 // DISCONNECTED notices. Deliberately decoupled from the app: it reads a
 // SessionView snapshot and reports user intent through the SessionActions
 // interface (both defined in web_client_session.h), so drawing depends
@@ -22,6 +22,7 @@
 #define MUJOCO_PYTHON_STUDIO_WEB_WEB_CLIENT_LOCAL_UI_H_
 
 #include <imgui.h>
+#include "role_transitions.h"
 #include "web_client_session.h"
 
 namespace mujoco::studio {
@@ -34,9 +35,11 @@ class DisconnectNotice {
  public:
   // server_close_reason is the close frame's reason text (shown for
   // kWsCloseViewerError); seconds_since_last_payload is negative before the
-  // first payload.
+  // first payload. The notices centre in the canvas above bottom_inset (the
+  // role bar's height), not in the whole window.
   void Draw(int server_close_code, const char* server_close_reason,
-            double seconds_since_last_payload, bool is_downloading);
+            double seconds_since_last_payload, bool is_downloading,
+            float bottom_inset);
 
  private:
   // How long the state stream (~60Hz while the Python side is alive) may go
@@ -48,64 +51,54 @@ class DisconnectNotice {
   bool logged_ = false;
 };
 
-// The role window: a collapsed role pill that expands on hover into the
-// session panel (role banner, control queue, data rates, per-role
-// settings). Owns its presentation state — mode, intro/hover timers, drag
-// and snap anchoring, edit grace.
+// The role bar: a full-width strip along the bottom of the canvas, the
+// height of Studio's status bar; the scene and the streamed UI are laid out
+// above it (see BarHeight). The role chip (dot + word) sits flush left,
+// followed by the role's own token (the spectator's camera mode, or the
+// controller's spectator count and limit) and the download rate; the
+// action buttons form one right-aligned cluster, where the controller also
+// sees how many are waiting, next to Release control. A queued spectator's
+// only inline cue is the amber dot; the queue details are in the buttons'
+// tooltips. Role transitions raise a short toast at the top of the canvas.
+// Owns its presentation state: the transition detector, the toast timer,
+// the measured cluster width, and the spectator-limit edit grace.
 class RoleWindow {
  public:
   void Draw(const SessionView& view, SessionActions& actions);
 
+  // The bar's height in logical pixels for the current DPI and font scale,
+  // floored to whole pixels so the scene rect above it meets it exactly.
+  // Valid outside an ImGui frame; call it each frame, the font scale can
+  // change at any time.
+  float BarHeight() const;
+
  private:
-  // Presentation state machine: the window starts in the intro (expanded
-  // for a few seconds so new users see it exists and learn it expands on
-  // hover); the first hover ends the intro.
-  enum class Mode {
-    kIntro = 0,  // Expanded on page load, until the timer or first hover.
-    kExpanded,   // Expanded while hovered (plus a short leave grace).
-    kCollapsed,  // The role pill; expands on hover.
-  };
+  static constexpr double kToastSec = 2.5;
+  // State-stream silence before the rate token turns into a stall warning
+  // (matches DisconnectNotice::kServerSilenceNoticeSec).
+  static constexpr double kStallAfterSec = 3.0;
+  // Max spectators edit grace: the local value wins over the roster until
+  // the edit is this old (see the InputInt).
+  static constexpr double kEditGraceSec = 1.5;
 
-  // Where the window is anchored on the page. It is always draggable;
-  // releasing a drag near an anchor snaps to it, anywhere else leaves the
-  // window Free at its dropped position.
-  enum Anchor {
-    kAnchorFree = 0,
-    kAnchorTopLeft,  // The anchors must stay contiguous from here on.
-    kAnchorTopMid,
-    kAnchorTopRight,
-    kAnchorBottomLeft,
-    kAnchorBottomMid,
-    kAnchorBottomRight,
-  };
+  void UpdateTransitions(const SessionView& view, double now);
+  void DrawBar(const SessionView& view, SessionActions& actions);
+  void DrawDownloading(const SessionView& view);
+  void DrawRoleChip(const SessionView& view);
+  void DrawCameraToken(const SessionView& view, SessionActions& actions);
+  void DrawCapacityToken(const SessionView& view, SessionActions& actions);
+  void DrawActions(const SessionView& view, SessionActions& actions);
+  void DrawDataRate(const SessionView& view);
+  void DrawToast(const SessionView& view, double now);
 
-  static constexpr double kCollapseGraceSec = 0.2;
-  static constexpr double kIntroExpandedSec = 5.0;
-  static constexpr float kEdgeMargin = 10.0f;
-  // Pivots keeping the whole window on-screen kEdgeMargin off the
-  // anchoring edges; indexed by Anchor - kAnchorTopLeft, like anchor_pos_.
-  static constexpr ImVec2 kAnchorPivot[6] = {
-      {0.0f, 0.0f}, {0.5f, 0.0f}, {1.0f, 0.0f},
-      {0.0f, 1.0f}, {0.5f, 1.0f}, {1.0f, 1.0f},
-  };
-
-  void ComputeAnchorPositions();
-  void UpdateSnap();
-  void UpdateCollapse();
-  static void DataRateLines(const SessionView& view);
-  void DrawCollapsed(const SessionView& view);
-  void DrawExpanded(const SessionView& view, SessionActions& actions);
-  void DrawSpectatorContents(const SessionView& view, SessionActions& actions);
-  void DrawControllerContents(const SessionView& view, SessionActions& actions);
-
-  Mode mode_ = Mode::kIntro;
-  Anchor anchor_ = kAnchorTopMid;
-  ImVec2 anchor_pos_[6];    // Recomputed each frame (canvas resizes).
-  double intro_start_ = 0;  // 0 until the expanded window first draws.
-  double hover_time_ = 0;   // Feeds the collapse grace period.
-  bool dragging_ = false;
-  // Max Spectators edit grace: the local value wins over the roster until
-  // max_spectators_edit_time_ is old enough (see the InputInt).
+  // Role changes and the toast each one deserves; a button click registers
+  // the wording it expects (see RoleTransitions).
+  RoleTransitions transitions_;
+  const char* toast_text_ = nullptr;
+  double toast_at_ = -1e9;
+  // The right-aligned cluster is measured as it draws; last frame's width
+  // places it this frame (the usual ImGui right-alignment trick).
+  float cluster_width_ = 0.0f;
   int max_spectators_edit_ = -1;
   double max_spectators_edit_time_ = -1e9;
 };

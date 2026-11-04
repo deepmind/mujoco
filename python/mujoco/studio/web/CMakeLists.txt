@@ -19,6 +19,8 @@ if(EMSCRIPTEN)
 
   # Browser WASM client for the Web Viewer
   add_executable(web_client
+    role_transitions.cc
+    role_transitions.h
     web_client.cc
     web_client_local_ui.cc
     web_client_local_ui.h

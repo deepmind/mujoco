@@ -519,19 +519,23 @@ ImPlotPairLayout ImPlot_ComputePairLayout() {
   };
 }
 
-static ImVec2 ClipSpaceToWindowCoordinates(float x, float y) {
-  const ImVec2& display_size = ImGui::GetIO().DisplaySize;
-  const float pos_x = display_size.x * ((x + 1) * 0.5f);
-  const float pos_y = display_size.y * (1.0f - ((y + 1) * 0.5f));
+static ImVec2 ClipSpaceToRectCoordinates(float x, float y, const ImVec4& rect) {
+  const float pos_x = rect.x + rect.z * ((x + 1) * 0.5f);
+  const float pos_y = rect.y + rect.w * (1.0f - ((y + 1) * 0.5f));
   return ImVec2(pos_x, pos_y);
 }
 
 void DrawTextAt(const char* text, float x, float y, float z) {
+  const ImVec2& display_size = ImGui::GetIO().DisplaySize;
+  DrawTextAtInRect(text, x, y, z, ImVec4(0.0f, 0.0f, display_size.x, display_size.y));
+}
+
+void DrawTextAtInRect(const char* text, float x, float y, float z, const ImVec4& rect) {
   if (x < -1 || y < -1 || x > 1 || y > 1 || z < -1 || z > 1) {
     return;
   }
 
-  const ImVec2 center_pos = ClipSpaceToWindowCoordinates(x, y);
+  const ImVec2 center_pos = ClipSpaceToRectCoordinates(x, y, rect);
   const ImVec2 size = ImGui::CalcTextSize(text);
 
   const ImVec2 pos = ImVec2(center_pos.x - size.x / 2, center_pos.y);

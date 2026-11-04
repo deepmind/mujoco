@@ -140,6 +140,12 @@ struct App {
   int spectator_cam_mode = kSpecCamTumble;
   float spectator_cam_speed = 0.001f;  // WASD speed; accelerates while held.
 
+  // The part of the canvas above the role bar, in logical pixels (x, y,
+  // width, height): the 3D scene renders into it, the remote UI lays out in
+  // it, 3D labels project into it. Refreshed every frame from the bar's
+  // height, which follows the font scale.
+  ImVec4 scene_rect = ImVec4(0.0f, 0.0f, 0.0f, 0.0f);
+
   Telemetry telemetry;
 
   // Main loop frame counters (MainLoopImpl): reconnect pacing for the state
@@ -320,9 +326,12 @@ void HandleSpectatorCameraInput() {
     }
   }
 
-  if (!io.WantCaptureMouse && io.DisplaySize.x > 0 && io.DisplaySize.y > 0) {
-    const float mouse_dx = io.MouseDelta.x / io.DisplaySize.x;
-    const float mouse_dy = io.MouseDelta.y / io.DisplaySize.y;
+  // Mouse motion is normalised by the scene rect (the canvas above the role
+  // bar), the area the camera actually renders into.
+  const ImVec4& rect = g_app.scene_rect;
+  if (!io.WantCaptureMouse && rect.z > 0 && rect.w > 0) {
+    const float mouse_dx = io.MouseDelta.x / rect.z;
+    const float mouse_dy = io.MouseDelta.y / rect.w;
     const bool is_mouse_dragging =
         (mouse_dx != 0.0f || mouse_dy != 0.0f) &&
         (ImGui::IsMouseDown(ImGuiMouseButton_Left) ||
@@ -427,7 +436,7 @@ void AppCallbacks::ShutdownRemoteUi() { g_app.remote_ui.Shutdown(); }
 void AppCallbacks::SetCameraMode(int mode) { SetSpectatorCameraMode(mode); }
 
 void BuildBrowserGui() {
-  // Refresh the byte-rate telemetry the role window shows.
+  // Refresh the byte-rate telemetry the role bar shows.
   const double now = ImGui::GetTime();
   if (now - g_app.telemetry.last_rate_time >= 1.0) {
     g_app.telemetry.gui_bytes_per_sec = g_app.remote_ui.ConsumeByteCount();
@@ -440,13 +449,15 @@ void BuildBrowserGui() {
       last_msg > 0 ? emscripten_get_now() / 1000.0 - last_msg : -1.0;
   g_app.disconnect_notice.Draw(g_app.session.ServerCloseCode(),
                                g_app.session.ServerCloseReason().c_str(),
-                               stale_sec, g_app.download_status.is_downloading);
+                               stale_sec, g_app.download_status.is_downloading,
+                               g_app.role_window.BarHeight());
 
   SessionView view;
   g_app.session.FillView(&view);
   view.gui_bytes_per_sec = g_app.telemetry.gui_bytes_per_sec;
   view.sim_bytes_per_sec = g_app.telemetry.sim_bytes_per_sec;
   view.have_remote_frame = g_app.remote_ui.RemoteDrawData() != nullptr;
+  view.seconds_since_last_payload = stale_sec;
   view.camera_mode = g_app.spectator_cam_mode;
   view.is_downloading = g_app.download_status.is_downloading;
   view.bytes_downloaded = g_app.download_status.bytes_downloaded;
@@ -457,13 +468,31 @@ void BuildBrowserGui() {
   g_app.role_window.Draw(view, g_app.session);
 }
 
+// The scene's viewport in framebuffer pixels (GL convention: origin at the
+// bottom-left): the window minus the role bar along the bottom. The bar's
+// inset is floored so that at a fractional DPI scale the scene reaches at
+// most one pixel under the opaque bar rather than leaving a gap above it.
+static mjrRect SceneViewport(int width, int height) {
+  const int bar_px = static_cast<int>(
+      std::floor(g_app.role_window.BarHeight() * g_app.window->GetScale()));
+  const int scene_height = std::max(1, height - bar_px);
+  return {0, height - scene_height, width, scene_height};
+}
+
 static mujoco::Renderer::View GetSceneView() {
   const mjModel* model = g_app.model_holder->model();
   const mjData* data = g_app.model_holder->data();
+  const int width = g_app.window->GetWidth() * g_app.window->GetScale();
+  const int height = g_app.window->GetHeight() * g_app.window->GetScale();
 
   mujoco::Renderer::View view;
   view.scene = g_app.renderer->GetSceneHandle("studio");
   view.camera = mjv_camera2GLCamera(model, data, &g_app.camera);
+  // The renderer truncates rel_viewport * target size to whole pixels; the
+  // half pixel keeps float error from landing one pixel short of the bar.
+  const mjrRect viewport = SceneViewport(width, height);
+  view.rel_viewport[1] = (viewport.bottom + 0.5f) / height;
+  view.rel_viewport[3] = (viewport.height + 0.5f) / height;
   if (g_app.render_flags[mjRND_SEGMENT]) {
     if (g_app.render_flags[mjRND_IDCOLOR]) {
       view.draw_mode = mjDRAW_MODE_SEGMENTATION_BY_ID;
@@ -588,9 +617,15 @@ void MainLoopImpl() {
 
   // Process incoming UI data BEFORE the ImGui frame: textures and draw
   // frames must be ready before we start the local ImGui frame and render.
+  // The role bar's height (it follows the font scale) sets this frame's
+  // scene rect: the remote UI lays out in it and its draw data is clipped
+  // to it, so the streamed Studio UI never runs under the bar.
   if (g_app.window) {
-    g_app.remote_ui.SetMaxClip(static_cast<float>(g_app.window->GetWidth()),
-                               static_cast<float>(g_app.window->GetHeight()));
+    const float bar_h = g_app.role_window.BarHeight();
+    g_app.scene_rect = ImVec4(
+        0.0f, 0.0f, static_cast<float>(g_app.window->GetWidth()),
+        std::max(0.0f, static_cast<float>(g_app.window->GetHeight()) - bar_h));
+    g_app.remote_ui.SetScreenArea(g_app.scene_rect.z, g_app.scene_rect.w);
   }
   g_app.remote_ui.ReceiveAndProcessCommands(g_app.frame_count);
 
@@ -646,7 +681,7 @@ void MainLoopImpl() {
       if (g_app.model_scene) {
         g_app.model_scene->Sync(
             g_app.model_holder->model(), g_app.model_holder->data(),
-            {0, 0, width, height}, &g_app.vis_options, &g_app.perturb,
+            SceneViewport(width, height), &g_app.vis_options, &g_app.perturb,
             &g_app.camera, std::span(g_app.extra_geoms));
       }
       can_submit = true;
@@ -720,9 +755,13 @@ void MainLoopImpl() {
 void SetupScene(mjModel* m) {
   g_app.model_scene.reset();
   if (m) {
+    // 3D labels project into the scene rect, not the whole window: the
+    // scene renders above the role bar.
     g_app.model_scene = std::make_unique<mujoco::studio::ModelScene>(
         g_app.renderer->GetContext(), g_app.renderer->GetScene("studio"), m,
-        mujoco::studio::DrawTextAt);
+        [](const char* text, float x, float y, float z) {
+          mujoco::studio::DrawTextAtInRect(text, x, y, z, g_app.scene_rect);
+        });
   }
 
   // Invalidate all texture caches (ImGui font atlas + NetImgui streamed

@@ -82,11 +82,14 @@ class RemoteUi {
   // The WebSocket close code once the socket has closed, else 0.
   int CloseCode() const;
 
-  // Remote clip rects are clamped to this (logical pixels); set each frame
-  // before ReceiveAndProcessCommands().
-  void SetMaxClip(float width, float height) {
-    max_clip_[0] = width;
-    max_clip_[1] = height;
+  // The part of the canvas the remote UI may use, in logical pixels: the
+  // whole window minus the browser-local role bar along the bottom. Sent to
+  // the remote client as its screen size (so Studio lays out its dock space
+  // and status bar inside it) and used to clamp remote clip rects. Set each
+  // frame before ReceiveAndProcessCommands() and CaptureAndSendInput().
+  void SetScreenArea(float width, float height) {
+    screen_area_[0] = width;
+    screen_area_[1] = height;
   }
 
   // Sends the CmdVersion handshake when the socket is newly open, then drains
@@ -125,7 +128,7 @@ class RemoteUi {
  private:
   Callbacks& callbacks_;
 
-  float max_clip_[2] = {0.0f, 0.0f};
+  float screen_area_[2] = {0.0f, 0.0f};
 
   // --- Connection-scoped state, reset on every (re)connect. ----------------
 

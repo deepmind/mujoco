@@ -33,6 +33,7 @@
 #include <optional>
 #include <string>
 
+#include "role_transitions.h"
 #include "state_payload.h"
 
 namespace mujoco::studio {
@@ -47,16 +48,6 @@ constexpr int kWsCloseNotController = 4004;    // /drop: only controller may
 constexpr int kWsCloseViewerError = 4005;      // /state: the viewer stopped
                                                //   with an error (the reason).
 
-// The page's role in the collaborative session. Every page starts by
-// claiming the controller slot; the claim either succeeds (kControlling)
-// or the page settles into spectating. A control grant puts a spectator
-// back into kClaiming while it reconnects to /ui.
-enum class SessionRole {
-  kClaiming = 0,  // /ui claim in flight; the role is not yet resolved.
-  kControlling,   // This page holds the open /ui connection.
-  kSpectating,    // Another page controls; scene + local role window only.
-};
-
 // Read-only snapshot of the session, passed to the local UI each frame.
 struct SessionView {
   SessionRole role = SessionRole::kClaiming;
@@ -67,6 +58,9 @@ struct SessionView {
   uint64_t gui_bytes_per_sec = 0;
   uint64_t sim_bytes_per_sec = 0;
   bool have_remote_frame = false;
+  // Staleness of the state stream, for the role bar's stall indicator;
+  // negative before the first payload.
+  double seconds_since_last_payload = -1.0;
   int camera_mode = 0;  // [SpectatorCamMode].
   bool is_downloading = true;
   size_t bytes_downloaded = 0;
