@@ -90,6 +90,10 @@ class SceneView : public mjrfScene {
   void SetHaze(float ratio, const float rgba[4]);
   float GetHazeRatio() const;
   filament::math::float4 GetHazeColor() const;
+  float GetFocusDistance() const { return focus_distance_; }
+  void SetFocusDistance(float focus_distance) {
+    focus_distance_ = focus_distance;
+  }
 
   static SceneView* downcast(mjrfScene* scene) {
     return static_cast<SceneView*>(scene);
@@ -116,6 +120,7 @@ class SceneView : public mjrfScene {
   std::unordered_set<Renderable*> renderables_;
   filament::Skybox* skybox_ = nullptr;
   std::unique_ptr<Renderable> haze_;
+  float focus_distance_ = 0.0f;
   int numstacks_ = 16;
   int numslices_ = 28;
   int numquads_ = 4;

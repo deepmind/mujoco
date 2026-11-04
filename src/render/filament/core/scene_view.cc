@@ -332,6 +332,7 @@ void SceneView::Render(filament::Renderer* renderer,
   }
 
   SetupCamera(request, camera_);
+  camera_->setFocusDistance(focus_distance_);
 
   // Aim the headlight along this request's camera. Filament re-gathers the
   // scene's lights for each render() call, so requests batched into one frame
@@ -554,7 +555,6 @@ static filament::ShadowType ShadowTypeFromString(std::string_view name) {
   mju_warning("Unknown shadow type: %s", name.data());
   return filament::ShadowType::PCF;
 }
-
 
 void SceneView::SetMsaa(int samples) {
   samples = std::clamp(samples, 1, 255);

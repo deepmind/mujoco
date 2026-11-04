@@ -483,11 +483,14 @@ void DrawColorGradingGui(SceneView* scene_view) {
 void DrawDepthOfFieldGui(SceneView* scene_view) {
   filament::View* view = scene_view->GetDefaultRenderView();
   auto opts = view->getDepthOfFieldOptions();
+  float focus_distance = scene_view->GetFocusDistance();
   bool changed = false;
+
   changed |= Ui("Enabled", &opts.enabled);
   changed |= Ui("Filter", &opts.filter);
   changed |= Ui("Max. Aperture", &opts.maxApertureDiameter);
   changed |= Ui("Resolution", &opts.nativeResolution);
+  changed |= Ui("Focal Distance", &focus_distance);
   changed |= Ui("COC Scale", &opts.cocScale);
   changed |= Ui("COC Aspect Ratio", &opts.cocAspectRatio);
   changed |= Ui("Max COC (Foreground)", &opts.maxForegroundCOC);
@@ -497,6 +500,7 @@ void DrawDepthOfFieldGui(SceneView* scene_view) {
   changed |= Ui("Fast Gather Ring Count", &opts.fastGatherRingCount);
   if (changed) {
     view->setDepthOfFieldOptions(opts);
+    scene_view->SetFocusDistance(focus_distance);
   }
 }
 
