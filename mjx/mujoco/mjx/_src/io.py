@@ -342,6 +342,10 @@ def _put_model_jax(
     raise NotImplementedError('Flex not implemented for JAX backend.')
   if m.nplastic:
     raise NotImplementedError('Plasticity not implemented for JAX backend.')
+  if m.nplugin:
+    # The JAX backend never calls plugins, so actuator, passive, sensor and SDF
+    # plugins would silently contribute nothing.
+    raise NotImplementedError('Plugins not implemented for JAX backend.')
 
   # contact sensor
   is_contact_sensor = m.sensor_type == types.SensorType.CONTACT

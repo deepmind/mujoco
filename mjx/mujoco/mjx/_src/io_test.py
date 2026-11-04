@@ -300,6 +300,30 @@ class ModelIOTest(parameterized.TestCase):
           impl='jax',
       )
 
+  def test_plugin_not_implemented(self):
+    m = mujoco.MjModel.from_xml_string("""
+      <mujoco>
+        <extension>
+          <plugin plugin="mujoco.pid">
+            <instance name="pid">
+              <config key="kp" value="4.0"/>
+            </instance>
+          </plugin>
+        </extension>
+        <worldbody>
+          <body>
+            <joint name="slide" type="slide" axis="0 0 1"/>
+            <geom size=".01"/>
+          </body>
+        </worldbody>
+        <actuator>
+          <plugin joint="slide" plugin="mujoco.pid" instance="pid"/>
+        </actuator>
+      </mujoco>
+    """)
+    with self.assertRaises(NotImplementedError):
+      mjx.put_model(m, impl='jax')
+
   def test_implicitfast_fluid_not_implemented(self):
     with self.assertRaises(NotImplementedError):
       mjx.put_model(
