@@ -146,9 +146,7 @@ jobs:
       uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
       with:
         path: ${{ runner.temp }}/external_deps
-        key: external-deps-${{ runner.os == 'Windows' && 'windows' || 'posix' }}-${{ contains(matrix.cmake_args, 'MUJOCO_BUILD_STUDIO:BOOL=ON') && 'studio' || 'core' }}-${{ hashFiles('cmake/**', 'python/mujoco/CMakeLists.txt') }}
-        restore-keys: |
-          external-deps-${{ runner.os == 'Windows' && 'windows' || 'posix' }}-${{ contains(matrix.cmake_args, 'MUJOCO_BUILD_STUDIO:BOOL=ON') && 'studio' || 'core' }}-
+        key: external-deps-v2-${{ runner.os == 'Windows' && 'windows' || 'posix' }}-${{ contains(matrix.cmake_args, 'MUJOCO_BUILD_STUDIO:BOOL=ON') && 'studio' || 'core' }}-${{ hashFiles('cmake/**', 'python/mujoco/CMakeLists.txt') }}
 
     - name: Configure MuJoCo
       env:
@@ -335,10 +333,7 @@ jobs:
       uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
       with:
         path: ${{ runner.temp }}/external_deps
-        key: external-deps-posix-wasm-${{ hashFiles('cmake/**') }}
-        restore-keys: |
-          external-deps-posix-wasm-
-          external-deps-posix-studio-
+        key: external-deps-v2-posix-wasm-${{ hashFiles('cmake/**') }}
 
     - name: Build and Test WASM bindings
       env:
@@ -416,10 +411,7 @@ jobs:
       uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
       with:
         path: ${{ runner.temp }}/external_deps
-        key: external-deps-posix-mjx-${{ hashFiles('cmake/**', 'python/mujoco/CMakeLists.txt') }}
-        restore-keys: |
-          external-deps-posix-mjx-
-          external-deps-posix-core-
+        key: external-deps-v2-posix-mjx-${{ hashFiles('cmake/**', 'python/mujoco/CMakeLists.txt') }}
 
     - name: Configure MuJoCo
       env:
