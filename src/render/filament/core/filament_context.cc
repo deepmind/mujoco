@@ -102,6 +102,7 @@ mjrfFrameHandle FilamentContext::Render(
   if constexpr (UTILS_HAS_THREADING) {
     // Wait until previous frame is completed before requesting a new frame.
     engine_->flushAndWait();
+    completed_frame_ = frame_counter_;
   }
 
   ValidateSwapChains(requests);
@@ -177,19 +178,22 @@ mjrfFrameHandle FilamentContext::Render(
     engine_->execute();
   }
 
+  const mjrfFrameHandle frame = ++frame_counter_;
   if (!read_requests.empty()) {
     engine_->flushAndWait();
+    completed_frame_ = frame;
     if (read_requests[0].read_completed) {
       read_requests[0].read_completed(read_requests[0].user_data);
     }
   }
 
-  return ++frame_counter_;
+  return frame;
 }
 
 void FilamentContext::WaitForFrame(mjrfFrameHandle frame_handle) {
-  if (frame_counter_ < frame_handle) {
+  if (completed_frame_ < frame_handle) {
     engine_->flushAndWait();
+    completed_frame_ = frame_counter_;
   }
 }
 

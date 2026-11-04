@@ -94,6 +94,7 @@ class FilamentContext : public mjrfContext {
   int offscreen_width_ = 0;
   int offscreen_height_ = 0;
   std::uint64_t frame_counter_ = 0;
+  std::uint64_t completed_frame_ = 0;
 };
 
 }  // namespace mujoco

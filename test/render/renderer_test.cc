@@ -987,5 +987,130 @@ TEST_F(RendererTest, DepthProjectionUsesFiniteFar) {
   EXPECT_NEAR(depth_at(0, 0), 0.0f, 1e-6f);
 }
 
+TEST_F(RendererTest, WaitForFrameFlushesSubmittedFrame) {
+  Renderer renderer(MakeOffscreenConfig());
+  mjrfContext* ctx = renderer.GetContext();
+  mjrfScene* scene = renderer.GetScene("scene");
+
+  mjrfTextureConfig tex_config;
+  mjrf_defaultTextureConfig(&tex_config);
+  tex_config.width = 4;
+  tex_config.height = 4;
+  tex_config.format = mjPIXEL_FORMAT_RGB8;
+  UniquePtr<mjrfTexture> texture = CreateTexture(ctx, tex_config);
+
+  std::vector<uint8_t> tex_bytes(4 * 4 * 3, 255);
+  int released = 0;
+  mjrfTextureData tex_data;
+  mjrf_defaultTextureData(&tex_data);
+  tex_data.bytes = tex_bytes.data();
+  tex_data.num_bytes = tex_bytes.size();
+  tex_data.user_data = &released;
+  tex_data.release =
+      +[](void* user_data) { (*static_cast<int*>(user_data))++; };
+  mjrf_uploadTexture(texture.get(), &tex_data);
+
+  mjrfRenderRequest req;
+  mjrf_defaultRenderRequest(&req);
+  req.scene = scene;
+  req.target = nullptr;
+  req.viewport = {0, 0, 16, 16};
+  req.post_processing = false;
+  req.shadows = false;
+  req.reflections = false;
+  req.camera.orthographic = true;
+  req.camera.pos[2] = 1.0f;
+  req.camera.forward[2] = -1.0f;
+  req.camera.up[1] = 1.0f;
+  req.camera.frustum_near = 0.0f;
+  req.camera.frustum_far = 1.0f;
+  req.camera.frustum_center = 8.0f;
+  req.camera.frustum_width = 8.0f;
+  req.camera.frustum_bottom = 16.0f;
+
+  mjrfFrameHandle frame = mjrf_render(ctx, &req, 1, nullptr, 0);
+  EXPECT_GT(frame, 0);
+
+  mjrf_waitForFrame(ctx, frame);
+  EXPECT_EQ(released, 1);
+
+  // Waiting again on an already-completed or zero handle is a safe no-op.
+  mjrf_waitForFrame(ctx, frame);
+  mjrf_waitForFrame(ctx, 0);
+  EXPECT_EQ(released, 1);
+}
+
+TEST_F(RendererTest, MeshReuploadReleasesResources) {
+  Renderer renderer(MakeOffscreenConfig());
+  mjrfContext* ctx = renderer.GetContext();
+  UniquePtr<mjrfMesh> mesh = MakeQuadMesh(ctx);
+
+  static const float vertices[] = {
+      -256.0f, -256.0f, 256.0f, -256.0f, -256.0f, 256.0f, 256.0f, 256.0f,
+  };
+  static const float uvs[] = {
+      0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 1.0f, 1.0f, 1.0f,
+  };
+  static const uint8_t colors[] = {
+      255, 255, 255, 255, 255, 255, 255, 255,
+      255, 255, 255, 255, 255, 255, 255, 255,
+  };
+  static const uint16_t indices[] = {0, 1, 2, 1, 3, 2};
+
+  UniquePtr<mjrfTexture> texture = MakeTexture(ctx, kRed);
+  UniquePtr<mjrfRenderable> renderable =
+      MakeRenderable(ctx, mesh.get(), texture.get());
+
+  mjrfRenderTargetConfig target_config;
+  mjrf_defaultRenderTargetConfig(&target_config);
+  target_config.width = 32;
+  target_config.height = 32;
+  target_config.color_format = mjPIXEL_FORMAT_RGB8;
+  target_config.depth_format = mjPIXEL_FORMAT_DEPTH32F;
+  Renderer::RenderTargetHandle target =
+      renderer.CreateRenderTarget("offscreen_mesh", target_config);
+  ASSERT_NE(target, Renderer::kInvalidRenderTarget);
+
+  mjrfScene* scene = renderer.GetScene("scene");
+  ASSERT_NE(scene, nullptr);
+  mjrf_addSceneRenderable(scene, renderable.get());
+
+  Renderer::View views[1];
+  SetupView(&views[0], renderer.GetSceneHandle("scene"), target, 32, 32);
+
+  int release_count_1 = 0;
+  mjrfMeshData data1;
+  mjrf_defaultMeshData(&data1);
+  data1.num_vertices = 4;
+  data1.vertices[0] = vertices;
+  data1.vertices[1] = uvs;
+  data1.vertices[2] = colors;
+  data1.num_indices = 6;
+  data1.indices = indices;
+  data1.release = +[](void* user) { (*static_cast<int*>(user))++; };
+  data1.user_data = &release_count_1;
+  mjrf_uploadMesh(mesh.get(), &data1);
+
+  renderer.Render(views);
+  EXPECT_EQ(release_count_1, 1);
+
+  int release_count_2 = 0;
+  mjrfMeshData data2;
+  mjrf_defaultMeshData(&data2);
+  data2.num_vertices = 4;
+  data2.vertices[0] = vertices;
+  data2.vertices[1] = uvs;
+  data2.vertices[2] = colors;
+  data2.num_indices = 6;
+  data2.indices = indices;
+  data2.release = +[](void* user) { (*static_cast<int*>(user))++; };
+  data2.user_data = &release_count_2;
+  mjrf_uploadMesh(mesh.get(), &data2);
+
+  renderer.Render(views);
+  EXPECT_EQ(release_count_2, 1);
+
+  mjrf_removeSceneRenderable(scene, renderable.get());
+}
 }  // namespace
 }  // namespace mujoco
