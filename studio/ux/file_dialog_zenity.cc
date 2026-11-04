@@ -60,17 +60,10 @@ static void UpdateArgs(std::vector<std::string>& args, std::string_view path,
     args.push_back("--filename=" + std::string(path.data()));
   }
   for (std::string_view filter : filters) {
-    std::string filter_str = "--file-filter=";
-    while (!filter.empty()) {
-      if (auto pos = filter.find(','); pos != std::string_view::npos) {
-        filter_str += "*." + std::string(filter.substr(0, pos)) + " ";
-        filter = filter.substr(pos + 1);
-      }
-      if (!filter.empty()) {
-        filter_str += "*." + std::string(filter);
-      }
+    std::string pattern = FormatFileFilter(filter, ' ');
+    if (!pattern.empty()) {
+      args.push_back("--file-filter=" + pattern);
     }
-    args.push_back(filter_str);
   }
 }
 

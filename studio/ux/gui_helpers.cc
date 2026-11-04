@@ -65,74 +65,72 @@ std::string CameraToString(const mjData* data, const mjvCamera* camera) {
 }
 
 std::string KeyframeToString(const mjModel* model, const mjData* data, bool full_precision) {
-  const int kStrLen = 5000;
-
   char buf[200];
   const char p_regular[] = "%g";
   const char p_full[] = "%-22.16g";
   const char* format = full_precision ? p_full : p_regular;
 
-  char str[kStrLen] = "<key\n";
+  std::string str = "<key\n";
 
   // time
-  std::strncat(str, " time=\"", kStrLen);
+  str += " time=\"";
   std::snprintf(buf, sizeof(buf), format, data->time);
-  std::strncat(str, buf, kStrLen);
+  str += buf;
 
   // qpos
-  std::strncat(str, "\"\n  qpos=\"", kStrLen);
+  str += "\"\n  qpos=\"";
   for (int i = 0; i < model->nq; i++) {
     std::snprintf(buf, sizeof(buf), format, data->qpos[i]);
-    if (i < model->nq - 1) std::strncat(buf, " ", 200);
-    std::strncat(str, buf, kStrLen);
+    str += buf;
+    if (i < model->nq - 1) str += " ";
   }
 
   // qvel
-  std::strncat(str, "\"\n  qvel=\"", kStrLen);
+  str += "\"\n  qvel=\"";
   for (int i = 0; i < model->nv; i++) {
     std::snprintf(buf, sizeof(buf), format, data->qvel[i]);
-    if (i < model->nv - 1) std::strncat(buf, " ", 200);
-    std::strncat(str, buf, kStrLen);
+    str += buf;
+    if (i < model->nv - 1) str += " ";
   }
 
   // act
   if (model->na > 0) {
-    std::strncat(str, "\"\n  act=\"", kStrLen);
+    str += "\"\n  act=\"";
     for (int i = 0; i < model->na; i++) {
       std::snprintf(buf, sizeof(buf), format, data->act[i]);
-      if (i < model->na - 1) std::strncat(buf, " ", 200);
-      std::strncat(str, buf, kStrLen);
+      str += buf;
+      if (i < model->na - 1) str += " ";
     }
   }
 
   // ctrl
   if (model->nu > 0) {
-    std::strncat(str, "\"\n  ctrl=\"", kStrLen);
+    str += "\"\n  ctrl=\"";
     for (int i = 0; i < model->nu; i++) {
       std::snprintf(buf, sizeof(buf), format, data->ctrl[i]);
-      if (i < model->nu - 1) std::strncat(buf, " ", 200);
-      std::strncat(str, buf, kStrLen);
+      str += buf;
+      if (i < model->nu - 1) str += " ";
     }
   }
 
   if (model->nmocap > 0) {
-    std::strncat(str, "\"\n  mpos=\"", kStrLen);
+    str += "\"\n  mpos=\"";
     for (int i = 0; i < 3 * model->nmocap; i++) {
       std::snprintf(buf, sizeof(buf), format, data->mocap_pos[i]);
-      if (i < 3 * model->nmocap - 1) std::strncat(buf, " ", 200);
-      std::strncat(str, buf, kStrLen);
+      str += buf;
+      if (i < 3 * model->nmocap - 1) str += " ";
     }
 
     // mocap_quat
-    std::strncat(str, "\"\n  mquat=\"", kStrLen);
+    str += "\"\n  mquat=\"";
     for (int i = 0; i < 4 * model->nmocap; i++) {
       std::snprintf(buf, sizeof(buf), format, data->mocap_quat[i]);
-      if (i < 4 * model->nmocap - 1) std::strncat(buf, " ", 200);
-      std::strncat(str, buf, kStrLen);
+      str += buf;
+      if (i < 4 * model->nmocap - 1) str += " ";
     }
   }
 
-  std::strncat(str, "\"\n/>", kStrLen);
+  str += "\"\n/>";
   return str;
 }
 

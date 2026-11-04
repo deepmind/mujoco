@@ -15,11 +15,34 @@
 #ifndef MUJOCO_STUDIO_UX_FILE_DIALOG_H_
 #define MUJOCO_STUDIO_UX_FILE_DIALOG_H_
 
+#include <cstddef>
 #include <span>
 #include <string>
 #include <string_view>
 
 namespace mujoco::studio {
+
+// Formats a comma-separated extension list (e.g. "xml,mjb") as wildcard
+// patterns joined by `separator` (e.g. "*.xml *.mjb" or "*.xml;*.mjb").
+inline std::string FormatFileFilter(std::string_view filter, char separator) {
+  std::string result;
+  while (!filter.empty()) {
+    const size_t pos = filter.find(',');
+    const std::string_view ext = filter.substr(0, pos);
+    if (!ext.empty()) {
+      if (!result.empty()) {
+        result += separator;
+      }
+      result += "*.";
+      result.append(ext);
+    }
+    if (pos == std::string_view::npos) {
+      break;
+    }
+    filter.remove_prefix(pos + 1);
+  }
+  return result;
+}
 
 // Result returned by various file dialog functions.
 struct DialogResult {

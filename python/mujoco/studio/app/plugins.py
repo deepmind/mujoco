@@ -323,6 +323,11 @@ class App(plugin.ViewerPlugin):
       )
     else:
       mujoco.mjv_defaultFreeCamera(self.model, self.viewer.camera)
+      if self.ux_state.camera_index not in (
+          ux.TUMBLE_CAMERA_IDX,
+          ux.FREE_CAMERA_IDX,
+      ):
+        self.ux_state.camera_index = ux.TUMBLE_CAMERA_IDX
 
   def reload_model(self) -> None:
     """Asks the sim to reload the current model from its file."""

@@ -646,6 +646,7 @@ void App::BuildModel(const BuildModelInfo& info) {
     if (tmp_holder->ok()) {
       preserve_camera_on_load_ = true;
       model_holder_ = std::move(tmp_holder);
+      tmp_.curr_element = nullptr;
       RestoreKeyframeSelection(saved_key);
       OnModelLoaded("", model_kind_);
     } else {
@@ -653,6 +654,7 @@ void App::BuildModel(const BuildModelInfo& info) {
     }
   } else if (std::holds_alternative<RecompileModel>(info)) {
     const KeyframeSelection saved_key = CaptureKeyframeSelection(/*is_reload=*/true);
+    tmp_.curr_element = nullptr;
     model_holder_->Recompile();
     if (!model_holder_->ok()) {
       SetLoadError(std::string(model_holder_->error()));
@@ -667,6 +669,7 @@ void App::BuildModel(const BuildModelInfo& info) {
     profiler_.ResetTimers();
   } else if (std::holds_alternative<EmptyModel>(info)) {
     model_holder_.reset();
+    tmp_.curr_element = nullptr;
     mj_deleteVFS(&vfs_);
     mj_defaultVFS(&vfs_);
     model_holder_ = ModelHolder::FromSpec(mj_makeSpec(), &vfs_);
@@ -680,6 +683,7 @@ void App::BuildModel(const BuildModelInfo& info) {
     const std::string resolved_file = ResolveFile(load.filepath, search_paths_);
     const KeyframeSelection saved_key = CaptureKeyframeSelection(preserve_camera_on_load_);
     model_holder_.reset();
+    tmp_.curr_element = nullptr;
     mj_deleteVFS(&vfs_);
     mj_defaultVFS(&vfs_);
     model_holder_ = ModelHolder::FromFile(resolved_file, &vfs_);
@@ -712,6 +716,7 @@ void App::BuildModel(const BuildModelInfo& info) {
     auto& load = std::get<BufferModel>(info);
     const KeyframeSelection saved_key = CaptureKeyframeSelection(preserve_camera_on_load_);
     model_holder_.reset();
+    tmp_.curr_element = nullptr;
     mj_deleteVFS(&vfs_);
     mj_defaultVFS(&vfs_);
     model_holder_ = ModelHolder::FromBuffer(load.buffer, load.content_type, load.name, &vfs_);
@@ -733,6 +738,7 @@ void App::BuildModel(const BuildModelInfo& info) {
 
 void App::OnModelLoaded(std::string_view filename, ModelKind model_kind) {
   load_error_ = "";
+  tmp_.curr_element = nullptr;
 
   timer_prev_ = {};
   profiler_.Clear();

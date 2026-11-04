@@ -66,30 +66,27 @@ static std::unique_ptr<wchar_t[]> CharToWChar(std::string_view str) {
 }
 
 static std::unique_ptr<wchar_t[]> ReadFilter(std::string_view filter) {
-  std::string filter_str;
-  while (!filter.empty()) {
-    if (auto pos = filter.find(','); pos != std::string_view::npos) {
-      filter_str += "*." + std::string(filter.substr(0, pos)) + ";";
-      filter = filter.substr(pos + 1);
-    }
-    if (!filter.empty()) {
-      filter_str += "*." + std::string(filter);
-    }
+  std::string filter_str = FormatFileFilter(filter, ';');
+  if (filter_str.empty()) {
+    return nullptr;
   }
   return CharToWChar(filter_str);
 }
 
 static bool AddFilters(IFileDialog* dialog, std::span<std::string_view> filters = {}) {
   // +1 to include *.* wildcard.
-  const int num_filters = filters.size() + 1;
+  const size_t max_filters = filters.size() + 1;
 
   std::vector<COMDLG_FILTERSPEC> specs;
   std::vector<std::unique_ptr<wchar_t[]>> names;
-  names.reserve(num_filters);
-  specs.reserve(num_filters);
+  names.reserve(max_filters);
+  specs.reserve(max_filters);
 
   for (std::string_view filter : filters) {
     auto wfilter = ReadFilter(filter);
+    if (!wfilter) {
+      continue;
+    }
     auto& spec = specs.emplace_back();
     spec.pszName = wfilter.get();
     spec.pszSpec = wfilter.get();
@@ -101,7 +98,7 @@ static bool AddFilters(IFileDialog* dialog, std::span<std::string_view> filters 
   last.pszSpec = WILDCARD;
   last.pszName = WILDCARD;
 
-  dialog->SetFileTypes(num_filters, specs.data());
+  dialog->SetFileTypes(static_cast<UINT>(specs.size()), specs.data());
   return true;
 }
 

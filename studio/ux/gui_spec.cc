@@ -189,6 +189,13 @@ static void BodyTreeGuiRecursive(mjsElement** element, mjsBody* body, SpecEditor
   }
   if (editor && *element == body->element) {
     AddEditorButtons(body->element, element, *editor);
+    if (!*element) {
+      if (tree_open) {
+        ImGui::TreePop();
+      }
+      ImGui::PopID();
+      return;
+    }
   }
 
   if (tree_open) {

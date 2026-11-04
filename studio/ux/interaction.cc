@@ -435,7 +435,7 @@ static PickResult PickSkin(const mjModel* m, const mjData* d, const mjtNum ray_p
 
     float* skinvert = vertex_buffer.data();
     float* skinnormal = m->skin_inflate[i] ? normal_buffer.data() : nullptr;
-    MakeSkin(m, d, vis_options, i, skinvert, skinnormal);
+    MakeSkin(m, d, vis_options, i, skinnormal, skinvert);
 
     int vertid;
     mjtNum test_dist =

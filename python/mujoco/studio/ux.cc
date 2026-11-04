@@ -54,7 +54,7 @@ struct UxState {
   int camera_index = mujoco::studio::kTumbleCameraIdx;
 
   // Read/edited by simulation_gui.
-  int key_idx = 0;
+  int key_idx = -1;
   int nthread = 0;
   bool update_threadpool = false;
   mujoco::studio::SimulationTimelineState timeline;
