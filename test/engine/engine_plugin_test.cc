@@ -22,6 +22,7 @@
 #include <chrono>
 #include <cstddef>
 #include <cstdint>
+#include <cstdio>
 #include <cstdlib>
 #include <filesystem>  // NOLINT
 #include <fstream>
@@ -29,7 +30,8 @@
 #include <sstream>
 #include <string>
 #include <string_view>
-#include <thread>  // NOLINT
+#include <system_error>  // NOLINT
+#include <thread>        // NOLINT
 #include <vector>
 
 #include <gmock/gmock.h>
@@ -922,6 +924,58 @@ TEST_F(MujocoTest, FindDecoderNullContentTypeCrash) {
   resource.name = filename;
   const mjpDecoder* decoder = mjp_findDecoder(&resource, nullptr);
   EXPECT_THAT(decoder, testing::IsNull());
+}
+
+static std::string PathToUtf8(const std::filesystem::path& p) {
+  auto u8str = p.u8string();
+  return std::string(reinterpret_cast<const char*>(u8str.data()), u8str.size());
+}
+
+TEST_F(MujocoTest, LoadAllPluginLibrariesUtf8Path) {
+#if defined(_WIN32) || defined(__CYGWIN__)
+  std::filesystem::path filename = u8"テスト_plugin.dll";
+#elif defined(__APPLE__)
+  std::filesystem::path filename = u8"テスト_plugin.dylib";
+#else
+  std::filesystem::path filename = u8"テスト_plugin.so";
+#endif
+  std::filesystem::path utf8_dir =
+      std::filesystem::path(::testing::TempDir()) / u8"mujoco_plugin_テスト";
+  std::error_code ec;
+  std::filesystem::remove_all(utf8_dir, ec);
+  ec.clear();
+  std::filesystem::create_directories(utf8_dir, ec);
+  if (ec) {
+    GTEST_SKIP() << "Could not create directory with UTF-8 name: "
+                 << ec.message();
+  }
+
+  std::string dir_u8 = PathToUtf8(utf8_dir);
+  std::string filename_u8 = PathToUtf8(filename);
+
+  // empty directory: callback should not be invoked
+  static int empty_calls = 0;
+  empty_calls = 0;
+  mj_loadAllPluginLibraries(
+      dir_u8.c_str(), +[](const char*, int, int) { ++empty_calls; });
+  EXPECT_EQ(empty_calls, 0);
+
+  std::ofstream(utf8_dir / filename) << "not a library";
+
+#if defined(_WIN32) || defined(__CYGWIN__)
+  static char loaded_file[256] = "";
+  loaded_file[0] = '\0';
+  mj_loadAllPluginLibraries(
+      dir_u8.c_str(), +[](const char* name, int first, int count) {
+        std::snprintf(loaded_file, sizeof(loaded_file), "%s", name);
+      });
+  EXPECT_EQ(std::string(loaded_file), filename_u8);
+#else
+  auto load_all = MjuErrorMessageFrom(mj_loadAllPluginLibraries);
+  EXPECT_THAT(load_all(dir_u8.c_str(), nullptr), HasSubstr(filename_u8));
+#endif
+
+  std::filesystem::remove_all(utf8_dir);
 }
 
 }  // namespace

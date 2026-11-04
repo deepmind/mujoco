@@ -777,12 +777,51 @@ int mjp_archiveProviderCount() {
 }
 
 
+#if defined(_WIN32) || defined(__CYGWIN__)
+// convert UTF-8 string to wide string
+static std::wstring Utf8ToWide(std::string_view str) {
+  if (str.empty()) {
+    return L"";
+  }
+  int wlen = MultiByteToWideChar(
+      CP_UTF8, MB_ERR_INVALID_CHARS, str.data(), static_cast<int>(str.size()), nullptr, 0);
+  if (wlen <= 0) {
+    return L"";
+  }
+  std::wstring wstr(wlen, L'\0');
+  MultiByteToWideChar(
+      CP_UTF8, MB_ERR_INVALID_CHARS, str.data(), static_cast<int>(str.size()), wstr.data(), wlen);
+  return wstr;
+}
+
+// convert wide string to UTF-8 string
+static std::string WideToUtf8(std::wstring_view wstr) {
+  if (wstr.empty()) {
+    return "";
+  }
+  int len = WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, wstr.data(),
+                                static_cast<int>(wstr.size()), nullptr, 0, nullptr, nullptr);
+  if (len <= 0) {
+    return "";
+  }
+  std::string str(len, '\0');
+  WideCharToMultiByte(CP_UTF8, WC_ERR_INVALID_CHARS, wstr.data(),
+                      static_cast<int>(wstr.size()), str.data(), len, nullptr, nullptr);
+  return str;
+}
+#endif
+
 // load plugins from a dynamic library, return false and write error message on failure
 static bool LoadPluginLibrary(const char* path, char* error, int error_sz) {
 #if defined(_WIN32) || defined(__CYGWIN__)
   (void)error;
   (void)error_sz;
-  LoadLibraryA(path);
+  if (path) {
+    std::wstring wpath = Utf8ToWide(path);
+    if (!wpath.empty()) {
+      LoadLibraryW(wpath.c_str());
+    }
+  }
 #else
   void* handle = dlopen(path, RTLD_NOW | RTLD_LOCAL);
   if (!handle) {
@@ -832,27 +871,36 @@ static bool LoadAllPluginLibraries(const char* directory, mjfPluginLibraryLoadCa
     return true;
   };
 
+  if (!directory || !directory[0]) {
+    return true;
+  }
+
   // define platform-specific strings
 #if defined(_WIN32) || defined(__CYGWIN__)
   const std::string sep = "\\";
-  WIN32_FIND_DATAA find_data;
-  HANDLE hfile = FindFirstFileA(
-      (directory + sep + "*.dll").c_str(), &find_data);
-  if (!hfile) {
+  WIN32_FIND_DATAW find_data;
+  std::wstring wpattern = Utf8ToWide(directory + sep + "*.dll");
+  if (wpattern.empty()) {
+    return true;
+  }
+  HANDLE hfile = FindFirstFileW(wpattern.c_str(), &find_data);
+  if (hfile == INVALID_HANDLE_VALUE) {
     return true;
   }
 
   // go through each file in the directory
   bool keep_going = true;
   while (keep_going) {
-    const std::string name(find_data.cFileName);
-    // load the library and check for plugins
-    const std::string dso_path = directory + sep + name;
-    if (!load_dso_and_call_callback(name.c_str(), dso_path.c_str())) {
-      FindClose(hfile);
-      return false;
+    const std::string name = WideToUtf8(find_data.cFileName);
+    if (!name.empty()) {
+      // load the library and check for plugins
+      const std::string dso_path = directory + sep + name;
+      if (!load_dso_and_call_callback(name.c_str(), dso_path.c_str())) {
+        FindClose(hfile);
+        return false;
+      }
     }
-    keep_going = FindNextFileA(hfile, &find_data);
+    keep_going = FindNextFileW(hfile, &find_data);
   }
   FindClose(hfile);
 #else

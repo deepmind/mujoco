@@ -340,7 +340,9 @@ Bug fixes
   :ref:`mjrContext` in :ref:`mjr_readPixels` and colors geoms by ``segid + 1`` like :ref:`mjRND_IDCOLOR<mjtRndFlag>`
   so a geom with ``segid`` 0 no longer renders as background.
 - File paths on Windows are now interpreted as UTF-8 rather than the active ANSI code page, fixing loading and saving
-  files when the path contains non-ASCII UTF-8 characters (:issue:`3139`). Contribution by :github:user:`mar-yan24`.
+  files, plugin library discovery and loading (:ref:`mj_loadPluginLibrary`, :ref:`mj_loadAllPluginLibraries`), and
+  :ref:`simulate<saSimulate>` executable directory lookup when paths contain non-ASCII UTF-8 characters
+  (:issue:`3139`). Contribution by :github:user:`mar-yan24`.
 - Fixed :ref:`dcmotor<actuator-dcmotor>` parameter handling: allow zero :ref:`motorconst<actuator-dcmotor-motorconst>`
   for ``input="none"``, reject negative constants (e.g. ``motorconst="-a b"`` is now rejected instead of silently
   using ``K = b``), replace capacitance when an inconsistent :ref:`thermal<actuator-dcmotor-thermal>` triple is given,
