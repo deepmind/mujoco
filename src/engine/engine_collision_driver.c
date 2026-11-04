@@ -765,7 +765,7 @@ void mj_collision(const mjModel* m, mjData* d) {
   TM_RESTART;
 
   // process bodyflex pairs returned by broadphase, merge with predefined geom pairs
-  int pairadr = 0, ncandidate = 0, ngroup = 0, g1, g2;
+  int pairadr = 0, exadr = 0, ncandidate = 0, ngroup = 0, g1, g2;
 
   // align the arena for candidate collision pairs for narrowphase
   size_t parena = alignArena(d, _Alignof(mjcPair));
@@ -807,15 +807,14 @@ void mj_collision(const mjModel* m, mjData* d) {
     }
 
     // handle body pair exclusion
-    int exadr = 0;
     if (nexclude) {
       // advance exadr while exclude_signature < signature
-      while (exadr < nexclude && m->exclude_signature[exadr] < signature) {
+      while (exadr < nexclude && (unsigned int)m->exclude_signature[exadr] < signature) {
         exadr++;
       }
 
       // skip this bodyflex pair if its signature is found in exclude array
-      if (exadr < nexclude && m->exclude_signature[exadr] == signature) {
+      if (exadr < nexclude && (unsigned int)m->exclude_signature[exadr] == signature) {
         continue;
       }
     }
@@ -2023,6 +2022,46 @@ static inline int pairMaxContact(const mjModel* m, const mjcPair* pair) {
 }
 
 
+// return 1 if collision pair may use nativeccd buffer, 0 otherwise
+// returning 0 for a CCD pair only costs performance (mjc_penetration falls
+// back to per-call stack allocation when no buffer is bound), so the denylist
+// is safe and new analytical colliders don't need to be added for correctness
+static inline int pairNeedsCCD(const mjModel* m, const mjcPair* pair) {
+  if (mjDISABLED(mjDSBL_NATIVECCD)) {
+    return 0;
+  }
+
+  switch (pair->type) {
+    case mjCPAIR_GEOM_GEOM: {
+      if (speculativeEnabled(m)) {
+        return 1;
+      }
+      int type1 = m->geom_type[pair->geom_geom.g1];
+      int type2 = m->geom_type[pair->geom_geom.g2];
+      mjfCollision fn = mjCOLLISIONFUNC[type1][type2];
+      if (!fn ||
+          fn == mjc_PlaneSphere || fn == mjc_PlaneCapsule ||
+          fn == mjc_PlaneCylinder || fn == mjc_PlaneBox ||
+          fn == mjc_PlaneConvex || fn == mjc_SphereSphere ||
+          fn == mjc_SphereCapsule || fn == mjc_SphereCylinder ||
+          fn == mjc_SphereBox || fn == mjc_CapsuleCapsule ||
+          fn == mjc_CapsuleBox || fn == mjc_BoxBox ||
+          fn == mjc_SDF || fn == mjc_HFieldSDF || fn == mjc_MeshSDF) {
+        return 0;
+      }
+      return 1;
+    }
+
+    case mjCPAIR_GEOM_ELEM:
+    case mjCPAIR_ELEM_ELEM:
+      return 1;
+
+    default:
+      return 0;
+  }
+}
+
+
 static void collisionTask(const mjModel* m, mjData* d, void* arg, int thread_id, int idx) {
   mjContactArg* conargs = (mjContactArg*)arg;
   mjPreContact* conbuffer = conargs->conbuffer;
@@ -2035,7 +2074,9 @@ static void collisionTask(const mjModel* m, mjData* d, void* arg, int thread_id,
   int npair = conargs->npair;
   int n = mjMIN(chunksize, npair - globalidx);
 
-  mjc_setCCDBuffer(epabuffer + thread_id * conargs->ccd_size);
+  if (epabuffer) {
+    mjc_setCCDBuffer(epabuffer + thread_id * conargs->ccd_size);
+  }
   for (int i = 0; i < n; i++) {
     int conpos = pair[i].conpos;
 
@@ -2125,7 +2166,9 @@ static void collisionTask(const mjModel* m, mjData* d, void* arg, int thread_id,
               "expected at most %d from pairMaxContact", ncon[i], expected_max);
     }
   }
-  mjc_setCCDBuffer(NULL);
+  if (epabuffer) {
+    mjc_setCCDBuffer(NULL);
+  }
 }
 
 
@@ -2328,9 +2371,6 @@ static inline void filterPreContacts(mjData* d, mjContactArg* arg, int start, in
 // compute contacts for a batch of collision pairs on the arena starting at parena
 static void mj_narrowphase(const mjModel* m, mjData* d, int npair, size_t parena) {
   int nthread = mju_numThread(d);
-  int npolygonmax = mjDISABLED(mjDSBL_MULTICCD) ? 0 : m->npolygonmax;
-  int nmeshdegmax = mjDISABLED(mjDSBL_MULTICCD) ? 0 : m->nmeshdegmax;
-  int ccd_size = mjc_ccdSize(npolygonmax, nmeshdegmax, m->opt.ccd_iterations);
   // try to balance load of 5 chunks per thread
   int chunksize = (nthread == 1) ? npair : mjMAX(1, npair / (5 * nthread));
 
@@ -2344,6 +2384,7 @@ static void mj_narrowphase(const mjModel* m, mjData* d, int npair, size_t parena
   mjcPair* pairbuffer = mjSTACKALLOC(d, npair, mjcPair);
   int maxcon = 0;
   int has_flex = 0;
+  int has_ccd = 0;
   for (int i = 0; i < npair; i++) {
     pairbuffer[i] = buffer[i];
     pairbuffer[i].conpos = maxcon;
@@ -2351,6 +2392,16 @@ static void mj_narrowphase(const mjModel* m, mjData* d, int npair, size_t parena
     if (buffer[i].type == mjCPAIR_GEOM_FLEX) {
       has_flex = 1;
     }
+    if (!has_ccd && pairNeedsCCD(m, buffer + i)) {
+      has_ccd = 1;
+    }
+  }
+
+  int ccd_size = 0;
+  if (has_ccd) {
+    int npolygonmax = mjDISABLED(mjDSBL_MULTICCD) ? 0 : m->npolygonmax;
+    int nmeshdegmax = mjDISABLED(mjDSBL_MULTICCD) ? 0 : m->nmeshdegmax;
+    ccd_size = mjc_ccdSize(npolygonmax, nmeshdegmax, m->opt.ccd_iterations);
   }
 
   // buffer data has been copied to metadata on the stack;
@@ -2371,7 +2422,7 @@ static void mj_narrowphase(const mjModel* m, mjData* d, int npair, size_t parena
   {
     mj_markStack(d);
     int nactive = (nchunk < 2) ? 1 : nthread;
-    arg.epabuffer = mj_stackAllocByte(d, ccd_size * nactive, sizeof(mjtNum));
+    arg.epabuffer = has_ccd ? mj_stackAllocByte(d, ccd_size * nactive, sizeof(mjtNum)) : NULL;
     mju_dispatch(m, d, collisionTask, &arg, nchunk);
     mj_freeStack(d);
   }

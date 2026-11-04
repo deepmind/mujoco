@@ -1484,5 +1484,108 @@ TEST_F(MjCollisionTest, PlaneAndSdfFlexRespectGeomBitmaskInMidphase) {
   EXPECT_EQ(d_all->ncon, 0);
 }
 
+// Exclude two-pointer merge with out-of-order excludes, midphase, and <pair>.
+TEST_F(MjCollisionTest, ExcludeMergeAndPairOverride) {
+  static constexpr char xml[] = R"(
+  <mujoco>
+    <worldbody>
+      <geom name="gw" size="0.3"/>
+      <replicate count="20" offset="0.001 0 0">
+        <body name="r">
+          <freejoint/>
+          <geom name="gr" size="0.3" contype="2" conaffinity="0"/>
+        </body>
+      </replicate>
+      <body name="a" pos="0.01 0 0">
+        <freejoint/>
+        <geom name="ga" size="0.3"/>
+      </body>
+      <body name="b" pos="0.02 0 0">
+        <freejoint/>
+        <geom name="gb0" size="0.3"/>
+        <geom name="gb1" pos="0 0 0.01" size="0.3"/>
+      </body>
+    </worldbody>
+    <contact>
+      <exclude body1="b" body2="a"/>
+      <exclude body1="b" body2="r10"/>
+      <exclude body1="a" body2="world"/>
+      <exclude body1="r05" body2="world"/>
+      <pair geom1="gb1" geom2="ga"/>
+    </contact>
+  </mujoco>
+  )";
+  char error[1024];
+  MjModelPtr m = LoadModelFromString(xml, error, sizeof(error));
+  ASSERT_THAT(m.get(), NotNull()) << error;
+  MjDataPtr d = MakeData(m);
+  for (int disable : {0, static_cast<int>(mjDSBL_MIDPHASE)}) {
+    m->opt.disableflags = disable;
+    mj_forward(m.get(), d.get());
+    EXPECT_THAT(colliding_pairs(m.get(), d.get()),
+                ElementsAre(GeomPair("ga", "gb1"), GeomPair("gb0", "gw"),
+                            GeomPair("gb1", "gw")));
+  }
+}
+
+// Narrowphase skips CCD stack buffers unless convex or custom colliders run.
+TEST_F(MjCollisionTest, NarrowphaseCCDBuffer) {
+  static constexpr char sphere_xml[] = R"(
+  <mujoco>
+    <worldbody>
+      <replicate count="20" offset="0.01 0 0">
+        <body>
+          <freejoint/>
+          <geom type="sphere" size="0.2"/>
+        </body>
+      </replicate>
+    </worldbody>
+  </mujoco>
+  )";
+  static constexpr char ellipsoid_xml[] = R"(
+  <mujoco>
+    <worldbody>
+      <replicate count="20" offset="0.01 0 0">
+        <body>
+          <freejoint/>
+          <geom type="ellipsoid" size="0.2 0.2 0.2"/>
+        </body>
+      </replicate>
+    </worldbody>
+  </mujoco>
+  )";
+  auto max_stack = [](const char* xml, int workers, int disable = 0) {
+    char error[1024];
+    MjModelPtr m = LoadModelFromString(xml, error, sizeof(error));
+    EXPECT_THAT(m.get(), NotNull()) << error;
+    m->opt.disableflags = disable;
+    MjDataPtr d = MakeData(m);
+    mju_threadpool(d.get(), workers);
+    mj_forward(m.get(), d.get());
+    d->maxuse_stack = 0;
+    mj_collision(m.get(), d.get());
+    EXPECT_EQ(d->ncon, 190);
+    return static_cast<ptrdiff_t>(d->maxuse_stack);
+  };
+
+  ptrdiff_t prim = max_stack(sphere_xml, 4);
+  ptrdiff_t convex = max_stack(ellipsoid_xml, 4);
+  ptrdiff_t ccd_buf = max_stack(ellipsoid_xml, 0) - max_stack(sphere_xml, 0);
+  ASSERT_GT(ccd_buf, 0);
+  EXPECT_LE(prim, max_stack(ellipsoid_xml, 4, mjDSBL_NATIVECCD));
+  EXPECT_LT(prim - max_stack(sphere_xml, 0), ccd_buf / 10);
+  EXPECT_GE(convex - prim, 4 * ccd_buf);
+
+  static mjfCollision ccd = mjCOLLISIONFUNC[mjGEOM_ELLIPSOID][mjGEOM_ELLIPSOID];
+  mjfCollision orig = mjCOLLISIONFUNC[mjGEOM_SPHERE][mjGEOM_SPHERE];
+  mjCOLLISIONFUNC[mjGEOM_SPHERE][mjGEOM_SPHERE] =
+      [](const mjModel* m, mjData* d, mjPreContact* c, int g1, int g2,
+         mjtNum margin) { return ccd(m, d, c, g1, g2, margin); };
+  ptrdiff_t custom = max_stack(sphere_xml, 4);
+  mjCOLLISIONFUNC[mjGEOM_SPHERE][mjGEOM_SPHERE] = orig;
+  EXPECT_NEAR(custom, convex, ccd_buf / 4);
+  EXPECT_LT(custom - prim, 10 * ccd_buf);
+}
+
 }  // namespace
 }  // namespace mujoco
