@@ -113,6 +113,7 @@ static void settexture(int type, int state, const mjrContext* con, const mjvGeom
       glDisable(GL_TEXTURE_GEN_T);
       glDisable(GL_TEXTURE_GEN_R);
       glDisable(GL_TEXTURE_GEN_Q);
+      glActiveTexture(GL_TEXTURE0);
     }
   }
 
@@ -723,11 +724,19 @@ static int isSupportedLight(const mjvLight* light) {
 
 
 // init lights
-static void initLights(mjvScene* scn) {
-  // count supported lights
+static int initLights(mjvScene* scn, int* light_id) {
+  GLint max_lights = 0;
+  glGetIntegerv(GL_MAX_LIGHTS, &max_lights);
+  max_lights = mjMAX(0, mjMIN(8, max_lights));
+
+  // count supported lights, compact into hardware slots
+  int n = mjMIN(mjMAXLIGHT, scn->nlight);
   int nsupported = 0;
-  for (int i=0; i < scn->nlight; i++) {
-    nsupported += isSupportedLight(scn->lights+i);
+  for (int i=0; i < n && nsupported < max_lights; i++) {
+    // ignore unsupported light types: mjLIGHT_POINT, mjLIGHT_IMAGE
+    if (isSupportedLight(scn->lights+i)) {
+      light_id[nsupported++] = i;
+    }
   }
 
   // create some ambient light if no supported lights are present
@@ -740,19 +749,16 @@ static void initLights(mjvScene* scn) {
   glLightModeli(GL_LIGHT_MODEL_LOCAL_VIEWER, 1);
 
   // set light properties
-  for (int i=0; i < scn->nlight; i++) {
-    // ignore unsupported light types: mjLIGHT_POINT, mjLIGHT_IMAGE
-    if (!isSupportedLight(scn->lights+i)) {
-      continue;
-    }
+  for (int i=0; i < nsupported; i++) {
+    const mjvLight* light = scn->lights+light_id[i];
 
     // colors
-    glLightfv(GL_LIGHT0+i, GL_AMBIENT, scn->lights[i].ambient);
-    glLightfv(GL_LIGHT0+i, GL_DIFFUSE, scn->lights[i].diffuse);
-    glLightfv(GL_LIGHT0+i, GL_SPECULAR, scn->lights[i].specular);
+    glLightfv(GL_LIGHT0+i, GL_AMBIENT, light->ambient);
+    glLightfv(GL_LIGHT0+i, GL_DIFFUSE, light->diffuse);
+    glLightfv(GL_LIGHT0+i, GL_SPECULAR, light->specular);
 
     // parameters for directional light
-    if (scn->lights[i].type == mjLIGHT_DIRECTIONAL) {
+    if (light->type == mjLIGHT_DIRECTIONAL) {
       glLightf(GL_LIGHT0+i, GL_SPOT_EXPONENT,         0);
       glLightf(GL_LIGHT0+i, GL_SPOT_CUTOFF,           180);
       glLightf(GL_LIGHT0+i, GL_CONSTANT_ATTENUATION,  1);
@@ -761,19 +767,21 @@ static void initLights(mjvScene* scn) {
     }
 
     // parameters for spot light
-    else if (scn->lights[i].type == mjLIGHT_SPOT) {
-      glLightf(GL_LIGHT0+i, GL_SPOT_EXPONENT,         scn->lights[i].exponent);
-      glLightf(GL_LIGHT0+i, GL_SPOT_CUTOFF,           scn->lights[i].cutoff);
-      glLightf(GL_LIGHT0+i, GL_CONSTANT_ATTENUATION,  scn->lights[i].attenuation[0]);
-      glLightf(GL_LIGHT0+i, GL_LINEAR_ATTENUATION,    scn->lights[i].attenuation[1]);
-      glLightf(GL_LIGHT0+i, GL_QUADRATIC_ATTENUATION, scn->lights[i].attenuation[2]);
+    else if (light->type == mjLIGHT_SPOT) {
+      glLightf(GL_LIGHT0+i, GL_SPOT_EXPONENT,         light->exponent);
+      glLightf(GL_LIGHT0+i, GL_SPOT_CUTOFF,           light->cutoff);
+      glLightf(GL_LIGHT0+i, GL_CONSTANT_ATTENUATION,  light->attenuation[0]);
+      glLightf(GL_LIGHT0+i, GL_LINEAR_ATTENUATION,    light->attenuation[1]);
+      glLightf(GL_LIGHT0+i, GL_QUADRATIC_ATTENUATION, light->attenuation[2]);
     }
   }
 
   // disable all lights (enable selectively in render)
-  for (int i=0; i < scn->nlight; i++) {
+  for (int i=0; i < max_lights; i++) {
     glDisable(GL_LIGHT0+i);
   }
+
+  return nsupported;
 }
 
 
@@ -887,7 +895,8 @@ static void adjustLight(const mjvLight* thislight, int n) {
 
 // render
 void mjr_render(mjrRect viewport, mjvScene* scn, const mjrContext* con) {
-  int stereo, nt, ngeom = scn->ngeom, nlight = mjMIN(mjMAXLIGHT, scn->nlight);
+  int stereo, nt, ngeom = scn->ngeom, nlight;
+  int light_id[8];
   unsigned int drawbuffer;
   mjvGLCamera cam;
   mjtNum hpos[3];
@@ -960,7 +969,7 @@ void mjr_render(mjrRect viewport, mjvScene* scn, const mjrContext* con) {
   }
 
   // init lights
-  initLights(scn);
+  nlight = initLights(scn, light_id);
 
   // compute head position in model space
   mjv_cameraInModel(hpos, NULL, NULL, scn);
@@ -1003,12 +1012,11 @@ void mjr_render(mjrRect viewport, mjvScene* scn, const mjrContext* con) {
   }
 
   // allow only one reflective geom
-  int j = 0;
+  int reflective_id = -1;
   for (int i=0; i < ngeom; i++) {
-    if (j) {
-      scn->geoms[i].reflectance = 0;
-    } else if (isReflective(scn->geoms + i)) {
-      j = 1;
+    if (isReflective(scn->geoms+i)) {
+      reflective_id = i;
+      break;
     }
   }
 
@@ -1032,6 +1040,7 @@ void mjr_render(mjrRect viewport, mjvScene* scn, const mjrContext* con) {
   }
 
   // SIDEBYSIDE: reduce viewport
+  mjrRect full_viewport = viewport;
   if (stereo == mjSTEREO_SIDEBYSIDE) {
     viewport.width /= 2;
   }
@@ -1099,7 +1108,7 @@ void mjr_render(mjrRect viewport, mjvScene* scn, const mjrContext* con) {
         // get geom pointer
         thisgeom = scn->geoms + i;
 
-        if (isReflective(thisgeom)) {
+        if (i == reflective_id) {
           // if box, replace with temporary plane matching Z+ box side
           if (thisgeom->type == mjGEOM_BOX) {
             // copy and convert to plane
@@ -1157,10 +1166,8 @@ void mjr_render(mjrRect viewport, mjvScene* scn, const mjrContext* con) {
 
           // set light position and direction, enable supported lights
           for (int j=0; j < nlight; j++) {
-            if (isSupportedLight(scn->lights+j)) {
-              adjustLight(scn->lights+j, j);
-              glEnable(GL_LIGHT0+j);
-            }
+            adjustLight(scn->lights+light_id[j], j);
+            glEnable(GL_LIGHT0+j);
           }
 
           // render reflected non-transparent geoms, except for thisgeom
@@ -1211,11 +1218,7 @@ void mjr_render(mjrRect viewport, mjvScene* scn, const mjrContext* con) {
 
     // set light position and direction, enable non-shadow lights
     for (int i=0; i < nlight; i++) {
-      // get pointer, ignore unsupported light types
-      thislight = scn->lights + i;
-      if (!isSupportedLight(thislight)) {
-        continue;
-      }
+      thislight = scn->lights+light_id[i];
 
       // set light
       adjustLight(thislight, i);
@@ -1230,15 +1233,14 @@ void mjr_render(mjrRect viewport, mjvScene* scn, const mjrContext* con) {
     //  (only one allowed, more would result in weird transparency)
     glEnable(GL_BLEND);
     glBlendFunc(GL_ONE, GL_ONE);
-    for (int i=0; i < ngeom; i++)
-      if (isReflective(scn->geoms+i)) {
-        renderGeom(scn->geoms+i, mjrRND_NORMAL, headpos, scn, con);
-      }
+    if (reflective_id >= 0) {
+      renderGeom(scn->geoms+reflective_id, mjrRND_NORMAL, headpos, scn, con);
+    }
     glDisable(GL_BLEND);
 
     // render remaining opaque geoms
     for (int i=0; i < ngeom; i++) {
-      if (!scn->geoms[i].transparent && !isReflective(scn->geoms+i)) {
+      if (!scn->geoms[i].transparent && i != reflective_id) {
         renderGeom(scn->geoms+i, mjrRND_NORMAL, headpos, scn, con);
       }
     }
@@ -1257,10 +1259,9 @@ void mjr_render(mjrRect viewport, mjvScene* scn, const mjrContext* con) {
     // shadow map rendering
     if (scn->flags[mjRND_SHADOW] && con->shadowFBO) {
       for (int i=0; i < nlight; i++) {
-        // get pointer, ignore unsupported light types
-        thislight = scn->lights + i;
+        thislight = scn->lights+light_id[i];
 
-        if (thislight->castshadow && isSupportedLight(thislight)) {
+        if (thislight->castshadow) {
           // prepare up-direction
           mjr_orthoVec(temp, thislight->dir);
 
@@ -1481,9 +1482,7 @@ void mjr_render(mjrRect viewport, mjvScene* scn, const mjrContext* con) {
 
     // enable supported lights
     for (int i=0; i < nlight; i++) {
-      if (isSupportedLight(scn->lights+i)) {
-        glEnable(GL_LIGHT0+i);
-      }
+      glEnable(GL_LIGHT0+i);
     }
 
     // blend mode
@@ -1531,6 +1530,12 @@ void mjr_render(mjrRect viewport, mjvScene* scn, const mjrContext* con) {
     }
     glEnable(GL_DEPTH_TEST);
     glEnable(GL_LIGHTING);
+  }
+
+  // restore full viewport after stereo rendering
+  if (stereo == mjSTEREO_SIDEBYSIDE) {
+    viewport = full_viewport;
+    glViewport(viewport.left, viewport.bottom, viewport.width, viewport.height);
   }
 
   // frame
@@ -1581,9 +1586,11 @@ void mjr_render(mjrRect viewport, mjvScene* scn, const mjrContext* con) {
     glPolygonMode(GL_FRONT_AND_BACK, GL_FILL);
 
     void* depth_buf = mju_malloc(sizeof(float) * viewport.width * viewport.height);
-    glReadPixels(0, 0, viewport.width, viewport.height, GL_DEPTH_COMPONENT, GL_FLOAT, depth_buf);
+    glReadPixels(viewport.left, viewport.bottom, viewport.width, viewport.height,
+                 GL_DEPTH_COMPONENT, GL_FLOAT, depth_buf);
 
     GLuint depth_tex;
+    glActiveTexture(GL_TEXTURE0);
     glEnable(GL_TEXTURE_2D);
     glGenTextures(1, &depth_tex);
     glBindTexture(GL_TEXTURE_2D, depth_tex);
