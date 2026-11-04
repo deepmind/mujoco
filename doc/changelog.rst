@@ -257,6 +257,9 @@ Deformables
 - Flex :ref:`edge damping<flex-edge-damping>` is now integrated explicitly under ``implicit`` and ``implicitfast``
   (previously it also damped rigid translation).
 - Fixed contact Jacobians of quadratic flexes, which dropped nodes with negative basis weights.
+- Improved numerical stability of :ref:`nativeccd<option-flag-nativeccd>` convex collision detection and
+  :ref:`multiccd<option-flag-multiccd>` contact generation. This can slightly change contacts for models with convex
+  or mesh collisions.
 
 Compiler
 ^^^^^^^^
