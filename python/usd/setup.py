@@ -213,9 +213,11 @@ class BuildCMakeExtension(build_ext.build_ext):
         otool_out = subprocess.check_output(
             ['otool', '-l', dylib_path], text=True
         )
-        for rpath in re.findall(
-            r'cmd LC_RPATH\s+cmdsize \d+\s+path ([^\n]+?) \(offset \d+\)',
-            otool_out,
+        for rpath in dict.fromkeys(
+            re.findall(
+                r'cmd LC_RPATH\s+cmdsize \d+\s+path ([^\n]+?) \(offset \d+\)',
+                otool_out,
+            )
         ):
           if not rpath.startswith('@'):
             subprocess.check_call(
