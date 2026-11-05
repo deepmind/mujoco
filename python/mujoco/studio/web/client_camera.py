@@ -27,7 +27,6 @@ them undo it.
 import math
 
 import mujoco
-from mujoco.studio.web import state_payload
 
 # Generations are streamed as uint32 (ViewerInputState.camera_generation).
 _GENERATION_MASK = 0xFFFFFFFF
@@ -76,6 +75,11 @@ class ClientCameraSync:
     """
     if self._synced is not None and _camera_fields(camera) != self._synced:
       return False  # The viewer changed it; update_generation() will bump.
+    # Imported here, not at the top: viewer_protocol imports this module, so it
+    # must import where the web viewer's native modules are not built (e.g.
+    # Windows wheels). Only the web viewer calls apply().
+    from mujoco.studio.web import state_payload  # pylint: disable=g-import-not-at-top
+
     sent = state_payload.parse_client_camera(message)
     if sent is None or sent.generation != self.generation:
       return False
