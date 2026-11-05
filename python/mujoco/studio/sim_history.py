@@ -23,6 +23,7 @@ no need to couple such a viewer plugin to ``SimHistory`` explicitly: the
 message is the only contract between them.
 """
 
+import collections
 import dataclasses
 import math
 
@@ -48,28 +49,31 @@ class SimHistorySnapshot(messages.Snapshot):
 
   Viewer-to-sim (scrub request):
     The viewer sets only ``index`` (the desired history offset) and leaves
-    ``size`` and ``head_time`` at their defaults.  The sim loads the requested
-    frame into its own model/data, requests a pause, and the result reaches the
-    viewer as the next StateSnapshot.
+    ``size``, ``head_time``, and ``tail_time`` at their defaults.  The sim
+    loads the requested frame into its own model/data, requests a pause, and
+    the result reaches the viewer as the next StateSnapshot.
 
   Sim-to-viewer (buffer description):
     Sent whenever a frame is recorded, history is reset, or a scrub request is
-    applied.  ``size``, ``index``, and ``head_time`` are populated so the viewer
-    can render the scrubber timeline against the sim's authoritative index
-    space.
+    applied.  ``size``, ``index``, ``head_time``, and ``tail_time`` are
+    populated so the viewer can render the scrubber timeline against the sim's
+    authoritative index space.
 
   Attributes:
-    size: Total number of frames stored in the sim's history.  Left at 0 in the
-      viewer-to-sim direction (the sim ignores it).
+    size: Total number of frames stored in the sim's history.
+    head_time: Simulation timestamp at the head of the history buffer (index 0).
+    tail_time: Simulation timestamp of the oldest frame in the history buffer
+      (index ``1 - size``).
     index: History offset in the sim's index space; 0 is the most recent state,
       negative values go further into the past.
-    head_time: Simulation timestamp at the head of the history buffer (index 0).
-      Left at 0.0 in the viewer-to-sim direction (the sim ignores it).
   """
 
+  # Sim -> viewer only; left at their defaults (and ignored) viewer -> sim.
   size: int = 0
-  index: int = 0
   head_time: float = 0.0
+  tail_time: float = 0.0
+  # Sim -> viewer and viewer -> sim.
+  index: int = 0
 
   @classmethod
   def from_ux_state(cls, ux_state: ux.UxState) -> 'SimHistorySnapshot | None':
@@ -85,13 +89,29 @@ class SimHistory(plugin.SimPlugin):
   Owns the authoritative history buffer, records a frame after every physics
   step, handles scrub requests from the viewer, and broadcasts the buffer
   state as a ``SimHistorySnapshot`` whenever the buffer changes or is scrubbed.
+
+  The buffer holds a bounded number of frames (``sim.SimHistory``), so at one
+  frame per step it covers only a second or two of a large model stepped at
+  500 Hz. Pass ``min_seconds`` to record every Nth step instead, with N chosen
+  per model so the buffer spans at least that much simulated time; models
+  small enough to fit are still recorded every step.
   """
 
-  def __init__(self) -> None:
+  def __init__(self, *, min_seconds: float = 0.0) -> None:
+    """Initializes the plugin.
+
+    Args:
+      min_seconds: Simulated seconds the history should span at least, by
+        recording only every Nth step when the buffer is too small to hold
+        every step. 0 records every step.
+    """
+    self._min_seconds = float(min_seconds)
     self.sim_history = sim.SimHistory()
     self._ux_state = ux.UxState()
     self._model: mujoco.MjModel | None = None
     self._last_recorded_time = math.inf
+    # Timestamps of the recorded frames, oldest first, in step with the buffer.
+    self._times: collections.deque[float] = collections.deque()
 
   @messages.handler(priority=messages.Priority.INTERNAL)
   def _on_sim_init(self, _: plugin.SimInitEvent) -> None:
@@ -99,6 +119,19 @@ class SimHistory(plugin.SimPlugin):
     self._ux_state = ux.UxState()
     self._model = None
     self._last_recorded_time = math.inf
+    self._times = collections.deque()
+
+  @property
+  def frame_interval(self) -> float:
+    """Simulated seconds between recorded frames for the current model."""
+    if self._model is None or self._min_seconds <= 0.0:
+      return 0.0
+    timestep = float(self._model.opt.timestep)
+    capacity = self.sim_history.capacity()
+    if timestep <= 0.0 or capacity <= 1:
+      return 0.0
+    stride = math.ceil(self._min_seconds / timestep / (capacity - 1))
+    return stride * timestep if stride > 1 else 0.0
 
   def _send_snapshot(self) -> None:
     self.handle.send_to_viewer(
@@ -106,6 +139,7 @@ class SimHistory(plugin.SimPlugin):
             size=self.sim_history.size(),
             index=self.sim_history.get_index(),
             head_time=self._ux_state.sim_head_time,
+            tail_time=self._times[0] if self._times else 0.0,
         )
     )
 
@@ -131,14 +165,31 @@ class SimHistory(plugin.SimPlugin):
       ux.reset_history(
           self.sim_history, self._ux_state, event.model, event.data
       )
-    elif event.data.time != self._last_recorded_time:
+      self._times = collections.deque(
+          [float(event.data.time)], maxlen=max(1, self.sim_history.capacity())
+      )
+    elif self._frame_is_due(event.data.time, event.model):
+      # Recording from a scrubbed-back frame drops the frames after it.
+      for _ in range(min(-self.sim_history.get_index(), len(self._times))):
+        self._times.pop()
       ux.record_history(
           self.sim_history, self._ux_state, event.model, event.data
       )
+      self._times.append(float(event.data.time))
     else:
       return
     self._last_recorded_time = event.data.time
     self._send_snapshot()
+
+  def _frame_is_due(self, time: float, model: mujoco.MjModel) -> bool:
+    """Whether ``frame_interval`` has elapsed since the last recorded frame."""
+    elapsed = time - self._last_recorded_time
+    if elapsed == 0.0:
+      return False  # Idle sync (e.g. paused): nothing new to record.
+    if elapsed < 0.0:
+      return True  # Time jumped back (e.g. an auto-reset): start over at once.
+    # Half a step of slack so rounding never skips a frame that is due.
+    return elapsed >= self.frame_interval - 0.5 * float(model.opt.timestep)
 
   @messages.handler(priority=messages.Priority.INTERNAL)
   def _on_scrub(self, snapshot: SimHistorySnapshot) -> bool:

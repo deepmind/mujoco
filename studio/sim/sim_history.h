@@ -76,6 +76,9 @@ class SimHistory {
   // Returns the number of states in the history buffer.
   int Size() const { return size_; }
 
+  // Returns the most states the buffer can hold, as set by Init().
+  int Capacity() const { return static_cast<int>(history_.size()); }
+
   // Sets the total number of states in the history buffer. Clamped to [0,
   // history_.size()].
   void SetSize(int size) {

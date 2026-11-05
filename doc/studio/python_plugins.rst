@@ -248,7 +248,8 @@ individually when replacing one:
   authoritative ring buffer after every physics step (``PostStepEvent``), broadcasts buffer metadata to the viewer via
   ``SimHistorySnapshot``, and loads historical frames when the user scrubs the timeline in ``studio_app.App``.
   ``studio_app.App`` and ``sim_history.SimHistory`` are decoupled: ``SimHistorySnapshot`` is the sole contract
-  between them.
+  between them. The buffer holds a bounded number of frames; ``SimHistory(min_seconds=10.0)`` records every Nth step
+  instead, with N chosen per model so the buffer spans at least that much simulated time.
 
 Stepping & Control
 ------------------

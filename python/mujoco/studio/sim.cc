@@ -110,6 +110,8 @@ void InitSim(py::module_& m) {
       )
       .def("size", &SimHistory::Size,
            "Returns the number of recorded states.")
+      .def("capacity", &SimHistory::Capacity,
+           "Returns the most states the buffer can hold, as set by init().")
       .def("set_size", &SimHistory::SetSize, py::arg("size"),
            "Sets the number of recorded states.");
 }
