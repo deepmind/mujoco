@@ -94,6 +94,15 @@ def kinematics(m: Model, d: Data) -> Data:
 
     return qpos, anchor, axis, pos, quat, mat
 
+  # mocap bodies are static children of the world, so the mocap pose is their
+  # pose relative to the parent: use it in the tree scan, so that bodies below
+  # a mocap body follow it
+  body_pos, body_quat = m.body_pos, m.body_quat
+  if m.nmocap:
+    body_pos = body_pos.at[m.body_mocapid >= 0].set(d.mocap_pos)
+    mocap_quat = jax.vmap(math.normalize)(d.mocap_quat)
+    body_quat = body_quat.at[m.body_mocapid >= 0].set(mocap_quat)
+
   qpos, xanchor, xaxis, xpos, xquat, xmat = scan.body_tree(
       m,
       fn,
@@ -104,17 +113,9 @@ def kinematics(m: Model, d: Data) -> Data:
       m.jnt_axis,
       d.qpos,
       m.qpos0,
-      m.body_pos,
-      m.body_quat,
+      body_pos,
+      body_quat,
   )
-
-  if m.nmocap:
-    xpos = xpos.at[m.body_mocapid >= 0].set(d.mocap_pos)
-    mocap_quat = jax.vmap(math.normalize)(d.mocap_quat)
-    xquat = xquat.at[m.body_mocapid >= 0].set(mocap_quat)
-    xmat = xmat.at[m.body_mocapid >= 0].set(
-        jax.vmap(math.quat_to_mat)(mocap_quat)
-    )
 
   v_local_to_global = jax.vmap(support.local_to_global)
 
