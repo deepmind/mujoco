@@ -6,14 +6,14 @@ next to an elasto-plastic counterpart under the same load. Plastic state lives i
 simulation restores the undeformed reference geometry.
 
 <p float="left">
-  <a href="https://live.mujoco.org/?model=github:google-deepmind/mujoco/main/model/plastic/wire.xml" title="Open wire.xml in live.mujoco.org"><img src="https://www.gstatic.com/mujoco/model/plastic/wire.webp" width="32%"></a>
-  <a href="https://live.mujoco.org/?model=github:google-deepmind/mujoco/main/model/plastic/paper.xml" title="Open paper.xml in live.mujoco.org"><img src="https://www.gstatic.com/mujoco/model/plastic/paper.webp" width="32%"></a>
+  <a href="https://live.mujoco.org/?model=github:google-deepmind/mujoco/main/model/plastic/wire.xml" title="Open wire.xml in live.mujoco.org"><img src="https://www.gstatic.com/mujoco/model/plastic/wire_v2.webp" width="32%"></a>
+  <a href="https://live.mujoco.org/?model=github:google-deepmind/mujoco/main/model/plastic/paper.xml" title="Open paper.xml in live.mujoco.org"><img src="https://www.gstatic.com/mujoco/model/plastic/paper_v2.webp" width="32%"></a>
   <a href="https://live.mujoco.org/?model=github:google-deepmind/mujoco/main/model/plastic/foil.xml" title="Open foil.xml in live.mujoco.org"><img src="https://www.gstatic.com/mujoco/model/plastic/foil.webp" width="32%"></a>
 </p>
 <p float="left">
   <a href="https://live.mujoco.org/?model=github:google-deepmind/mujoco/main/model/plastic/clay.xml" title="Open clay.xml in live.mujoco.org"><img src="https://www.gstatic.com/mujoco/model/plastic/clay.webp" width="32%"></a>
-  <a href="https://live.mujoco.org/?model=github:google-deepmind/mujoco/main/model/plastic/roller.xml" title="Open roller.xml in live.mujoco.org"><img src="https://www.gstatic.com/mujoco/model/plastic/roller.webp" width="32%"></a>
-  <a href="https://live.mujoco.org/?model=github:google-deepmind/mujoco/main/model/plastic/torsion.xml" title="Open torsion.xml in live.mujoco.org"><img src="https://www.gstatic.com/mujoco/model/plastic/torsion.webp" width="32%"></a>
+  <a href="https://live.mujoco.org/?model=github:google-deepmind/mujoco/main/model/plastic/roller.xml" title="Open roller.xml in live.mujoco.org"><img src="https://www.gstatic.com/mujoco/model/plastic/roller_v2.webp" width="32%"></a>
+  <a href="https://live.mujoco.org/?model=github:google-deepmind/mujoco/main/model/plastic/torsion.xml" title="Open torsion.xml in live.mujoco.org"><img src="https://www.gstatic.com/mujoco/model/plastic/torsion_v2.webp" width="32%"></a>
 </p>
 
 Click an animation to open the model in the browser viewer at [live.mujoco.org](https://live.mujoco.org).
