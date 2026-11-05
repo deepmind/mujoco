@@ -300,15 +300,35 @@ def _flex_vertices(
 
     # Accumulate weighted node positions
     result = wp.vec3(0.0, 0.0, 0.0)
-    for li in range(2):
-      for lj in range(2):
-        for lk in range(2):
+    two = int(2)
+    three = int(3)
+    for li in range(two):
+      for lj in range(two):
+        for lk in range(two):
           w = support.eval_basis_trilinear(local, li * 4 + lj * 2 + lk)
-          gi = ci + li
-          gj = cj + lj
-          gk = ck + lk
-          node_idx = gi * ny_g * nz_g + gj * nz_g + gk
-          result += w * flexnode_xpos_in[worldid, nstart + node_idx]
+          if w != 0.0:
+            gi = ci + li
+            gj = cj + lj
+            gk = ck + lk
+            is_int = order < 0 and gi > 0 and gi < cx and gj > 0 and gj < cy and gk > 0 and gk < cz
+            idx_x = wp.vec3i(0, cx, gi)
+            idx_y = wp.vec3i(0, cy, gj)
+            idx_z = wp.vec3i(0, cz, gk)
+            s = float(gi) / float(cx)
+            t = float(gj) / float(cy)
+            u = float(gk) / float(cz)
+            wx = wp.vec3(1.0 - s, s, -1.0)
+            wy = wp.vec3(1.0 - t, t, -1.0)
+            wz = wp.vec3(1.0 - u, u, -1.0)
+            a_start = int(0) if is_int else int(2)
+            for a in range(a_start, three):
+              for b in range(a_start, three):
+                for c in range(a_start, three):
+                  if is_int and a == 2 and b == 2 and c == 2:
+                    continue
+                  w_tfi = w * wx[a] * wy[b] * wz[c] if is_int else w
+                  node_idx = (idx_x[a] * ny_g + idx_y[b]) * nz_g + idx_z[c]
+                  result += w_tfi * flexnode_xpos_in[worldid, nstart + node_idx]
 
     flexvert_xpos_out[worldid, vertid] = result
   else:

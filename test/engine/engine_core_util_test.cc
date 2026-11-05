@@ -132,6 +132,225 @@ TEST_F(FlexGatherStateTest, mju_flexGatherState_ShellMode) {
   EXPECT_NEAR(xpos[3 * 13 + 2], shift[2], 1e-5);
 }
 
+// mj_flexInterpWeights evaluated at vertex reference coordinates reproduces
+// d->flexvert_xpos in a perturbed configuration, and at arbitrary interior
+// points in [0, 1]^3 reproduces affine fields (using only boundary nodes in
+// shell mode), for trilinear and quadratic interpolation.
+TEST_F(FlexGatherStateTest, InterpWeightsMatchVertexPositions) {
+  static constexpr char xml[] = R"(
+  <mujoco>
+    <option gravity="0 0 0"/>
+    <worldbody>
+      <flexcomp name="vol1" type="grid" count="4 4 3" spacing=".1 .1 .1"
+                dim="3" mass="1" radius="0.01" dof="trilinear" cellcount="2 2 1">
+        <elasticity young="1e4" poisson="0.2"/>
+        <contact selfcollide="none"/>
+      </flexcomp>
+      <flexcomp name="vol2" type="grid" count="4 4 3" spacing=".1 .1 .1" pos="1 0 0"
+                dim="3" mass="1" radius="0.01" dof="quadratic" cellcount="1 1 1">
+        <elasticity young="1e4" poisson="0.2"/>
+        <contact selfcollide="none"/>
+      </flexcomp>
+      <flexcomp name="shell1" type="grid" count="4 4 4" spacing=".1 .1 .1" pos="2 0 0"
+                dim="3" mass="1" radius="0.01" dof="trilinear" cellcount="3 3 3">
+        <elasticity young="1e4" poisson="0.2" elastic2d="both" thickness="0.01"/>
+        <contact selfcollide="none"/>
+      </flexcomp>
+      <flexcomp name="shell2" type="grid" count="4 4 4" spacing=".1 .1 .1" pos="3 0 0"
+                dim="3" mass="1" radius="0.01" dof="quadratic" cellcount="2 2 2">
+        <elasticity young="1e4" poisson="0.2" elastic2d="both" thickness="0.01"/>
+        <contact selfcollide="none"/>
+      </flexcomp>
+    </worldbody>
+  </mujoco>
+  )";
+  char error[1024];
+  MjModelPtr m = LoadModelFromString(xml, error, sizeof(error));
+  ASSERT_THAT(m.get(), NotNull()) << error;
+  ASSERT_EQ(m->nflex, 4);
+  EXPECT_EQ(m->flex_interp[0], 1);
+  EXPECT_EQ(m->flex_interp[1], 2);
+  EXPECT_EQ(m->flex_interp[2], -1);
+  EXPECT_EQ(m->flex_interp[3], -2);
+
+  // perturbed configuration
+  MjDataPtr d = MakeData(m);
+  for (int i = 0; i < m->nq; i++) {
+    d->qpos[i] = m->qpos0[i] + 0.02 * (mju_Halton(i + 1, 2) - 0.5);
+  }
+  mj_forward(m.get(), d.get());
+
+  const mjtNum A[9] = {1.2, 0.3, -0.1, 0.05, 0.9, 0.2, -0.15, 0.1, 1.1};
+  const mjtNum b[3] = {0.02, -0.03, 0.04};
+  int nsample = 0;
+  for (int f = 0; f < m->nflex; f++) {
+    int vadr = m->flex_vertadr[f];
+    int order = m->flex_interp[f] < 0 ? -m->flex_interp[f] : m->flex_interp[f];
+    int nx = m->flex_cellnum[3 * f + 0] * order + 1;
+    int ny = m->flex_cellnum[3 * f + 1] * order + 1;
+    int nz = m->flex_cellnum[3 * f + 2] * order + 1;
+
+    // at every vertex, mj_flexInterpWeights reproduces d->flexvert_xpos
+    for (int v = 0; v < m->flex_vertnum[f]; v++) {
+      int gv = vadr + v;
+      int node[mjMAXFLEXINTERPW];
+      mjtNum weight[mjMAXFLEXINTERPW];
+      int nn = mj_flexInterpWeights(m.get(), f, m->flex_vert0 + 3 * gv, node,
+                                    weight);
+      ASSERT_GT(nn, 0);
+      mjtNum recon[3] = {0, 0, 0};
+      for (int q = 0; q < nn; q++) {
+        mjtNum pos[3];
+        mj_flexNodePos(m.get(), d.get(), f, m->flex_nodeadr[f] + node[q], pos);
+        mju_addToScl3(recon, pos, weight[q]);
+        if (m->flex_interp[f] < 0) {
+          int k = node[q] % nz, j = (node[q] / nz) % ny,
+              i = node[q] / (ny * nz);
+          EXPECT_TRUE(i == 0 || i == nx - 1 || j == 0 || j == ny - 1 ||
+                      k == 0 || k == nz - 1)
+              << "interior node in shell-mode weights, flex " << f;
+        }
+      }
+      for (int c = 0; c < 3; c++) {
+        EXPECT_NEAR(recon[c], d->flexvert_xpos[3 * gv + c], MjTol(1e-10, 1e-5))
+            << "flex " << f << " vert " << v;
+      }
+      nsample++;
+    }
+
+    // at interior points in [0, 1]^3, weights use only boundary nodes in shell
+    // mode and reproduce affine fields
+    for (int s = 0; s < 20; s++) {
+      mjtNum coord[3] = {
+          mju_Halton(s + 1, 2),
+          mju_Halton(s + 1, 3),
+          mju_Halton(s + 1, 5),
+      };
+      int node[mjMAXFLEXINTERPW];
+      mjtNum weight[mjMAXFLEXINTERPW];
+      int nn = mj_flexInterpWeights(m.get(), f, coord, node, weight);
+      ASSERT_GT(nn, 0);
+      mjtNum wsum = 0;
+      mjtNum recon[3] = {0, 0, 0};
+      for (int q = 0; q < nn; q++) {
+        wsum += weight[q];
+        int k = node[q] % nz, j = (node[q] / nz) % ny, i = node[q] / (ny * nz);
+        if (m->flex_interp[f] < 0) {
+          EXPECT_TRUE(i == 0 || i == nx - 1 || j == 0 || j == ny - 1 ||
+                      k == 0 || k == nz - 1)
+              << "interior node in shell-mode weights, flex " << f;
+        }
+        mjtNum ncoord[3] = {
+            (mjtNum)i / (nx - 1),
+            (mjtNum)j / (ny - 1),
+            (mjtNum)k / (nz - 1),
+        };
+        mjtNum y[3];
+        mju_mulMatVec3(y, A, ncoord);
+        mju_addTo3(y, b);
+        mju_addToScl3(recon, y, weight[q]);
+      }
+      EXPECT_NEAR(wsum, 1.0, MjTol(1e-12, 1e-5));
+      mjtNum expected[3];
+      mju_mulMatVec3(expected, A, coord);
+      mju_addTo3(expected, b);
+      for (int c = 0; c < 3; c++) {
+        EXPECT_NEAR(recon[c], expected[c], MjTol(1e-12, 1e-5))
+            << "flex " << f << " sample " << s;
+      }
+    }
+  }
+  EXPECT_GT(nsample, 0);
+}
+
+// Coons TFI of shell-mode flexes reproduces affine motions of the boundary:
+// with the boundary nodes moved by an affine map, the (pinned) interior lattice
+// nodes and all vertices follow the same map, for trilinear and quadratic
+// interpolation, and the boundary nodes are left unchanged.
+TEST_F(FlexGatherStateTest, ShellTFIReproducesAffineMotion) {
+  static constexpr char xml[] = R"(
+  <mujoco>
+    <worldbody>
+      <flexcomp name="shell1" type="grid" count="4 4 4" spacing=".1 .1 .1"
+                dim="3" mass="1" radius="0.01" dof="trilinear" cellcount="3 3 3">
+        <elasticity young="1e4" poisson="0.2" elastic2d="both" thickness="0.01"/>
+        <contact selfcollide="none"/>
+      </flexcomp>
+      <flexcomp name="shell2" type="grid" count="4 4 4" spacing=".1 .1 .1" pos="1 0 0"
+                dim="3" mass="1" radius="0.01" dof="quadratic" cellcount="2 2 2">
+        <elasticity young="1e4" poisson="0.2" elastic2d="both" thickness="0.01"/>
+        <contact selfcollide="none"/>
+      </flexcomp>
+    </worldbody>
+  </mujoco>
+  )";
+  char error[1024];
+  MjModelPtr m = LoadModelFromString(xml, error, sizeof(error));
+  ASSERT_THAT(m.get(), NotNull()) << error;
+  MjDataPtr d = MakeData(m);
+  mj_forward(m.get(), d.get());
+
+  // rest positions of nodes and vertices
+  std::vector<mjtNum> node0(3 * m->nflexnode), vert0(3 * m->nflexvert);
+  for (int f = 0; f < m->nflex; f++) {
+    ASSERT_LT(m->flex_interp[f], 0);
+    for (int n = 0; n < m->flex_nodenum[f]; n++) {
+      int g = m->flex_nodeadr[f] + n;
+      mj_flexNodePos(m.get(), d.get(), f, g, node0.data() + 3 * g);
+    }
+  }
+  mju_copy(vert0.data(), d->flexvert_xpos, 3 * m->nflexvert);
+
+  // affine map y = A x + b
+  const mjtNum A[9] = {1.2, 0.3, -0.1, 0.05, 0.9, 0.2, -0.15, 0.1, 1.1};
+  const mjtNum b[3] = {0.02, -0.03, 0.04};
+  auto affine = [&](const mjtNum* x, mjtNum* y) {
+    mju_mulMatVec3(y, A, x);
+    mju_addTo3(y, b);
+  };
+
+  // move the boundary node bodies (the only ones with dofs) by the affine map
+  for (int g = 0; g < m->nflexnode; g++) {
+    int body = m->flex_nodebodyid[g];
+    if (m->body_dofnum[body] != 3) {
+      continue;
+    }
+    mjtNum y[3];
+    affine(node0.data() + 3 * g, y);
+    for (int k = 0; k < 3; k++) {
+      int jnt = m->dof_jntid[m->body_dofadr[body] + k];
+      d->qpos[m->jnt_qposadr[jnt]] = y[k] - node0[3 * g + k];
+    }
+  }
+  mj_forward(m.get(), d.get());
+
+  for (int f = 0; f < m->nflex; f++) {
+    // nodes: interior reconstructed by TFI, boundary unchanged
+    std::vector<mjtNum> xpos(3 * m->flex_nodenum[f]);
+    mju_flexGatherState(m.get(), d.get(), f, xpos.data(), nullptr);
+    for (int n = 0; n < m->flex_nodenum[f]; n++) {
+      int g = m->flex_nodeadr[f] + n;
+      mjtNum y[3];
+      affine(node0.data() + 3 * g, y);
+      for (int k = 0; k < 3; k++) {
+        EXPECT_NEAR(xpos[3 * n + k], y[k], MjTol(1e-12, 1e-5))
+            << "flex " << f << " node " << n;
+      }
+    }
+
+    // vertices: Lagrange interpolation of an affine node field is exact
+    for (int v = 0; v < m->flex_vertnum[f]; v++) {
+      int g = m->flex_vertadr[f] + v;
+      mjtNum y[3];
+      affine(vert0.data() + 3 * g, y);
+      for (int k = 0; k < 3; k++) {
+        EXPECT_NEAR(d->flexvert_xpos[3 * g + k], y[k], MjTol(1e-12, 1e-5))
+            << "flex " << f << " vertex " << v;
+      }
+    }
+  }
+}
+
 using AngMomMatTest = MujocoTest;
 
 static constexpr char AngMomTestingModel[] = R"(
@@ -866,13 +1085,15 @@ TEST_F(JacobianTest, QuadraticFlexContactPreservesNegativeBasisWeights) {
   ASSERT_GE(v_target, 0);
 
   // Place probe sphere directly beneath v_target so the contact point is at
-  // (0.25, 0.25, 0) with normal +z.
-  mj_kinematics(m.get(), d.get());
+  // (0.25, 0.25, 0) with normal +z (mj_forward computes flexvert_xpos).
+  mj_forward(m.get(), d.get());
   int probe = mj_name2id(m.get(), mjOBJ_GEOM, "probe");
   ASSERT_GE(probe, 0);
-  m->geom_pos[3 * probe + 0] = d->flexvert_xpos[3 * v_target + 0];
-  m->geom_pos[3 * probe + 1] = d->flexvert_xpos[3 * v_target + 1];
-  m->geom_pos[3 * probe + 2] = d->flexvert_xpos[3 * v_target + 2] - 0.03;
+  // (move the body: the geom shares its frame, so geom_pos is not used)
+  int probe_body = m->geom_bodyid[probe];
+  m->body_pos[3 * probe_body + 0] = d->flexvert_xpos[3 * v_target + 0];
+  m->body_pos[3 * probe_body + 1] = d->flexvert_xpos[3 * v_target + 1];
+  m->body_pos[3 * probe_body + 2] = d->flexvert_xpos[3 * v_target + 2] - 0.03;
 
   // In the 3x3x3 quadratic node grid (order=2, cellcount=1x1x1), node (2, 1, 0)
   // at index 2*9 + 1*3 + 0 = 21 has basis weight (-0.125) * (0.75) * (1.0) =
@@ -889,16 +1110,27 @@ TEST_F(JacobianTest, QuadraticFlexContactPreservesNegativeBasisWeights) {
     ASSERT_GT(d->ncon, 0);
     ASSERT_GT(d->nefc, 0);
 
-    // Extract first contact row of efc_J.
+    // Extract the efc_J row of the contact closest to v_target.
+    int ic = 0;
+    for (int i = 1; i < d->ncon; i++) {
+      if (mju_dist3(d->contact[i].pos, d->flexvert_xpos + 3 * v_target) <
+          mju_dist3(d->contact[ic].pos, d->flexvert_xpos + 3 * v_target)) {
+        ic = i;
+      }
+    }
+    ASSERT_LT(mju_dist3(d->contact[ic].pos, d->flexvert_xpos + 3 * v_target),
+              0.03);
+    int r = d->contact[ic].efc_address;
+    ASSERT_GE(r, 0);
     std::vector<mjtNum> row(m->nv, 0);
     if (mj_isSparse(m.get())) {
-      int adr = d->efc_J_rowadr[0];
-      int nnz = d->efc_J_rownnz[0];
+      int adr = d->efc_J_rowadr[r];
+      int nnz = d->efc_J_rownnz[r];
       for (int k = 0; k < nnz; k++) {
         row[d->efc_J_colind[adr + k]] = d->efc_J[adr + k];
       }
     } else {
-      mju_copy(row.data(), d->efc_J, m->nv);
+      mju_copy(row.data(), d->efc_J + r * m->nv, m->nv);
     }
 
     // By partition of unity, moving all flex z-DOFs and the probe z-DOF by +1
@@ -1043,10 +1275,10 @@ TEST_F(FlexGatherStateTest, GatherScatterCellInterpolated) {
   }
 
   // Verify that quadratic shell mode (flex_interp == -2, f4 in xml_simple) uses
-  // 27-node quadratic cell interpolation after mju_shellTrackInterior, rather
-  // than piecewise-trilinear sub-cell interpolation: a quadratic displacement
-  // u_x(X) = X^2 on boundary nodes is reproduced exactly at face vertices X =
-  // 1/3 and 2/3.
+  // 27-node quadratic cell interpolation after the TFI of the interior nodes,
+  // rather than piecewise-trilinear sub-cell interpolation: a quadratic
+  // displacement u_x(X) = X^2 on boundary nodes is reproduced exactly at face
+  // vertices X = 1/3 and 2/3.
   {
     char error[1024];
     MjModelPtr m = LoadModelFromString(xml_simple, error, sizeof(error));

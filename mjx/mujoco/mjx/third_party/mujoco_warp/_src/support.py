@@ -1720,59 +1720,195 @@ def eval_basis_trilinear(local: wp.vec3, node_idx: int) -> float:
   return _phi(local[0], i) * _phi(local[1], j) * _phi(local[2], k)
 
 
+MAX_INTERP_BODIES = 64
+vec_interp_body = wp.types.vector(length=MAX_INTERP_BODIES, dtype=int)
+vec_interp_weight = wp.types.vector(length=MAX_INTERP_BODIES, dtype=float)
+
+
 @wp.func
-def select_top4_weights(
+def add_interp_weight(
   # In:
-  W_mat: wp.mat33,
-  b_mat: wp.mat33,
+  nb: int,
+  body: vec_interp_body,
+  weight: vec_interp_weight,
+  b: int,
+  w: float,
+) -> tuple[int, vec_interp_body, vec_interp_weight]:
+  """Appends weight to body id, merging duplicates by summing weights."""
+  if b < 0:
+    return nb, body, weight
+  for i in range(nb):
+    if body[i] == b:
+      weight[i] += w
+      return nb, body, weight
+  if nb < MAX_INTERP_BODIES:
+    body[nb] = b
+    weight[nb] = w
+    return nb + 1, body, weight
+  return nb, body, weight
+
+
+@wp.func
+def add_interp_point_weights(
+  # Model:
+  body_weldid: wp.array[int],
+  flex_nodebodyid: wp.array[int],
+  # In:
+  coord: wp.vec3,
+  scale: float,
+  cn: wp.vec3i,
+  nstart: int,
+  is_shell: bool,
+  use_weld: bool,
+  local_nb: int,
+  local_bodies: vec_interp_body,
+  local_weights: vec_interp_weight,
+) -> tuple[int, vec_interp_body, vec_interp_weight]:
+  """Accumulates trilinear cell node body weights at reference coord (with Coons TFI in shell mode)."""
+  if scale == 0.0:
+    return local_nb, local_bodies, local_weights
+  cx = cn[0]
+  cy = cn[1]
+  cz = cn[2]
+  ci = wp.clamp(int(wp.floor(coord[0] * float(cx))), 0, cx - 1)
+  cj = wp.clamp(int(wp.floor(coord[1] * float(cy))), 0, cy - 1)
+  ck = wp.clamp(int(wp.floor(coord[2] * float(cz))), 0, cz - 1)
+  local = wp.vec3(
+    wp.clamp(coord[0] * float(cx) - float(ci), 0.0, 1.0),
+    wp.clamp(coord[1] * float(cy) - float(cj), 0.0, 1.0),
+    wp.clamp(coord[2] * float(cz) - float(ck), 0.0, 1.0),
+  )
+  cy1 = cy + 1
+  cz1 = cz + 1
+  n_corners = int(8)
+  three = int(3)
+  for c_idx in range(n_corners):
+    basis = eval_basis_trilinear(local, c_idx)
+    if basis != 0.0:
+      nw = scale * basis
+      gi = ci + ((c_idx >> 2) & 1)
+      gj = cj + ((c_idx >> 1) & 1)
+      gk = ck + (c_idx & 1)
+      is_int = is_shell and gi > 0 and gi < cx and gj > 0 and gj < cy and gk > 0 and gk < cz
+      idx_x = wp.vec3i(0, cx, gi)
+      idx_y = wp.vec3i(0, cy, gj)
+      idx_z = wp.vec3i(0, cz, gk)
+      s = float(gi) / float(cx)
+      t = float(gj) / float(cy)
+      u = float(gk) / float(cz)
+      wx = wp.vec3(1.0 - s, s, -1.0)
+      wy = wp.vec3(1.0 - t, t, -1.0)
+      wz = wp.vec3(1.0 - u, u, -1.0)
+      a_start = int(0) if is_int else int(2)
+      for a in range(a_start, three):
+        for b in range(a_start, three):
+          for c in range(a_start, three):
+            if is_int and a == 2 and b == 2 and c == 2:
+              continue
+            w_tfi = nw * wx[a] * wy[b] * wz[c] if is_int else nw
+            nidx = nstart + (idx_x[a] * cy1 + idx_y[b]) * cz1 + idx_z[c]
+            bid = flex_nodebodyid[nidx]
+            if use_weld:
+              bid = body_weldid[bid]
+            local_nb, local_bodies, local_weights = add_interp_weight(
+              local_nb, local_bodies, local_weights, bid, w_tfi
+            )
+  return local_nb, local_bodies, local_weights
+
+
+@wp.func
+def add_flex_interp_weights(
+  # Model:
+  body_weldid: wp.array[int],
+  flex_dim: wp.array[int],
+  flex_interp: wp.array[int],
+  flex_cellnum: wp.array[wp.vec3i],
+  flex_nodeadr: wp.array[int],
+  flex_vertadr: wp.array[int],
+  flex_elemdataadr: wp.array[int],
+  flex_nodebodyid: wp.array[int],
+  flex_elem: wp.array[int],
+  flex_vert0: wp.array[wp.vec3],
+  # Data in:
+  flexvert_xpos_in: wp.array2d[wp.vec3],
+  # In:
+  f: int,
+  elem_id: int,
+  vert_id: int,
+  con_pos: wp.vec3,
+  worldid: int,
+  scale: float,
+  use_weld: bool,
+  local_nb: int,
+  local_bodies: vec_interp_body,
+  local_weights: vec_interp_weight,
+) -> tuple[int, vec_interp_body, vec_interp_weight]:
+  """Accumulates interpolated flex contact side bodies and weights at the blended reference coord."""
+  coord = wp.vec3(0.0)
+  if vert_id >= 0:
+    coord = flex_vert0[flex_vertadr[f] + vert_id]
+  elif elem_id >= 0:
+    dim_f = flex_dim[f]
+    edata_adr = flex_elemdataadr[f] + elem_id * (dim_f + 1)
+    vert_adr_f = flex_vertadr[f]
+    w_elem = flex_elem_weights(
+      flex_dim, flex_vertadr, flex_elemdataadr, flex_elem, flexvert_xpos_in, f, elem_id, con_pos, worldid
+    )
+    for vi in range(dim_f + 1):
+      v_idx = flex_elem[edata_adr + vi]
+      coord += w_elem[vi] * flex_vert0[vert_adr_f + v_idx]
+  else:
+    return local_nb, local_bodies, local_weights
+
+  return add_interp_point_weights(
+    body_weldid,
+    flex_nodebodyid,
+    coord,
+    scale,
+    flex_cellnum[f],
+    flex_nodeadr[f],
+    flex_interp[f] < 0,
+    use_weld,
+    local_nb,
+    local_bodies,
+    local_weights,
+  )
+
+
+@wp.func
+def _top4_interp(
+  # In:
+  local_nb: int,
+  local_bodies: vec_interp_body,
+  local_weights: vec_interp_weight,
 ) -> tuple[wp.vec4i, wp.vec4]:
-  """Selects top 4 weights and their corresponding body IDs from 8 voxel corners."""
   selected_b = wp.vec4i(-1, -1, -1, -1)
   selected_W = wp.vec4(0.0, 0.0, 0.0, 0.0)
+  lw = local_weights
+  n_top = int(4)
+  for p in range(n_top):
+    max_w = float(-1.0)
+    max_b = int(-1)
+    max_k = int(-1)
+    for k in range(local_nb):
+      w = lw[k]
+      if w > max_w:
+        max_w = w
+        max_b = local_bodies[k]
+        max_k = k
+    if max_k >= 0 and max_w > 0.0:
+      lw[max_k] = -1.0
+      selected_b[p] = max_b
+      selected_W[p] = max_w
 
-  local_W = W_mat
-  for p in range(4):
-    max_w = -1.0
-    max_b = -1
-    max_r = -1
-    max_c = -1
-    for r in range(3):
-      for c in range(3):
-        idx = 3 * r + c
-        if idx < 8:
-          w = local_W[r, c]
-          if w > max_w:
-            max_w = w
-            max_b = int(b_mat[r, c])
-            max_r = r
-            max_c = c
-    # Record top choice for this pass and mark it as visited
-    if max_r >= 0:
-      local_W[max_r, max_c] = -1.0
-
-      if p == 0:
-        selected_b = wp.vec4i(max_b, -1, -1, -1)
-        selected_W = wp.vec4(max_w, 0.0, 0.0, 0.0)
-      elif p == 1:
-        selected_b = wp.vec4i(selected_b[0], max_b, -1, -1)
-        selected_W = wp.vec4(selected_W[0], max_w, 0.0, 0.0)
-      elif p == 2:
-        selected_b = wp.vec4i(selected_b[0], selected_b[1], max_b, -1)
-        selected_W = wp.vec4(selected_W[0], selected_W[1], max_w, 0.0)
-      else:
-        selected_b = wp.vec4i(selected_b[0], selected_b[1], selected_b[2], max_b)
-        selected_W = wp.vec4(selected_W[0], selected_W[1], selected_W[2], max_w)
-
-  # Normalize selected weights
   sum_W = selected_W[0] + selected_W[1] + selected_W[2] + selected_W[3]
-  if sum_W > 1.0e-5:
+  if sum_W != 0.0:
     selected_W = wp.vec4(
       selected_W[0] / sum_W,
       selected_W[1] / sum_W,
       selected_W[2] / sum_W,
       selected_W[3] / sum_W,
     )
-
   return selected_b, selected_W
 
 
@@ -2129,6 +2265,7 @@ def contact_bodies_and_weights(
   jnt_bodyid: wp.array[int],
   geom_bodyid: wp.array[int],
   flex_dim: wp.array[int],
+  flex_interp: wp.array[int],
   flex_cellnum: wp.array[wp.vec3i],
   flex_nodeadr: wp.array[int],
   flex_vertadr: wp.array[int],
@@ -2166,115 +2303,83 @@ def contact_bodies_and_weights(
   if geom_id >= 0:
     return wp.vec4i(geom_bodyid[geom_id], -1, -1, -1), wp.vec4(1.0, 0.0, 0.0, 0.0)
 
+  # Interpolated flex contact (vertex or element, volume or shell)
+  if flex_interp[flex_id] != 0:
+    local_bodies = vec_interp_body(-1)
+    local_weights = vec_interp_weight(0.0)
+    local_nb = int(0)
+    local_nb, local_bodies, local_weights = add_flex_interp_weights(
+      flex_nodebodyid,
+      flex_dim,
+      flex_interp,
+      flex_cellnum,
+      flex_nodeadr,
+      flex_vertadr,
+      flex_elemdataadr,
+      flex_nodebodyid,
+      flex_elem,
+      flex_vert0,
+      flexvert_xpos_in,
+      flex_id,
+      elem_id,
+      vert_id,
+      con_pos,
+      worldid,
+      1.0,
+      False,
+      local_nb,
+      local_bodies,
+      local_weights,
+    )
+    return _top4_interp(local_nb, local_bodies, local_weights)
+
   # Plane-Vertex or Vertex-only flex contact
   flex_vert_start = flex_vertadr[flex_id]
   if vert_id >= 0:
     body = flex_vertbodyid[flex_vert_start + vert_id]
-    if body >= 0:
-      body_ids = wp.vec4i(body, -1, -1, -1)
-      weights = wp.vec4(1.0, 0.0, 0.0, 0.0)
-      nb = int(1)
-      if flex_elemnum[flex_id] > 0 and rod_has_twist(flex_rod_has_twist, flex_id):
-        e_rod = flex_vert_rodelem[flex_vert_start + vert_id]
-        v_other = vert[1 - side] if flex[1 - side] == flex_id else -1
-        if e_rod >= 0:
-          ed = flex_elemdataadr[flex_id] + 2 * e_rod
-          ev0 = flex_elem[ed + 0]
-          ev1 = flex_elem[ed + 1]
-          if ev0 != v_other and ev1 != v_other:
-            body_ids, nb = _append_body_weight_zero(body_ids, nb, flex_vertbodyid[flex_vert_start + ev0])
-            body_ids, nb = _append_body_weight_zero(body_ids, nb, flex_vertbodyid[flex_vert_start + ev1])
-            jnt_e, _sgn_v = rod_edge_twist_jnt(
-              flex_elemadr,
-              flex_elemnum,
-              flex_rod_edgeadr,
-              flex_rod_edgenum,
-              flex_rodedge_jnt,
-              flex_elem_rodedge,
-              flex_id,
-              e_rod,
-            )
-            if jnt_e >= 0:
-              body_ids, nb = _append_body_weight_zero(body_ids, nb, jnt_bodyid[jnt_e])
-      return body_ids, weights
-
-    # Interpolated flex vertex contact: interpolate to the 8 corner nodes
-    v_adr = flex_vert_start + vert_id
-    coord = flex_vert0[v_adr]
-    cn = flex_cellnum[flex_id]
-    cx = cn[0]
-    cy = cn[1]
-    cz = cn[2]
-
-    ci = wp.min(int(coord[0] * float(cx)), cx - 1)
-    ci = wp.max(ci, 0)
-    cj = wp.min(int(coord[1] * float(cy)), cy - 1)
-    cj = wp.max(cj, 0)
-    ck = wp.min(int(coord[2] * float(cz)), cz - 1)
-    ck = wp.max(ck, 0)
-
-    local_x = wp.clamp(coord[0] * float(cx) - float(ci), 0.0, 1.0)
-    local_y = wp.clamp(coord[1] * float(cy) - float(cj), 0.0, 1.0)
-    local_z = wp.clamp(coord[2] * float(cz) - float(ck), 0.0, 1.0)
-    local = wp.vec3(local_x, local_y, local_z)
-
-    ny_g = cy + 1
-    nz_g = cz + 1
-    nstart = flex_nodeadr[flex_id]
-
-    body_ids = wp.vec4i(-1, -1, -1, -1)
-    weights = wp.vec4(0.0, 0.0, 0.0, 0.0)
-    n_collected = int(0)
-
-    for li in range(2):
-      for lj in range(2):
-        for lk in range(2):
-          w = eval_basis_trilinear(local, li * 4 + lj * 2 + lk)
-          if w > 1.0e-5 and n_collected < 4:
-            gi = ci + li
-            gj = cj + lj
-            gk = ck + lk
-            node_idx = gi * ny_g * nz_g + gj * nz_g + gk
-            b = flex_nodebodyid[nstart + node_idx]
-
-            # Put into body_ids and weights
-            if n_collected == 0:
-              body_ids = wp.vec4i(b, -1, -1, -1)
-              weights = wp.vec4(w, 0.0, 0.0, 0.0)
-            elif n_collected == 1:
-              body_ids = wp.vec4i(body_ids[0], b, -1, -1)
-              weights = wp.vec4(weights[0], w, 0.0, 0.0)
-            elif n_collected == 2:
-              body_ids = wp.vec4i(body_ids[0], body_ids[1], b, -1)
-              weights = wp.vec4(weights[0], weights[1], w, 0.0)
-            else:
-              body_ids = wp.vec4i(body_ids[0], body_ids[1], body_ids[2], b)
-              weights = wp.vec4(weights[0], weights[1], weights[2], w)
-
-            n_collected += 1
-
-    # Normalize weights so they sum to 1.0
-    w_sum = weights[0] + weights[1] + weights[2] + weights[3]
-    if w_sum > 1.0e-5:
-      w_sum_inv = 1.0 / w_sum
-      weights = wp.vec4(weights[0] * w_sum_inv, weights[1] * w_sum_inv, weights[2] * w_sum_inv, weights[3] * w_sum_inv)
-
+    body_ids = wp.vec4i(body, -1, -1, -1)
+    weights = wp.vec4(1.0, 0.0, 0.0, 0.0)
+    nb = int(1)
+    if flex_elemnum[flex_id] > 0 and rod_has_twist(flex_rod_has_twist, flex_id):
+      e_rod = flex_vert_rodelem[flex_vert_start + vert_id]
+      v_other = vert[1 - side] if flex[1 - side] == flex_id else -1
+      if e_rod >= 0:
+        ed = flex_elemdataadr[flex_id] + 2 * e_rod
+        ev0 = flex_elem[ed + 0]
+        ev1 = flex_elem[ed + 1]
+        if ev0 != v_other and ev1 != v_other:
+          body_ids, nb = _append_body_weight_zero(body_ids, nb, flex_vertbodyid[flex_vert_start + ev0])
+          body_ids, nb = _append_body_weight_zero(body_ids, nb, flex_vertbodyid[flex_vert_start + ev1])
+          jnt_e, _sgn_v = rod_edge_twist_jnt(
+            flex_elemadr,
+            flex_elemnum,
+            flex_rod_edgeadr,
+            flex_rod_edgenum,
+            flex_rodedge_jnt,
+            flex_elem_rodedge,
+            flex_id,
+            e_rod,
+          )
+          if jnt_e >= 0:
+            body_ids, nb = _append_body_weight_zero(body_ids, nb, jnt_bodyid[jnt_e])
     return body_ids, weights
 
   dim = flex_dim[flex_id]
+  if dim < 1 or dim > 3:
+    return wp.vec4i(-1, -1, -1, -1), wp.vec4(0.0, 0.0, 0.0, 0.0)
 
   # barycentric weights of the closest point on the element
   elem_weight = flex_elem_weights(
     flex_dim, flex_vertadr, flex_elemdataadr, flex_elem, flexvert_xpos_in, flex_id, elem_id, con_pos, worldid
   )
 
-  if dim == 1:
-    elem_data_start = flex_elemdataadr[flex_id] + elem_id * 2
-    v0 = flex_elem[elem_data_start + 0]
-    v1 = flex_elem[elem_data_start + 1]
+  elem_data_start = flex_elemdataadr[flex_id] + elem_id * (dim + 1)
+  v0 = flex_elem[elem_data_start + 0]
+  v1 = flex_elem[elem_data_start + 1]
+  b0 = flex_vertbodyid[flex_vert_start + v0]
+  b1 = flex_vertbodyid[flex_vert_start + v1]
 
-    b0 = flex_vertbodyid[flex_vert_start + v0]
-    b1 = flex_vertbodyid[flex_vert_start + v1]
+  if dim == 1:
     body_ids = wp.vec4i(b0, b1, -1, -1)
     weights = wp.vec4(elem_weight[0], elem_weight[1], 0.0, 0.0)
     nb = int(2)
@@ -2298,101 +2403,16 @@ def contact_bodies_and_weights(
     return body_ids, weights
 
   elif dim == 2:
-    elem_data_start = flex_elemdataadr[flex_id] + elem_id * 3
-    v0 = flex_elem[elem_data_start + 0]
-    v1 = flex_elem[elem_data_start + 1]
     v2 = flex_elem[elem_data_start + 2]
-
-    b0 = flex_vertbodyid[flex_vert_start + v0]
-    b1 = flex_vertbodyid[flex_vert_start + v1]
     b2 = flex_vertbodyid[flex_vert_start + v2]
-
     return wp.vec4i(b0, b1, b2, -1), wp.vec4(elem_weight[0], elem_weight[1], elem_weight[2], 0.0)
 
-  elif dim == 3:
-    elem_data_start = flex_elemdataadr[flex_id] + elem_id * 4
-    v0 = flex_elem[elem_data_start + 0]
-    v1 = flex_elem[elem_data_start + 1]
+  else:
     v2 = flex_elem[elem_data_start + 2]
     v3 = flex_elem[elem_data_start + 3]
-
-    w0 = elem_weight[0]
-    w1 = elem_weight[1]
-    w2 = elem_weight[2]
-    w3 = elem_weight[3]
-
-    b0 = flex_vertbodyid[flex_vert_start + v0]
-    if b0 >= 0:
-      b1 = flex_vertbodyid[flex_vert_start + v1]
-      b2 = flex_vertbodyid[flex_vert_start + v2]
-      b3 = flex_vertbodyid[flex_vert_start + v3]
-      return wp.vec4i(b0, b1, b2, b3), wp.vec4(w0, w1, w2, w3)
-    else:
-      # Interpolated 3D flex element contact: evaluate the trilinear basis at the reference
-      # coordinates of the contact point, blended with the element weights (see mj_vertBodyWeight)
-      coord = (
-        w0 * flex_vert0[flex_vert_start + v0]
-        + w1 * flex_vert0[flex_vert_start + v1]
-        + w2 * flex_vert0[flex_vert_start + v2]
-        + w3 * flex_vert0[flex_vert_start + v3]
-      )
-      cn = flex_cellnum[flex_id]
-      cx = cn[0]
-      cy = cn[1]
-      cz = cn[2]
-
-      ci = wp.min(int(coord[0] * float(cx)), cx - 1)
-      ci = wp.max(ci, 0)
-      cj = wp.min(int(coord[1] * float(cy)), cy - 1)
-      cj = wp.max(cj, 0)
-      ck = wp.min(int(coord[2] * float(cz)), cz - 1)
-      ck = wp.max(ck, 0)
-
-      ny_g = cy + 1
-      nz_g = cz + 1
-      nstart = flex_nodeadr[flex_id]
-
-      local_x = wp.clamp(coord[0] * float(cx) - float(ci), 0.0, 1.0)
-      local_y = wp.clamp(coord[1] * float(cy) - float(cj), 0.0, 1.0)
-      local_z = wp.clamp(coord[2] * float(cz) - float(ck), 0.0, 1.0)
-      local = wp.vec3(local_x, local_y, local_z)
-
-      # trilinear weights of the 8 voxel corners
-      W0 = eval_basis_trilinear(local, 0)
-      W1 = eval_basis_trilinear(local, 1)
-      W2 = eval_basis_trilinear(local, 2)
-      W3 = eval_basis_trilinear(local, 3)
-      W4 = eval_basis_trilinear(local, 4)
-      W5 = eval_basis_trilinear(local, 5)
-      W6 = eval_basis_trilinear(local, 6)
-      W7 = eval_basis_trilinear(local, 7)
-
-      # 8 node body IDs corresponding to the 8 voxel corners
-      b0_node = flex_nodebodyid[nstart + (ci + 0) * ny_g * nz_g + (cj + 0) * nz_g + (ck + 0)]
-      b1_node = flex_nodebodyid[nstart + (ci + 0) * ny_g * nz_g + (cj + 0) * nz_g + (ck + 1)]
-      b2_node = flex_nodebodyid[nstart + (ci + 0) * ny_g * nz_g + (cj + 1) * nz_g + (ck + 0)]
-      b3_node = flex_nodebodyid[nstart + (ci + 0) * ny_g * nz_g + (cj + 1) * nz_g + (ck + 1)]
-      b4_node = flex_nodebodyid[nstart + (ci + 1) * ny_g * nz_g + (cj + 0) * nz_g + (ck + 0)]
-      b5_node = flex_nodebodyid[nstart + (ci + 1) * ny_g * nz_g + (cj + 0) * nz_g + (ck + 1)]
-      b6_node = flex_nodebodyid[nstart + (ci + 1) * ny_g * nz_g + (cj + 1) * nz_g + (ck + 0)]
-      b7_node = flex_nodebodyid[nstart + (ci + 1) * ny_g * nz_g + (cj + 1) * nz_g + (ck + 1)]
-
-      W_mat = wp.mat33(W0, W1, W2, W3, W4, W5, W6, W7, -1.0)
-      b_mat = wp.mat33(
-        float(b0_node),
-        float(b1_node),
-        float(b2_node),
-        float(b3_node),
-        float(b4_node),
-        float(b5_node),
-        float(b6_node),
-        float(b7_node),
-        -1.0,
-      )
-      return select_top4_weights(W_mat, b_mat)
-
-  else:
-    return wp.vec4i(-1, -1, -1, -1), wp.vec4(0.0, 0.0, 0.0, 0.0)
+    b2 = flex_vertbodyid[flex_vert_start + v2]
+    b3 = flex_vertbodyid[flex_vert_start + v3]
+    return wp.vec4i(b0, b1, b2, b3), elem_weight
 
 
 # TODO(flex): Add interpolated flex self-collision support. Currently, interpolated
