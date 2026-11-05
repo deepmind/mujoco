@@ -15,12 +15,15 @@
 // Python bindings for MuJoCo platform UX components.
 
 #include <array>
+#include <cstdint>
 #include <string>
 #include <tuple>
 #include <vector>
 
 #include <imgui.h>
+#include <imgui_internal.h>
 #include <implot.h>
+#include <implot_internal.h>
 #include <mujoco/mujoco.h>
 #include <mujoco/studio/sim/sim_history.h>
 #include <mujoco/studio/sim/step_control.h>
@@ -67,6 +70,55 @@ struct UxState {
 struct RenderFlags {
   std::array<uint8_t, mjNRNDFLAG> flags = {0};
 };
+
+// Unwinds every ImGui and ImPlot Begin*/Push* left open since NewFrame()
+// without asserting or spamming debug logs, so the stacks are as they were
+// right after NewFrame() and later UI code and EndFrame() run normally.
+bool UnwindImGuiFrame() {
+  ImGuiContext* ctx = ImGui::GetCurrentContext();
+  if (ctx == nullptr || !ctx->WithinFrameScope) return false;
+  ImGuiIO& io = ctx->IO;
+  const bool enable_assert = io.ConfigErrorRecoveryEnableAssert;
+  const bool enable_debug_log = io.ConfigErrorRecoveryEnableDebugLog;
+  const bool enable_tooltip = io.ConfigErrorRecoveryEnableTooltip;
+  io.ConfigErrorRecoveryEnableAssert = false;
+  io.ConfigErrorRecoveryEnableDebugLog = false;
+  io.ConfigErrorRecoveryEnableTooltip = false;
+  ImGui::ErrorRecoveryTryToRecoverState(&ctx->StackSizesInNewFrame);
+  io.ConfigErrorRecoveryEnableAssert = enable_assert;
+  io.ConfigErrorRecoveryEnableDebugLog = enable_debug_log;
+  io.ConfigErrorRecoveryEnableTooltip = enable_tooltip;
+
+  if (ImPlotContext* plot_ctx = ImPlot::GetCurrentContext();
+      plot_ctx != nullptr) {
+    if (plot_ctx->CurrentPlot != nullptr) {
+      ImPlotItemGroup& items = plot_ctx->CurrentPlot->Items;
+      for (int i = 0; i < items.GetItemCount(); ++i) {
+        items.GetItemByIndex(i)->SeenThisFrame = false;
+      }
+    }
+    if (plot_ctx->CurrentSubplot != nullptr) {
+      ImPlotItemGroup& items = plot_ctx->CurrentSubplot->Items;
+      for (int i = 0; i < items.GetItemCount(); ++i) {
+        items.GetItemByIndex(i)->SeenThisFrame = false;
+      }
+    }
+    ImPlot::ResetCtxForNextPlot(plot_ctx);
+    ImPlot::ResetCtxForNextSubplot(plot_ctx);
+    ImPlot::ResetCtxForNextAlignedPlots(plot_ctx);
+    plot_ctx->CurrentItems = nullptr;
+    if (plot_ctx->ColorModifiers.Size > 0) {
+      ImPlot::PopStyleColor(plot_ctx->ColorModifiers.Size);
+    }
+    if (plot_ctx->StyleModifiers.Size > 0) {
+      ImPlot::PopStyleVar(plot_ctx->StyleModifiers.Size);
+    }
+    if (plot_ctx->ColormapModifiers.Size > 0) {
+      ImPlot::PopColormap(plot_ctx->ColormapModifiers.Size);
+    }
+  }
+  return true;
+}
 
 }  // namespace
 
@@ -145,6 +197,15 @@ void InitUx(py::module_& m) {
         ImPlot::SetCurrentContext(reinterpret_cast<ImPlotContext*>(ptr));
       },
       py::arg("ptr"), "Set ImPlot context pointer.");
+
+  m.def(
+      "unwind_imgui_frame",
+      []() {
+        py::gil_scoped_release no_gil;
+        return UnwindImGuiFrame();
+      },
+      "Unwinds every ImGui and ImPlot Begin*/Push* left open since NewFrame() "
+      "without asserting; returns whether a frame was in progress.");
 
   m.def(
       "configure_docking_layout",

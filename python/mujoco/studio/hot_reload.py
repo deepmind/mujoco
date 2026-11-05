@@ -28,8 +28,9 @@ When a watched ``.py`` file is saved, ``tick()`` does the following:
 3. Rebuilds the registry's handler table and dispatches
    ``HotReloadEvent(plugins=...)`` with the swapped plugins. Once a plugin's
    class has been swapped, exceptions raised by its handlers are caught and
-   logged once per handler (rather than terminating the viewer or sim loop), and
-   the log suppression resets on the next reload.
+   logged once per handler (rather than terminating the viewer or sim loop),
+   any ImGui ``Begin*``/``Push*`` calls the handler left open are closed so the
+   frame still ends cleanly, and the log suppression resets on the next reload.
 
 Watched modules are the modules of the registry's plugins plus the ``.py``
 modules they import from their own directory. Built-in plugins such as
@@ -477,6 +478,7 @@ class Reloader:
       try:
         return bound(message)
       except Exception:  # pylint: disable=broad-exception-caught
+        _unwind_imgui_frame()
         if key not in state.logged:
           state.logged.add(key)
           _log(
@@ -487,6 +489,26 @@ class Reloader:
         return None
 
     return handler
+
+
+def _unwind_imgui_frame() -> None:
+  """Closes the ImGui/ImPlot Begin*/Push* calls a handler left open.
+
+  Dear ImGui and ImPlot abort the process when a frame or plot is missing its
+  ``End*()`` or ``Pop*()``, so without this an exception raised inside a window
+  or plot (or between a push and its pop) would take the viewer down even
+  though the exception itself is caught and logged. Unwinding to the state
+  right after ``NewFrame()`` also keeps a half-built window or plot from
+  leaking into the plugins that run after the failing one. A no-op when no
+  ImGui frame is in progress (e.g. on the sim side, or for non-GUI handlers).
+  """
+  try:
+    # Imported here so that the sim side never loads the UX bindings and the
+    # happy path pays nothing.
+    from mujoco.studio import ux  # pylint: disable=g-import-not-at-top
+  except ImportError:
+    return
+  ux.unwind_imgui_frame()
 
 
 # -----------------------------------------------------------------------------

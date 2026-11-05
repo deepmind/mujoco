@@ -63,7 +63,14 @@ PYBIND11_MODULE(dear_imgui, m) {
 
   py::class_<ImGuiIO>(m, "IO")
       .def_readwrite("ConfigFlags", &ImGuiIO::ConfigFlags)
-      .def_readonly("DisplaySize", &ImGuiIO::DisplaySize)
+      .def_readwrite("BackendFlags", &ImGuiIO::BackendFlags)
+      .def_readwrite("ConfigErrorRecoveryEnableAssert",
+                     &ImGuiIO::ConfigErrorRecoveryEnableAssert)
+      .def_readwrite("ConfigErrorRecoveryEnableDebugLog",
+                     &ImGuiIO::ConfigErrorRecoveryEnableDebugLog)
+      .def_readwrite("ConfigErrorRecoveryEnableTooltip",
+                     &ImGuiIO::ConfigErrorRecoveryEnableTooltip)
+      .def_readwrite("DisplaySize", &ImGuiIO::DisplaySize)
       .def_readonly("FontGlobalScale", &ImGuiIO::FontGlobalScale)
       .def_readonly("DeltaTime", &ImGuiIO::DeltaTime)
       .def_property_readonly(
@@ -89,6 +96,23 @@ PYBIND11_MODULE(dear_imgui, m) {
   m.def("SetCurrentContext", [](uintptr_t ptr) {
     ImGui::SetCurrentContext(reinterpret_cast<ImGuiContext*>(ptr));
   });
+
+  // Context and frame lifecycle, for hosts that drive ImGui from Python (e.g.
+  // headless tests). Rendering backends stay in C++; after Render() the draw
+  // data is simply dropped unless a C++ backend consumes it.
+  m.def(
+      "CreateContext",
+      []() { return reinterpret_cast<uintptr_t>(ImGui::CreateContext()); },
+      "Creates a context and makes it current; returns its handle.");
+  m.def(
+      "DestroyContext",
+      [](uintptr_t ptr) {
+        ImGui::DestroyContext(reinterpret_cast<ImGuiContext*>(ptr));
+      },
+      py::arg("ptr") = 0, "Destroys the given context (0: the current one).");
+  DEF0(NewFrame);
+  DEF0(EndFrame);
+  DEF0(Render);
 
   py::class_<ImGuiListClipper>(m, "ListClipper")
       .def(py::init<>())
@@ -417,8 +441,10 @@ PYBIND11_MODULE(dear_imgui, m) {
       .value("HasMouseCursors", ImGuiBackendFlags_HasMouseCursors)
       .value("HasSetMousePos", ImGuiBackendFlags_HasSetMousePos)
       .value("RendererHasVtxOffset", ImGuiBackendFlags_RendererHasVtxOffset)
+      .value("RendererHasTextures", ImGuiBackendFlags_RendererHasTextures)
       .value("PlatformHasViewports", ImGuiBackendFlags_PlatformHasViewports)
-      .value("HasMouseHoveredViewport", ImGuiBackendFlags_HasMouseHoveredViewport)
+      .value("HasMouseHoveredViewport",
+             ImGuiBackendFlags_HasMouseHoveredViewport)
       .value("RendererHasViewports", ImGuiBackendFlags_RendererHasViewports);
 
   py::enum_<ImGuiCol_>(m, "Col")

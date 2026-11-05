@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <cstdint>
 #define NAMESPACE ImPlot
 #include "dear_imgui_macros.h"
 #include <implot.h>
@@ -46,6 +47,16 @@ PYBIND11_MODULE(implot, m) {
         ImPlot::SetCurrentContext(reinterpret_cast<ImPlotContext*>(ptr));
       },
       py::arg("ptr"), "Set ImPlot context pointer.");
+  m.def(
+      "CreateContext",
+      []() { return reinterpret_cast<uintptr_t>(ImPlot::CreateContext()); },
+      "Creates a context and makes it current; returns its handle.");
+  m.def(
+      "DestroyContext",
+      [](uintptr_t ptr) {
+        ImPlot::DestroyContext(reinterpret_cast<ImPlotContext*>(ptr));
+      },
+      py::arg("ptr") = 0, "Destroys the given context (0: the current one).");
 
   // Types.
   py::class_<ImPlotPoint>(m, "Point")
