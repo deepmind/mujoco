@@ -1267,6 +1267,11 @@ void App::ApplyWindowStateStorage() {
       ++it;  // Window not submitted yet; try again next frame.
       continue;
     }
+    // Windows that opt out of saved settings may keep non-boolean state in their storage.
+    if (window->Flags & ImGuiWindowFlags_NoSavedSettings) {
+      it = window_state_storage_.erase(it);
+      continue;
+    }
     const ImGuiID id = std::strtoul(it->first.c_str() + sep + 1, nullptr, 16);
     window->StateStorage.SetInt(id, std::stoi(it->second) != 0);
     it = window_state_storage_.erase(it);
@@ -1294,6 +1299,9 @@ void App::SaveSettings() {
     KeyValues window_state_storage = window_state_storage_;
     ImGuiContext& g = *ImGui::GetCurrentContext();
     for (ImGuiWindow* window : g.Windows) {
+      if (window->Flags & ImGuiWindowFlags_NoSavedSettings) {
+        continue;
+      }
       for (const ImGuiStoragePair& pair : window->StateStorage.Data) {
         window_state_storage[WindowStateStorageKey(window->Name, pair.key)] =
             std::to_string(pair.val_i);
@@ -1500,7 +1508,8 @@ void App::BuildGui() {
 
   // XYZ view gizmo.
   if (tmp_.view_gizmo && has_model() && has_data()) {
-    ViewGizmoGui(model(), data(), camera_, tmp_.camera_idx, workspace_rect);
+    ViewGizmoGui(model(), data(), camera_, tmp_.camera_idx, tmp_.view_gizmo_animation,
+                 workspace_rect);
   }
 
   // Display a drag-and-drop message if no model is loaded.

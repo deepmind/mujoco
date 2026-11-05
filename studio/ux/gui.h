@@ -183,13 +183,23 @@ std::string GetCameraName(const mjModel* model, const mjvCamera& camera, int ind
 // UX for selecting the camera.
 bool CameraSelectionGui(const mjModel* model, mjData* data, mjvCamera& camera, int& index);
 
+// Transient camera animation state of ViewGizmoGui, owned by the caller.
+struct ViewGizmoAnimation {
+  double start_time = -1.0;  // negative when idle
+  double start_azimuth = 0;
+  double start_elevation = 0;
+  double target_azimuth = 0;
+  double target_elevation = 0;
+};
+
 // XYZ axes in the top-right corner of the 3D view (`workspace_rect`, from
 // ConfigureDockingLayout) that turn with the camera. Clicking an axis animates
 // the camera to look along it, or from the other side if it already does;
 // dragging orbits the camera. A fixed camera is first swapped for the tumble
-// camera, updating `camera_index`. Returns true if the camera changed.
+// camera, updating `camera_index`. The animation progress is kept in
+// `animation`. Returns true if the camera changed.
 bool ViewGizmoGui(const mjModel* model, const mjData* data, mjvCamera& camera, int& camera_index,
-                  const ImVec4& workspace_rect);
+                  ViewGizmoAnimation& animation, const ImVec4& workspace_rect);
 
 // UX for controlling the physics simulation parameters (e.g. integrator,
 // solver, etc.) in mjOption.

@@ -186,6 +186,9 @@ class App {
     int camera_idx = kTumbleCameraIdx;
     int key_idx = -1;
 
+    // View gizmo camera animation.
+    ViewGizmoAnimation view_gizmo_animation;
+
     // Controls.
     int speed_index = 0;
     float cam_speed = 0.0f;

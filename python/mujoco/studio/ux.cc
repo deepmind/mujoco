@@ -53,6 +53,9 @@ struct UxState {
   // Read/edited by camera_selection_gui
   int camera_index = mujoco::studio::kTumbleCameraIdx;
 
+  // Read/edited by view_gizmo_gui.
+  mujoco::studio::ViewGizmoAnimation view_gizmo_animation;
+
   // Read/edited by simulation_gui.
   int key_idx = -1;
   int nthread = 0;
@@ -355,6 +358,7 @@ void InitUx(py::module_& m) {
         py::gil_scoped_release no_gil;
         return mujoco::studio::ViewGizmoGui(
             model.get(), data.get(), *camera.get(), ux_state.camera_index,
+            ux_state.view_gizmo_animation,
             ImVec4(workspace_rect[0], workspace_rect[1], workspace_rect[2],
                    workspace_rect[3]));
       },

@@ -1110,7 +1110,7 @@ bool CameraSelectionGui(const mjModel* model, mjData* data, mjvCamera& camera, i
 }
 
 bool ViewGizmoGui(const mjModel* model, const mjData* data, mjvCamera& camera, int& camera_index,
-                  const ImVec4& workspace_rect) {
+                  ViewGizmoAnimation& animation, const ImVec4& workspace_rect) {
   if (model == nullptr || data == nullptr) {
     return false;
   }
@@ -1189,13 +1189,6 @@ bool ViewGizmoGui(const mjModel* model, const mjData* data, mjvCamera& camera, i
     }
   }
 
-  // Animation state: start/target angles and start time (negative when idle).
-  ImGuiStorage* storage = ImGui::GetStateStorage();
-  const ImGuiID id_t0 = ImGui::GetID("##t0");
-  const ImGuiID id_az0 = ImGui::GetID("##az0");
-  const ImGuiID id_el0 = ImGui::GetID("##el0");
-  const ImGuiID id_az1 = ImGui::GetID("##az1");
-  const ImGuiID id_el1 = ImGui::GetID("##el1");
   const double now = ImGui::GetTime();
 
   // Fixed cameras ignore azimuth/elevation, so switch to the tumble camera.
@@ -1215,7 +1208,7 @@ bool ViewGizmoGui(const mjModel* model, const mjData* data, mjvCamera& camera, i
       release_fixed_camera();
       camera.azimuth -= delta.x * kDragDegPerPixel;
       camera.elevation = std::clamp(camera.elevation - delta.y * kDragDegPerPixel, -90.0, 90.0);
-      storage->SetFloat(id_t0, -1.0f);  // A drag cancels the animation.
+      animation.start_time = -1.0;  // A drag cancels the animation.
       changed = true;
     }
   }
@@ -1232,25 +1225,23 @@ bool ViewGizmoGui(const mjModel* model, const mjData* data, mjvCamera& camera, i
     // Looking straight down (up), keep +Y pointing up the screen.
     const double az =
         std::abs(f[2]) > 0.5 ? (f[2] < 0 ? 90.0 : -90.0) : std::atan2(f[1], f[0]) * 180.0 / mjPI;
-    storage->SetFloat(id_az0, static_cast<float>(camera.azimuth));
-    storage->SetFloat(id_el0, static_cast<float>(camera.elevation));
-    storage->SetFloat(id_az1, static_cast<float>(az));
-    storage->SetFloat(id_el1, static_cast<float>(el));
-    storage->SetFloat(id_t0, static_cast<float>(now));
+    animation = {.start_time = now,
+                 .start_azimuth = camera.azimuth,
+                 .start_elevation = camera.elevation,
+                 .target_azimuth = az,
+                 .target_elevation = el};
   }
 
   // Animate to the target, the short way around in azimuth.
-  const float t0 = storage->GetFloat(id_t0, -1.0f);
-  if (t0 >= 0.0f) {
-    const double u = std::clamp((now - t0) / kAnimationSec, 0.0, 1.0);
+  if (animation.start_time >= 0.0) {
+    const double u = std::clamp((now - animation.start_time) / kAnimationSec, 0.0, 1.0);
     const double ease = u * u * (3.0 - 2.0 * u);  // Smoothstep.
-    const double az0 = storage->GetFloat(id_az0);
-    const double el0 = storage->GetFloat(id_el0);
-    const double daz = std::remainder(storage->GetFloat(id_az1) - az0, 360.0);
-    camera.azimuth = az0 + daz * ease;
-    camera.elevation = el0 + (storage->GetFloat(id_el1) - el0) * ease;
+    const double daz = std::remainder(animation.target_azimuth - animation.start_azimuth, 360.0);
+    camera.azimuth = animation.start_azimuth + daz * ease;
+    camera.elevation =
+        animation.start_elevation + (animation.target_elevation - animation.start_elevation) * ease;
     if (u >= 1.0) {
-      storage->SetFloat(id_t0, -1.0f);
+      animation.start_time = -1.0;
     }
     changed = true;
   }
