@@ -213,6 +213,305 @@ static int capsuleTriangle(mjPreContact* con, mjtNum margin, const mjtNum* pos,
   return cnt;
 }
 
+
+// outward unit normals nrm and offsets off of the faces of tetrahedron v, such that
+// dot(nrm[i], p) - off[i] is the signed distance from p to face i (opposite vertex i);
+// return 0 if the tetrahedron is (nearly) flat
+static int tetFaces(mjtNum nrm[4][3], mjtNum off[4], const mjtNum* v[4]) {
+  // volume relative to the edge lengths at v[0], below which the face orientations are
+  // ill-conditioned in single precision; both sides scale as length^3, which does not
+  // underflow for small elements
+  const mjtNum flat = 1e-6;
+  mjtNum e1[3], e2[3], e3[3], e12[3];
+  mji_sub3(e1, v[1], v[0]);
+  mji_sub3(e2, v[2], v[0]);
+  mji_sub3(e3, v[3], v[0]);
+  mji_cross(e12, e1, e2);
+  mjtNum vol6 = mju_dot3(e12, e3);
+  if (mju_abs(vol6) <= flat * mju_norm3(e1) * mju_norm3(e2) * mju_norm3(e3)) {
+    return 0;
+  }
+
+  for (int i=0; i < 4; i++) {
+    const mjtNum* a = v[(i+1) % 4];
+    mjtNum ab[3], ac[3], ai[3];
+    mji_sub3(ab, v[(i+2) % 4], a);
+    mji_sub3(ac, v[(i+3) % 4], a);
+    mji_sub3(ai, v[i], a);
+    mji_cross(nrm[i], ab, ac);
+    mju_normalize3(nrm[i]);
+    if (mju_dot3(nrm[i], ai) > 0) {
+      mju_scl3(nrm[i], nrm[i], -1);
+    }
+    off[i] = mju_dot3(nrm[i], a);
+  }
+  return 1;
+}
+
+
+// closest points p on segment AB and q on triangle t, assuming AB does not cross t; return the
+// squared distance, and in feature the feature of t containing q whose normal is exact:
+// 1 for the interior of t, 2 + i for the interior of edge t[i] t[i+1] with q - p along the
+// cross product of AB and the edge, 0 otherwise
+static mjtNum segTriangle(mjtNum p[3], mjtNum q[3], int* feature, const mjtNum a[3],
+                          const mjtNum b[3], const mjtNum* t[3]) {
+  mjtNum best = mjMAXVAL, ab[3], x[3], y[3], dif[3], w[4];
+  mji_sub3(ab, b, a);
+  *feature = 0;
+
+  // segment endpoints : triangle, a single point for a sphere
+  int point = (ab[0] == 0 && ab[1] == 0 && ab[2] == 0);
+  const mjtNum* end[2] = {a, b};
+  for (int i=0; i < 2 - point; i++) {
+    mjc_triWeights(w, end[i], t[0], t[1], t[2]);
+    for (int k=0; k < 3; k++) {
+      y[k] = w[0]*t[0][k] + w[1]*t[1][k] + w[2]*t[2][k];
+    }
+    mji_sub3(dif, y, end[i]);
+    mjtNum dist2 = mju_dot3(dif, dif);
+    if (dist2 < best) {
+      best = dist2;
+      mji_copy3(p, end[i]);
+      mji_copy3(q, y);
+      *feature = (w[0] > 0 && w[1] > 0 && w[2] > 0);
+    }
+  }
+
+  // segment : triangle edges, which the triangle query covers for a point
+  if (point) {
+    return best;
+  }
+  for (int i=0; i < 3; i++) {
+    const mjtNum* c = t[i];
+    const mjtNum* e = t[(i+1) % 3];
+    int n = mjc_segWeights(w, a, b, c, e);
+    for (int j=0; j < n; j++) {
+      mji_addScl3(x, a, ab, w[2*j]);
+      for (int k=0; k < 3; k++) {
+        y[k] = c[k] + w[2*j+1]*(e[k] - c[k]);
+      }
+      mji_sub3(dif, y, x);
+      mjtNum dist2 = mju_dot3(dif, dif);
+      if (dist2 < best) {
+        best = dist2;
+        mji_copy3(p, x);
+        mji_copy3(q, y);
+        int interior = n == 1 && w[0] > 0 && w[0] < 1 && w[1] > 0 && w[1] < 1;
+        *feature = interior ? 2 + i : 0;
+      }
+    }
+  }
+
+  return best;
+}
+
+
+// edges of a tetrahedron, as pairs of vertex indices
+static const int tetEdge[6][2] = {{0, 1}, {0, 2}, {0, 3}, {1, 2}, {1, 3}, {2, 3}};
+
+
+// minimum translation of segment AB out of tetrahedron v over the separating axes, which are
+// the face normals and the cross products of AB with the edges, given the signed distances sa
+// and sb of A and B to the faces; return the depth (negative if separated, then the axis is the
+// one of maximum separation), set nrm to the axis from the segment to the tetrahedron, and edge
+// to the edge of a cross product axis or -1 for a face normal
+static mjtNum tetSepAxis(mjtNum nrm[3], int* edge, const mjtNum a[3], const mjtNum b[3],
+                         const mjtNum* v[4], mjtNum fnrm[4][3], const mjtNum sa[4],
+                         const mjtNum sb[4]) {
+  mjtNum depth = mjMAXVAL, ab[3];
+  mji_sub3(ab, b, a);
+  *edge = -1;
+
+  // face normals, translating out through face i
+  for (int i=0; i < 4; i++) {
+    mjtNum depth_i = -mjMIN(sa[i], sb[i]);
+    if (depth_i < depth) {
+      depth = depth_i;
+      mji_scl3(nrm, fnrm[i], -1);
+    }
+  }
+
+  // segment x edges, skipping (near) parallel pairs which are covered by the face normals
+  for (int k=0; k < 6; k++) {
+    mjtNum e[3], axis[3];
+    mji_sub3(e, v[tetEdge[k][1]], v[tetEdge[k][0]]);
+    mji_cross(axis, ab, e);
+    mjtNum norm2 = mju_dot3(axis, axis);
+    if (norm2 <= mjMINVAL * mju_dot3(ab, ab) * mju_dot3(e, e)) {
+      continue;
+    }
+    mju_scl3(axis, axis, 1 / mju_sqrt(norm2));
+
+    // overlap of the segment and tetrahedron projections, translating along +axis or -axis
+    mjtNum proja = mju_dot3(axis, a), projb = mju_dot3(axis, b);
+    mjtNum smin = mjMIN(proja, projb), smax = mjMAX(proja, projb);
+    mjtNum tmin = mjMAXVAL, tmax = -mjMAXVAL;
+    for (int i=0; i < 4; i++) {
+      mjtNum proj = mju_dot3(axis, v[i]);
+      tmin = mjMIN(tmin, proj);
+      tmax = mjMAX(tmax, proj);
+    }
+    if (tmax - smin < depth) {
+      depth = tmax - smin;
+      mji_scl3(nrm, axis, -1);
+      *edge = k;
+    }
+    if (smax - tmin < depth) {
+      depth = smax - tmin;
+      mji_copy3(nrm, axis);
+      *edge = k;
+    }
+  }
+
+  return depth;
+}
+
+
+// capsule (segment pa pb with radius r, a sphere if pa = pb) : tetrahedron vert with radius rt,
+// the analytic counterpart of mjc_ConvexElem; return the number of contacts (0 or 1), or -1
+// if the tetrahedron is degenerate
+static int capsuleTetrahedron(mjPreContact* con, mjtNum margin, const mjtNum pa[3],
+                              const mjtNum pb[3], mjtNum r, const mjtNum* vert[4], mjtNum rt) {
+  // distance relative to the coordinates, below which the direction between the closest points
+  // is rounding noise
+#ifdef mjUSESINGLE
+  const mjtNum touch = 1e-6f;
+#else
+  const mjtNum touch = 1e-12;
+#endif
+
+  // work relative to the first vertex, limiting rounding at large coordinates
+  mjtNum vloc[4][3], a[3], b[3];
+  const mjtNum* v[4] = {vloc[0], vloc[1], vloc[2], vloc[3]};
+  for (int i=0; i < 4; i++) {
+    mji_sub3(vloc[i], vert[i], vert[0]);
+  }
+  mji_sub3(a, pa, vert[0]);
+  mji_sub3(b, pb, vert[0]);
+
+  mjtNum fnrm[4][3], foff[4];
+  if (!tetFaces(fnrm, foff, v)) {
+    return -1;
+  }
+
+  // signed distances of A and B to the faces, clip AB to the tetrahedron
+  mjtNum sa[4], sb[4], t0 = 0, t1 = 1;
+  for (int i=0; i < 4; i++) {
+    sa[i] = mju_dot3(fnrm[i], a) - foff[i];
+    sb[i] = mju_dot3(fnrm[i], b) - foff[i];
+    if (sa[i] > 0 && sb[i] > 0) {
+      t0 = 1, t1 = 0;
+    } else if (sa[i] > 0) {
+      t0 = mjMAX(t0, sa[i] / (sa[i] - sb[i]));
+    } else if (sb[i] > 0) {
+      t1 = mjMIN(t1, sa[i] / (sa[i] - sb[i]));
+    }
+  }
+
+  // signed distance between segment and tetrahedron, normal from capsule to tetrahedron,
+  // deepest (or closest) point p on segment
+  mjtNum dist, nrm[3] = {0, 0, 0}, p[3] = {a[0], a[1], a[2]}, ab[3];
+  mji_sub3(ab, b, a);
+
+  // separated: closest points between segment and tetrahedron faces, skipping the faces with
+  // the segment on their inner side, since the closest point on the tetrahedron lies on a face
+  // with p on its outer side (at least one, as the segment is outside)
+  if (t0 > t1) {
+    mjtNum dist2 = mjMAXVAL, q[3] = {0, 0, 0};
+    int face = 0, feature = 0;
+    for (int i=0; i < 4; i++) {
+      if (sa[i] <= 0 && sb[i] <= 0) {
+        continue;
+      }
+      const mjtNum* t[3] = {v[(i+1) % 4], v[(i+2) % 4], v[(i+3) % 4]};
+      mjtNum pi[3], qi[3];
+      int fi;
+      mjtNum di2 = segTriangle(pi, qi, &fi, a, b, t);
+      if (di2 < dist2) {
+        dist2 = di2;
+        face = i;
+        feature = fi;
+        mji_copy3(p, pi);
+        mji_copy3(q, qi);
+      }
+    }
+    dist = mju_sqrt(dist2);
+
+    // q inside the face: face normal
+    if (feature == 1) {
+      mji_scl3(nrm, fnrm[face], -1);
+    }
+
+    // q inside an edge and p inside the segment: cross product, toward the centroid
+    else if (feature > 1) {
+      int j = feature - 2;
+      const mjtNum* c = v[(face + 1 + j) % 4];
+      const mjtNum* e = v[(face + 1 + (j+1) % 3) % 4];
+      mjtNum ce[3], cen[3];
+      mji_sub3(ce, e, c);
+      mji_cross(nrm, ab, ce);
+      mju_normalize3(nrm);
+      for (int k=0; k < 3; k++) {
+        cen[k] = 0.25*(v[0][k] + v[1][k] + v[2][k] + v[3][k]) - q[k];
+      }
+      if (mju_dot3(nrm, cen) < 0) {
+        mju_scl3(nrm, nrm, -1);
+      }
+    }
+
+    // vertex or edge end: direction between the closest points, or the separating axis of
+    // maximum separation if they are within rounding of each other
+    else {
+      mjtNum scale2 = mjMAX(mjMAX(mju_dot3(v[1], v[1]), mju_dot3(v[2], v[2])),
+                            mjMAX(mju_dot3(v[3], v[3]), mjMAX(mju_dot3(a, a), mju_dot3(b, b))));
+      if (dist2 > touch*touch * scale2) {
+        mji_sub3(nrm, q, p);
+        mju_scl3(nrm, nrm, 1 / dist);
+      } else {
+        int edge;
+        tetSepAxis(nrm, &edge, a, b, v, fnrm, sa, sb);
+      }
+    }
+  }
+
+  // intersecting: minimum translation over the separating axes
+  else {
+    int edge;
+    dist = -tetSepAxis(nrm, &edge, a, b, v, fnrm, sa, sb);
+
+    // edge axis: closest point on segment to the edge
+    if (edge >= 0) {
+      mjtNum w[4];
+      int n = mjc_segWeights(w, a, b, v[tetEdge[edge][0]], v[tetEdge[edge][1]]);
+      mji_addScl3(p, a, ab, n == 2 ? 0.5*(w[0] + w[2]) : w[0]);
+    }
+
+    // face axis: deepest endpoint, or the middle of the clipped segment if parallel
+    else {
+      mjtNum da = mju_dot3(nrm, a), db = mju_dot3(nrm, b);
+      if (da > db) {
+        mji_copy3(p, a);
+      } else if (db > da) {
+        mji_copy3(p, b);
+      } else {
+        mji_addScl3(p, a, ab, 0.5*(t0 + t1));
+      }
+    }
+  }
+
+  // construct contact
+  con[0].dist = dist - r - rt;
+  if (con[0].dist >= margin) {
+    return 0;
+  }
+  mji_addScl3(con[0].pos, p, nrm, r + 0.5*con[0].dist);
+  mji_addTo3(con[0].pos, vert[0]);
+  mji_copy3(con[0].normal, nrm);
+  mji_zero3(con[0].tangent);
+  return 1;
+}
+
+
 // test a plane geom and a flex for collision, return number of contacts
 int mjc_PlaneFlex(const mjModel* m, mjData* d, mjPreContact* con, int* vert, int g, int f,
                   mjtNum margin) {
@@ -444,6 +743,27 @@ int mjc_GeomElem(const mjModel* m, mjData* d, mjPreContact* con, int g, int f, i
     ncon = capsuleTriangle(con, margin, d->geom_xpos + 3*g, d->geom_xmat + 9*g,
                                  m->geom_size + 3*g, vertxpos + 3*edata[0], vertxpos + 3*edata[1],
                                  vertxpos + 3*edata[2], m->flex_radius[f]);
+  }
+
+  // sphere/capsule : tetrahedron
+  else if (dim == 3 && (type == mjGEOM_SPHERE || type == mjGEOM_CAPSULE)) {
+    const mjtNum* vertxpos = d->flexvert_xpos + 3*m->flex_vertadr[f];
+    const mjtNum* v[4] = {vertxpos + 3*edata[0], vertxpos + 3*edata[1],
+                          vertxpos + 3*edata[2], vertxpos + 3*edata[3]};
+
+    // segment of capsule axis, a point for spheres
+    const mjtNum* pos = d->geom_xpos + 3*g;
+    const mjtNum* mat = d->geom_xmat + 9*g;
+    const mjtNum* size = m->geom_size + 3*g;
+    mjtNum len = (type == mjGEOM_CAPSULE) ? size[1] : 0;
+    mjtNum axis[3] = {mat[2], mat[5], mat[8]}, p1[3], p2[3];
+    mji_addScl3(p1, pos, axis, -len);
+    mji_addScl3(p2, pos, axis, len);
+
+    ncon = capsuleTetrahedron(con, margin, p1, p2, size[0], v, m->flex_radius[f]);
+    if (ncon < 0) {
+      ncon = mjc_ConvexElem(m, d, con, g, -1, -1, -1, f, e, margin);
+    }
   }
 
   // general geom : elem

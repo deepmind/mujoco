@@ -19,6 +19,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <cstdio>
 #include <string>
 #include <utility>
@@ -757,6 +758,262 @@ TEST_F(MjCollisionTest, Flex3DActiveLayersMidphaseDisabled) {
         EXPECT_LT(layer, m->flex_activelayers[f]);
       }
     }
+  }
+}
+
+// GJK/EPA options with a tight tolerance: EPA normals of curved shapes converge
+// as the square root of the distance tolerance
+std::string CcdOption() {
+  return sizeof(mjtNum) == sizeof(float)
+             ? R"(ccd_tolerance="1e-6" ccd_iterations="200")"
+             : R"(ccd_tolerance="1e-12" ccd_iterations="200")";
+}
+
+// model with the given options, a probe geom on a free body, and the given
+// bodies
+std::string ProbeModel(const std::string& probe, const std::string& bodies,
+                       const std::string& options = "") {
+  return R"(
+  <mujoco>
+    )" + options +
+         R"(
+    <asset>
+      <mesh name="tet" vertex="0 0 0  .1 0 0  0 .1 0  0 0 .1"/>
+    </asset>
+    <worldbody>
+      <body>
+        <freejoint/>
+        )" +
+         probe + R"(
+      </body>
+      )" +
+         bodies + R"(
+    </worldbody>
+  </mujoco>)";
+}
+
+// compares the probe contacts of two models over random probe poses around the
+// tetrahedron with vertices (0, 0, 0), (.1, 0, 0), (0, .1, 0), (0, 0, .1);
+// returns the number of poses with a contact
+int CompareProbeContacts(const std::string& xml1, const std::string& xml2) {
+  char error[1024];
+  MjModelPtr m1 = LoadModelFromString(xml1.c_str(), error, sizeof(error));
+  EXPECT_THAT(m1.get(), NotNull()) << error;
+  MjModelPtr m2 = LoadModelFromString(xml2.c_str(), error, sizeof(error));
+  EXPECT_THAT(m2.get(), NotNull()) << error;
+  if (!m1 || !m2) return 0;
+  MjDataPtr d1 = MakeData(m1);
+  MjDataPtr d2 = MakeData(m2);
+
+  // pseudo-random numbers in [-1, 1), identical on all platforms (64-bit LCG)
+  std::uint64_t state = 1;
+  auto unif = [&state]() {
+    state = state * 6364136223846793005ULL + 1442695040888963407ULL;
+    double u = static_cast<double>(state >> 11) / 9007199254740992.0;  // 2^53
+    return static_cast<mjtNum>(2 * u - 1);
+  };
+  // in single precision, GJK/EPA occasionally misses a contact
+  const bool single = sizeof(mjtNum) == sizeof(float);
+  int ncontact = 0, nmismatch = 0;
+  std::string mismatched;
+  for (int i = 0; i < 300; i++) {
+    // position within .07 of the tetrahedron centroid, random orientation
+    mjtNum qpos[7];
+    for (int k = 0; k < 7; k++) {
+      qpos[k] = unif();
+    }
+    for (int k = 0; k < 3; k++) {
+      qpos[k] = .025 + .07 * qpos[k];
+    }
+    mju_normalize4(qpos + 3);
+    mju_copy(d1->qpos, qpos, 7);
+    mju_copy(d2->qpos, qpos, 7);
+    mj_fwdPosition(m1.get(), d1.get());
+    mj_fwdPosition(m2.get(), d2.get());
+
+    // skip poses at the contact boundary, where existence is ill-conditioned
+    if (d1->ncon + d2->ncon == 0) continue;
+    if (d1->ncon != d2->ncon) {
+      const mjContact* c = d1->ncon ? d1->contact : d2->contact;
+      if (std::abs(c->dist - c->includemargin) < MjTol(1e-6, 1e-4)) continue;
+    }
+
+    SCOPED_TRACE("pose " + std::to_string(i));
+    if (d1->ncon != 1 || d2->ncon != 1) {
+      const mjContact* c = d1->ncon ? d1->contact : d2->contact;
+      if (!single) {
+        ADD_FAILURE() << "ncon " << d1->ncon << " vs " << d2->ncon
+                      << ", dist - includemargin "
+                      << c->dist - c->includemargin;
+      }
+      nmismatch++;
+      mismatched += " " + std::to_string(i);
+      continue;
+    }
+    const mjContact& con1 = d1->contact[0];
+    const mjContact& con2 = d2->contact[0];
+    // in single precision, GJK/EPA normals of curved shapes are limited by the
+    // achievable tolerance: they converge as the square root of the distance
+    // tolerance, and the frame tolerance (about 17 degrees) reflects the float
+    // GJK/EPA reference, not the analytic contacts
+    EXPECT_NEAR(con1.dist, con2.dist, MjTol(2e-8, 3e-5));
+    for (int k = 0; k < 3; k++) {
+      EXPECT_NEAR(con1.frame[k], con2.frame[k], MjTol(3e-4, 3e-1));
+      EXPECT_NEAR(con1.pos[k], con2.pos[k], MjTol(2e-6, 1e-3));
+    }
+    ncontact++;
+  }
+  EXPECT_LE(nmismatch, single ? 3 : 0) << "mismatched poses:" << mismatched;
+  return ncontact;
+}
+
+TEST_F(MjCollisionTest, Flex3DSphereCapsuleMatchMesh) {
+  // flex tetrahedron with zero radius, and the same tetrahedron as a mesh
+  const std::string flex = R"(
+      <flexcomp name="tet" type="direct" dim="3" radius="0" mass="1"
+                point="0 0 0  .1 0 0  0 .1 0  0 0 .1" element="0 1 2 3">
+        <contact selfcollide="none"/>
+      </flexcomp>)";
+  const std::string mesh = R"(
+      <body>
+        <freejoint/>
+        <geom type="mesh" mesh="tet"/>
+      </body>)";
+  const std::string nomulti = "<option " + CcdOption() + R"(>
+      <flag multiccd="disable"/>
+    </option>)";
+
+  // analytic sphere and capsule : tetrahedron match GJK/EPA with the mesh
+  for (const char* probe :
+       {R"(<geom size=".02"/>)", R"(<geom type="capsule" size=".015 .03"/>)"}) {
+    SCOPED_TRACE(probe);
+    EXPECT_GT(CompareProbeContacts(ProbeModel(probe, flex),
+                                   ProbeModel(probe, mesh, nomulti)),
+              50);
+  }
+}
+
+TEST_F(MjCollisionTest, Flex3DSphereRadiusMarginMatchEllipsoid) {
+  // with flex radius and margin, analytic sphere matches GJK/EPA with an
+  // ellipsoid of equal radii, which uses the general geom : elem path
+  const std::string flex = R"(
+      <flexcomp name="tet" type="direct" dim="3" radius=".005" mass="1"
+                point="0 0 0  .1 0 0  0 .1 0  0 0 .1" element="0 1 2 3">
+        <contact selfcollide="none" margin=".01"/>
+      </flexcomp>)";
+  const std::string ccd = "<option " + CcdOption() + "/>";
+  EXPECT_GT(CompareProbeContacts(
+                ProbeModel(R"(<geom size=".02"/>)", flex),
+                ProbeModel(R"(<geom type="ellipsoid" size=".02 .02 .02"/>)",
+                           flex, ccd)),
+            50);
+}
+
+TEST_F(MjCollisionTest, Flex3DSphereFlatElementMatchesConvex) {
+  // nearly flat tetrahedron, which is too thin for the analytic path: sphere
+  // matches GJK/EPA with an ellipsoid of equal radii (the analytic path would
+  // also match in double precision; the Warp test_degenerate_tetrahedron checks
+  // that it rejects the element)
+  const std::string flex = R"(
+      <flexcomp name="tet" type="direct" dim="3" radius=".005" mass="1"
+                point="0 0 0  .1 0 0  0 .1 0  .03 .03 1e-8" element="0 1 2 3">
+        <contact selfcollide="none"/>
+      </flexcomp>)";
+  const std::string ccd = "<option " + CcdOption() + "/>";
+  EXPECT_GT(CompareProbeContacts(
+                ProbeModel(R"(<geom size=".02"/>)", flex, ccd),
+                ProbeModel(R"(<geom type="ellipsoid" size=".02 .02 .02"/>)",
+                           flex, ccd)),
+            20);
+}
+
+// expects a single contact between the probe at the free joint pose qpos and
+// the unit tetrahedron with vertices pos, pos + (1, 0, 0), pos + (0, 1, 0),
+// pos + (0, 0, 1), with the given distance and normal (from the probe to the
+// tetrahedron)
+void ExpectUnitTetrahedronContact(const char* probe, const char* pos,
+                                  const mjtNum qpos[7], mjtNum dist,
+                                  const mjtNum normal[3], mjtNum tol) {
+  const std::string flex = std::string(R"(
+      <flexcomp name="tet" type="direct" dim="3" radius="0" mass="1" pos=")") +
+                           pos + R"("
+                point="0 0 0  1 0 0  0 1 0  0 0 1" element="0 1 2 3">
+        <contact selfcollide="none"/>
+      </flexcomp>)";
+  char error[1024];
+  MjModelPtr m = LoadModelFromString(ProbeModel(probe, flex).c_str(), error,
+                                     sizeof(error));
+  ASSERT_THAT(m.get(), NotNull()) << error;
+  MjDataPtr d = MakeData(m);
+  mju_copy(d->qpos, qpos, 7);
+  mj_fwdPosition(m.get(), d.get());
+  ASSERT_EQ(d->ncon, 1);
+  EXPECT_NEAR(d->contact[0].dist, dist, tol);
+  for (int k = 0; k < 3; k++) {
+    EXPECT_NEAR(d->contact[0].frame[k], normal[k], tol);
+  }
+}
+
+TEST_F(MjCollisionTest, Flex3DSphereCenterOnFace) {
+  // sphere centers on the face x + y + z = 1, on either side of it within
+  // rounding, also far from the origin: the normal is the face normal and the
+  // depth is the radius
+  const mjtNum s3 = 1 / mju_sqrt(3.0);
+  const mjtNum normal[3] = {-s3, -s3, -s3};
+  const mjtNum w[5][3] = {{.2, .3, .5},
+                          {.6, .2, .2},
+                          {.25, .5, .25},
+                          {s3 * s3, s3 * s3, s3 * s3},
+                          {.45, .1, .45}};
+  struct {
+    const char* str;
+    mjtNum val[3];
+  } offsets[2] = {{"0 0 0", {0, 0, 0}}, {"100 -50 30", {100, -50, 30}}};
+  for (const auto& offset : offsets) {
+    for (const auto& wi : w) {
+      SCOPED_TRACE(offset.str);
+      mjtNum qpos[7] = {0, 0, 0, 1, 0, 0, 0};
+      for (int k = 0; k < 3; k++) {
+        qpos[k] = offset.val[k] + wi[k];
+      }
+      ExpectUnitTetrahedronContact(R"(<geom size=".1"/>)", offset.str, qpos,
+                                   -.1, normal, MjTol(1e-10, 1e-4));
+    }
+  }
+}
+
+TEST_F(MjCollisionTest, Flex3DSphereCapsuleNearTouchingNormals) {
+  // probes whose center or axis passes just outside the unit tetrahedron: the
+  // normals are exact, for a closest point at a vertex, inside an edge and
+  // inside a face
+  const mjtNum s2 = 1 / mju_sqrt(2.0), s3 = 1 / mju_sqrt(3.0);
+  const mjtNum tol = MjTol(1e-10, 1e-5);
+
+  // sphere near vertex (0, 0, 0)
+  {
+    const mjtNum qpos[7] = {-5e-6, -5e-6, -5e-6, 1, 0, 0, 0};
+    const mjtNum normal[3] = {s3, s3, s3};
+    ExpectUnitTetrahedronContact(R"(<geom size=".01"/>)", "0 0 0", qpos,
+                                 5e-6 * mju_sqrt(3.0) - .01, normal, tol);
+  }
+
+  // capsule along (0, 1, -1) crossing just outside edge x, rotated by -135
+  // degrees about x
+  {
+    const mjtNum qpos[7] = {
+        .5, -5e-6, -5e-6, mju_cos(-3 * mjPI / 8), mju_sin(-3 * mjPI / 8), 0, 0};
+    const mjtNum normal[3] = {0, s2, s2};
+    ExpectUnitTetrahedronContact(R"(<geom type="capsule" size=".05 .14"/>)",
+                                 "0 0 0", qpos, 5e-6 * mju_sqrt(2.0) - .05,
+                                 normal, tol);
+  }
+
+  // capsule along x just below face z = 0, overhanging the tetrahedron
+  {
+    const mjtNum qpos[7] = {0, .5, -1e-7, s2, 0, s2, 0};
+    const mjtNum normal[3] = {0, 0, 1};
+    ExpectUnitTetrahedronContact(R"(<geom type="capsule" size=".01 5"/>)",
+                                 "0 0 0", qpos, 1e-7 - .01, normal, tol);
   }
 }
 

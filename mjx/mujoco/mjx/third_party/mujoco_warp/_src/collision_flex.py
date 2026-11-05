@@ -2084,6 +2084,10 @@ def _flex_narrowphase_elem_detect(warn_overflow: int):
     t1 = wp.vec3(0.0, 0.0, 0.0)
     t2 = wp.vec3(0.0, 0.0, 0.0)
     t3 = wp.vec3(0.0, 0.0, 0.0)
+    p0 = wp.vec3(0.0, 0.0, 0.0)
+    p1 = wp.vec3(0.0, 0.0, 0.0)
+    p2 = wp.vec3(0.0, 0.0, 0.0)
+    p3 = wp.vec3(0.0, 0.0, 0.0)
     v0 = int(-1)
     v1 = int(-1)
     v2 = int(-1)
@@ -2287,6 +2291,40 @@ def _flex_narrowphase_elem_detect(warn_overflow: int):
       # Stage 2: Element AABB vs Geom world AABB check
       if _flex_element_aabb_filter(geom_box_min, geom_box_max, elem_min, elem_max):
         continue
+
+      # sphere/capsule : tetrahedron, analytic (falls back to ccd for degenerate tetrahedra)
+      if f_dim == 3 and (gtype == int(GeomType.SPHERE) or gtype == int(GeomType.CAPSULE)):
+        cap_len = wp.where(gtype == int(GeomType.CAPSULE), geom_size_val[1], 0.0)
+        cap_axis_g = geom_rot[:, 2]
+        valid, cdist, cpos, cnrm = collision_primitive_core.capsule_tetrahedron(
+          geom_pos - cap_len * cap_axis_g, geom_pos + cap_len * cap_axis_g, geom_size_val[0], p0, p1, p2, p3, elem_radius
+        )
+        if valid:
+          if cdist < margin:
+            _write_candidate(
+              max_candidates,
+              cdist,
+              cpos,
+              cnrm,
+              geomid,
+              -1,
+              flexid,
+              local_elemid,
+              -1,
+              worldid,
+              wp.static(bool(warn_overflow & OverflowType.NARROWPHASE)),
+              overflow_out,
+              cand_dist_out,
+              cand_pos_out,
+              cand_nrm_out,
+              cand_geom_out,
+              cand_flex_out,
+              cand_elem_out,
+              cand_vert_out,
+              cand_worldid_out,
+              ncand_out,
+            )
+          continue
 
       if gtype == int(GeomType.MESH):
         ccdid = wp.atomic_add(nccd, 0, 1)  # kernel_analyzer: ignore[atomic]

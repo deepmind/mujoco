@@ -1952,3 +1952,294 @@ def cylinder_triangle(
     mat23f(pos1[0], pos1[1], pos1[2], pos2[0], pos2[1], pos2[2]),
     mat23f(nrm1[0], nrm1[1], nrm1[2], nrm2[0], nrm2[1], nrm2[2]),
   )
+
+
+@wp.func
+def _segment_triangle(a: wp.vec3, b: wp.vec3, t1: wp.vec3, t2: wp.vec3, t3: wp.vec3) -> Tuple[float, wp.vec3, wp.vec3, int]:
+  """Closest points between segment ab and triangle t1 t2 t3, which it does not cross.
+
+  Port of segTriangle from engine_collision_flex.c.
+
+  Args:
+    a: First endpoint of the segment.
+    b: Second endpoint of the segment.
+    t1: First triangle vertex.
+    t2: Second triangle vertex.
+    t3: Third triangle vertex.
+
+  Returns:
+    - Squared distance.
+    - Closest point on the segment.
+    - Closest point on the triangle.
+    - Feature of the triangle containing its closest point whose normal is exact: 1 for the
+      interior, 2 + i for the interior of edge i (from vertex i to vertex i + 1, from 0) with the
+      closest points along the cross product of the segment and the edge, 0 otherwise.
+  """
+  best = float(MJ_MAXVAL)
+  p = a
+  q = a
+  feature = int(0)
+
+  # segment endpoints : triangle, a single point for a sphere
+  point = a[0] == b[0] and a[1] == b[1] and a[2] == b[2]
+  for i in range(wp.where(point, 1, 2)):
+    end = a if i == 0 else b
+    w = tri_weights(end, t1, t2, t3)
+    y = w[0] * t1 + w[1] * t2 + w[2] * t3
+    dist2 = wp.length_sq(y - end)
+    if dist2 < best:
+      best = dist2
+      p = end
+      q = y
+      feature = 0
+      if w[0] > 0.0 and w[1] > 0.0 and w[2] > 0.0:
+        feature = 1
+
+  # segment : triangle edges, which the triangle query covers for a point
+  if point:
+    return best, p, q, feature
+  for i in range(3):
+    c = t1 if i == 0 else (t2 if i == 1 else t3)
+    e = t2 if i == 0 else (t3 if i == 1 else t1)
+    n, w0, w1 = _segment_weights(a, b, c, e)
+    for j in range(n):
+      ws = w0 if j == 0 else w1
+      x = a + ws[0] * (b - a)
+      y = c + ws[1] * (e - c)
+      dist2 = wp.length_sq(y - x)
+      if dist2 < best:
+        best = dist2
+        p = x
+        q = y
+        feature = 0
+        if n == 1 and ws[0] > 0.0 and ws[0] < 1.0 and ws[1] > 0.0 and ws[1] < 1.0:
+          feature = 2 + i
+
+  return best, p, q, feature
+
+
+@wp.func
+def _tet_edge(k: int) -> Tuple[int, int]:
+  """Vertex indices of edge k of a tetrahedron: (0, 1), (0, 2), (0, 3), (1, 2), (1, 3), (2, 3)."""
+  j0 = wp.where(k < 3, 0, wp.where(k < 5, 1, 2))
+  j1 = wp.where(k < 3, k + 1, wp.where(k < 5, k - 1, 3))
+  return j0, j1
+
+
+@wp.func
+def _tet_sep_axis(a: wp.vec3, b: wp.vec3, tet: mat43f, fnrm: mat43f, sa: wp.vec4, sb: wp.vec4) -> Tuple[float, wp.vec3, int]:
+  """Minimum translation of segment ab out of a tetrahedron over the separating axes.
+
+  Port of tetSepAxis from engine_collision_flex.c. The separating axes are the face normals and the
+  cross products of the segment with the edges.
+
+  Args:
+    a: First endpoint of the segment.
+    b: Second endpoint of the segment.
+    tet: Tetrahedron vertices (one per row).
+    fnrm: Outward face normals (one per row), face i is opposite vertex i.
+    sa: Signed distances of a to the faces.
+    sb: Signed distances of b to the faces.
+
+  Returns:
+    - Depth, negative if separated (then the axis is the one of maximum separation).
+    - Axis from the segment to the tetrahedron.
+    - Edge of a cross product axis, or -1 for a face normal.
+  """
+  ab = b - a
+  depth = float(MJ_MAXVAL)
+  nrm = wp.vec3(0.0)
+  edge = int(-1)
+
+  # face normals, translating out through face i
+  for i in range(4):
+    depth_i = -wp.min(sa[i], sb[i])
+    if depth_i < depth:
+      depth = depth_i
+      nrm = -fnrm[i]
+
+  # segment x edges, skipping (near) parallel pairs which are covered by the face normals
+  for k in range(6):
+    j0, j1 = _tet_edge(k)
+    e = tet[j1] - tet[j0]
+    axis = wp.cross(ab, e)
+    norm2 = wp.dot(axis, axis)
+    if norm2 <= MJ_MINVAL * wp.dot(ab, ab) * wp.dot(e, e):
+      continue
+    axis = axis / wp.sqrt(norm2)
+
+    # overlap of the segment and tetrahedron projections, translating along +axis or -axis
+    proja = wp.dot(axis, a)
+    projb = wp.dot(axis, b)
+    smin = wp.min(proja, projb)
+    smax = wp.max(proja, projb)
+    tmin = float(MJ_MAXVAL)
+    tmax = float(-MJ_MAXVAL)
+    for i in range(4):
+      proj = wp.dot(axis, tet[i])
+      tmin = wp.min(tmin, proj)
+      tmax = wp.max(tmax, proj)
+    if tmax - smin < depth:
+      depth = tmax - smin
+      nrm = -axis
+      edge = k
+    if smax - tmin < depth:
+      depth = smax - tmin
+      nrm = axis
+      edge = k
+
+  return depth, nrm, edge
+
+
+@wp.func
+def capsule_tetrahedron(
+  # In:
+  pa: wp.vec3,
+  pb: wp.vec3,
+  radius: float,
+  v0: wp.vec3,
+  v1: wp.vec3,
+  v2: wp.vec3,
+  v3: wp.vec3,
+  tet_radius: float,
+) -> Tuple[bool, float, wp.vec3, wp.vec3]:
+  """Contact between a capsule (segment pa pb with radius, a sphere if pa = pb) and a tetrahedron.
+
+  Port of capsuleTetrahedron from engine_collision_flex.c, the analytic counterpart of GJK/EPA:
+  the closest points if the segment is outside the tetrahedron, otherwise the minimum translation
+  over the separating axes (face normals and segment x edge cross products).
+
+  Args:
+    pa: First endpoint of the capsule segment.
+    pb: Second endpoint of the capsule segment.
+    radius: Capsule radius.
+    v0: First tetrahedron vertex.
+    v1: Second tetrahedron vertex.
+    v2: Third tetrahedron vertex.
+    v3: Fourth tetrahedron vertex.
+    tet_radius: Tetrahedron (flex element) radius.
+
+  Returns:
+    - Whether the tetrahedron is nondegenerate (otherwise the distance is MJ_MAXVAL and the
+      position and normal are zero).
+    - Contact distance.
+    - Contact position.
+    - Contact normal, from the capsule to the tetrahedron.
+  """
+  # volume relative to the edge lengths at v0, below which the face orientations are
+  # ill-conditioned in single precision; both sides scale as length^3, which does not underflow
+  # for small elements
+  e1 = v1 - v0
+  e2 = v2 - v0
+  e3 = v3 - v0
+  vol6 = wp.dot(wp.cross(e1, e2), e3)
+  if wp.abs(vol6) <= 1.0e-6 * wp.length(e1) * wp.length(e2) * wp.length(e3):
+    return False, MJ_MAXVAL, wp.vec3(0.0), wp.vec3(0.0)
+
+  # work relative to v0, limiting rounding at large coordinates
+  a = pa - v0
+  b = pb - v0
+  tet = mat43f()
+  tet[0] = wp.vec3(0.0)
+  tet[1] = e1
+  tet[2] = e2
+  tet[3] = e3
+
+  # outward face normals and offsets, face i is opposite vertex i
+  fnrm = mat43f()
+  foff = wp.vec4()
+  for i in range(4):
+    va = tet[(i + 1) % 4]
+    fn = wp.normalize(wp.cross(tet[(i + 2) % 4] - va, tet[(i + 3) % 4] - va))
+    if wp.dot(fn, tet[i] - va) > 0.0:
+      fn = -fn
+    fnrm[i] = fn
+    foff[i] = wp.dot(fn, va)
+
+  # signed distances of a and b to the faces, clip ab to the tetrahedron
+  sa = wp.vec4()
+  sb = wp.vec4()
+  t0 = float(0.0)
+  t1 = float(1.0)
+  for i in range(4):
+    sa[i] = wp.dot(fnrm[i], a) - foff[i]
+    sb[i] = wp.dot(fnrm[i], b) - foff[i]
+    if sa[i] > 0.0 and sb[i] > 0.0:
+      t0 = 1.0
+      t1 = 0.0
+    elif sa[i] > 0.0:
+      t0 = wp.max(t0, sa[i] / (sa[i] - sb[i]))
+    elif sb[i] > 0.0:
+      t1 = wp.min(t1, sa[i] / (sa[i] - sb[i]))
+
+  ab = b - a
+  dist = float(0.0)
+  nrm = wp.vec3(0.0)
+  p = a
+
+  # separated: closest points between segment and tetrahedron faces, skipping the faces with the
+  # segment on their inner side, since the closest point on the tetrahedron lies on a face with p on
+  # its outer side (at least one, as the segment is outside)
+  if t0 > t1:
+    dist2 = float(MJ_MAXVAL)
+    q = a
+    face = int(0)
+    feature = int(0)
+    for i in range(4):
+      if sa[i] <= 0.0 and sb[i] <= 0.0:
+        continue
+      di2, pi, qi, fi = _segment_triangle(a, b, tet[(i + 1) % 4], tet[(i + 2) % 4], tet[(i + 3) % 4])
+      if di2 < dist2:
+        dist2 = di2
+        p = pi
+        q = qi
+        face = i
+        feature = fi
+    dist = wp.sqrt(dist2)
+
+    if feature == 1:
+      # q inside the face: face normal
+      nrm = -fnrm[face]
+    elif feature > 1:
+      # q inside an edge and p inside the segment: cross product, toward the centroid
+      j = feature - 2
+      c = tet[(face + 1 + j) % 4]
+      e = tet[(face + 1 + (j + 1) % 3) % 4]
+      nrm = wp.normalize(wp.cross(ab, e - c))
+      if wp.dot(nrm, 0.25 * (tet[0] + tet[1] + tet[2] + tet[3]) - q) < 0.0:
+        nrm = -nrm
+    else:
+      # vertex or edge end: direction between the closest points, or the separating axis of
+      # maximum separation if they are within rounding (1e-6 of the coordinates) of each other
+      scale2 = wp.max(
+        wp.max(wp.length_sq(e1), wp.length_sq(e2)), wp.max(wp.length_sq(e3), wp.max(wp.length_sq(a), wp.length_sq(b)))
+      )
+      if dist2 > 1.0e-12 * scale2:
+        nrm = (q - p) / dist
+      else:
+        unused_depth, nrm, unused_edge = _tet_sep_axis(a, b, tet, fnrm, sa, sb)
+
+  # intersecting: minimum translation over the separating axes
+  else:
+    depth, nrm, edge = _tet_sep_axis(a, b, tet, fnrm, sa, sb)
+    dist = -depth
+
+    # edge axis: closest point on segment to the edge
+    if edge >= 0:
+      j0, j1 = _tet_edge(edge)
+      nseg, wseg0, wseg1 = _segment_weights(a, b, tet[j0], tet[j1])
+      p = a + wp.where(nseg == 2, 0.5 * (wseg0[0] + wseg1[0]), wseg0[0]) * ab
+
+    # face axis: deepest endpoint, or the middle of the clipped segment if parallel
+    else:
+      da = wp.dot(nrm, a)
+      db = wp.dot(nrm, b)
+      if da > db:
+        p = a
+      elif db > da:
+        p = b
+      else:
+        p = a + 0.5 * (t0 + t1) * ab
+
+  dist = dist - radius - tet_radius
+  return True, dist, v0 + p + nrm * (radius + 0.5 * dist), nrm
