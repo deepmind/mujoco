@@ -85,7 +85,7 @@ mkdir -p mujoco/doc
   find . -path ./internal -prune -o -type f \( -name '*.rst' -o -path './skills/*.md' \) -print0 |
     while IFS= read -r -d '' f; do
       mkdir -p "${tmp_dir}/mujoco/doc/${f%/*}"
-      cp -p "${f}" "${tmp_dir}/mujoco/doc/${f}"
+      cp "${f}" "${tmp_dir}/mujoco/doc/${f}"
     done
 )
 
