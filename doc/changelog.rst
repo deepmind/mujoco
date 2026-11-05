@@ -314,6 +314,8 @@ Rendering
 - Added :ref:`mjrf_flush` (``mjrf.Context.flush`` in Python) to flush pending operations to the rendering backend and
   invoke any completed callbacks.
 - Added :ref:`mjRND_POST_PROCESSING<mjtRndFlag>` rendering flag.
+- Allow :ref:`headlight.active <visual-headlight-active>` to be set to "false", "true", or "auto" while continuing to
+  support integer values (0=false, 1=true, 2=auto). Change the default to "auto" instead of "true".
 
 Python bindings
 ^^^^^^^^^^^^^^^

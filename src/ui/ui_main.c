@@ -2204,7 +2204,7 @@ void mjui_update(int section, int item, const mjUI* ui,
         drawrectangle(it->rect, rgbdecor, rgbpane, con);
 
         // fill selection
-        r = radioelement(it, *(int*)it->pdata, ui, con);
+        r = radioelement(it, mjMAX(0, mjMIN(*(int*)it->pdata, it->multi.nelem-1)), ui, con);
         drawrectangle(r, rgbdecor, NULL, con);
 
         // element names

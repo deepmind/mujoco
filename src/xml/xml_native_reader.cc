@@ -1883,6 +1883,17 @@ void mjXReader::Visual(XMLElement* section) {
                         kHeadlightAttrsN,
                         false,
                         /*authored=*/spec);
+      if (string text; ReadAttrTxt(elem, "active", text)) {
+        int value = FindKey(FalseTrueAuto_map, FalseTrueAuto_sz, text);
+        if (value >= 0) {
+          vis->headlight.active = value;
+        } else if (!ReadAttrInt(elem, "active", &vis->headlight.active) ||
+                   vis->headlight.active < 0 ||
+                   vis->headlight.active > 2) {
+          throw mjXError(elem, "invalid keyword: '%s'", text.c_str());
+        }
+        mjs_setAuthored(spec, &vis->headlight.active, 1);
+      }
     }
 
     // map sub-element

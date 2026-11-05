@@ -1886,7 +1886,8 @@ void VisualizationGui(mjModel* model, mjvOption* vis_options, mjvCamera* camera,
   ImGui::SliderInt("Flex layer", &vis_options->flex_layer, 0, 10);
 
   if (SectionHeader("Headlight")) {
-    ImGui_SwitchToggle("Active", &vis.headlight.active);
+    const char* opts[] = {"Off", "On", "Auto"};
+    ImGui::Combo("Active", &vis.headlight.active, opts, IM_ARRAYSIZE(opts));
     ImGui::ColorEdit3("Ambient", vis.headlight.ambient);
     ImGui::ColorEdit3("Diffuse", vis.headlight.diffuse);
     ImGui::ColorEdit3("Specular", vis.headlight.specular);

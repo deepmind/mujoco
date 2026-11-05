@@ -225,6 +225,8 @@ class _Emitter:
       return f'type="file"{ns_part}'
     if attr.type == 'enum':
       keywords = ' '.join(k for k, _ in self.schema.enums[attr.target].items)
+      if (element.name, attr.name) == ('headlight', 'active'):
+        keywords += ' 0 1 2'  # legacy int literals still accepted by the reader
       return f'type="keyword" valid_values={saxutils.quoteattr(keywords)}'
     if attr.type == 'bool':
       return 'type="keyword" valid_values="false true"'

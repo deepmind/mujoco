@@ -511,7 +511,7 @@ STRUCTS: Mapping[str, StructDecl] = dict([
                          StructFieldDecl(
                              name='active',
                              type=ValueType(name='int'),
-                             doc='is headlight active',
+                             doc='is headlight active (0: no, 1: yes, 2: auto)',
                          ),
                      ),
                  ),

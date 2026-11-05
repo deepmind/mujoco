@@ -129,7 +129,7 @@ static const mjXDefaultEntry kDefaults_mjVisual_headlight[] = {
   {"ambient", (int)offsetof(mjVisual, headlight.ambient), 1, 3, 3, 0, {0.1, 0.1, 0.1}},
   {"diffuse", (int)offsetof(mjVisual, headlight.diffuse), 1, 3, 3, 0, {0.4, 0.4, 0.4}},
   {"specular", (int)offsetof(mjVisual, headlight.specular), 1, 3, 3, 0, {0.5, 0.5, 0.5}},
-  {"active", (int)offsetof(mjVisual, headlight.active), 2, 1, 1, 0, {1.0}},
+  {"active", (int)offsetof(mjVisual, headlight.active), 2, 1, 1, 0, {(double)2}},
 };
 
 static const mjXDefaultEntry kDefaults_mjVisual_map[] = {

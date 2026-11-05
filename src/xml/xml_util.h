@@ -33,6 +33,8 @@ void mjCopyError(char* dst, const char* src, int maxlen);
 
 using tinyxml2::XMLElement;
 
+static constexpr int kDefaultUnauthoredValue = -12345;
+
 XMLElement* FirstChildElement(XMLElement* e, const char* name = nullptr);
 XMLElement* NextSiblingElement(XMLElement* e, const char* name = nullptr);
 
@@ -274,7 +276,7 @@ class mjXUtil {
   static void WriteAttrInt(tinyxml2::XMLElement* elem,
                            std::string           name,
                            int                   data,
-                           int                   def = -12345);
+                           int                   def = kDefaultUnauthoredValue);
 
   // write attribute- keyword
   static void WriteAttrKey(tinyxml2::XMLElement* elem,
@@ -282,7 +284,7 @@ class mjXUtil {
                            const mjMap*          map,
                            int                   mapsz,
                            int                   data,
-                           int                   def = -12345);
+                           int                   def = kDefaultUnauthoredValue);
 
   // write attribute- space-separated keywords
   static void WriteAttrKeys(XMLElement*  elem,
@@ -291,7 +293,7 @@ class mjXUtil {
                             int          mapsz,
                             int*         data,
                             int          ndata,
-                            int          def = -12345);
+                            int          def = kDefaultUnauthoredValue);
 
  private:
   template <typename T>

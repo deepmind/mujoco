@@ -80,7 +80,9 @@ class StructsTest(absltest.TestCase):
                              f'{inner_field.name} rgb (alpha=1)')
           elif inner_field.name == 'active':
             self.assertEqual(inner_field.type, type_parsing.parse_type('int'))
-            self.assertEqual(inner_field.doc, 'is headlight active')
+            self.assertEqual(
+                inner_field.doc, 'is headlight active (0: no, 1: yes, 2: auto)'
+            )
         self.assertIn('ambient', inner_fields)
         self.assertIn('diffuse', inner_fields)
         self.assertIn('specular', inner_fields)

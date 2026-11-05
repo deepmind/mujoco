@@ -163,7 +163,7 @@ void mj_defaultVisual(mjVisual* vis) {
   vis->headlight.specular[0]      = 0.5;
   vis->headlight.specular[1]      = 0.5;
   vis->headlight.specular[2]      = 0.5;
-  vis->headlight.active           = 1;
+  vis->headlight.active           = 2;
 
   // map parameters
   vis->map.stiffness              = 100;

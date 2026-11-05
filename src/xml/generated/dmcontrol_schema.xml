@@ -176,7 +176,7 @@
             <attribute name="ambient" type="array" array_type="float" array_size="3" default="0.1 0.1 0.1"/>
             <attribute name="diffuse" type="array" array_type="float" array_size="3" default="0.4 0.4 0.4"/>
             <attribute name="specular" type="array" array_type="float" array_size="3" default="0.5 0.5 0.5"/>
-            <attribute name="active" type="int" default="1"/>
+            <attribute name="active" type="keyword" valid_values="false true auto 0 1 2" default="auto"/>
           </attributes>
         </element>
         <element name="map">

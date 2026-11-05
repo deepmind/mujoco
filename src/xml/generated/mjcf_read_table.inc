@@ -152,7 +152,6 @@ inline constexpr mjXAttr kHeadlightAttrs[] = {
   {"ambient", mjXAttr::kFloat, 3, true, false, false, false, (int)offsetof(mjVisual, headlight.ambient)},
   {"diffuse", mjXAttr::kFloat, 3, true, false, false, false, (int)offsetof(mjVisual, headlight.diffuse)},
   {"specular", mjXAttr::kFloat, 3, true, false, false, false, (int)offsetof(mjVisual, headlight.specular)},
-  {"active", mjXAttr::kInt, 1, true, false, false, false, (int)offsetof(mjVisual, headlight.active)},
 };
 inline constexpr int kHeadlightAttrsN = sizeof(kHeadlightAttrs) / sizeof(kHeadlightAttrs[0]);
 
