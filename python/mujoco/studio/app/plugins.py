@@ -373,11 +373,12 @@ class App(plugin.ViewerPlugin):
       return
 
     if is_freecam_wasd:
-      handled, cam_speed = inputs.handle_freecam_wasd_keyboard_events(
-          self.model, self.data, self.viewer.camera, self.viewer.cam_speed
+      handled, self.viewer.cam_speed = (
+          inputs.handle_freecam_wasd_keyboard_events(
+              self.model, self.data, self.viewer.camera, self.viewer.cam_speed
+          )
       )
       if handled:
-        self.viewer.cam_speed = cam_speed
         return
 
   def handle_camera_tracking_mouse_events(self) -> None:

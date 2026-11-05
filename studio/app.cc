@@ -34,8 +34,8 @@
 #include <span>
 #include <string>
 #include <string_view>
-#include <thread>
 #include <system_error>
+#include <thread>
 #include <utility>
 #include <variant>
 #include <vector>
@@ -55,6 +55,7 @@
 #include "studio/render/model_scene.h"
 #include "studio/sim/model_holder.h"
 #include "studio/sim/step_control.h"
+#include "studio/ux/camera_control.h"
 #include "studio/ux/console.h"
 #include "studio/ux/file_dialog.h"
 #include "studio/ux/gui.h"
@@ -882,7 +883,6 @@ void App::HandleMouseEvents() {
   const float mouse_y = io.MousePos.y / io.DisplaySize.y;
   const float mouse_dx = io.MouseDelta.x / io.DisplaySize.x;
   const float mouse_dy = io.MouseDelta.y / io.DisplaySize.y;
-  const float mouse_scroll = io.MouseWheel / 50.0f;
   const bool is_mouse_moving = (mouse_dx != 0.0f || mouse_dy != 0.0f);
   const bool is_any_mouse_down = ImGui::IsMouseDown(ImGuiMouseButton_Left) ||
                                  ImGui::IsMouseDown(ImGuiMouseButton_Right) ||
@@ -917,35 +917,9 @@ void App::HandleMouseEvents() {
       MovePerturb(model(), data(), &camera_, &perturb_, action, mouse_dx, mouse_dy);
     }
   }
-  // Handle camera movement actions.
-  else if (is_mouse_dragging) {
-    if (tmp_.camera_idx == kFreeCameraIdx) {
-      if (ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
-        mjv_moveCamera(model(), mjMOUSE_TURN_H, mouse_dx, 0.f, &camera_);
-        mjv_moveCamera(model(), mjMOUSE_TURN_V, 0.f, mouse_dy, &camera_);
-      }
-    } else {
-      if (ImGui::IsMouseDown(ImGuiMouseButton_Left)) {
-        mjv_moveCamera(model(), mjMOUSE_ROTATE_H, mouse_dx, 0.f, &camera_);
-        mjv_moveCamera(model(), mjMOUSE_ROTATE_V, 0.f, mouse_dy, &camera_);
-      } else if (ImGui::IsMouseDown(ImGuiMouseButton_Middle)) {
-        mjv_moveCamera(model(), mjMOUSE_ZOOM, 0.f, mouse_dy, &camera_);
-      }
-    }
 
-    // Right mouse movement is relative to the horizontal and vertical planes.
-    if (ImGui::IsMouseDown(ImGuiMouseButton_Right) && io.KeyShift) {
-      mjv_moveCamera(model(), mjMOUSE_MOVE_H, mouse_dx, mouse_dy, &camera_);
-    } else if (ImGui::IsMouseDown(ImGuiMouseButton_Right)) {
-      mjv_moveCamera(model(), mjMOUSE_MOVE_V, mouse_dx, mouse_dy, &camera_);
-    }
-  }
-
-  // Mouse scroll zooms the camera towards/away from the lookat point.
-  // Ignored by user-centered free cameras which don't have a lookat point.
-  if (mouse_scroll != 0.0f && tmp_.camera_idx != kFreeCameraIdx) {
-    mjv_moveCamera(model(), mjMOUSE_ZOOM, 0.f, -mouse_scroll, &camera_);
-  }
+  // Camera drags and wheel (Ctrl drags are left to the perturbation above).
+  MoveCameraWithMouse(model(), &camera_, tmp_.camera_idx == kFreeCameraIdx, ReadImGuiCameraInput());
 
   // Left double click.
   if (ImGui::IsMouseDoubleClicked(ImGuiMouseButton_Left)) {
@@ -1171,50 +1145,9 @@ void App::HandleKeyboardEvents() {
     tmp_.camera_idx = SetCamera(model(), &camera_, tmp_.camera_idx - 1);
   } else if (has_model() && ImGui_IsChordJustPressed(ImGuiKey_RightBracket)) {
     tmp_.camera_idx = SetCamera(model(), &camera_, tmp_.camera_idx + 1);
-    // WASD camera controls for free camera.
-  } else if (is_freecam_wasd && (ImGui::IsKeyDown(ImGuiKey_W) || ImGui::IsKeyDown(ImGuiKey_S) ||
-                                 ImGui::IsKeyDown(ImGuiKey_A) || ImGui::IsKeyDown(ImGuiKey_D) ||
-                                 ImGui::IsKeyDown(ImGuiKey_Q) || ImGui::IsKeyDown(ImGuiKey_E))) {
-    bool moved = false;
-
-    // Move (dolly) forward/backward using W and S keys.
-    if (ImGui::IsKeyDown(ImGuiKey_W)) {
-      mjv_moveCamera(model(), mjMOUSE_MOVE_H_REL, 0, tmp_.cam_speed, &camera_);
-      moved = true;
-    } else if (ImGui::IsKeyDown(ImGuiKey_S)) {
-      mjv_moveCamera(model(), mjMOUSE_MOVE_H_REL, 0, -tmp_.cam_speed, &camera_);
-      moved = true;
-    }
-
-    // Strafe (truck) left/right using A and D keys.
-    if (ImGui::IsKeyDown(ImGuiKey_A)) {
-      mjv_moveCamera(model(), mjMOUSE_MOVE_H_REL, -tmp_.cam_speed, 0, &camera_);
-      moved = true;
-    } else if (ImGui::IsKeyDown(ImGuiKey_D)) {
-      mjv_moveCamera(model(), mjMOUSE_MOVE_H_REL, tmp_.cam_speed, 0, &camera_);
-      moved = true;
-    }
-
-    // Move (pedestal) up/down using Q and E keys.
-    if (ImGui::IsKeyDown(ImGuiKey_Q)) {
-      mjv_moveCamera(model(), mjMOUSE_MOVE_V_REL, 0, tmp_.cam_speed, &camera_);
-      moved = true;
-    } else if (ImGui::IsKeyDown(ImGuiKey_E)) {
-      mjv_moveCamera(model(), mjMOUSE_MOVE_V_REL, 0, -tmp_.cam_speed, &camera_);
-      moved = true;
-    }
-
-    if (moved) {
-      tmp_.cam_speed += 0.001f;
-
-      const float max_speed = ImGui::GetIO().KeyShift ? 0.1 : 0.01f;
-      if (tmp_.cam_speed > max_speed) {
-        tmp_.cam_speed = max_speed;
-      }
-    } else {
-      tmp_.cam_speed = 0.001f;
-    }
-  } else {
+  } else if (!is_freecam_wasd ||
+             !MoveCameraWithKeys(model(), &camera_, ReadImGuiCameraInput(), &tmp_.cam_speed)) {
+    // Unless WASD/QE flew the fly camera, offer the keys to plugins.
     ForEachPlugin<KeyHandlerPlugin>([&](auto* plugin) {
       if (plugin->key_chord && plugin->on_key_pressed) {
         if (ImGui_IsChordJustPressed(plugin->key_chord)) {

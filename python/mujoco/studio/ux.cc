@@ -24,6 +24,7 @@
 #include <mujoco/mujoco.h>
 #include <mujoco/studio/sim/sim_history.h>
 #include <mujoco/studio/sim/step_control.h>
+#include <mujoco/studio/ux/camera_control.h>
 #include <mujoco/studio/ux/console.h>
 #include <mujoco/studio/ux/gui.h>
 #include <mujoco/studio/ux/gui_helpers.h>
@@ -637,6 +638,37 @@ void InitUx(py::module_& m) {
       },
       py::arg("model"), py::arg("data"), py::arg("cam"), py::arg("motion"),
       py::arg("dx"), py::arg("dy"), "Moves the given camera.");
+
+  m.attr("MIN_FLY_SPEED") = mujoco::studio::kMinFlySpeed;
+
+  m.def(
+      "move_camera_with_mouse",
+      [](const mujoco::python::MjModelWrapper& model,
+         mujoco::python::MjvCameraWrapper& camera, bool fly_camera) {
+        const mujoco::studio::CameraInput input =
+            mujoco::studio::ReadImGuiCameraInput();
+        py::gil_scoped_release no_gil;
+        return mujoco::studio::MoveCameraWithMouse(model.get(), camera.get(),
+                                                   fly_camera, input);
+      },
+      py::arg("model"), py::arg("camera"), py::arg("fly_camera"),
+      "Moves the camera with this frame's ImGui mouse drags and wheel as "
+      "Studio maps them. Returns whether it moved.");
+
+  m.def(
+      "move_camera_with_keys",
+      [](const mujoco::python::MjModelWrapper& model,
+         mujoco::python::MjvCameraWrapper& camera, float speed) {
+        const mujoco::studio::CameraInput input =
+            mujoco::studio::ReadImGuiCameraInput();
+        py::gil_scoped_release no_gil;
+        const bool moved = mujoco::studio::MoveCameraWithKeys(
+            model.get(), camera.get(), input, &speed);
+        return std::make_tuple(moved, speed);
+      },
+      py::arg("model"), py::arg("camera"), py::arg("speed"),
+      "Flies the fly camera with this frame's ImGui WASD/QE keys as Studio "
+      "does. Returns (moved, speed), with the fly speed for the next frame.");
 
   m.def(
       "InitPerturb",

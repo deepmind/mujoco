@@ -139,7 +139,7 @@ class Viewer(abc.ABC):
 
     # Visual state.
     self.camera = camera or mujoco.MjvCamera()
-    self.cam_speed = 0.001
+    self.cam_speed = ux.MIN_FLY_SPEED
     self.perturb = perturb or mujoco.MjvPerturb()
     self.vis_options = vis_options or mujoco.MjvOption()
     self.extra_geoms = extra_geoms or []
