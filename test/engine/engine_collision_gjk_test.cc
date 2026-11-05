@@ -3340,4 +3340,90 @@ TEST_F(MjGjkTest, BoxNormalsFaceDiagonal) {
   EXPECT_EQ(ncons, 4);
 }
 
+TEST_F(MjGjkTest, MeshBoxConcentric) {
+  static constexpr char xml[] = R"(
+  <mujoco>
+    <asset>
+      <mesh name="cube"
+            vertex="-1 -1 -1  1 -1 -1  1 1 -1  -1 1 -1
+                    -1 -1  1  1 -1  1  1 1  1  -1 1  1"/>
+    </asset>
+    <worldbody>
+      <geom name="geom1" type="mesh" mesh="cube"/>
+      <geom name="geom2" type="box" size="0.2 0.2 0.2"/>
+    </worldbody>
+  </mujoco>)";
+
+  MjModelPtr model = LoadModelFromString(xml);
+  MjDataPtr data = MakeData(model);
+  mj_forward(model.get(), data.get());
+
+  int g1 = mj_name2id(model.get(), mjOBJ_GEOM, "geom1");
+  int g2 = mj_name2id(model.get(), mjOBJ_GEOM, "geom2");
+
+  mjCCDStatus status;
+  std::vector<mjtNum> dir, pos;
+  mjtNum dist;
+  int ncons = Penetration(status, dist, dir, pos, model, data, g1, g2, 0, 4);
+
+  ASSERT_EQ(ncons, 4);
+  EXPECT_NEAR(dist, -1.2, MjTol(1e-12, 1e-5));
+}
+
+TEST_F(MjGjkTest, AnisotropicMeshBoxConcentric) {
+  static constexpr char xml[] = R"(
+  <mujoco>
+    <asset>
+      <mesh name="slab" scale="0.18 0.18 0.06"
+            vertex="-1 -1 -1  1 -1 -1  1 1 -1  -1 1 -1
+                    -1 -1  1  1 -1  1  1 1  1  -1 1  1"/>
+    </asset>
+    <worldbody>
+      <geom name="geom1" type="mesh" mesh="slab"/>
+      <geom name="geom2" type="box" size="0.039 0.039 0.14"/>
+    </worldbody>
+  </mujoco>)";
+
+  MjModelPtr model = LoadModelFromString(xml);
+  MjDataPtr data = MakeData(model);
+  mj_forward(model.get(), data.get());
+
+  int g1 = mj_name2id(model.get(), mjOBJ_GEOM, "geom1");
+  int g2 = mj_name2id(model.get(), mjOBJ_GEOM, "geom2");
+
+  mjCCDStatus status;
+  std::vector<mjtNum> dir, pos;
+  mjtNum dist;
+  int ncons = Penetration(status, dist, dir, pos, model, data, g1, g2);
+
+  ASSERT_EQ(ncons, 1);
+  EXPECT_NEAR(dist, -0.2, MjTol(1e-8, 1e-5));
+}
+
+TEST_F(MjGjkTest, TouchingEllipsoids) {
+  static constexpr char xml[] = R"(
+  <mujoco>
+    <worldbody>
+      <geom name="e1" type="ellipsoid" pos="-0.5 0 0" size="0.5 0.3 0.2"/>
+      <geom name="e2" type="ellipsoid" pos="0.4999995 0 0" size="0.5 0.3 0.2"/>
+    </worldbody>
+  </mujoco>)";
+
+  MjModelPtr model = LoadModelFromString(xml);
+  MjDataPtr data = MakeData(model);
+  mj_forward(model.get(), data.get());
+
+  int e1 = mj_name2id(model.get(), mjOBJ_GEOM, "e1");
+  int e2 = mj_name2id(model.get(), mjOBJ_GEOM, "e2");
+
+  mjCCDStatus status;
+  std::vector<mjtNum> dir, pos;
+  mjtNum dist;
+  int ncons = Penetration(status, dist, dir, pos, model, data, e1, e2);
+
+  ASSERT_EQ(ncons, 1);
+  EXPECT_LT(dist, 0);
+  EXPECT_NEAR(dist, -5e-7, MjTol(1e-11, 1e-6));
+}
+
 }  // namespace mujoco
