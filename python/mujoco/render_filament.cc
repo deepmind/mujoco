@@ -74,23 +74,37 @@ namespace mujoco::python {
 namespace {
 
 // Initializers for structs.
-void Init(mjrfContextConfig& obj)      { mjrf_defaultContextConfig(&obj); }
-void Init(mjrfFrameStats& obj)         { mjrf_defaultFrameStats(&obj); }
-void Init(mjrfLightParams& obj)        { mjrf_defaultLightParams(&obj); }
-void Init(mjrfMaterial& obj)           { mjrf_defaultMaterial(&obj); }
-void Init(mjrfMeshConfig& obj)         { mjrf_defaultMeshConfig(&obj); }
-void Init(mjrfMeshData& obj)           { mjrf_defaultMeshData(&obj); }
-void Init(mjrfReadRequest& obj)        { mjrf_defaultReadRequest(&obj); }
-void Init(mjrfRenderableParams& obj)   { mjrf_defaultRenderableParams(&obj); }
-void Init(mjrfRenderRequest& obj)      { mjrf_defaultRenderRequest(&obj); }
-void Init(mjrfRenderTargetConfig& obj) { mjrf_defaultRenderTargetConfig(&obj); }
-void Init(mjrfSceneParams& obj)        { mjrf_defaultSceneParams(&obj); }
-void Init(mjrfTextureConfig& obj)      { mjrf_defaultTextureConfig(&obj); }
-void Init(mjrfTextureData& obj)        { mjrf_defaultTextureData(&obj); }
-void Init(mjrRect& obj)                { std::memset(&obj, 0, sizeof(obj)); }
-void Init(mjrCamera& obj)              { std::memset(&obj, 0, sizeof(obj)); }
-void Init(mjrVertexAttribute& obj)     { std::memset(&obj, 0, sizeof(obj)); }
-
+void Init(mjrfContextConfig& obj)        { mjrf_defaultContextConfig(&obj); }
+void Init(mjrfFrameStats& obj)           { mjrf_defaultFrameStats(&obj); }
+void Init(mjrfLightParams& obj)          { mjrf_defaultLightParams(&obj); }
+void Init(mjrfMaterial& obj)             { mjrf_defaultMaterial(&obj); }
+void Init(mjrfMeshConfig& obj)           { mjrf_defaultMeshConfig(&obj); }
+void Init(mjrfMeshData& obj)             { mjrf_defaultMeshData(&obj); }
+void Init(mjrfReadRequest& obj)          { mjrf_defaultReadRequest(&obj); }
+void Init(mjrfRenderableParams& obj)     { mjrf_defaultRenderableParams(&obj); }
+void Init(mjrfRenderRequest& obj)        { mjrf_defaultRenderRequest(&obj); }
+void Init(mjrfRenderTargetConfig& obj)   { mjrf_defaultRenderTargetConfig(&obj); }
+void Init(mjrfSceneParams& obj)          { mjrf_defaultSceneParams(&obj); }
+void Init(mjrfTextureConfig& obj)        { mjrf_defaultTextureConfig(&obj); }
+void Init(mjrfTextureData& obj)          { mjrf_defaultTextureData(&obj); }
+void Init(mjrfRenderOpts& obj)           { mjrf_defaultRenderOpts(&obj); }
+void Init(mjrfAmbientOcclusionOpts& obj) { mjrf_defaultAmbientOcclusionOpts(&obj); }
+void Init(mjrfAntialiasingOpts& obj)     { mjrf_defaultAntialiasingOpts(&obj); }
+void Init(mjrfBloomOpts& obj)            { mjrf_defaultBloomOpts(&obj); }
+void Init(mjrfColorGradingOpts& obj)     { mjrf_defaultColorGradingOpts(&obj); }
+void Init(mjrfDepthOfFieldOpts& obj)     { mjrf_defaultDepthOfFieldOpts(&obj); }
+void Init(mjrfDitheringOpts& obj)        { mjrf_defaultDitheringOpts(&obj); }
+void Init(mjrfFogOpts& obj)              { mjrf_defaultFogOpts(&obj); }
+void Init(mjrfHazeOpts& obj)             { mjrf_defaultHazeOpts(&obj); }
+void Init(mjrfHeadlightOpts& obj)        { mjrf_defaultHeadlightOpts(&obj); }
+void Init(mjrfMaterialOpts& obj)         { mjrf_defaultMaterialOpts(&obj); }
+void Init(mjrfReflectionOpts& obj)       { mjrf_defaultReflectionOpts(&obj); }
+void Init(mjrfShadowOpts& obj)           { mjrf_defaultShadowOpts(&obj); }
+void Init(mjrfSkyboxOpts& obj)           { mjrf_defaultSkyboxOpts(&obj); }
+void Init(mjrfVignetteOpts& obj)         { mjrf_defaultVignetteOpts(&obj); }
+void Init(mjrRect& obj)                  { std::memset(&obj, 0, sizeof(obj)); }
+void Init(mjrCamera& obj)                { std::memset(&obj, 0, sizeof(obj)); }
+void Init(mjrVertexAttribute& obj)       { std::memset(&obj, 0, sizeof(obj)); }
 
 
 template <typename T, std::size_t N>
