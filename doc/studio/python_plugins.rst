@@ -227,8 +227,45 @@ plugin builds the widgets and sends custom ``*Snapshot`` or ``*Event`` messages 
 and the simulation plugin handles those messages to mutate state or recompile and publish a new model via
 ``self.handle.set_model(...)``.
 
-.. TODO(matijak): Add a split-plugin chain editing sample under sample/studio/ and link to it here once Python modeling
-   via SimPlugin is supported.
+.. _StudioPythonScenes:
+
+Python Scenes
+-------------
+
+A scene built in Python with :ref:`mjSpec` is a ``plugin.SimPlugin`` that handles ``LoadModelEvent``, calls
+``self.handle.set_model(spec)``, and returns ``True`` to consume the event before ``ViewerHandle``'s file loader runs;
+handling ``HotReloadEvent`` and calling ``self.handle.reload()`` rebuilds the scene in place whenever the plugin module
+or a helper module imported from the same directory is saved, preserving camera pose, pause state, and playback speed:
+
+.. code-block:: python
+
+   import mujoco
+   from mujoco.studio import messages
+   from mujoco.studio import plugin
+
+
+   class MyScene(plugin.SimPlugin):
+     height: int = 5
+
+     @messages.handler
+     def on_load_model(self, event: messages.LoadModelEvent) -> bool:
+       if event.path:
+         return False  # Let ViewerHandle load --model or dropped files.
+       spec = mujoco.MjSpec()
+       ...  # Populate spec from self.height.
+       self.handle.set_model(spec)
+       return True
+
+     @messages.handler
+     def on_hot_reload(self, event: messages.HotReloadEvent) -> None:
+       if self in event.plugins:
+         self.handle.reload()
+
+When a Python scene also reads base XML files—for example via ``mujoco.MjSpec.from_file('robot.xml')``—pass them via
+``self.handle.set_model(spec, watch=['robot.xml'])`` so saving those XMLs or their ``<include>`` and mesh assets
+triggers ``reload()`` as well. See `python_scene.py
+<https://github.com/google-deepmind/mujoco/blob/main/python/mujoco/sample/studio/python_scene.py>`__ for a complete
+parametric scene paired with a Dear ImGui control panel.
 
 Built-in Plugins
 ----------------
@@ -377,8 +414,9 @@ events to ``SimPlugin`` instances in chronological order:
      - Dispatched once by ``ViewerHandle.__init__``. ``SimPlugin`` caches ``self.handle`` automatically above
        ``Priority.CRITICAL`` before subclass handlers run.
    * - ``LoadModelEvent(path)``
-     - Sent on startup, UI Reload, or file drag-and-drop. ``ViewerHandle`` loads the file and publishes it via
-       ``handle.set_model(model, path=path)``, keeping the previous model if loading fails.
+     - Dispatched on startup, UI Reload, model file hot-reload, or file drag-and-drop. A ``SimPlugin`` can build a
+       :ref:`Python scene <StudioPythonScenes>`, call ``handle.set_model(spec)``, and return ``True`` to consume the
+       event; otherwise ``ViewerHandle`` loads ``path`` when non-empty, keeping the previous model if loading fails.
    * - ``ModelEvent(model, path)``
      - Dispatched when ``handle.set_model(...)`` publishes a model or ``handle.sync(model, data)`` sees a new model
        object, followed immediately by ``PostModelEvent``.
@@ -512,8 +550,9 @@ restarting the process:
 - **Live class swapping**: Saving a registered plugin's ``.py`` file or a helper module imported from the same
   directory reloads the module, swaps ``plugin.__class__`` in place—preserving existing instance attributes, camera
   pose, UI docking layout, and ``WebViewer`` browser connections—and dispatches ``HotReloadEvent(plugins=...)`` so
-  swapped plugins can initialize new buffers or invalidate cached MuJoCo IDs. Saving the watched XML/URDF model file or
-  its ``<include>`` assets automatically triggers a model reload.
+  swapped plugins can reconcile state or call ``self.handle.reload()``. Saving the active XML/URDF model file, files
+  passed to ``handle.set_model(..., watch=[...])``, or their ``<include>`` and mesh assets automatically triggers
+  ``handle.reload()``.
 - **Fixed boundary & error recovery**: Framework modules, ``__main__``, the C++ binary, and the set of registered plugin
   instances are fixed across reloads. Syntax, import, or model compilation errors leave the previous code and model
   running and retry on the next save; exceptions raised by a swapped plugin's handlers are logged once to the Studio

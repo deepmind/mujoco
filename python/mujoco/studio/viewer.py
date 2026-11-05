@@ -14,10 +14,11 @@
 """Interactive Studio GUI viewer for MuJoCo.
 
 Pass ``--plugins=a.py,b.py`` to load ``ViewerPlugin`` and ``SimPlugin``
-subclasses from Python files (see ``plugin.load_plugins``). With
-``--hot_reload=all``, saving those files, the model file, or its assets reloads
-them without restarting (``plugins``, ``model``, or plugin class names narrow
-that down).
+subclasses from Python files (see ``plugin.load_plugins``); a ``SimPlugin``
+that handles ``LoadModelEvent`` provides the model, so ``--model`` is optional.
+With ``--hot_reload=all``, saving those files, the model file, or its assets
+reloads them without restarting (``plugins``, ``model``, or plugin class names
+narrow that down).
 """
 
 import argparse

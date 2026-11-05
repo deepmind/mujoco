@@ -153,6 +153,10 @@ rendering and UI through non-blocking message endpoints:
         ImPlot charting (`viewer.py --model=... --plugins=python/mujoco/sample/studio/implot.py`).
     -   `python/mujoco/sample/studio/custom_sim_loop.py` — External script owning its stepping and
         pacing loop via `handle.sync(model, data)`.
+    -   `python/mujoco/sample/studio/python_scene.py` — `MyScene` and
+        `MySceneGui` demonstrating a hot-reloading scene built in Python paired
+        with UI (run `viewer.py --hot_reload=all` with
+        `--plugins=python/mujoco/sample/studio/python_scene.py`).
 
 ## 2. Launching Python Viewers
 
@@ -284,6 +288,63 @@ overlays, and `messages.Priority` levels, read
 [studio/python_plugins.rst](../../studio/python_plugins.rst)
 (`.. _StudioSceneOverlays:`, `.. _StudioLifecycle:`, `.. _StudioDiffSync:`,
 `.. _StudioPriorities:`).
+
+### Scenes Built in Python (`LoadModelEvent` + `handle.set_model()`)
+
+A sim plugin that handles `LoadModelEvent`, calls `self.handle.set_model(spec)`,
+and returns `True` provides the model; handle `HotReloadEvent` (`if self in
+event.plugins: self.handle.reload()`) so saving the file rebuilds the scene in
+place. Pair it with a `ViewerPlugin` (same file is fine) whose ImGui controls
+send it `Event`s or `Snapshot`s, and run with
+`viewer.py --plugins=my_scene.py --hot_reload=all`. The contract — when
+`LoadModelEvent` is dispatched and how handlers handle it, `event.path`,
+Reload, errors, hot reload — is documented on `messages.LoadModelEvent`;
+`ViewerHandle.set_model` and `ViewerHandle.reload` cover the API, and
+`python/mujoco/sample/studio/python_scene.py` is a complete, runnable scene
+paired with UI. Define the plugins in a module, not in `__main__`, to
+hot-reload them; don't name your own handlers `_sim_plugin_on_*` /
+`_viewer_plugin_on_*` (the base classes' handlers). Plugins must be registered
+at launch: when live-coding, stub a `SimPlugin` and a `ViewerPlugin` up front
+and grow them.
+
+> [!IMPORTANT]
+>
+> **Edit the model where it lives.** A scene is either a model file
+> (`--model=scene.xml`: edit the XML, and `--hot_reload=all` or `model`, or the
+> Reload button, picks the edit up with its `<include>`s and assets) or a
+> Python plugin (edit the `.py` file). Don't write a `LoadModelEvent` plugin
+> just to load an existing XML with `MjSpec.from_file` and patch it in Python:
+> the model would then live in two places and edits to the XML would not
+> hot-reload. When asked to change a model and it is unclear whether the user
+> wants the file edited or a Python scene (e.g. to drive a parameter from UI at
+> runtime), ask before choosing.
+>
+> **UI controls for an XML scene are a temporary scaffold.** There is no
+> framework that writes UI values back into an XML file, and `MjSpec.to_xml()`
+> is not an in-place save (it regenerates the whole file, dropping comments,
+> formatting and `<include>`s). When the user is working on an XML scene and
+> asks for controls over some of its parameters, tell them so and propose this
+> workflow:
+>
+> 1.  **Scaffold**: a `LoadModelEvent` sim plugin that keeps the XML path
+>     itself, loads the file into a spec (`mujoco.MjSpec.from_file(path)`),
+>     applies the parameters (`spec.body('torso').pos = ...`) and publishes it
+>     with `self.handle.set_model(spec, watch=[path])`, plus a `ViewerPlugin`
+>     whose UI controls send the values (as in `sample/studio/python_scene.py`).
+>     Reload and hot reload arrive with an empty `event.path`, so leave out the
+>     `if event.path: return False` guard here. Run with `--hot_reload=all` to
+>     grow the plugins while the viewer runs; saving the XML, its `<include>`s
+>     or assets then rebuilds the scene like saving the plugin does.
+> 2.  **Tune** in the UI; the values live in the plugin for now.
+> 3.  **Bake**: once the user is happy, write the final values into the XML by
+>     hand (edit the attributes in place, keeping `<include>`s and comments),
+>     delete the scaffold plugin, and reload the XML on its own to confirm it
+>     matches.
+>
+> If the parameters should stay live, the scene belongs in Python for good
+> (`MjSpec` built in code, no XML); if the file is generated anyway and its
+> formatting does not matter, `spec.to_xml()` can replace step 3. Say so
+> briefly if asked, but do not build anything more elaborate up front.
 
 ### C++ Studio Plugins & `LaunchStudio`
 

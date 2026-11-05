@@ -18,7 +18,7 @@ import copy
 import dataclasses
 import logging
 import os
-from typing import Any, Callable
+from typing import Any, Callable, Iterable
 import mujoco
 from mujoco.studio import endpoints
 from mujoco.studio import hot_reload
@@ -93,8 +93,10 @@ class ViewerHandle:
     # every step when options are unchanged.
     self._last_opt: mujoco.MjOption | None = None
 
-    # With hot reload on: the files ``path`` is built from. sync() reloads the
-    # model when one of them changes.
+    # Model files on disk (from model_path or set_model(watch=...)) to watch for
+    # changes; Python plugin .py files are watched by hot_reload.tick() instead.
+    self._watched: tuple[str, ...] = ()
+    # Polls _watched (plus <include>s and assets) when model hot reload is on.
     self._model_files: hot_reload.FileWatcher | None = None
 
     # Instantiate handlers from user plugins + framework defaults.
@@ -198,38 +200,80 @@ class ViewerHandle:
 
   def set_model(
       self,
-      model: mujoco.MjModel,
+      model: mujoco.MjSpec | mujoco.MjModel,
       path: str = '',
       data: mujoco.MjData | None = None,
+      *,
+      watch: Iterable[str | os.PathLike[str]] = (),
   ) -> None:
     """Publishes ``model`` to sim plugins and the viewer as the current model.
 
+    Can be called from a ``LoadModelEvent`` handler (which returns ``True`` to
+    consume the event; see ``LoadModelEvent``) or from any other sim-side
+    handler (e.g. a GUI event handler)::
+
+      @messages.handler
+      def on_load_model(self, event: messages.LoadModelEvent) -> bool:
+        spec = mujoco.MjSpec()
+        ...
+        self.handle.set_model(spec)
+        return True
+
     Args:
-      model: The new model.
+      model: The new model, or an ``MjSpec`` to compile.
       path: The file that produced ``model``, if any; see ``ModelEvent.path``.
       data: The data for ``model``; a fresh ``MjData`` is created when None.
+      watch: Extra files read by a Python scene while building ``model`` (e.g.
+        a base XML loaded with ``MjSpec.from_file('robot.xml')`` to make the
+        initial spec). A model file loaded via ``path`` is already watched
+        automatically; ``watch`` lets a Python scene (where ``path`` is empty)
+        also trigger ``reload()`` when those files or their ``<include>``s and
+        assets are saved.
     """
-    path = os.path.abspath(path) if path else ''
+    # Compile the spec if needed and create data when not provided.
+    if isinstance(model, mujoco.MjSpec):
+      model = model.compile()
+    if data is None:
+      data = mujoco.MjData(model)
+
+    # Normalize the model path and the files to watch for model hot reload.
+    model_path = os.path.abspath(path) if path else ''
+    watched = [os.path.abspath(os.fspath(p)) for p in watch]
+    if model_path:
+      watched = [model_path, *watched]
+
+    # Install the model and data, update the file watcher, and run mj_forward.
     self.model = model
-    self.data = mujoco.MjData(model) if data is None else data
-    self.model_path = path
+    self.data = data
+    self.model_path = model_path
     self._last_opt = copy.deepcopy(model.opt)
-    self._watch_model(path)
+    self._watch_model(watched)
     mujoco.mj_forward(self.model, self.data)
-    event = messages.ModelEvent(model=model, path=path)
+
+    # Notify sim plugins and the viewer of the new model.
+    event = messages.ModelEvent(model=model, path=model_path)
     self.dispatch(event)
     self.send_to_viewer(event)
 
   def reload(self) -> None:
-    """Reloads the current model, as the Reload button does."""
-    self.dispatch(messages.LoadModelEvent())
+    """Reloads the current model, as the Reload button does.
 
-  def _watch_model(self, path: str) -> None:
-    """With model hot reload on, watches the files ``path`` is built from."""
+    Dispatches ``LoadModelEvent(path=self.model_path)``: a model file is parsed
+    again, or a sim plugin that handles ``LoadModelEvent`` builds the model
+    again (e.g. after a GUI event or ``HotReloadEvent``). Call on the sim
+    thread.
+    """
+    self.dispatch(messages.LoadModelEvent(path=self.model_path))
+
+  def _watch_model(self, files: Iterable[str]) -> None:
+    """With model hot reload on, reloads the model when ``files`` are saved."""
+    self._watched = tuple(dict.fromkeys(files))
     self._model_files = None
-    if not path or not hot_reload.watches_model():
-      return
-    self._model_files = hot_reload.watch_files(parser.dependencies(path))
+    if self._watched and hot_reload.watches_model():
+      paths: list[str] = []
+      for f in self._watched:
+        paths.extend(parser.dependencies(f))
+      self._model_files = hot_reload.watch_files(list(dict.fromkeys(paths)))
 
   def sync(
       self,
@@ -278,6 +322,7 @@ class ViewerHandle:
         # Model passed directly to sync() has no file path to reload from.
         assert self.model is not None and self.data is not None
         self.model_path = ''
+        self._watched = ()
         self._model_files = None
         self._last_opt = copy.deepcopy(self.model.opt)
         self._sim_endpoint.send_to_viewer(messages.ModelEvent(model=self.model))
@@ -290,8 +335,10 @@ class ViewerHandle:
     hot_reload.tick(self._sim_plugins, self)
     if not hot_reload.watches_model():
       self._model_files = None
-    elif self._model_files is None and self.model_path:
-      self._watch_model(self.model_path)
+    elif self._model_files is None and self._watched:
+      # If set_model() on the sim thread ran before Viewer.__init__ enabled
+      # hot_reload on the viewer thread, start the watcher on the next sync().
+      self._watch_model(self._watched)
     if self._model_files is not None and self._model_files.poll():
       self.reload()
 
@@ -369,6 +416,7 @@ class ViewerHandle:
       self.data = mujoco.MjData(event.model)
       self.model_path = event.path
       self._last_opt = copy.deepcopy(event.model.opt)
+      self._watch_model([event.path] if event.path else [])
       mujoco.mj_forward(self.model, self.data)
     assert self.model is not None and self.data is not None
     self.dispatch(
@@ -379,10 +427,14 @@ class ViewerHandle:
 
   @messages.handler(priority=messages.Priority.INTERNAL)
   def _on_load_model(self, event: messages.LoadModelEvent) -> None:
-    # Normalize so relative and absolute paths to a file match.
-    path = os.path.abspath(event.path) if event.path else self.model_path
-    if not path:
-      return
+    """Loads the requested file, unless a sim plugin consumed the event."""
+    path = event.path or self.model_path
+    if path:  # Else no plugin provided a model and there is no file.
+      # Normalize so relative and absolute paths to a file match.
+      self._load_file(os.path.abspath(path))
+
+  def _load_file(self, path: str) -> None:
+    """Loads and publishes ``path``, keeping the previous model on error."""
     if self.model is None:
       # Record path before loading so Reload can retry a broken initial file.
       self.model_path = path
@@ -390,7 +442,7 @@ class ViewerHandle:
       model = parser.load(path)
     except Exception:  # pylint: disable=broad-exception-caught
       if path == self.model_path and self._model_files is None:
-        self._watch_model(path)  # So that saving a fix loads it.
+        self._watch_model([path])  # So that saving a fix loads it.
       # A broken file must not take down the running viewer.
       logger.exception('Loading %r failed; keeping the previous model.', path)
       return

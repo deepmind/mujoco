@@ -264,7 +264,7 @@ class App(plugin.ViewerPlugin):
 
   def __init__(self, config: Config | None = None) -> None:
     install_console_hooks()
-    self._model_path: str = ''
+    self._model_path: str | None = None
     self.theme = ux.load_theme()
     self.config = config or Config()
     self.status = 'Ready'
@@ -330,8 +330,10 @@ class App(plugin.ViewerPlugin):
         self.ux_state.camera_index = ux.TUMBLE_CAMERA_IDX
 
   def reload_model(self) -> None:
-    """Asks the sim to reload the current model from its file."""
-    self.viewer.send_to_sim(messages.LoadModelEvent())
+    """Asks the sim to reload the current model."""
+    self.viewer.send_to_sim(
+        messages.LoadModelEvent(path=self.viewer.model_path)
+    )
 
   def close(self) -> None:
     self.viewer.dispatch(messages.ExitEvent())
@@ -750,7 +752,7 @@ class App(plugin.ViewerPlugin):
 
   @messages.handler(priority=messages.Priority.INTERNAL)
   def _on_post_model(self, event: messages.PostModelEvent) -> None:
-    same_scene = bool(event.path and event.path == self._model_path)
+    same_scene = event.path == self._model_path
     self._model_path = event.path
     if same_scene:
       self._reload_app_state(event.model)

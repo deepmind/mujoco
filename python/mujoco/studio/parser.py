@@ -18,6 +18,12 @@ import mujoco
 
 def load(filepath: str) -> mujoco.MjModel:
   """Loads and compiles a model file: XML, URDF, MJB, or MJZ/ZIP."""
+  if filepath.endswith('.py'):
+    raise ValueError(
+        f'{filepath!r} is a Python file. A scene built in Python is a sim'
+        ' plugin that handles LoadModelEvent: pass the file to --plugins (or'
+        ' an instance in plugins=[...]) rather than --model.'
+    )
   if filepath.endswith('.mjb'):
     return mujoco.MjModel.from_binary_path(filepath)
   if filepath.endswith(('.mjz', '.zip')):

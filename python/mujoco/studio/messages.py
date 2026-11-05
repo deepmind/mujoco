@@ -246,10 +246,9 @@ class ModelEvent(Event):
 
   Attributes:
     model: The compiled MuJoCo model.
-    path: The file that produced ``model`` (e.g. via ``LoadModelEvent``), or
-      empty for an in-memory model. Reloading the same ``path`` preserves
-      viewer UI state (such as camera and pause); a different ``path`` (or
-      empty) resets it.
+    path: The model file that produced ``model``, or empty for a model built in
+      Python. Reloading the same ``path`` preserves viewer UI state such as
+      camera and pause; changing ``path`` resets it.
   """
 
   model: mujoco.MjModel
@@ -258,16 +257,77 @@ class ModelEvent(Event):
 
 @dataclasses.dataclass(frozen=True)
 class LoadModelEvent(Event):
-  """Asks ``ViewerHandle`` to load a model file and publish a ``ModelEvent``.
+  """Asks the sim to load a model file (``path``), or to reload the current model.
 
-  Sent from viewer to sim or dispatched on the sim thread. Without a ``path``
-  this is **Reload**, which re-creates the current model from its ``path``.
-  With a ``path`` it loads that model file (e.g. provided on startup or
-  drag-dropped in the viewer) and makes it the current model.
+  ``ViewerHandle`` is what loads model files: its ``Priority.INTERNAL`` handler
+  parses ``path`` and publishes the result with ``set_model``. Sim plugins
+  handle the event first (in priority order) and can provide a model built in
+  Python instead: such a handler calls ``self.handle.set_model(spec)`` and
+  returns ``True``, which consumes the event so that ``ViewerHandle``'s handler
+  does not run.
+
+  When ``LoadModelEvent`` is dispatched and how it is handled:
+
+  * **Startup** (``launch_*.run``): dispatched with the ``--model`` file path,
+    or ``path=''`` when ``--model`` is omitted. A sim plugin that builds a
+    model in Python consumes the event; otherwise ``ViewerHandle`` loads
+    ``path`` when it is non-empty.
+  * **File drop** on the viewer: sent from the viewer with ``path`` set to the
+    dropped file. A sim plugin that checks ``if event.path: return False`` lets
+    ``ViewerHandle`` load the dropped file; one that ignores ``event.path``
+    keeps its Python scene.
+  * **Reload button** or ``ViewerHandle.reload()``: the button sends the same
+    event that ``reload()`` dispatches, with ``path`` set to the current
+    ``model_path`` (the shown model file, or ``''`` when the shown model was
+    built in Python). So a sim plugin that yields to files also yields on
+    Reload and ``ViewerHandle`` parses the file again, while a Python scene is
+    built again by its plugin.
+  * **Model hot reload** (``--hot_reload=all`` or ``=model``): when the shown
+    model file, one of its dependencies, or a file passed to
+    ``ViewerHandle.set_model(watch=...)`` is saved, ``ViewerHandle.sync`` calls
+    ``reload()``, as above. Saving a sim plugin's own code dispatches
+    ``HotReloadEvent`` instead; the plugin calls ``reload()`` from its handler
+    to rebuild its scene (see the example below).
+
+  A sim plugin that builds a model in Python handles ``LoadModelEvent`` to
+  build and publish the model, and ``HotReloadEvent`` to rebuild it when its
+  own code is saved::
+
+    class MyScene(plugin.SimPlugin):
+      height: int = 5
+
+      @messages.handler
+      def on_load_model(self, event: messages.LoadModelEvent) -> bool:
+        if event.path:
+          return False  # Let ViewerHandle load --model or dropped files.
+        spec = mujoco.MjSpec()
+        ...  # Build from self.height; edit freely while running.
+        self.handle.set_model(spec)
+        return True
+
+      @messages.handler
+      def on_hot_reload(self, event: messages.HotReloadEvent) -> None:
+        if self in event.plugins:
+          self.handle.reload()  # What the Reload button does.
+
+  Errors: a model file that fails to load is logged and the previous model
+  stays (with no previous model, Reload retries the file); an error raised by a
+  plugin handler propagates like any handler's (once the plugin has been
+  hot-reloaded it is logged instead).
+
+  Note:
+    Pair the sim plugin with a ``ViewerPlugin`` whose controls send it events
+    or snapshots; ``sample/python_scene.py`` is a complete scene with UI to
+    tweak it.
+
+  Note:
+    Models defined in Python are passed via ``--plugins`` (or ``plugins=[...]``
+    in code); passing a ``.py`` file via ``--model`` would require a convention
+    for what to run in the file, which was avoided by design.
 
   Attributes:
-    path: The model file to load, or empty to reload the current model; see
-      ``ModelEvent.path``.
+    path: The model file to load, or empty when there is none (the current model
+      was built in Python, or no model is shown yet); see ``ModelEvent.path``.
   """
 
   path: str = ''

@@ -48,8 +48,10 @@ Design goal: a hard boundary between reloadable and fixed code:
   - The modules of registered plugins (both user plugins and built-in plugins
     such as ``studio_app.App``, ``StepControl``, and ``SimHistory``)
     and their local imports (here).
-  - The model file shown and its includes and assets (``ViewerHandle``, via
-    ``watch_files``).
+  - The shown model file with its includes and assets (``ViewerHandle``, via
+    ``watch_files``). A sim plugin that builds a model in Python can handle
+    ``HotReloadEvent`` and call ``self.handle.reload()`` so its model is
+    rebuilt when that plugin is reloaded.
 - **Fixed:**
   - The framework modules above (``messages``, ``plugin``, ``plugin_registry``,
     ``hot_reload_utils``, ``hot_reload``, and the host viewer/handle modules
@@ -128,7 +130,7 @@ class Options:
   """What hot reloading covers; ``parse()`` reads it from ``--hot_reload``.
 
   Attributes:
-    model: Whether the model file shown (with its includes and assets) is
+    model: Whether the shown model file (with its includes and assets) is
       reloaded when saved.
     plugins: Which registered plugins are reloaded when their module is saved:
       all of them (True), none (False), or those whose class has one of the
@@ -144,7 +146,8 @@ class Options:
 
     ``all`` covers plugins and the model, ``plugins`` and ``model`` one of the
     two, and anything else names a plugin class to reload, e.g.
-    ``Scene,SceneGui``. Items combine with commas (``model,Scene``).
+    ``MySimPlugin,MyViewerPlugin,...``. Items combine with commas
+    (``model,MySimPlugin``).
 
     Args:
       text: The flag value; empty for nothing.
