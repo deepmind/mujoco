@@ -363,6 +363,7 @@ void SetupTheme(GuiTheme theme) {
   s.ScrollbarSize = ImTrunc(10.0f * scale);
   s.GrabMinSize = ImTrunc(5.0f * scale);
   s.WindowMenuButtonPosition = ImGuiDir_None;
+  s.TabBarOverlineSize = 0.0f;
   s.TabCloseButtonMinWidthSelected = 0.0f;
   s.DockingNodeHasCloseButton = false;
 }
