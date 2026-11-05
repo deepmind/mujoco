@@ -11,6 +11,8 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
 set(CMAKE_INSTALL_RPATH_USE_LINK_PATH TRUE)
 if(APPLE)
   set(CMAKE_INSTALL_RPATH "@loader_path;@loader_path/..;@loader_path/../..;@loader_path/../../pxr;@loader_path/../../pxr/.dylibs;@loader_path/../Frameworks;@loader_path/../../Frameworks;${CMAKE_INSTALL_LIBDIR}")
@@ -55,6 +57,12 @@ if(APPLE)
 elseif(UNIX)
   set_target_properties(usd_decoder_plugin PROPERTIES
     BUILD_RPATH "$ORIGIN;$ORIGIN/..;$ORIGIN/../..;$ORIGIN/../../pxr;$ORIGIN/../../usd_core.libs;${USD_INSTALL_ROOT}"
+  )
+endif()
+if(UNIX AND NOT APPLE)
+  target_link_libraries(usd_decoder_plugin PRIVATE
+    -Wl,-lstdc++
+    -Wl,--exclude-libs,libstdc++_nonshared.a
   )
 endif()
 target_link_libraries(usd_decoder_plugin PRIVATE

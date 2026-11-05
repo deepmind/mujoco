@@ -14,6 +14,11 @@
 
 # --- Global Configuration ---
 
+# Match OpenUSD's C++17 standard and avoid C++20 deprecation warnings on
+# OpenUSD headers.
+set(CMAKE_CXX_STANDARD 17)
+set(CMAKE_CXX_STANDARD_REQUIRED ON)
+
 # Plugin target names (used for library and plugInfo.json)
 set(MJCF_PLUGIN_TARGET_NAME usdMjcf)
 set(MJC_PHYSICS_PLUGIN_TARGET_NAME mjcPhysics)
@@ -42,7 +47,12 @@ if(UNIX AND NOT APPLE)
   # OpenUSD (and PyPI's manylinux2014 usd-core wheel) is built against
   # libstdc++ with _GLIBCXX_USE_CXX11_ABI=0 on Linux, so strip any global
   # -stdlib=libc++ / -lc++ flags inherited from the root MuJoCo build.
+  # Link -lstdc++ before OpenUSD and hide static libstdc++_nonshared.a symbols
+  # so each library embeds its own hidden copy of symbols such as
+  # _ZSt28__throw_bad_array_new_lengthv instead of binding to the build-time
+  # libusd_ms.so.
   add_compile_definitions(_GLIBCXX_USE_CXX11_ABI=0)
+  list(PREPEND OPENUSD_CORE_LIBS -Wl,-lstdc++ -Wl,--exclude-libs,libstdc++_nonshared.a)
   string(REPLACE "-stdlib=libc++" "" CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS}")
   foreach(
     _flag
@@ -271,13 +281,24 @@ target_link_libraries(${MJCF_PLUGIN_TARGET_NAME} PRIVATE
 function(install_newton_usd_plugin install_base_dir)
   include(FetchContent)
 
-  FetchContent_Declare(
-    newton-usd-schemas
-    GIT_REPOSITORY https://github.com/newton-physics/newton-usd-schemas.git
-    GIT_TAG v0.4.0
-    GIT_SHALLOW TRUE
-    UPDATE_DISCONNECTED TRUE
+  set(NEWTON_USD_SCHEMAS_TAG v0.4.0)
+  set(NEWTON_TARBALL_PATH
+      "${MUJOCO_CMAKE_DEP_CACHE}/newton-usd-schemas-${NEWTON_USD_SCHEMAS_TAG}.tar.gz"
   )
+  if(MUJOCO_CMAKE_DEP_CACHE AND EXISTS "${NEWTON_TARBALL_PATH}")
+    FetchContent_Declare(
+      newton-usd-schemas
+      URL "${NEWTON_TARBALL_PATH}"
+    )
+  else()
+    FetchContent_Declare(
+      newton-usd-schemas
+      GIT_REPOSITORY https://github.com/newton-physics/newton-usd-schemas.git
+      GIT_TAG ${NEWTON_USD_SCHEMAS_TAG}
+      GIT_SHALLOW TRUE
+      UPDATE_DISCONNECTED TRUE
+    )
+  endif()
 
   FetchContent_GetProperties(newton-usd-schemas)
   if(NOT newton-usd-schemas_POPULATED)
@@ -322,11 +343,6 @@ configure_and_install_usd_plugin_info(
   mjcPhysics
   ${MJ_USD_INSTALL_DIR_LIB}
 )
-configure_file(
-  "${CMAKE_CURRENT_SOURCE_DIR}/mjcPhysics/generatedSchema.usda"
-  "${CMAKE_BINARY_DIR}/${MJ_USD_INSTALL_DIR_LIB}/mjcPhysics/generatedSchema.usda"
-  COPYONLY
-)
 if(WIN32 AND CMAKE_RUNTIME_OUTPUT_DIRECTORY)
   configure_file(
     "${CMAKE_CURRENT_SOURCE_DIR}/mjcPhysics/generatedSchema.usda"
@@ -336,6 +352,11 @@ if(WIN32 AND CMAKE_RUNTIME_OUTPUT_DIRECTORY)
 endif()
 
 # Install specific resources that are not plugInfo.json (like generatedSchema.usda)
+configure_file(
+  "${CMAKE_CURRENT_SOURCE_DIR}/mjcPhysics/generatedSchema.usda"
+  "${CMAKE_BINARY_DIR}/${MJ_USD_INSTALL_DIR_LIB}/mjcPhysics/generatedSchema.usda"
+  COPYONLY
+)
 install(FILES
   mjcPhysics/generatedSchema.usda
   DESTINATION ${MJ_USD_INSTALL_DIR_LIB}/mjcPhysics
@@ -345,7 +366,11 @@ install_newton_usd_plugin(
   ${MJ_USD_INSTALL_DIR_LIB}
 )
 
-# Install shared libraries
+# Install shared libraries and public USD headers
+install(DIRECTORY
+  "${CMAKE_CURRENT_SOURCE_DIR}/../../../include/mujoco/experimental/usd"
+  DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/mujoco/experimental"
+)
 install(TARGETS
   mujoco_usd
   ${MJCF_PLUGIN_TARGET_NAME}

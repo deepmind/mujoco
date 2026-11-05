@@ -17,7 +17,6 @@
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
-#include <numbers>
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
@@ -2182,7 +2181,7 @@ class ModelWriter {
       // MuJoCo angular damping is per radian; Newton expects per degree.
       double damping = joint->damping[0];
       if (joint->type == mjJNT_HINGE) {
-        damping *= std::numbers::pi / 180.0;
+        damping *= mjPI / 180.0;
       }
       WriteUniformAttribute(joint_spec, pxr::SdfValueTypeNames->Float,
                             kTokens->newtonDamping,
@@ -2228,7 +2227,7 @@ class ModelWriter {
         2 * znear *
         (use_intrinsic ? 1.0f / cam_intrinsic[1] *
                              (cam_sensorsize[1] / 2.f - cam_intrinsic[3])
-                       : mju_tan((fovy / 2) * (std::numbers::pi / 180.0)));
+                       : mju_tan((fovy / 2) * (mjPI / 180.0)));
     float horizontal_aperture =
         use_intrinsic ? 2 * znear / cam_intrinsic[0] *
                             (cam_sensorsize[0] / 2.f - cam_intrinsic[2])
