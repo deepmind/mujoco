@@ -375,8 +375,9 @@ Compact solver
 
 To optimize performance in scenes with many total DoFs but a relatively
 small number of active DoFs (typically fewer than 64, such as two robot
-arms with grippers (16 DoFs) and 8 active objects (48 DoFs)), MJWarp
-provides a **compact solver** that leverages this sleeping mechanism:
+arms with grippers (16 DoFs) and 8 active objects (48 DoFs), or batches
+simulating :ref:`per-world kinematic trees <mjwHeterogeneousTrees>`),
+MJWarp provides a **compact solver** that leverages this sleeping mechanism:
 
 1. Identifies the set of active DOFs for each world, determined from the active islands.
 2. **Compacts** these active DOFs into a single, contiguous dense workspace of a known maximum size (``nvmax``).
@@ -825,10 +826,110 @@ The base scene includes all mesh assets. The geom references one mesh (``mesh_a`
 Per-world height fields, materials, and textures can be similarly formulated.
 
 .. admonition:: Per-world asset dependent field construction
-  :class: note
+   :class: note
 
-  MJWarp enables per-world asset functionality but does not provide utilities for construction of dependent per-world
-  field variants. Construction is left to the user or environment authoring frameworks.
+   MJWarp enables per-world asset functionality but does not provide utilities for construction of dependent per-world
+   field variants. Construction is left to the user or environment authoring frameworks.
+
+.. _mjwHeterogeneousTrees:
+
+Per-world kinematic trees
+-------------------------
+
+Kinematic tree heterogeneity is enabled with a composite scene containing all candidate
+kinematic trees and per-world always sleep settings.
+
+- **Wakeup immunity**: Trees with ``SleepPolicy.ALWAYS`` are permanently asleep. They cannot be awakened by contacts,
+  external forces (:attr:`Data.qfrc_applied <mujoco_warp.Data.qfrc_applied>`), Cartesian wrenches
+  (:attr:`Data.xfrc_applied <mujoco_warp.Data.xfrc_applied>`), velocity tolerances, tendons, or equality constraints.
+- **Broadphase collision culling**: Geoms on ``SleepPolicy.ALWAYS`` trees are culled directly in broadphase collision
+  detection, emitting zero candidate pairs and skipping narrowphase completely.
+- **Active-DOF compaction**: Inactive trees are excluded from active-DOF mapping
+  (:attr:`Data.ncdof <mujoco_warp.Data.ncdof>`), so the compact constraint solver only evaluates active degrees of
+  freedom.
+- **Reset preservation**: Because the policy is defined on :class:`Model <mujoco_warp.Model>`, simulation resets
+  (:func:`mjw.reset_data <mujoco_warp.reset_data>`) automatically preserve the per-world sleep configuration.
+
+.. rubric:: Example
+
+Consider a scene with two robots: **Robot A** (1 DOF) and **Robot B** (2 DOFs), simulated across 3 worlds:
+World 0 with Robot A only, World 1 with Robot B only, and World 2 with both robots.
+
+The robots are defined in separate XML strings, combined into a composite scene using :ref:`MjSpec <mjSpec>`,
+and simulated with per-world tree sleep policies:
+
+.. code-block:: python
+
+  import mujoco
+  import mujoco_warp as mjw
+  import numpy as np
+  import warp as wp
+
+  ROBOT_A_XML = """
+  <mujoco>
+    <worldbody>
+      <body name="robot_a" pos="-1 0 1">
+        <joint name="robot_a_joint" type="hinge"/>
+        <geom type="capsule" size="0.05 0.2"/>
+      </body>
+    </worldbody>
+  </mujoco>
+  """
+
+  ROBOT_B_XML = """
+  <mujoco>
+    <worldbody>
+      <body name="robot_b" pos="1 0 1">
+        <joint name="robot_b_joint1" type="slide" axis="0 0 1"/>
+        <joint name="robot_b_joint2" type="hinge" axis="0 1 0"/>
+        <geom type="sphere" size="0.1"/>
+      </body>
+    </worldbody>
+  </mujoco>
+  """
+
+  # 1. Create a composite scene and attach both robot models using MjSpec
+  spec = mujoco.MjSpec()
+
+  spec_a = mujoco.MjSpec.from_string(ROBOT_A_XML)
+  spec_b = mujoco.MjSpec.from_string(ROBOT_B_XML)
+
+  spec.attach(spec_a, frame=spec.worldbody.add_frame(), prefix="")
+  spec.attach(spec_b, frame=spec.worldbody.add_frame(), prefix="")
+
+  nworld = 3
+  # World 0: Robot A only
+  # World 1: Robot B only
+  # World 2: Both robots
+  policy_table = np.array(
+      [
+          [mjw.SleepPolicy.AUTO, mjw.SleepPolicy.ALWAYS],
+          [mjw.SleepPolicy.ALWAYS, mjw.SleepPolicy.AUTO],
+          [mjw.SleepPolicy.AUTO, mjw.SleepPolicy.AUTO],
+      ],
+      dtype=np.int32,
+  )
+
+  # 2. Enable settings for the compact solver and compile
+  spec.option.solver = mujoco.mjtSolver.mjSOL_NEWTON
+  spec.option.enableflags |= mujoco.mjtEnableBit.mjENBL_SLEEP
+  mjm = spec.compile()
+
+  # 3. Allocate model with batched tree_sleep_policy
+  m = mjw.put_model(mjm, batch_sizes={"tree_sleep_policy": nworld})
+  m.tree_sleep_policy = wp.array(policy_table, dtype=int)
+
+  # 4. Size nvmax to the maximum active DOFs across worlds (World 2 has both active)
+  nvmax = int(mjm.tree_dofnum[0] + mjm.tree_dofnum[1])
+  d = mjw.make_data(mjm, nworld=nworld, nvmax=nvmax)
+
+  # 5. Reset data to initialize per-world sleep states from m.tree_sleep_policy
+  mjw.reset_data(m, d)
+
+  # 6. Simulate normally with zero narrowphase or solver overhead on inactive trees
+  for _ in range(10):
+    mjw.step(m, d)
+
 
 Batch Rendering
 ===============
