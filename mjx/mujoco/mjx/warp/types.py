@@ -232,7 +232,6 @@ class ModelWarp(PyTreeNode):
   efm_K_rowadr: np.ndarray
   efm_K_rownnz: np.ndarray
   efm_con_max_dof: int
-  efm_dofblk: np.ndarray
   efm_dofid: np.ndarray
   eq_connect_adr: np.ndarray
   eq_flex_adr: np.ndarray
@@ -380,7 +379,6 @@ class ModelWarp(PyTreeNode):
   nefm0L: int
   nefm0dof: int
   nefmK: int
-  nefmL: int
   nefmdof: int
   neq_flexstrain: int
   nflexbend_interp: int
@@ -549,7 +547,6 @@ class DataWarp(PyTreeNode):
   efc__vel: jax.Array
   efc_islandid: jax.Array
   efm_K_val: jax.Array
-  efm_L: jax.Array
   efm_as: jax.Array
   efm_c: jax.Array
   efm_ca: jax.Array
@@ -788,7 +785,6 @@ _NDIM = {
         'efc__vel': 2,
         'efc_islandid': 2,
         'efm_K_val': 2,
-        'efm_L': 2,
         'efm_as': 2,
         'efm_c': 2,
         'efm_ca': 2,
@@ -1061,7 +1057,6 @@ _NDIM = {
         'efm_K_rowadr': 1,
         'efm_K_rownnz': 1,
         'efm_con_max_dof': 0,
-        'efm_dofblk': 1,
         'efm_dofid': 1,
         'eq_active0': 1,
         'eq_connect_adr': 1,
@@ -1319,7 +1314,6 @@ _NDIM = {
         'nefm0L': 0,
         'nefm0dof': 0,
         'nefmK': 0,
-        'nefmL': 0,
         'nefmdof': 0,
         'neq': 0,
         'neq_flexstrain': 0,
@@ -1639,7 +1633,6 @@ _BATCH_DIM = {
         'efc__vel': True,
         'efc_islandid': True,
         'efm_K_val': True,
-        'efm_L': True,
         'efm_as': True,
         'efm_c': True,
         'efm_ca': True,
@@ -1912,7 +1905,6 @@ _BATCH_DIM = {
         'efm_K_rowadr': False,
         'efm_K_rownnz': False,
         'efm_con_max_dof': False,
-        'efm_dofblk': False,
         'efm_dofid': False,
         'eq_active0': False,
         'eq_connect_adr': False,
@@ -2170,7 +2162,6 @@ _BATCH_DIM = {
         'nefm0L': False,
         'nefm0dof': False,
         'nefmK': False,
-        'nefmL': False,
         'nefmdof': False,
         'neq': False,
         'neq_flexstrain': False,

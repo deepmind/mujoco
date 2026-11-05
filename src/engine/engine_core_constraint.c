@@ -2930,7 +2930,7 @@ static void mj_makeYNumeric(const mjModel* m, mjData* d, int flg_diagexact) {
   // (mj_effCouplings) so the backbone IS the metric; flex is rejected (mj_checkDiscrete);
   // under a primal solver the noslip post-pass consumes this AR as an approximation
   const mjtNum* factor = d->qLD;
-  if (mj_isMetric(m) && d->efm_diag) {
+  if (mj_effUseQH(d)) {
     factor = d->qH;
   }
 

@@ -5792,79 +5792,8 @@ TEST_F(DerivativeTest, EffPrecIsSymmetric) {
   }
 }
 
-// mj_effPrecFold adds the 3x3 diagonal blocks of J'*D*J to the step's blocks of
-// M + K: with no rows it reproduces them, and with every row A1 = A0 + Delta,
-// checked through the factors as A1^-1 (A0 y + Delta y) = y
-TEST_F(DerivativeTest, EffPrecFoldAddsRowBlocks) {
-  static constexpr char kXml[] = R"(
-  <mujoco>
-    <option solver="CG" integrator="discrete" jacobian="dense">
-      <flag island="disable"/>
-    </option>
-    <worldbody>
-      <geom type="plane" size="1 1 .01"/>
-      <flexcomp name="sheet" type="grid" dim="2" count="5 5 1" spacing=".04 .04 1"
-                radius=".005" mass=".1" pos="0 0 .004">
-        <contact selfcollide="none"/>
-        <elasticity young="1e4" poisson=".3" thickness="2e-3" elastic2d="stretch"/>
-      </flexcomp>
-    </worldbody>
-  </mujoco>
-  )";
-  char error[1024];
-  MjModelPtr model = LoadModelFromString(kXml, error, sizeof(error));
-  ASSERT_THAT(model.get(), NotNull()) << error;
-  MjDataPtr data = MakeData(model);
-  const mjModel* m = model.get();
-  mjData* d = data.get();
-  mj_forward(m, d);
-  int nb = d->nefmdof, nv = m->nv, nefc = d->nefc;
-  ASSERT_GT(nb, 0);
-  ASSERT_GT(nefc, 0);
-
-  // no rows: the step's own blocks
-  vector<mjtNum> L0(9 * nb), L1(9 * nb);
-  ASSERT_TRUE(mj_effPrecFold(m, d, L0.data(), -1, 0, d->efc_D, 0, d->efc_J,
-                             nullptr, nullptr, nullptr));
-  for (int i = 0; i < 9 * nb; i++) {
-    EXPECT_EQ(L0[i], d->efm_L[i]) << i;
-  }
-
-  // every row
-  ASSERT_TRUE(mj_effPrecFold(m, d, L1.data(), -1, nefc, d->efc_D, 0, d->efc_J,
-                             nullptr, nullptr, nullptr));
-  int folded = 0;
-  for (int k = 0; k < nb; k++) {
-    int base = d->efm_dofid[k];
-    mjtNum delta[9] = {0};
-    for (int r = 0; r < nefc; r++) {
-      const mjtNum* Jk = d->efc_J + r * nv + base;
-      for (int a = 0; a < 3; a++) {
-        for (int b = 0; b < 3; b++) {
-          delta[3 * a + b] += d->efc_D[r] * Jk[a] * Jk[b];
-        }
-      }
-    }
-    folded += mju_norm(delta, 9) > 0;
-    mjtNum v[3] = {static_cast<mjtNum>(mju_Halton(k, 2) - .5),
-                   static_cast<mjtNum>(mju_Halton(k, 3) - .5),
-                   static_cast<mjtNum>(mju_Halton(k, 5) - .5)};
-    mjtNum y[3], dy[3], rhs[3], x[3];
-    mju_cholSolve(y, L0.data() + 9 * k, v, 3);
-    mju_mulMatVec3(dy, delta, y);
-    mju_add3(rhs, v, dy);
-    mju_cholSolve(x, L1.data() + 9 * k, rhs, 3);
-    for (int a = 0; a < 3; a++) {
-      EXPECT_THAT(x[a], MjNear(y[a], 1e-8, 1e-3)) << "block " << k;
-    }
-  }
-  EXPECT_GT(folded, 0) << "the sheet must touch the plane";
-}
-
-// Per-island mj_effPrecFold writes compact blocks matching the island slice of
-// monolithic mj_effPrecFold (0 blocks on rigid islands), and island vs
-// monolithic CG agree for both 3D flexes (effIslandStep) and 2D flexes + sleep
-// (effCholReserved fallback).
+// Per-island and monolithic CG agree for both 3D flexes (effIslandStep) and 2D
+// flexes + sleep (effCholReserved).
 TEST_F(DerivativeTest, EffPrecFoldMultiIsland) {
   static constexpr char kXml3D[] = R"(
   <mujoco>
@@ -5900,75 +5829,8 @@ TEST_F(DerivativeTest, EffPrecFoldMultiIsland) {
     mjData* d = data.get();
     mj_forward(m, d);
 
-    int is_sparse = mj_isSparse(m);
     ASSERT_EQ(d->nisland, 3);
     ASSERT_EQ(d->nefmdof, 16);
-
-    vector<mjtNum> L_mono(9 * d->nefmdof);
-    ASSERT_EQ(mj_effPrecFold(m, d, L_mono.data(), -1, d->nefc, d->efc_D,
-                             is_sparse, d->efc_J, d->efc_J_rownnz,
-                             d->efc_J_rowadr, d->efc_J_colind),
-              d->nefmdof);
-
-    int flex_islands = 0, rigid_islands = 0;
-    for (int isl = 0; isl < d->nisland; isl++) {
-      int inv = d->island_nv[isl];
-      int inefc = d->island_nefc[isl];
-      int idofadr = d->island_idofadr[isl];
-      int iefcadr = d->island_iefcadr[isl];
-
-      vector<int> isl_triples;
-      for (int k = 0; k < d->nefmdof; k++) {
-        if (d->dof_island[d->efm_dofid[k]] == isl) {
-          isl_triples.push_back(k);
-        }
-      }
-      int expected = static_cast<int>(isl_triples.size());
-      EXPECT_EQ(mj_effFoldBlocks(d, isl), expected);
-      if (expected == 0) {
-        rigid_islands++;
-      } else {
-        EXPECT_EQ(expected, 8);
-        flex_islands++;
-      }
-
-      vector<mjtNum> L_isl(std::max(1, 9 * expected), -123);
-      int nfold = 0;
-      if (is_sparse) {
-        int nJ = 0;
-        for (int r = 0; r < inefc; r++) {
-          nJ += d->efc_J_rownnz[d->map_iefc2efc[iefcadr + r]];
-        }
-        vector<mjtNum> iJ(std::max(1, nJ));
-        vector<int> iJ_rownnz(inefc), iJ_rowadr(inefc),
-            iJ_colind(std::max(1, nJ));
-        mju_blockSparse(iJ.data(), iJ_rownnz.data(), iJ_rowadr.data(),
-                        iJ_colind.data(), d->efc_J, d->efc_J_rownnz,
-                        d->efc_J_rowadr, d->efc_J_colind, inefc,
-                        d->map_iefc2efc + iefcadr, d->map_dof2idof, idofadr, 0,
-                        nullptr, nullptr);
-        nfold = mj_effPrecFold(
-            m, d, L_isl.data(), isl, inefc, d->iefc_D + iefcadr, 1, iJ.data(),
-            iJ_rownnz.data(), iJ_rowadr.data(), iJ_colind.data());
-      } else {
-        vector<mjtNum> iJ(std::max(1, inefc * inv));
-        mju_block(iJ.data(), d->efc_J, m->nv, inv, inefc,
-                  d->map_iefc2efc + iefcadr, d->map_idof2dof + idofadr);
-        nfold =
-            mj_effPrecFold(m, d, L_isl.data(), isl, inefc, d->iefc_D + iefcadr,
-                           0, iJ.data(), nullptr, nullptr, nullptr);
-      }
-      ASSERT_EQ(nfold, expected);
-      for (int p = 0; p < nfold; p++) {
-        int k = isl_triples[p];
-        for (int a = 0; a < 9; a++) {
-          EXPECT_THAT(L_isl[9 * p + a], MjNear(L_mono[9 * k + a], 1e-12, 1e-5))
-              << "jac=" << jac << " isl=" << isl << " p=" << p << " a=" << a;
-        }
-      }
-    }
-    EXPECT_EQ(flex_islands, 2);
-    EXPECT_EQ(rigid_islands, 1);
 
     model->opt.disableflags |= mjDSBL_ISLAND;
     MjDataPtr data_mono = MakeData(model);
@@ -5980,7 +5842,7 @@ TEST_F(DerivativeTest, EffPrecFoldMultiIsland) {
   }
 
   // 2D flexes with sleep="enable": effCholReserved holds so per-island CG
-  // exercises the !has_isl fallback in mj_effPrecFold and mj_effPrecIsland.
+  // exercises the !has_isl fallback in mj_effPrecIsland.
   static constexpr char kXml2DSleep[] = R"(
   <mujoco>
     <option solver="CG" integrator="discrete" tolerance="1e-12" iterations="300">
@@ -6082,6 +5944,85 @@ TEST_F(DerivativeTest, TendonActfrcrangeSaturation) {
   EXPECT_EQ(eval_with_ctrl(1.0), 0.0);
   EXPECT_EQ(d->qDeriv[0], 0.0);
   EXPECT_EQ(d->nefmA, 0);
+}
+
+TEST_F(DerivativeTest, EffUseQHDiagExactAndGeneralKDiag) {
+  // 1. Undamped 3D flex with diagexact="enable": efm_diag is NULL while
+  // nefmK > 0, so mj_effUseQH ensures mj_makeYNumeric whitens against qH.
+  static constexpr char kXmlDiagExact[] = R"(
+  <mujoco>
+    <option integrator="discrete" timestep="0.01">
+      <flag diagexact="enable"/>
+    </option>
+    <worldbody>
+      <geom type="plane" size="2 2 .01"/>
+      <flexcomp name="cube" type="grid" dim="3" count="2 2 2"
+                spacing=".05 .05 .05" radius=".01" mass=".2" pos="0 0 .025">
+        <contact selfcollide="none"/>
+        <elasticity young="1e5" poisson=".3" damping="0"/>
+      </flexcomp>
+    </worldbody>
+  </mujoco>
+  )";
+  char error[1024];
+  MjModelPtr m_stiff = LoadModelFromString(kXmlDiagExact, error, sizeof(error));
+  ASSERT_THAT(m_stiff.get(), testing::NotNull()) << error;
+  MjDataPtr d_stiff = MakeData(m_stiff);
+  mj_forward(m_stiff.get(), d_stiff.get());
+  ASSERT_EQ(d_stiff->efm_diag, nullptr);
+  ASSERT_GT(d_stiff->nefmK, 0);
+  ASSERT_GT(d_stiff->nefc, 0);
+
+  MjModelPtr m_soft = LoadModelFromString(kXmlDiagExact, error, sizeof(error));
+  ASSERT_THAT(m_soft.get(), testing::NotNull()) << error;
+  m_soft->flex_stiffness[0] = 0;
+  for (int i = 0; i < m_soft->nflexstiffness; ++i) {
+    m_soft->flex_stiffness[i] = 0;
+  }
+  MjDataPtr d_soft = MakeData(m_soft);
+  mj_forward(m_soft.get(), d_soft.get());
+  ASSERT_EQ(d_soft->nefc, d_stiff->nefc);
+  EXPECT_LT(d_stiff->efc_diagA[0], d_soft->efc_diagA[0]);
+
+  // 2. Articulated flex under Newton (general CSR, nefmdof == 0, nefmK > 0):
+  // articulated trees omit diag(efm_K) from qH so parent-child inertia
+  // couplings are not distorted without efm_K's off-diagonals, keeping qH ==
+  // qLD when undamped; standalone 3-DOF slider trees (including trilinear
+  // nodes) include diag(efm_K).
+  static constexpr char kXmlNonSimple[] = R"(
+  <mujoco>
+    <option integrator="discrete" solver="Newton" timestep="0.01"/>
+    <worldbody>
+      <body name="base" pos="0 0 1">
+        <joint type="slide" axis="0 0 1"/>
+        <geom type="sphere" size=".01" mass="1" contype="0" conaffinity="0"/>
+        <flexcomp name="cloth" type="grid" count="3 3 1" spacing=".05 .05 .05"
+                  radius=".005" dim="2" mass="0.5" pos="0 0 0" dof="full">
+          <pin id="0"/>
+          <contact selfcollide="none" contype="0" conaffinity="0"/>
+          <elasticity young="1e4" poisson="0.2" damping="0" elastic2d="stretch"
+                      thickness="0.01"/>
+        </flexcomp>
+      </body>
+      <flexcomp name="tri" type="grid" count="2 2 2" spacing=".05 .05 .05"
+                radius=".005" dim="3" mass="0.5" pos="0.5 0 1" dof="trilinear">
+        <contact selfcollide="none" contype="0" conaffinity="0"/>
+        <elasticity young="1e4" poisson="0.2" damping="0"/>
+      </flexcomp>
+    </worldbody>
+  </mujoco>
+  )";
+  MjModelPtr m_gen = LoadModelFromString(kXmlNonSimple, error, sizeof(error));
+  ASSERT_THAT(m_gen.get(), testing::NotNull()) << error;
+  MjDataPtr d_gen = MakeData(m_gen);
+  mj_forward(m_gen.get(), d_gen.get());
+  ASSERT_GT(d_gen->nefmK, 0);
+  int cloth_dof = 1;
+  int child_diag = m_gen->M_rowadr[cloth_dof] + m_gen->M_rownnz[cloth_dof] - 1;
+  EXPECT_MJTNUM_EQ(d_gen->qH[child_diag], d_gen->qLD[child_diag]);
+  int tri_dof = m_gen->nv - 3;
+  int tri_diag = m_gen->M_rowadr[tri_dof] + m_gen->M_rownnz[tri_dof] - 1;
+  EXPECT_GT(d_gen->qH[tri_diag], d_gen->qLD[tri_diag]);
 }
 
 }  // namespace

@@ -1893,6 +1893,12 @@ int mj_isMetric(const mjModel* m) {
 }
 
 
+// does the active metric step populate the qH backbone factor (efm_diag or nefmK)
+int mj_effUseQH(const mjData* d) {
+  return d->efm_active && (d->efm_diag != NULL || d->nefmK > 0);
+}
+
+
 // do the tendon and actuator classes enter the metric. Under solver=PGS -- and only
 // there -- they are excluded and their forces integrate explicitly: the dual assembles
 // its constraint-space AR from the backbone factor, which cannot carry their couplings,

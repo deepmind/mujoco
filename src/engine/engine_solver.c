@@ -1107,8 +1107,8 @@ typedef struct {
   int flg_metric;         // effective metric active for this solve
   const mjModel* fm;      // model, for the metric calls
   mjData* fd;             // data, for the metric calls
-  mjtNum* epL;            // CG: metric blocks with the efc rows and rank-1 classes folded in
-                          // (mj_effPrecFold), 9*mj_effFoldBlocks, or NULL
+  mjtNum* epL;            // CG: per-dof diagonal with efc and contact rows folded in
+                          // (mj_effPrecFold), mj_effFoldDiagSize, or NULL
 
   // Newton: lower-triangle view of the metric matrix S = diag(h*D+h^2*K) + K_csr, built by
   // MakeMetricLower on the solver stack, merged into the Hessian alongside M
@@ -1318,17 +1318,15 @@ static void PrimalAllocate(const mjModel* m, mjData* d, mjPrimalContext* ctx, in
       nInt += (count);         \
   } while (0)
 
-  // CG: the solver's copy of the metric blocks (and 1D DER twist diagonal), for mj_effPrecFold
-  int nep = !flg_Newton ? 9*mj_effFoldBlocks(d, ctx->island) + mj_effTwistDiagSize(m, d, ctx->island) : 0;
+  // CG: per-dof folded diagonal, for mj_effPrecFold
+  int nep = !flg_Newton ? mj_effFoldDiagSize(m, d, ctx->island) : 0;
 
   for (int pass = 0; pass < 2; pass++) {
     if (pass) {
-      // keep the folded blocks only if the stack holds them with the other arrays and the
-      // deepest frame the solve takes on top: the fold, the preconditioner or the metric
-      // product. Else the step's blocks precondition the solve, with a warning
+      // keep the folded diagonal only if the stack holds it with the other arrays and the
+      // deepest frame the solve takes on top: the preconditioner or the metric product
       if (nep) {
-        size_t fold = mj_effFoldScratch(nv);
-        size_t scratch = mjMAX(fold, mjMAX(mj_effPrecScratch(m, d), mj_effMulAddScratch(m, d)));
+        size_t scratch = mjMAX(mj_effPrecScratch(m, d), mj_effMulAddScratch(m, d));
         size_t need = mj_stackBytes(sizeof(mjtNum)*nNum, _Alignof(mjtNum)) +
                       mj_stackBytes(sizeof(int)*nInt, _Alignof(int)) + scratch;
         if (need > mj_stackBytesAvailable(d)) {
@@ -1446,8 +1444,9 @@ static void PrimalAllocate(const mjModel* m, mjData* d, mjPrimalContext* ctx, in
     // under the discrete metric, gather the qH backbone factor of M + diag in place of
     // qLD: both are block-diagonal by tree, so the island block of the global factor is
     // the factor of the island block
-    const mjtNum* gLD = (d->efm_active && d->efm_diag) ? d->qH : d->qLD;
-    const mjtNum* gLDiagInv = (d->efm_active && d->efm_diag) ? d->qHDiagInv : d->qLDiagInv;
+    int use_qH = mj_effUseQH(d);
+    const mjtNum* gLD = use_qH ? d->qH : d->qLD;
+    const mjtNum* gLDiagInv = use_qH ? d->qHDiagInv : d->qLDiagInv;
     mju_blockSparse(ctx->qLD, ctx->M_rownnz, ctx->M_rowadr, ctx->M_colind,
                     gLD, m->M_rownnz, m->M_rowadr, m->M_colind,
                     nv, d->map_idof2dof + idofadr, d->map_dof2idof,

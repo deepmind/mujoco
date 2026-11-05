@@ -289,6 +289,7 @@ def kinematics_vmap(
   return d, is_batched[1]
 
 
+
 @ffi.format_args_for_warp
 def _tendon_shim(
     # Model
@@ -499,6 +500,7 @@ def tendon(m: types.Model, d: types.Data):
 def tendon_vmap(unused_axis_size, is_batched, m: types.Model, d: types.Data):
   d = tendon(m, d)
   return d, is_batched[1]
+
 
 
 @ffi.format_args_for_warp

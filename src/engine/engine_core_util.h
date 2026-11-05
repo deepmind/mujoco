@@ -214,6 +214,9 @@ MJAPI void mj_warning(mjData* d, int warning, int info);
 // the selected integrator performs the constraint solve in the effective metric
 int mj_isMetric(const mjModel* m);
 
+// does the active metric step populate the qH backbone factor (efm_diag or nefmK)
+int mj_effUseQH(const mjData* d);
+
 // do the tendon and actuator classes enter the metric (excluded under solver=PGS only;
 // noslip atop a primal solver keeps them)
 MJAPI int mj_effCouplings(const mjModel* m);

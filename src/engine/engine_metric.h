@@ -89,9 +89,8 @@ MJAPI void mj_effSolve(const mjModel* m, mjData* d, mjtNum* x, const mjtNum* b);
 MJAPI void mj_effPrec(const mjModel* m, mjData* d, mjtNum* x, const mjtNum* b);
 
 // island-local metric preconditioner x ~= (M + B)_island^-1 b, vectors in
-// island-local dof coordinates; L: folded blocks (mj_effPrecFold) or NULL for
-// the step's own factor; qLD/qLDiagInv/M_* are the island's gathered backbone
-// factor
+// island-local dof coordinates; L: folded per-dof diagonal (mj_effPrecFold) or
+// NULL; qLD/qLDiagInv/M_* are the island's gathered backbone factor
 void mj_effPrecIsland(const mjModel* m, mjData* d, mjtNum* x, const mjtNum* b,
                       int island, const mjtNum* L, const mjtNum* qLD,
                       const mjtNum* qLDiagInv,
@@ -107,30 +106,20 @@ MJAPI size_t mj_effMulAddScratch(const mjModel* m, const mjData* d);
 // stack bytes mj_effPrec and mj_effPrecIsland take, at most
 MJAPI size_t mj_effPrecScratch(const mjModel* m, const mjData* d);
 
-// number of covered 3x3 blocks mj_effPrecFold writes (island < 0: nefmdof; island >= 0: the
-// island's covered triples, at most island_nv/3)
-MJAPI int mj_effFoldBlocks(const mjData* d, int island);
-
-// length of the per-dof diagonal fold tail for 1D DER rod twist chains (L + 9*mj_effFoldBlocks),
+// length of the per-dof diagonal fold for covered flex triples and 1D DER rod twist chains,
 // 0 if none
-int mj_effTwistDiagSize(const mjModel* m, const mjData* d, int island);
+int mj_effFoldDiagSize(const mjModel* m, const mjData* d, int island);
 
-// stack bytes mj_effPrecFold takes for ncol columns (m->nv or island_nv[island])
-MJAPI size_t mj_effFoldScratch(int ncol);
+// fold the passive-contact and efc row diagonals (D > 0, active or not) into a solver-owned
+// per-dof diagonal L (mj_effFoldDiagSize) for covered flex triples and 1D DER rod twist chains;
+// returns 1 when folded, 0 if none
+int mj_effPrecFold(const mjModel* m, mjData* d, mjtNum* L, int island, int nefc,
+                   const mjtNum* efc_D, int is_sparse, const mjtNum* J,
+                   const int* J_rownnz, const int* J_rowadr, const int* J_colind);
 
-// fold the rank-1 classes and the efc rows (D > 0, active or not) into a solver-owned copy of the
-// covered 3x3 blocks: L (9*mj_effFoldBlocks) receives, for each folded triple in ascending dof
-// order, the factored 3x3 diagonal block of M + K + rank-1 classes + J'*D*J, with no sparse
-// factorization. island >= 0: J has the island's local columns and only the island's triples are
-// written compactly in L[0..9*nfold). Returns nfold (0, leaving L untouched, when no triple is
-// folded or the stack cannot hold the fold's frame)
-MJAPI int mj_effPrecFold(const mjModel* m, mjData* d, mjtNum* L, int island, int nefc,
-                         const mjtNum* efc_D, int is_sparse, const mjtNum* J,
-                         const int* J_rownnz, const int* J_rowadr, const int* J_colind);
-
-// mj_effPrec with the folded blocks L (mj_effPrecFold) in place of the step's factor
-MJAPI void mj_effPrecBlocks(const mjModel* m, mjData* d, mjtNum* x, const mjtNum* b,
-                            const mjtNum* L);
+// mj_effPrec with the folded per-dof diagonal L (mj_effPrecFold)
+void mj_effPrecBlocks(const mjModel* m, mjData* d, mjtNum* x, const mjtNum* b,
+                      const mjtNum* L);
 
 // a constraint solve with this solver runs monolithically: CG when the step's metric buffer holds
 // the sparse factor, which leaves no room for the per-island lists, and sleep is off

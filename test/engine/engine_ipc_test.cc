@@ -1582,13 +1582,12 @@ static constexpr char kHanging[] = R"(
 
 // the last step analysed, reserved and factored the sparse metric factor
 static bool FactorUsed(const mjData* d) {
-  mjtSize nb = d->nefmdof;
-  return nb && d->nefmL > 9 * nb && d->efm_L[9 * nb] == 1;
+  return d->nefmdof && d->nefmL > 0 && d->efm_L[0] == 1;
 }
 
-// the last step used the 3x3 blocks only
+// the last step used the qH diagonal fallback rather than the sparse factor
 static bool BlocksUsed(const mjData* d) {
-  return d->nefmdof && d->nefmL == 9 * d->nefmdof;
+  return d->nefmdof && (d->nefmL == 0 || d->efm_L[0] != 1);
 }
 
 // the vertices in the model's ordering
@@ -2015,7 +2014,7 @@ TEST_F(IpcTest, SparseFactorCoverage) {
       // the model's ordering holds exactly the step's covered vertices
       EXPECT_EQ(OrderedVertices(m), d->nefmdof);
       // the factor holds at least the covered matrix's lower block triangles
-      EXPECT_GE(d->nefmL, 9 * d->nefmdof + 6 * d->nefmdof);
+      EXPECT_GE(d->nefmL, 6 * d->nefmdof);
     } else {
       EXPECT_FALSE(FactorUsed(d));
     }
@@ -2083,7 +2082,7 @@ TEST_F(IpcTest, SparseFactorScratchBounds) {
       }
       std::vector<mjtNum> b(model->nv, 1), x(model->nv, 0);
       mj_effPrec(model, d, x.data(), b.data());
-      return d->efm_L[9 * d->nefmdof] == 1 &&
+      return d->nefmL > 0 && d->efm_L[0] == 1 &&
              d->warning[mjWARN_CNSTRFULL].number == 0;
     });
 

@@ -1173,7 +1173,7 @@ TEST_F(SolverTest, Discrete2DFlexNewtonSparseMatchesDense) {
       mj_forward(model.get(), data_sparse.get());
 
       ASSERT_GT(data_sparse->nefc, 0);
-      EXPECT_GT(data_sparse->nefmL, 9 * data_sparse->nefmdof);
+      EXPECT_GT(data_sparse->nefmL, 0);
       EXPECT_EQ(data_sparse->warning[mjWARN_INERTIA].number, 0);
       EXPECT_EQ(data_sparse->warning[mjWARN_BADQACC].number, 0);
       EXPECT_EQ(data_sparse->warning[mjWARN_CNSTRFULL].number, 0);
@@ -1305,7 +1305,7 @@ TEST_F(SolverTest, Discrete2DFlexNewtonThreadPool) {
   mj_forward(model.get(), data_single.get());
   mj_forward(model.get(), data_threaded.get());
   ASSERT_EQ(data_threaded->nisland, 2);
-  EXPECT_EQ(data_threaded->efm_L[9 * data_threaded->nefmdof], 1);
+  EXPECT_EQ(data_threaded->efm_L[0], 1);
   // Both 8x8 islands (nv = 192 each, offset after 6 freejoint DOFs) adopt
   // nontrivial perm and have solver_nnz well below natural-order fill (~17.5k)
   for (int isl = 0; isl < 2; isl++) {
@@ -1347,10 +1347,10 @@ TEST_F(SolverTest, Discrete2DFlexNewtonThreadPool) {
   }
 
   // If EFF_CHOL_PENDING (2) is encountered while d->threadlock is active during
-  // parallel island dispatch, effCholSolveIsland returns 0 without racing.
-  data_threaded->efm_L[9 * data_threaded->nefmdof] = 2;
+  // parallel island dispatch, effCholReady returns 0 without racing.
+  data_threaded->efm_L[0] = 2;
   mj_fwdConstraint(model.get(), data_threaded.get());
-  EXPECT_EQ(data_threaded->efm_L[9 * data_threaded->nefmdof], 2);
+  EXPECT_EQ(data_threaded->efm_L[0], 2);
   EXPECT_EQ(data_threaded->warning[mjWARN_BADQACC].number, 0);
 }
 

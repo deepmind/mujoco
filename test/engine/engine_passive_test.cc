@@ -4944,8 +4944,8 @@ TEST_F(ElasticityTest, RodBendingMetricCholesky) {
   mj_forward(m.get(), d.get());
   EXPECT_EQ(d->warning[mjWARN_INERTIA].number, 0);
   EXPECT_EQ(d->nefmdof, 39);
-  ASSERT_GT(d->nefmL, 9 * d->nefmdof);
-  EXPECT_EQ(d->efm_L[9 * d->nefmdof], 1);
+  ASSERT_GT(d->nefmL, 0);
+  EXPECT_EQ(d->efm_L[0], 1);
 
   // check that (M + B) qacc_smooth == qfrc_smooth + efm_c to machine precision
   // in 1 PCG iteration: the preconditioner sees the same twist chain as the
@@ -5006,8 +5006,8 @@ TEST_F(ElasticityTest, RodBendingMetricCholesky) {
   mj_forward(m.get(), d.get());
   EXPECT_EQ(d->warning[mjWARN_INERTIA].number, 0);
   EXPECT_EQ(d->nefmdof, 8);
-  ASSERT_GT(d->nefmL, 9 * d->nefmdof);
-  EXPECT_EQ(d->efm_L[9 * d->nefmdof], 1);
+  ASSERT_GT(d->nefmL, 0);
+  EXPECT_EQ(d->efm_L[0], 1);
   rhs.resize(m->nv);
   lhs.resize(m->nv);
   mju_add(rhs.data(), d->qfrc_smooth, d->efm_c, m->nv);

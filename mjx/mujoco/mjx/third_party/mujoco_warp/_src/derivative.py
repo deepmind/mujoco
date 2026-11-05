@@ -3389,148 +3389,72 @@ def _eff_flex_interp_stiff(deterministic: bool = False):
   return kernel
 
 
-@wp.func
-def _extract_3x3_diag_block(
+@wp.kernel
+def _eff_add_efmK_qH_diag(
   # Model:
+  body_parentid: wp.array[int],
+  body_weldid: wp.array[int],
+  body_jntnum: wp.array[int],
+  body_jntadr: wp.array[int],
+  body_dofnum: wp.array[int],
+  body_dofadr: wp.array[int],
+  body_simple: wp.array[int],
+  jnt_type: wp.array[int],
+  jnt_axis: wp.array2d[wp.vec3],
+  dof_bodyid: wp.array[int],
+  dof_treeid: wp.array[int],
+  tree_dofnum: wp.array[int],
   M_rownnz: wp.array[int],
   M_rowadr: wp.array[int],
-  M_colind: wp.array[int],
   efm_K_rownnz: wp.array[int],
   efm_K_rowadr: wp.array[int],
   efm_K_colind: wp.array[int],
   # Data in:
-  M_in: wp.array2d[float],
   efm_K_val_in: wp.array2d[float],
   # In:
-  i: int,
-  worldid: int,
-) -> wp.mat33:
-  B = wp.mat33(0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
-  for r in range(3):
-    row = i + r
-    m_adr = M_rowadr[row]
-    m_nnz = M_rownnz[row]
-    for a in range(m_nnz):
-      c = M_colind[m_adr + a]
-      if c >= i and c < i + 3:
-        B[r, c - i] += M_in[worldid, m_adr + a]
-
-    k_adr = efm_K_rowadr[row]
-    k_nnz = efm_K_rownnz[row]
-    for a in range(k_nnz):
-      c = efm_K_colind[k_adr + a]
-      if c >= i and c < i + 3:
-        B[r, c - i] += efm_K_val_in[worldid, k_adr + a]
-  return B
-
-
-@wp.func
-def _write_cholesky33(
-  # In:
-  worldid: int,
-  base: int,
-  B00: float,
-  B10: float,
-  B11: float,
-  B20: float,
-  B21: float,
-  B22: float,
+  qH_eff_in: wp.array2d[float],
   # Out:
-  out: wp.array2d[float],
+  qH_eff_out: wp.array2d[float],
 ):
-  mindiag = wp.max(MJ_MINVAL, 3.0 * 1.1920929e-7 * wp.max(B00, wp.max(B11, B22)))
-  L00 = wp.sqrt(wp.max(mindiag, B00))
-  L10 = B10 / L00
-  L20 = B20 / L00
-  L11 = wp.sqrt(wp.max(mindiag, B11 - L10 * L10))
-  L21 = (B21 - L20 * L10) / L11
-  L22 = wp.sqrt(wp.max(mindiag, B22 - (L20 * L20 + L21 * L21)))
-
-  out[worldid, base + 0] = L00
-  out[worldid, base + 1] = 0.0
-  out[worldid, base + 2] = 0.0
-  out[worldid, base + 3] = L10
-  out[worldid, base + 4] = L11
-  out[worldid, base + 5] = 0.0
-  out[worldid, base + 6] = L20
-  out[worldid, base + 7] = L21
-  out[worldid, base + 8] = L22
+  worldid, dofid = wp.tid()
+  rownnz = efm_K_rownnz[dofid]
+  if rownnz <= 0 or tree_dofnum[dof_treeid[dofid]] != 3:
+    return
+  b = body_weldid[dof_bodyid[dofid]]
+  b_dofadr = body_dofadr[b]
+  if body_dofnum[b] != 3 or dofid < b_dofadr or dofid >= b_dofadr + 3:
+    return
+  is_simple = body_simple[b] == 2
+  if not is_simple:
+    if body_jntnum[b] == 3 and body_dofnum[body_weldid[body_parentid[b]]] == 0:
+      jadr = body_jntadr[b]
+      ax_w = worldid % jnt_axis.shape[0]
+      is_simple = True
+      for j in range(3):
+        if jnt_type[jadr + j] != int(JointType.SLIDE):
+          is_simple = False
+        ax = jnt_axis[ax_w, jadr + j]
+        for k in range(3):
+          target = 1.0 if j == k else 0.0
+          if wp.abs(ax[k] - target) > MJ_MINVAL:
+            is_simple = False
+  if not is_simple:
+    return
+  idx = _find_csr_col(efm_K_rowadr[dofid], rownnz, dofid, efm_K_colind)
+  if idx >= 0:
+    diag = M_rowadr[dofid] + M_rownnz[dofid] - 1
+    qH_eff_out[worldid, diag] = qH_eff_in[worldid, diag] + efm_K_val_in[worldid, idx]
 
 
 @wp.kernel
-def _eff_factor_blocks(
+def _eff_zero_efm0_dofs(
   # Model:
-  M_rownnz: wp.array[int],
-  M_rowadr: wp.array[int],
-  M_colind: wp.array[int],
-  efm_K_rownnz: wp.array[int],
-  efm_K_rowadr: wp.array[int],
-  efm_K_colind: wp.array[int],
-  efm_dofid: wp.array[int],
-  # Data in:
-  M_in: wp.array2d[float],
-  efm_K_val_in: wp.array2d[float],
-  # Data out:
-  efm_L_out: wp.array2d[float],
-):
-  worldid, k = wp.tid()
-  i = efm_dofid[k]
-  B = _extract_3x3_diag_block(
-    M_rownnz, M_rowadr, M_colind, efm_K_rownnz, efm_K_rowadr, efm_K_colind, M_in, efm_K_val_in, i, worldid
-  )
-  _write_cholesky33(worldid, 9 * k, B[0, 0], B[1, 0], B[1, 1], B[2, 0], B[2, 1], B[2, 2], efm_L_out)
-
-
-@wp.kernel
-def _eff_block_solve(
-  # Model:
-  efm_dofid: wp.array[int],
-  # Data in:
-  efm_L_in: wp.array2d[float],
-  # In:
-  rhs_in: wp.array2d[float],
-  # Out:
-  res_out: wp.array2d[float],
-):
-  worldid, k = wp.tid()
-  i = efm_dofid[k]
-  base = 9 * k
-  L00 = efm_L_in[worldid, base + 0]
-  L10 = efm_L_in[worldid, base + 3]
-  L11 = efm_L_in[worldid, base + 4]
-  L20 = efm_L_in[worldid, base + 6]
-  L21 = efm_L_in[worldid, base + 7]
-  L22 = efm_L_in[worldid, base + 8]
-
-  b0 = rhs_in[worldid, i]
-  b1 = rhs_in[worldid, i + 1]
-  b2 = rhs_in[worldid, i + 2]
-
-  r0 = b0 / L00
-  r1 = (b1 - L10 * r0) / L11
-  r2 = (b2 - (L20 * r0 + L21 * r1)) / L22
-  x2 = r2 / L22
-  x1 = (r1 - L21 * x2) / L11
-  x0 = (r0 - L10 * x1 - L20 * x2) / L00
-
-  res_out[worldid, i] = x0
-  res_out[worldid, i + 1] = x1
-  res_out[worldid, i + 2] = x2
-
-
-@wp.kernel
-def _eff_copy_backbone_rhs(
-  # Model:
-  nv: int,
-  efm_dofblk: wp.array[int],
-  # In:
-  vec_in: wp.array2d[float],
+  efm0_dofid: wp.array[int],
   # Out:
   vec_out: wp.array2d[float],
 ):
-  worldid, dofid = wp.tid()
-  if dofid < nv:
-    vec_out[worldid, dofid] = 0.0 if efm_dofblk[dofid] >= 0 else vec_in[worldid, dofid]
+  worldid, k = wp.tid()
+  vec_out[worldid, efm0_dofid[k]] = 0.0
 
 
 @wp.kernel
@@ -4065,7 +3989,6 @@ def eff_build(m: Model, d: Data):
 
   if m.nefmK > 0:
     d.efm_K_val.zero_()
-    d.efm_L.zero_()
 
     det_atomics = bool(m.opt.deterministic & DeterminismType.ATOMICS)
     wp.launch(
@@ -4217,23 +4140,6 @@ def eff_build(m: Model, d: Data):
         ],
         outputs=[d.efm_K_val],
       )
-
-    wp.launch(
-      _eff_factor_blocks,
-      dim=(d.nworld, m.nefmdof),
-      inputs=[
-        m.M_rownnz,
-        m.M_rowadr,
-        m.M_colind,
-        m.efm_K_rownnz,
-        m.efm_K_rowadr,
-        m.efm_K_colind,
-        m.efm_dofid,
-        d.M,
-        d.efm_K_val,
-      ],
-      outputs=[d.efm_L],
-    )
 
 
 @event_scope
@@ -4603,11 +4509,43 @@ def eff_actuation(m: Model, d: Data):
       outputs=[d.qH],
     )
 
-  # Factor qH into qHLD and qHDiagInv
+  # Factor qH into qHLD and qHDiagInv (adding efm_K diagonal into the factor only,
+  # keeping d.qH = M + efm_sdiag so regularize_constraint and Newton Hessian assembly
+  # do not double-count efm_K).
+  if m.nefmK > 0:
+    qH_eff = wp.clone(d.qH)
+    wp.launch(
+      _eff_add_efmK_qH_diag,
+      dim=(d.nworld, m.nv),
+      inputs=[
+        m.body_parentid,
+        m.body_weldid,
+        m.body_jntnum,
+        m.body_jntadr,
+        m.body_dofnum,
+        m.body_dofadr,
+        m.body_simple,
+        m.jnt_type,
+        m.jnt_axis,
+        m.dof_bodyid,
+        m.dof_treeid,
+        m.tree_dofnum,
+        m.M_rownnz,
+        m.M_rowadr,
+        m.efm_K_rownnz,
+        m.efm_K_rowadr,
+        m.efm_K_colind,
+        d.efm_K_val,
+        qH_eff,
+      ],
+      outputs=[qH_eff],
+    )
+  else:
+    qH_eff = d.qH
   if m.M_tiles:
-    smooth._factor_blocks(m, d, d.qH, d.qHLD, d.qHDiagInv)
+    smooth._factor_blocks(m, d, qH_eff, d.qHLD, d.qHDiagInv)
   if d.qHLD.shape[1] > m.qLD_block_total:
-    smooth._factor_i_sparse(m, d, d.qH, d.qHLD[:, m.qLD_block_total :], d.qHDiagInv)
+    smooth._factor_i_sparse(m, d, qH_eff, d.qHLD[:, m.qLD_block_total :], d.qHDiagInv)
 
 
 def eff_mul_m_scratch(m: Model, d: Data) -> tuple[Optional[tuple], Optional[tuple]]:
@@ -4806,155 +4744,15 @@ def eff_mul_m(
       )
 
 
-@wp.kernel
-def _eff_build_blocks_raw(
-  # Model:
-  M_rownnz: wp.array[int],
-  M_rowadr: wp.array[int],
-  M_colind: wp.array[int],
-  efm_K_rownnz: wp.array[int],
-  efm_K_rowadr: wp.array[int],
-  efm_K_colind: wp.array[int],
-  efm_dofid: wp.array[int],
-  is_sparse: bool,
-  # Data in:
-  nefc_in: wp.array[int],
-  M_in: wp.array2d[float],
-  efm_K_val_in: wp.array2d[float],
-  efc_J_in: wp.array3d[float],
-  efc_D_in: wp.array2d[float],
-  # Out:
-  epB_out: wp.array2d[float],
-):
-  worldid, k = wp.tid()
-  i = efm_dofid[k]
-  B = _extract_3x3_diag_block(
-    M_rownnz, M_rowadr, M_colind, efm_K_rownnz, efm_K_rowadr, efm_K_colind, M_in, efm_K_val_in, i, worldid
-  )
-
-  if not is_sparse:
-    nefc = nefc_in[worldid]
-    for r in range(nefc):
-      D = efc_D_in[worldid, r]
-      if D != 0.0:
-        j0 = efc_J_in[worldid, r, i]
-        j1 = efc_J_in[worldid, r, i + 1]
-        j2 = efc_J_in[worldid, r, i + 2]
-        if j0 != 0.0 or j1 != 0.0 or j2 != 0.0:
-          B[0, 0] += D * j0 * j0
-          B[0, 1] += D * j0 * j1
-          B[0, 2] += D * j0 * j2
-          B[1, 0] += D * j1 * j0
-          B[1, 1] += D * j1 * j1
-          B[1, 2] += D * j1 * j2
-          B[2, 0] += D * j2 * j0
-          B[2, 1] += D * j2 * j1
-          B[2, 2] += D * j2 * j2
-
-  base = 9 * k
-  for r in range(3):
-    for c in range(3):
-      epB_out[worldid, base + 3 * r + c] = B[r, c]
-
-
 @cache_kernel
-def _eff_fold_tendon(max_ten_J_rownnz: int, deterministic: bool = False):
+def _eff_fold_efc_sparse(nv: int, deterministic: bool = False):
   module_options = {"enable_backward": False}
   if deterministic:
     module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
-    module_options["deterministic_max_records"] = 3 * max_ten_J_rownnz
+    module_options["deterministic_max_records"] = nv
 
   @wp.kernel(module="unique", module_options=module_options)
   def kernel(
-    # Model:
-    ten_J_rownnz: wp.array[int],
-    ten_J_rowadr: wp.array[int],
-    ten_J_colind: wp.array[int],
-    efm_dofid: wp.array[int],
-    efm_dofblk: wp.array[int],
-    # Data in:
-    ten_J_in: wp.array2d[float],
-    efm_ts_in: wp.array2d[float],
-    # Out:
-    epB_out: wp.array2d[float],
-  ):
-    worldid, t = wp.tid()
-    s = efm_ts_in[worldid, t]
-    if s == 0.0:
-      return
-    rowadr = ten_J_rowadr[t]
-    rownnz = ten_J_rownnz[t]
-    for a in range(rownnz):
-      ia = ten_J_colind[rowadr + a]
-      k = efm_dofblk[ia]
-      if k < 0:
-        continue
-      base = efm_dofid[k]
-      s_va = s * ten_J_in[worldid, rowadr + a]
-      for b in range(rownnz):
-        ib = ten_J_colind[rowadr + b]
-        if efm_dofblk[ib] == k:
-          vb = ten_J_in[worldid, rowadr + b]
-          wp.atomic_add(epB_out, worldid, 9 * k + 3 * (ia - base) + (ib - base), s_va * vb)
-
-  return kernel
-
-
-@cache_kernel
-def _eff_fold_actuator(nv: int, deterministic: bool = False):
-  module_options = {"enable_backward": False}
-  if deterministic:
-    module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
-    module_options["deterministic_max_records"] = 3 * nv
-
-  @wp.kernel(module="unique", module_options=module_options)
-  def kernel(
-    # Model:
-    efm_dofid: wp.array[int],
-    efm_dofblk: wp.array[int],
-    # Data in:
-    moment_rownnz_in: wp.array2d[int],
-    moment_rowadr_in: wp.array2d[int],
-    moment_colind_in: wp.array2d[int],
-    actuator_moment_in: wp.array2d[float],
-    efm_as_in: wp.array2d[float],
-    # Out:
-    epB_out: wp.array2d[float],
-  ):
-    worldid, u = wp.tid()
-    s = efm_as_in[worldid, u]
-    if s == 0.0:
-      return
-    rowadr = moment_rowadr_in[worldid, u]
-    rownnz = moment_rownnz_in[worldid, u]
-    for a in range(rownnz):
-      ia = moment_colind_in[worldid, rowadr + a]
-      k = efm_dofblk[ia]
-      if k < 0:
-        continue
-      base = efm_dofid[k]
-      s_va = s * actuator_moment_in[worldid, rowadr + a]
-      for b in range(rownnz):
-        ib = moment_colind_in[worldid, rowadr + b]
-        if efm_dofblk[ib] == k:
-          vb = actuator_moment_in[worldid, rowadr + b]
-          wp.atomic_add(epB_out, worldid, 9 * k + 3 * (ia - base) + (ib - base), s_va * vb)
-
-  return kernel
-
-
-@cache_kernel
-def _eff_fold_efc_sparse(has_tw_diag: bool, nv: int, deterministic: bool = False):
-  module_options = {"enable_backward": False}
-  if deterministic:
-    module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
-    module_options["deterministic_max_records"] = (4 if has_tw_diag else 3) * nv
-
-  @wp.kernel(module="unique", module_options=module_options)
-  def kernel(
-    # Model:
-    efm_dofid: wp.array[int],
-    efm_dofblk: wp.array[int],
     # Data in:
     nefc_in: wp.array[int],
     efc_J_rownnz_in: wp.array2d[int],
@@ -4963,7 +4761,6 @@ def _eff_fold_efc_sparse(has_tw_diag: bool, nv: int, deterministic: bool = False
     efc_J_in: wp.array3d[float],
     efc_D_in: wp.array2d[float],
     # Out:
-    epB_out: wp.array2d[float],
     tw_diag_out: wp.array2d[float],
   ):
     worldid, r = wp.tid()
@@ -4977,18 +4774,7 @@ def _eff_fold_efc_sparse(has_tw_diag: bool, nv: int, deterministic: bool = False
     for a in range(nnz):
       ia = efc_J_colind_in[worldid, 0, adr + a]
       ja = efc_J_in[worldid, 0, adr + a]
-      if wp.static(has_tw_diag):
-        wp.atomic_add(tw_diag_out, worldid, ia, D * ja * ja)
-      k = efm_dofblk[ia]
-      if k < 0:
-        continue
-      base = efm_dofid[k]
-      D_ja = D * ja
-      for b in range(nnz):
-        ib = efc_J_colind_in[worldid, 0, adr + b]
-        if efm_dofblk[ib] == k:
-          jb = efc_J_in[worldid, 0, adr + b]
-          wp.atomic_add(epB_out, worldid, 9 * k + 3 * (ia - base) + (ib - base), D_ja * jb)
+      wp.atomic_add(tw_diag_out, worldid, ia, D * ja * ja)
 
   return kernel
 
@@ -5015,17 +4801,14 @@ def _eff_fold_tw_diag_efc_dense(
 
 
 @cache_kernel
-def _eff_fold_contact_rank1(has_tw_diag: bool, max_dof: int, deterministic: bool = False):
+def _eff_fold_contact_rank1(max_dof: int, deterministic: bool = False):
   module_options = {"enable_backward": False}
   if deterministic:
     module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
-    module_options["deterministic_max_records"] = (4 if has_tw_diag else 3) * max_dof
+    module_options["deterministic_max_records"] = max_dof
 
   @wp.kernel(module="unique", module_options=module_options)
   def kernel(
-    # Model:
-    efm_dofid: wp.array[int],
-    efm_dofblk: wp.array[int],
     # Data in:
     contact_worldid_in: wp.array[int],
     nacon_in: wp.array[int],
@@ -5035,7 +4818,6 @@ def _eff_fold_contact_rank1(has_tw_diag: bool, max_dof: int, deterministic: bool
     efm_con_scale_in: wp.array[float],
     efm_con_nnz_in: wp.array[int],
     # Out:
-    epB_out: wp.array2d[float],
     tw_diag_out: wp.array2d[float],
   ):
     cid = wp.tid()
@@ -5049,122 +4831,89 @@ def _eff_fold_contact_rank1(has_tw_diag: bool, max_dof: int, deterministic: bool
     for a in range(nnz):
       ia = efm_con_dof_in[cid, a]
       va = efm_con_val_in[cid, a]
-      if wp.static(has_tw_diag):
-        wp.atomic_add(tw_diag_out, worldid, ia, scale * va * va)
-      k = efm_dofblk[ia]
-      if k < 0:
-        continue
-      base = efm_dofid[k]
-      scale_va = scale * va
-      for b in range(nnz):
-        ib = efm_con_dof_in[cid, b]
-        if efm_dofblk[ib] == k:
-          vb = efm_con_val_in[cid, b]
-          wp.atomic_add(epB_out, worldid, 9 * k + 3 * (ia - base) + (ib - base), scale_va * vb)
+      wp.atomic_add(tw_diag_out, worldid, ia, scale * va * va)
 
   return kernel
 
 
 @wp.kernel
-def _eff_factor_folded_blocks(
-  # In:
-  epB_in: wp.array2d[float],
+def _eff_zero_covered_dofs(
+  # Model:
+  efm_dofid: wp.array[int],
   # Out:
-  epL_out: wp.array2d[float],
+  vec_out: wp.array2d[float],
 ):
   worldid, k = wp.tid()
-  base = 9 * k
-  _write_cholesky33(
-    worldid,
-    base,
-    epB_in[worldid, base + 0],
-    epB_in[worldid, base + 3],
-    epB_in[worldid, base + 4],
-    epB_in[worldid, base + 6],
-    epB_in[worldid, base + 7],
-    epB_in[worldid, base + 8],
-    epL_out,
-  )
+  i = efm_dofid[k]
+  vec_out[worldid, i] = 0.0
+  vec_out[worldid, i + 1] = 0.0
+  vec_out[worldid, i + 2] = 0.0
+
+
+@wp.kernel
+def _eff_invert_covered_fold_diag(
+  # Model:
+  M_rownnz: wp.array[int],
+  M_rowadr: wp.array[int],
+  efm_K_rownnz: wp.array[int],
+  efm_K_rowadr: wp.array[int],
+  efm_K_colind: wp.array[int],
+  efm_dofid: wp.array[int],
+  # Data in:
+  qH_in: wp.array2d[float],
+  efm_K_val_in: wp.array2d[float],
+  # In:
+  tw_diag_in: wp.array2d[float],
+  # Out:
+  tw_diag_out: wp.array2d[float],
+):
+  worldid, k = wp.tid()
+  i = efm_dofid[k]
+  for r in range(3):
+    row = i + r
+    diag = qH_in[worldid, M_rowadr[row] + M_rownnz[row] - 1] + tw_diag_in[worldid, row]
+    rownnz = efm_K_rownnz[row]
+    if rownnz > 0:
+      idx = _find_csr_col(efm_K_rowadr[row], rownnz, row, efm_K_colind)
+      if idx >= 0:
+        diag += efm_K_val_in[worldid, idx]
+    tw_diag_out[worldid, row] = 1.0 / wp.max(MJ_MINVAL, diag)
+
+
+@wp.kernel
+def _eff_apply_covered_fold_diag(
+  # Model:
+  efm_dofid: wp.array[int],
+  # In:
+  vec_in: wp.array2d[float],
+  tw_diag_in: wp.array2d[float],
+  # Out:
+  res_out: wp.array2d[float],
+):
+  worldid, k = wp.tid()
+  i = efm_dofid[k]
+  res_out[worldid, i] = vec_in[worldid, i] * tw_diag_in[worldid, i]
+  res_out[worldid, i + 1] = vec_in[worldid, i + 1] * tw_diag_in[worldid, i + 1]
+  res_out[worldid, i + 2] = vec_in[worldid, i + 2] * tw_diag_in[worldid, i + 2]
 
 
 @event_scope
 def eff_prec_fold(
   m: Model,
   d: Data,
-  out: Optional[wp.array] = None,
   tw_diag: Optional[wp.array] = None,
-) -> wp.array:
-  """Folds rank-1 metric terms and active/inactive efc rows into 3x3 preconditioner blocks."""
-  epL = out if out is not None else wp.empty_like(d.efm_L)
-  has_tw_diag = tw_diag is not None
-  if m.nefmdof == 0 and not has_tw_diag:
-    return epL
-  epB = wp.empty_like(d.efm_L)
-  dofblk = m.efm_dofblk
-  if has_tw_diag:
-    tw_diag.zero_()
-  tw_out = tw_diag if has_tw_diag else epB
+):
+  """Folds active/inactive efc and passive-contact diagonals into tw_diag for covered flex triples and 1D rod twist."""
+  if tw_diag is None:
+    return
+  tw_diag.zero_()
   det_atomics = bool(m.opt.deterministic & DeterminismType.ATOMICS)
-
-  if m.nefmdof > 0:
-    wp.launch(
-      _eff_build_blocks_raw,
-      dim=(d.nworld, m.nefmdof),
-      inputs=[
-        m.M_rownnz,
-        m.M_rowadr,
-        m.M_colind,
-        m.efm_K_rownnz,
-        m.efm_K_rowadr,
-        m.efm_K_colind,
-        m.efm_dofid,
-        m.is_sparse,
-        d.nefc,
-        d.M,
-        d.efm_K_val,
-        d.efc.J,
-        d.efc.D,
-      ],
-      outputs=[epB],
-    )
-
-    wp.launch(
-      _eff_fold_tendon(m.max_ten_J_rownnz if det_atomics else 0, det_atomics),
-      dim=(d.nworld, m.ntendon),
-      inputs=[
-        m.ten_J_rownnz,
-        m.ten_J_rowadr,
-        m.ten_J_colind,
-        m.efm_dofid,
-        dofblk,
-        d.ten_J,
-        d.efm_ts,
-      ],
-      outputs=[epB],
-    )
-
-    wp.launch(
-      _eff_fold_actuator(m.nv if det_atomics else 0, det_atomics),
-      dim=(d.nworld, m.nactuator),
-      inputs=[
-        m.efm_dofid,
-        dofblk,
-        d.moment_rownnz,
-        d.moment_rowadr,
-        d.moment_colind,
-        d.actuator_moment,
-        d.efm_as,
-      ],
-      outputs=[epB],
-    )
 
   if m.is_sparse:
     wp.launch(
-      _eff_fold_efc_sparse(has_tw_diag, m.nv if det_atomics else 0, det_atomics),
+      _eff_fold_efc_sparse(m.nv if det_atomics else 0, det_atomics),
       dim=(d.nworld, d.njmax),
       inputs=[
-        m.efm_dofid,
-        dofblk,
         d.nefc,
         d.efc.J_rownnz,
         d.efc.J_rowadr,
@@ -5172,24 +4921,22 @@ def eff_prec_fold(
         d.efc.J,
         d.efc.D,
       ],
-      outputs=[epB, tw_out],
+      outputs=[tw_diag],
     )
-  elif has_tw_diag:
+  else:
     wp.launch(
       _eff_fold_tw_diag_efc_dense,
       dim=(d.nworld, m.nv),
       inputs=[d.nefc, d.efc.J, d.efc.D],
-      outputs=[tw_out],
+      outputs=[tw_diag],
     )
 
-  if m.has_flex_passive:
+  if m.has_flex_passive and not ((m.opt.disableflags & DisableBit.SPRING) and (m.opt.disableflags & DisableBit.DAMPER)):
     efm_con_dof, efm_con_val, efm_con_scale, _, efm_con_nnz = build_efm_contact(m, d)
     wp.launch(
-      _eff_fold_contact_rank1(has_tw_diag, m.efm_con_max_dof if det_atomics else 0, det_atomics),
+      _eff_fold_contact_rank1(m.efm_con_max_dof if det_atomics else 0, det_atomics),
       dim=d.naconmax,
       inputs=[
-        m.efm_dofid,
-        dofblk,
         d.contact.worldid,
         d.nacon,
         efm_con_dof,
@@ -5197,17 +4944,26 @@ def eff_prec_fold(
         efm_con_scale,
         efm_con_nnz,
       ],
-      outputs=[epB, tw_out],
+      outputs=[tw_diag],
     )
 
   if m.nefmdof > 0:
     wp.launch(
-      _eff_factor_folded_blocks,
+      _eff_invert_covered_fold_diag,
       dim=(d.nworld, m.nefmdof),
-      inputs=[epB],
-      outputs=[epL],
+      inputs=[
+        m.M_rownnz,
+        m.M_rowadr,
+        m.efm_K_rownnz,
+        m.efm_K_rowadr,
+        m.efm_K_colind,
+        m.efm_dofid,
+        d.qH,
+        d.efm_K_val,
+        tw_diag,
+      ],
+      outputs=[tw_diag],
     )
-  return epL
 
 
 @event_scope
@@ -5216,11 +4972,10 @@ def eff_prec(
   d: Data,
   res: wp.array2d[float],
   vec: wp.array2d[float],
-  epL: Optional[wp.array] = None,
   x_scratch: Optional[wp.array] = None,
   tw_diag: Optional[wp.array] = None,
 ):
-  """Preconditions residual vector using 3x3 flex block Cholesky and backbone qHLD."""
+  """Preconditions residual vector using backbone qHLD (plus folded diagonal, efm0_L, or 1D rod twist solve)."""
   has_rod_twist = m.nflexrodedge > 0 and not (
     (m.opt.disableflags & DisableBit.SPRING) and (m.opt.disableflags & DisableBit.DAMPER)
   )
@@ -5228,10 +4983,11 @@ def eff_prec(
   tw_in = tw_diag if has_tw_diag else d.qH
   if m.efm0_active:
     if m.nefm0dof < m.nv:
+      wp.copy(res, vec)
       wp.launch(
-        _eff_copy_backbone_rhs,
-        dim=(d.nworld, m.nv),
-        inputs=[m.nv, m.efm_dofblk, vec],
+        _eff_zero_efm0_dofs,
+        dim=(d.nworld, m.nefm0dof),
+        inputs=[m.efm0_dofid],
         outputs=[res],
       )
       smooth.solve_LD(m, d, d.qHLD, d.qHDiagInv, res, res, x_scratch=x_scratch)
@@ -5284,12 +5040,63 @@ def eff_prec(
       )
     return
 
-  L_arr = epL if epL is not None else d.efm_L
-  if 3 * m.nefmdof == m.nv:
+  if has_tw_diag and m.nefmdof > 0:
+    if 3 * m.nefmdof == m.nv and not has_rod_twist:
+      wp.launch(
+        _eff_apply_covered_fold_diag,
+        dim=(d.nworld, m.nefmdof),
+        inputs=[m.efm_dofid, vec, tw_diag],
+        outputs=[res],
+      )
+      if m.opt.enableflags & EnableBit.SLEEP:
+        wp.launch(
+          _zero_sleeping_dofs,
+          dim=(d.nworld, m.nv),
+          inputs=[m.dof_treeid, d.tree_awake],
+          outputs=[res],
+        )
+      return
+
+    rhs = wp.clone(vec) if res.ptr == vec.ptr else vec
+    if res.ptr != rhs.ptr:
+      wp.copy(res, rhs)
     wp.launch(
-      _eff_block_solve,
+      _eff_zero_covered_dofs,
       dim=(d.nworld, m.nefmdof),
-      inputs=[m.efm_dofid, L_arr, vec],
+      inputs=[m.efm_dofid],
+      outputs=[res],
+    )
+    smooth.solve_LD(m, d, d.qHLD, d.qHDiagInv, res, res, x_scratch=x_scratch)
+    if has_rod_twist:
+      wp.launch(
+        _eff_twist_solve(has_tw_diag),
+        dim=(d.nworld, m.nflex),
+        inputs=[
+          m.opt.timestep,
+          m.opt.disableflags,
+          m.jnt_dofadr,
+          m.dof_treeid,
+          m.tree_dofnum,
+          m.flex_bendingadr,
+          m.flex_bending,
+          m.flex_damping,
+          m.flex_rigid,
+          m.M_rownnz,
+          m.M_rowadr,
+          m.flex_rod_has_twist,
+          m.flex_rod_edgeadr,
+          m.flex_rod_edgenum,
+          m.flex_rodedge_jnt,
+          d.qH,
+          rhs,
+          tw_in,
+        ],
+        outputs=[d.flex_rodedge_tridiag, res],
+      )
+    wp.launch(
+      _eff_apply_covered_fold_diag,
+      dim=(d.nworld, m.nefmdof),
+      inputs=[m.efm_dofid, rhs, tw_diag],
       outputs=[res],
     )
     if m.opt.enableflags & EnableBit.SLEEP:
@@ -5300,14 +5107,8 @@ def eff_prec(
         outputs=[res],
       )
     return
-  dofblk = m.efm_dofblk
-  wp.launch(
-    _eff_copy_backbone_rhs,
-    dim=(d.nworld, m.nv),
-    inputs=[m.nv, dofblk, vec],
-    outputs=[res],
-  )
-  smooth.solve_LD(m, d, d.qHLD, d.qHDiagInv, res, res, x_scratch=x_scratch)
+
+  smooth.solve_LD(m, d, d.qHLD, d.qHDiagInv, res, vec, x_scratch=x_scratch)
   if has_rod_twist:
     wp.launch(
       _eff_twist_solve(has_tw_diag),
@@ -5334,12 +5135,6 @@ def eff_prec(
       ],
       outputs=[d.flex_rodedge_tridiag, res],
     )
-  wp.launch(
-    _eff_block_solve,
-    dim=(d.nworld, m.nefmdof),
-    inputs=[m.efm_dofid, L_arr, vec],
-    outputs=[res],
-  )
   if m.opt.enableflags & EnableBit.SLEEP:
     wp.launch(
       _zero_sleeping_dofs,

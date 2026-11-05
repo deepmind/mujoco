@@ -1611,13 +1611,11 @@ class Model:
 
   warp only fields:
     nefmK: number of non-zeros in effective flex stiffness matrix
-    nefmdof: number of flex preconditioner 3x3 DOF blocks
-    nefmL: number of entries in flex preconditioner 3x3 blocks
+    nefmdof: number of covered flex vertex triples
     efm_K_rownnz: row non-zeros in effective flex stiffness CSR (nv,)
     efm_K_rowadr: row addresses in effective flex stiffness CSR (nv,)
     efm_K_colind: column indices in effective flex stiffness CSR (nefmK,)
-    efm_dofid: starting DOF index for each 3x3 flex block (nefmdof,)
-    efm_dofblk: maps each DOF to its 3x3 flex block index; -1 if none (nv,)
+    efm_dofid: starting DOF index for each covered flex triple (nefmdof,)
     callback: custom physics callbacks
     nbranch: number of branches (leaf-to-root paths)
     nv_pad: number of degrees of freedom + padding
@@ -2182,12 +2180,10 @@ class Model:
   # warp only fields:
   nefmK: int
   nefmdof: int
-  nefmL: int
   efm_K_rownnz: array("nv", int)
   efm_K_rowadr: array("nv", int)
   efm_K_colind: array("nefmK", int)
   efm_dofid: array("nefmdof", int)
-  efm_dofblk: array("nv", int)
   callback: Callback
   nbranch: int
   nv_pad: int
@@ -2573,7 +2569,6 @@ class Data:
     efm_fluid: fluid drag blocks in M's sparsity pattern        (nworld, nC)
     efm_ca: actuation-stage smooth-force shift                  (nworld, nv)
     efm_K_val: effective flex stiffness CSR values              (nworld, nefmK)
-    efm_L: factored 3x3 diagonal blocks of M+K                  (nworld, nefmL)
     qHLD: factor of modified mass matrix qH                     (nworld, qld_total)
     efm_ts: tendon metric scale h^2*k + h*b                     (nworld, ntendon)
     efm_as: actuator metric scale h^2*gp + h*gv                 (nworld, nactuator)
@@ -2751,7 +2746,6 @@ class Data:
   efm_fluid: array("nworld", "nC", float)
   efm_ca: array("nworld", "nv", float)
   efm_K_val: array("nworld", "nefmK", float)
-  efm_L: array("nworld", "nefmL", float)
   qHLD: array("nworld", "qld_total", float)
   efm_ts: array("nworld", "ntendon", float)
   efm_as: array("nworld", "nactuator", float)
