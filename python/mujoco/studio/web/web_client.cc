@@ -525,13 +525,26 @@ void BuildBrowserGui() {
   }
 }
 
+// The canvas's backing store in device pixels: the render target, the
+// scene viewport and the UI's orthographic camera all have to be exactly
+// this size. SDL sizes it to floor(css size * devicePixelRatio) on each
+// axis, so with a fractional ratio the height is not the CSS height times
+// the width's scale: that lands one row short for about a quarter of all
+// window sizes, which left the top row of the canvas unrendered (a dark
+// line above the menu bar) and squashed the UI pass by a row so its bottom
+// edges landed between pixels.
+static int FramebufferWidth() { return g_app.window->GetDrawableWidth(); }
+static int FramebufferHeight() { return g_app.window->GetDrawableHeight(); }
+
 // The scene's viewport in framebuffer pixels (GL convention: origin at the
 // bottom-left): the window minus the role bar along the bottom. The bar's
 // inset is floored so that at a fractional DPI scale the scene reaches at
 // most one pixel under the opaque bar rather than leaving a gap above it.
 static mjrRect SceneViewport(int width, int height) {
-  const int bar_px = static_cast<int>(
-      std::floor(g_app.role_window.BarHeight() * g_app.window->GetScale()));
+  const float scale_y = static_cast<float>(height) /
+                        static_cast<float>(g_app.window->GetHeight());
+  const int bar_px =
+      static_cast<int>(std::floor(g_app.role_window.BarHeight() * scale_y));
   const int scene_height = std::max(1, height - bar_px);
   return {0, height - scene_height, width, scene_height};
 }
@@ -539,8 +552,8 @@ static mjrRect SceneViewport(int width, int height) {
 static mujoco::Renderer::View GetSceneView() {
   const mjModel* model = g_app.model_holder->model();
   const mjData* data = g_app.model_holder->data();
-  const int width = g_app.window->GetWidth() * g_app.window->GetScale();
-  const int height = g_app.window->GetHeight() * g_app.window->GetScale();
+  const int width = FramebufferWidth();
+  const int height = FramebufferHeight();
 
   mujoco::Renderer::View view;
   view.scene = g_app.renderer->GetSceneHandle("studio");
@@ -581,8 +594,8 @@ static mujoco::Renderer::View GetSceneView() {
 }
 
 static mujoco::Renderer::View GetUxView() {
-  const int width = g_app.window->GetWidth() * g_app.window->GetScale();
-  const int height = g_app.window->GetHeight() * g_app.window->GetScale();
+  const int width = FramebufferWidth();
+  const int height = FramebufferHeight();
 
   mujoco::Renderer::View view;
   view.scene = g_app.renderer->GetSceneHandle("ux");
@@ -727,10 +740,8 @@ void MainLoopImpl() {
       g_app.backend_state_dirty = false;
     }
 
-    int width =
-        static_cast<int>(g_app.window->GetWidth() * g_app.window->GetScale());
-    int height =
-        static_cast<int>(g_app.window->GetHeight() * g_app.window->GetScale());
+    const int width = FramebufferWidth();
+    const int height = FramebufferHeight();
     if (width > 0 && height > 0) {
       g_app.renderer->ResizeRenderTarget(mujoco::Renderer::kWindowRenderTarget,
                                          width, height);

@@ -15,6 +15,7 @@
 #include "render/filament/support/imgui_bridge.h"
 
 #include <algorithm>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -254,8 +255,13 @@ void ImguiBridge::Update() {
     mjrf_uploadMesh(mesh, &data);
 
     for (const ImDrawCmd& command : cmds->CmdBuffer) {
-      const int width = size.x * scale.x;
-      const int height = size.y * scale.y;
+      // The framebuffer's size. The scale is the framebuffer size over the
+      // display size, so the product is a whole number up to float error;
+      // round it, since truncating a 875.99994 to 875 would shift every
+      // scissor (measured from the bottom edge) down a row and clip the top
+      // row of every window.
+      const int width = static_cast<int>(std::lround(size.x * scale.x));
+      const int height = static_cast<int>(std::lround(size.y * scale.y));
 
       UniquePtr<mjrfRenderable>& renderable = renderables_[renderable_index];
       mjrf_setRenderableMesh(renderable.get(), mesh, command.IdxOffset,
@@ -283,10 +289,21 @@ void ImguiBridge::Update() {
                                        static_cast<float>(width));
       const float clip_y1 = std::clamp(command.ClipRect.w * scale.y, clip_y0,
                                        static_cast<float>(height));
-      material.scissor[0] = clip_x0;
-      material.scissor[1] = height - clip_y1;
-      material.scissor[2] = clip_x1 - clip_x0;
-      material.scissor[3] = clip_y1 - clip_y0;
+      // Snap the rect outward to whole pixels. At a fractional DPI scale the
+      // clip edges fall between pixels, and filament truncates the scissor
+      // to integers: measured from the bottom (the GL origin), that drops a
+      // row along the top edge of every window, showing whatever is behind
+      // the UI through a one-pixel seam (e.g. the 3D scene above and below
+      // the menu bar). Growing the rect is harmless: the geometry's own
+      // anti-aliased edges end where they should.
+      const float x0 = std::floor(clip_x0);
+      const float y0 = std::floor(clip_y0);
+      const float x1 = std::ceil(clip_x1);
+      const float y1 = std::ceil(clip_y1);
+      material.scissor[0] = x0;
+      material.scissor[1] = height - y1;
+      material.scissor[2] = x1 - x0;
+      material.scissor[3] = y1 - y0;
       mjrf_setRenderableMaterial(renderable.get(), &material);
 
       const float size[] = {scale.x, scale.y, 1.0f};
