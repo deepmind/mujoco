@@ -22,12 +22,12 @@ namespace mujoco {
 namespace usd {
 
 // Sets a user value on an mjsElement with the key "usd_primpath".
-MJAPI void SetUsdPrimPathUserValue(mjsElement* element,
+void SetUsdPrimPathUserValue(mjsElement* element,
                              const pxr::SdfPath& prim_path);
 
 // Gets the user value associated with the key "usd_primpath" from an
 // mjsElement. Returns empty pxr::SdfPath() if the value is not found.
-MJAPI pxr::SdfPath GetUsdPrimPathUserValue(mjsElement* element);
+pxr::SdfPath GetUsdPrimPathUserValue(mjsElement* element);
 
 }  // namespace usd
 }  // namespace mujoco

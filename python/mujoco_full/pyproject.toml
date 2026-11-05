@@ -59,6 +59,7 @@ sysid = [
     "typing_extensions",
 ]
 usd = [
-    "usd-core",
+    "mujoco-usd==4.0.0; python_version<='3.13'",
     "pillow",
+    "usd-core",
 ]

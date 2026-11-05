@@ -39,6 +39,7 @@
 #include <mujoco/experimental/usd/mjcPhysics/siteAPI.h>
 #include <mujoco/experimental/usd/mjcPhysics/tendon.h>
 #include <mujoco/experimental/usd/mjcPhysics/tokens.h>
+#include <mujoco/experimental/usd/utils.h>
 #include <mujoco/mujoco.h>
 #include "kinematic_tree.h"
 #include "material_parsing.h"
@@ -86,6 +87,7 @@
 #include <pxr/usd/usdShade/materialBindingAPI.h>
 
 using mujoco::NewtonTokens;
+using mujoco::usd::SetUsdPrimPathUserValue;
 using pxr::MjcPhysicsTokens;
 using pxr::TfToken;
 template <typename T>
@@ -97,8 +99,6 @@ struct UsdCaches {
   pxr::UsdShadeMaterialBindingAPI::CollectionQueryCache collection_query_cache;
   std::map<pxr::SdfPath, mjsMaterial*> parsed_materials;
 };
-
-constexpr const char* kUsdPrimPathKey = "usd_primpath";
 
 std::string GetStageModelName(const pxr::UsdStageRefPtr& stage) {
   pxr::UsdPrim default_prim = stage->GetDefaultPrim();
@@ -123,24 +123,6 @@ std::string GetStageModelName(const pxr::UsdStageRefPtr& stage) {
   }
 
   return "";
-}
-
-void SetUsdPrimPathUserValue(mjsElement* element,
-                             const pxr::SdfPath& prim_path) {
-  // The value is a pointer to a newly allocated SdfPath, which will be deleted
-  // when the mjsElement is deleted.
-  const pxr::SdfPath* usd_primpath = new pxr::SdfPath(prim_path);
-  mjs_setUserValueWithCleanup(
-      element, kUsdPrimPathKey, usd_primpath,
-      [](const void* data) { delete static_cast<const pxr::SdfPath*>(data); });
-}
-
-pxr::SdfPath GetUsdPrimPathUserValue(mjsElement* element) {
-  const void* user_data = mjs_getUserValue(element, kUsdPrimPathKey);
-  if (user_data) {
-    return *static_cast<const pxr::SdfPath*>(user_data);
-  }
-  return pxr::SdfPath();
 }
 
 void SetDoubleArrFromGfVec3d(double* to, const pxr::GfVec3d& from) {
@@ -2765,12 +2747,7 @@ mjsBody* ParseUsdPhysicsRigidbody(
     ParseNewtonArticulationRootAPI(spec, prim);
   }
 
-  // The value is a pointer to a newly allocated SdfPath, which will be deleted
-  // when the mjsElement is deleted.
-  const pxr::SdfPath* usd_primpath = new pxr::SdfPath(prim.GetPath());
-  mjs_setUserValueWithCleanup(
-      body->element, kUsdPrimPathKey, usd_primpath,
-      [](const void* data) { delete static_cast<const pxr::SdfPath*>(data); });
+  SetUsdPrimPathUserValue(body->element, prim.GetPath());
 
   if (prim.HasAPI<pxr::UsdPhysicsFilteredPairsAPI>()) {
     ParseUsdFilteredPairsAPI(spec, prim);

@@ -23,7 +23,6 @@
 #include <pxr/pxr.h>
 #include <pxr/usd/sdf/declareHandles.h>
 #include <pxr/usd/sdf/fileFormat.h>
-#include <pxr/usd/usd/api.h>
 
 PXR_NAMESPACE_OPEN_SCOPE
 
@@ -45,7 +44,6 @@ class UsdMjcfFileFormat : public SdfFileFormat {
   using SdfFileFormat::FileFormatArguments;
 
   // Returns true if 'file' can be read by this format plugin.
-  USD_API
   bool CanRead(const std::string &file) const override;
 
   // Reads scene description from the asset specified by resolved_path into
@@ -56,7 +54,6 @@ class UsdMjcfFileFormat : public SdfFileFormat {
   // ignore it.
   //
   // Returns true if the asset is successfully read into layer, false otherwise.
-  USD_API
   bool Read(pxr::SdfLayer *layer, const std::string &resolved_path,
             bool metadata_only) const override;
 
@@ -64,12 +61,10 @@ class UsdMjcfFileFormat : public SdfFileFormat {
   //
   // If the file is successfully read, this method returns true. Otherwise,
   // false is returned and errors are posted.
-  USD_API
   bool ReadFromString(SdfLayer *layer, const std::string &str) const override;
 
   // Writes the contents in 'layer' to 'str'. This just forwards to the usda
   // implementation.
-  USD_API
   bool WriteToString(const SdfLayer &layer, std::string *str,
                      const std::string &comment) const override;
 

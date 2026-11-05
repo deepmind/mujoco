@@ -317,16 +317,6 @@ if(MUJOCO_WITH_USD)
     DESTINATION ${CMAKE_INSTALL_LIBDIR}
   )
 
-  if(APPLE)
-    set_target_properties(mujoco PROPERTIES
-      BUILD_RPATH "${USD_INSTALL_ROOT}"
-      INSTALL_RPATH "@loader_path")
-  elseif(UNIX)
-    set_target_properties(mujoco PROPERTIES
-      BUILD_RPATH "${USD_INSTALL_ROOT}"
-      INSTALL_RPATH "$ORIGIN")
-  endif()
-
   add_subdirectory(src/experimental/usd)
   add_subdirectory(plugin/usd_decoder)
 endif()

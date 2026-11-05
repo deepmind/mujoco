@@ -302,9 +302,9 @@ install_mujoco() {
 copy_plugins_posix() {
     echo "Copying plugins..."
     mkdir -p ${TMPDIR}/mujoco_install/mujoco_plugin &&
-    cp lib/libactuator.* ${TMPDIR}/mujoco_install/mujoco_plugin &&
-    cp lib/libsensor.* ${TMPDIR}/mujoco_install/mujoco_plugin &&
-    cp lib/libsdf_plugin.* ${TMPDIR}/mujoco_install/mujoco_plugin
+    find lib -maxdepth 2 -name "libactuator.*" -exec cp {} ${TMPDIR}/mujoco_install/mujoco_plugin \; &&
+    find lib -maxdepth 2 -name "libsensor.*" -exec cp {} ${TMPDIR}/mujoco_install/mujoco_plugin \; &&
+    find lib -maxdepth 2 -name "libsdf_plugin.*" -exec cp {} ${TMPDIR}/mujoco_install/mujoco_plugin \;
 }
 
 
@@ -402,8 +402,9 @@ make_python_sdist() {
     source ${TMPDIR}/venv/bin/activate &&
     ./make_sdist.sh &&
     (cd studio && ./make_sdist.sh) &&
+    (cd usd && ./make_sdist.sh) &&
     (cd mujoco_full && ./make_sdist.sh) &&
-    mv studio/dist/mujoco_studio-*.tar.gz mujoco_full/dist/mujoco-*.tar.gz dist/
+    mv studio/dist/mujoco_studio-*.tar.gz usd/dist/mujoco_usd-*.tar.gz mujoco_full/dist/mujoco-*.tar.gz dist/
 }
 
 
@@ -447,6 +448,14 @@ build_python_bindings() {
           -f "${TMPDIR}/mujoco_install/bin/Release/mujoco_studio_platform.lib" ]]; then
         sdists+=(mujoco_studio-*.tar.gz mujoco-*.tar.gz)
     fi
+    if [[ -f "${TMPDIR}/mujoco_install/lib/libmujoco_usd.so" || \
+          -f "${TMPDIR}/mujoco_install/lib64/libmujoco_usd.so" || \
+          -f "${TMPDIR}/mujoco_install/lib/libmujoco_usd.dylib" || \
+          -f "${TMPDIR}/mujoco_install/lib/mujoco_usd.lib" || \
+          -f "${TMPDIR}/mujoco_install/bin/mujoco_usd.dll" || \
+          -f "${TMPDIR}/mujoco_install/bin/Release/mujoco_usd.dll" ]]; then
+        sdists+=(mujoco_usd-*.tar.gz)
+    fi
     MUJOCO_PATH="${TMPDIR}/mujoco_install" \
     MUJOCO_PLUGIN_PATH="${TMPDIR}/mujoco_install/mujoco_plugin" \
     MUJOCO_CMAKE_ARGS="-DCMAKE_INTERPROCEDURAL_OPTIMIZATION:BOOL=OFF -DFETCHCONTENT_BASE_DIR=${py_deps_dir}/_deps ${CCACHE_ARGS} ${CMAKE_ARGS} ${ext_deps_args[*]}" \
@@ -463,7 +472,10 @@ install_python_bindings() {
     if compgen -G "mujoco_studio-*.whl" > /dev/null; then
         pip install --no-deps --no-index mujoco_studio-*.whl mujoco-*.whl
     fi &&
-    pip check
+    pip check &&
+    if compgen -G "mujoco_usd-*.whl" > /dev/null; then
+        pip install --no-deps --no-index mujoco_usd-*.whl
+    fi
 }
 
 
@@ -670,7 +682,7 @@ build_mujoco_live() {
 _build_python_wheel() {
     local prefix="$1"
     # A clean python/dist keeps the wheel glob below unambiguous.
-    rm -rf python/dist python/studio/dist python/mujoco_full/dist
+    rm -rf python/dist python/studio/dist python/usd/dist python/mujoco_full/dist
     (cd python && ./make_sdist.sh)
     local sdists=(python/dist/mujoco_core-*.tar.gz)
     if _has_studio_platform "${prefix}"; then
@@ -678,6 +690,16 @@ _build_python_wheel() {
         (cd python/mujoco_full && ./make_sdist.sh)
         mv python/studio/dist/mujoco_studio-*.tar.gz python/mujoco_full/dist/mujoco-*.tar.gz python/dist/
         sdists+=(python/dist/mujoco_studio-*.tar.gz python/dist/mujoco-*.tar.gz)
+    fi
+    if [[ -f "${prefix}/lib/libmujoco_usd.so" || \
+          -f "${prefix}/lib64/libmujoco_usd.so" || \
+          -f "${prefix}/lib/libmujoco_usd.dylib" || \
+          -f "${prefix}/lib/mujoco_usd.lib" || \
+          -f "${prefix}/bin/mujoco_usd.dll" || \
+          -f "${prefix}/bin/Release/mujoco_usd.dll" ]]; then
+        (cd python/usd && ./make_sdist.sh)
+        mv python/usd/dist/mujoco_usd-*.tar.gz python/dist/
+        sdists+=(python/dist/mujoco_usd-*.tar.gz)
     fi
 
     # See build_python_bindings for why CCACHE_BASEDIR/SLOPPINESS are set.
@@ -721,6 +743,9 @@ _install_python_wheel() {
     pip install --force-reinstall --no-deps --no-index python/dist/mujoco_core-*.whl
     if compgen -G "python/dist/mujoco_studio-*.whl" > /dev/null; then
         pip install --force-reinstall --no-deps --no-index python/dist/mujoco_studio-*.whl python/dist/mujoco-*.whl
+    fi
+    if compgen -G "python/dist/mujoco_usd-*.whl" > /dev/null; then
+        pip install --force-reinstall --no-deps --no-index python/dist/mujoco_usd-*.whl
     fi
 }
 

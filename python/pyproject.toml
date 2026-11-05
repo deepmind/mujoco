@@ -42,6 +42,7 @@ include-package-data = false
 include = ["mujoco", "mujoco.*"]
 exclude = [
     "mujoco_full*",
+    "mujoco._usd*",
     "mujoco.cmake*",
     "mujoco.codegen",
     "mujoco.doc*",
@@ -50,6 +51,7 @@ exclude = [
     "mujoco.sample.studio*",
     "mujoco.simulate*",
     "mujoco.studio*",
+    "mujoco.usd.MjcPhysics*",
 ]
 
 [tool.setuptools.package-data]
@@ -88,8 +90,9 @@ sysid = [
     "typing_extensions",
 ]
 usd = [
+    "mujoco-usd==4.0.0; python_version<='3.13'",
+    "pillow",
     "usd-core",
-    "pillow"
 ]
 
 [tool.isort]

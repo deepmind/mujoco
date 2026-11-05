@@ -23,6 +23,7 @@ set(MJ_USD_INSTALL_DIR_LIB ${CMAKE_INSTALL_LIBDIR}/mujoco-usd-resources)
 
 # Common OpenUSD libraries
 set(OPENUSD_CORE_LIBS
+  ${PXR_LIBRARIES}
   usd ar kind tf gf vt usdShade usdLux usdGeom usdPhysics
 )
 
@@ -31,6 +32,30 @@ set(OPENUSD_CORE_LIBS
 set(DEFAULT_CXX_VISIBILITY_PROPS
   CXX_VISIBILITY_PRESET default
 )
+
+# Pure C++ USD targets do not embed a Python interpreter; disable inline
+# Boost.Python VtValue proxies so they do not emit direct references to
+# _Py_NoneStruct / _Py_Dealloc when OpenUSD is built with Python enabled.
+add_compile_options(-UPXR_PYTHON_SUPPORT_ENABLED)
+
+if(UNIX AND NOT APPLE)
+  # OpenUSD (and PyPI's manylinux2014 usd-core wheel) is built against
+  # libstdc++ with _GLIBCXX_USE_CXX11_ABI=0 on Linux, so strip any global
+  # -stdlib=libc++ / -lc++ flags inherited from the root MuJoCo build.
+  add_compile_definitions(_GLIBCXX_USE_CXX11_ABI=0)
+  string(REPLACE "-stdlib=libc++" "" CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS}")
+  foreach(
+    _flag
+    "-stdlib=libc++"
+    "-nostdlib++"
+    "-rtlib=compiler-rt"
+    "-Wl,-Bstatic"
+    "-lc++"
+    "-Wl,-Bdynamic"
+  )
+    string(REPLACE "${_flag}" "" CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS}")
+  endforeach()
+endif()
 
 # --- Helper Functions ---
 function(configure_and_install_usd_plugin_info plugin_name source_subpath install_base_dir)
@@ -54,6 +79,16 @@ function(configure_and_install_usd_plugin_info plugin_name source_subpath instal
     "${OUTPUT_FILE}"
     @ONLY
   )
+
+  if(WIN32 AND CMAKE_RUNTIME_OUTPUT_DIRECTORY)
+    set(RUNTIME_OUTPUT_DIR "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/mujoco-usd-resources/${plugin_name}")
+    file(MAKE_DIRECTORY "${RUNTIME_OUTPUT_DIR}")
+    configure_file(
+      "${CMAKE_CURRENT_SOURCE_DIR}/${source_subpath}/plugInfo.json"
+      "${RUNTIME_OUTPUT_DIR}/plugInfo.json"
+      @ONLY
+    )
+  endif()
 
   install(FILES "${OUTPUT_FILE}"
     DESTINATION "${install_base_dir}/${plugin_name}"
@@ -108,13 +143,10 @@ add_library(${MJCF_PLUGIN_TARGET_NAME} SHARED)
 target_sources(${MJCF_PLUGIN_TARGET_NAME} PRIVATE
   plugins/mjcf/mjcf_file_format.cc
   plugins/mjcf/mjcf_file_format.h
-  plugins/mjcf/mujoco_to_usd.cc
-  plugins/mjcf/mujoco_to_usd.h
-  plugins/mjcf/utils.cc
-  plugins/mjcf/utils.h
 )
 set_target_properties(${MJCF_PLUGIN_TARGET_NAME} PROPERTIES
   OUTPUT_NAME ${MJCF_PLUGIN_TARGET_NAME}
+  WINDOWS_EXPORT_ALL_SYMBOLS ON
   ${DEFAULT_CXX_VISIBILITY_PROPS}
 )
 target_include_directories(${MJCF_PLUGIN_TARGET_NAME} PRIVATE
@@ -143,59 +175,94 @@ target_sources(${MJC_PHYSICS_PLUGIN_TARGET_NAME} PRIVATE
 )
 set_target_properties(${MJC_PHYSICS_PLUGIN_TARGET_NAME} PROPERTIES
   OUTPUT_NAME ${MJC_PHYSICS_PLUGIN_TARGET_NAME}
+  WINDOWS_EXPORT_ALL_SYMBOLS ON
   ${DEFAULT_CXX_VISIBILITY_PROPS}
 )
+target_compile_definitions(${MJC_PHYSICS_PLUGIN_TARGET_NAME} PRIVATE MJCPHYSICS_EXPORTS)
 target_include_directories(${MJC_PHYSICS_PLUGIN_TARGET_NAME} PUBLIC
   $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../../../include>
 )
 
-## ----- mujoco USD utils -----
+## ----- mujoco_usd -----
 
-target_sources(mujoco PRIVATE
+add_library(mujoco_usd SHARED
   layer_sink.cc
   utils.cc
   writer.cc
+  plugins/mjcf/mujoco_to_usd.cc
+  plugins/mjcf/mujoco_to_usd.h
+  plugins/mjcf/utils.cc
+  plugins/mjcf/utils.h
+)
+set_target_properties(mujoco_usd PROPERTIES
+  OUTPUT_NAME mujoco_usd
+  WINDOWS_EXPORT_ALL_SYMBOLS ON
+  ${DEFAULT_CXX_VISIBILITY_PROPS}
+)
+target_include_directories(mujoco_usd PUBLIC
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../../../include>
+  $<BUILD_INTERFACE:${CMAKE_CURRENT_SOURCE_DIR}/../../..>
+)
+target_include_directories(mujoco_usd PRIVATE
+  "${CMAKE_CURRENT_SOURCE_DIR}/../.."
+  "${CMAKE_CURRENT_SOURCE_DIR}/plugins"
 )
 
 # pxr/usd/tf/hashset.h might include deprecated headers so disable this check
 # when compiling with USD enabled.
 target_compile_options(
-     mujoco
-     PRIVATE -Wno-deprecated
+  mujoco_usd
+  PRIVATE -Wno-deprecated
 )
 
 # Configure RPATH for macOS and UNIX.
 if(APPLE)
+  set(_MJ_USD_APPLE_RPATH
+    "@loader_path;@loader_path/..;@loader_path/../..;@loader_path/../../pxr;@loader_path/../../pxr/.dylibs;@loader_path/../Frameworks;@loader_path/../../Frameworks;${USD_INSTALL_ROOT}"
+  )
   set_target_properties(${MJCF_PLUGIN_TARGET_NAME} PROPERTIES
-    BUILD_RPATH "${USD_INSTALL_ROOT}"
-    INSTALL_RPATH "@loader_path")
+    BUILD_RPATH "${_MJ_USD_APPLE_RPATH}"
+    INSTALL_RPATH "@loader_path;@loader_path/..;@loader_path/../..;@loader_path/../../pxr;@loader_path/../../pxr/.dylibs;@loader_path/../Frameworks;@loader_path/../../Frameworks")
 
   set_target_properties(${MJC_PHYSICS_PLUGIN_TARGET_NAME} PROPERTIES
-    BUILD_RPATH "${USD_INSTALL_ROOT}"
-    INSTALL_RPATH "@loader_path")
+    BUILD_RPATH "${_MJ_USD_APPLE_RPATH}"
+    INSTALL_RPATH "@loader_path;@loader_path/..;@loader_path/../..;@loader_path/../../pxr;@loader_path/../../pxr/.dylibs;@loader_path/../Frameworks;@loader_path/../../Frameworks")
+
+  set_target_properties(mujoco_usd PROPERTIES
+    BUILD_RPATH "${_MJ_USD_APPLE_RPATH}"
+    INSTALL_RPATH "@loader_path;@loader_path/..;@loader_path/../..;@loader_path/../../pxr;@loader_path/../../pxr/.dylibs;@loader_path/../Frameworks;@loader_path/../../Frameworks")
 elseif(UNIX)
+  set(_MJ_USD_UNIX_RPATH
+    "$ORIGIN;$ORIGIN/..;$ORIGIN/../..;$ORIGIN/../../pxr;$ORIGIN/../../usd_core.libs;${USD_INSTALL_ROOT}"
+  )
   set_target_properties(${MJCF_PLUGIN_TARGET_NAME} PROPERTIES
-    BUILD_RPATH "${USD_INSTALL_ROOT}"
-    INSTALL_RPATH "$ORIGIN")
+    BUILD_RPATH "${_MJ_USD_UNIX_RPATH}"
+    INSTALL_RPATH "$ORIGIN;$ORIGIN/..;$ORIGIN/../..;$ORIGIN/../../pxr;$ORIGIN/../../usd_core.libs")
 
   set_target_properties(${MJC_PHYSICS_PLUGIN_TARGET_NAME} PROPERTIES
-    BUILD_RPATH "${USD_INSTALL_ROOT}"
-    INSTALL_RPATH "$ORIGIN")
+    BUILD_RPATH "${_MJ_USD_UNIX_RPATH}"
+    INSTALL_RPATH "$ORIGIN;$ORIGIN/..;$ORIGIN/../..;$ORIGIN/../../pxr;$ORIGIN/../../usd_core.libs")
+
+  set_target_properties(mujoco_usd PROPERTIES
+    BUILD_RPATH "${_MJ_USD_UNIX_RPATH}"
+    INSTALL_RPATH "$ORIGIN;$ORIGIN/..;$ORIGIN/../..;$ORIGIN/../../pxr;$ORIGIN/../../usd_core.libs")
 endif()
 
 target_link_libraries(${MJC_PHYSICS_PLUGIN_TARGET_NAME} PRIVATE
   ${OPENUSD_CORE_LIBS}
 )
 
-target_link_libraries(${MJCF_PLUGIN_TARGET_NAME} PRIVATE
+target_link_libraries(mujoco_usd PUBLIC
   ${OPENUSD_CORE_LIBS}
   mujoco
-  tinyxml2
   ${MJC_PHYSICS_PLUGIN_TARGET_NAME}
 )
 
-target_link_libraries(mujoco PUBLIC
+target_link_libraries(${MJCF_PLUGIN_TARGET_NAME} PRIVATE
   ${OPENUSD_CORE_LIBS}
+  mujoco
+  mujoco_usd
+  tinyxml2
   ${MJC_PHYSICS_PLUGIN_TARGET_NAME}
 )
 
@@ -227,6 +294,13 @@ function(install_newton_usd_plugin install_base_dir)
   configure_file("${NEWTON_USD_DIR}/plugInfo.json" "${NEWTON_BUILD_DIR}/plugInfo.json" COPYONLY)
   configure_file("${NEWTON_USD_DIR}/generatedSchema.usda" "${NEWTON_BUILD_DIR}/generatedSchema.usda" COPYONLY)
 
+  if(WIN32 AND CMAKE_RUNTIME_OUTPUT_DIRECTORY)
+    set(NEWTON_RUNTIME_DIR "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/mujoco-usd-resources/newton")
+    file(MAKE_DIRECTORY "${NEWTON_RUNTIME_DIR}")
+    configure_file("${NEWTON_USD_DIR}/plugInfo.json" "${NEWTON_RUNTIME_DIR}/plugInfo.json" COPYONLY)
+    configure_file("${NEWTON_USD_DIR}/generatedSchema.usda" "${NEWTON_RUNTIME_DIR}/generatedSchema.usda" COPYONLY)
+  endif()
+
   install(FILES "${NEWTON_BUILD_DIR}/plugInfo.json"
     DESTINATION "${install_base_dir}/newton"
   )
@@ -248,6 +322,18 @@ configure_and_install_usd_plugin_info(
   mjcPhysics
   ${MJ_USD_INSTALL_DIR_LIB}
 )
+configure_file(
+  "${CMAKE_CURRENT_SOURCE_DIR}/mjcPhysics/generatedSchema.usda"
+  "${CMAKE_BINARY_DIR}/${MJ_USD_INSTALL_DIR_LIB}/mjcPhysics/generatedSchema.usda"
+  COPYONLY
+)
+if(WIN32 AND CMAKE_RUNTIME_OUTPUT_DIRECTORY)
+  configure_file(
+    "${CMAKE_CURRENT_SOURCE_DIR}/mjcPhysics/generatedSchema.usda"
+    "${CMAKE_RUNTIME_OUTPUT_DIRECTORY}/mujoco-usd-resources/mjcPhysics/generatedSchema.usda"
+    COPYONLY
+  )
+endif()
 
 # Install specific resources that are not plugInfo.json (like generatedSchema.usda)
 install(FILES
@@ -261,8 +347,10 @@ install_newton_usd_plugin(
 
 # Install shared libraries
 install(TARGETS
+  mujoco_usd
   ${MJCF_PLUGIN_TARGET_NAME}
   ${MJC_PHYSICS_PLUGIN_TARGET_NAME}
-  EXPORT ${PROJECT_NAME}
+  RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR}
   LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}
+  ARCHIVE DESTINATION ${CMAKE_INSTALL_LIBDIR}
 )

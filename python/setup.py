@@ -206,6 +206,12 @@ class BuildCMakeExtension(build_ext.build_ext):
     for directory, _, filenames in os.walk(self._mujoco_plugins_path):
       for pattern in get_plugin_lib_patterns():
         for filename in fnmatch.filter(filenames, pattern):
+          if filename in (
+              'libusd_decoder_plugin.so',
+              'libusd_decoder_plugin.dylib',
+              'usd_decoder_plugin.dll',
+          ):
+            continue
           shutil.copyfile(
               os.path.join(directory, filename), os.path.join(dst, filename)
           )

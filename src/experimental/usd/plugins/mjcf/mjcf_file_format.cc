@@ -15,11 +15,18 @@
 #include "mjcf/mjcf_file_format.h"
 
 #include <array>
+#include <cstring>
 #include <memory>
 #include <stack>
 #include <string>
 #include <unordered_set>
 #include <vector>
+
+#ifdef _WIN32
+#define strcasecmp _stricmp
+#else
+#include <strings.h>
+#endif
 
 #include <mujoco/mujoco.h>
 #include "mjcf/mujoco_to_usd.h"

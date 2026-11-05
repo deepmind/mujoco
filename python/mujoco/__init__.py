@@ -295,22 +295,36 @@ _specs.MjSpec.to_zip = to_zip
 _structs.MjData.bind = _bind_data  # pyrefly: ignore[bad-assignment]
 _structs.MjModel.bind = _bind_model  # pyrefly: ignore[bad-assignment]
 
+__version__ = mj_versionString()  # pylint: disable=undefined-variable
+
 HEADERS_DIR = os.path.join(os.path.dirname(__file__), 'include/mujoco')
 PLUGINS_DIR = os.path.join(os.path.dirname(__file__), 'plugin')
 
 PLUGIN_HANDLES = []
 
 def _load_all_bundled_plugins():
-  for directory, _, filenames in os.walk(PLUGINS_DIR):
-    for filename in filenames:
-      if os.path.splitext(filename)[-1] in [".dll", ".dylib", ".so"]:
-        PLUGIN_HANDLES.append(ctypes.CDLL(os.path.join(directory, filename)))
-      elif filename == "__init__.py":
-        pass
-      else:
-        warnings.warn('Ignoring non-library in plugin directory: '
-                      f'{os.path.join(directory, filename)}', ImportWarning)
+  if os.path.isdir(PLUGINS_DIR):
+    for directory, _, filenames in os.walk(PLUGINS_DIR):
+      for filename in filenames:
+        if os.path.splitext(filename)[-1] in [".dll", ".dylib", ".so"]:
+          lib_path = os.path.join(directory, filename)
+          PLUGIN_HANDLES.append(ctypes.CDLL(lib_path))
+        elif filename == "__init__.py":
+          pass
+        else:
+          warnings.warn('Ignoring non-library in plugin directory: '
+                        f'{os.path.join(directory, filename)}', ImportWarning)
+  try:
+    import importlib.metadata as _metadata
+    for _ep in _metadata.entry_points(group='mujoco.plugins'):
+      try:
+        _ep.load()()
+      except Exception as _ep_err:  # pylint: disable=broad-exception-caught
+        warnings.warn(
+            f'Failed to load mujoco plugin entry point {_ep.name}: {_ep_err}',
+            RuntimeWarning,
+        )
+  except Exception:  # pylint: disable=broad-exception-caught
+    pass
 
 _load_all_bundled_plugins()
-
-__version__ = mj_versionString()  # pylint: disable=undefined-variable

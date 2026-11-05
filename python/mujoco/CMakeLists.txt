@@ -17,6 +17,7 @@ cmake_minimum_required(VERSION 3.15)
 
 option(MUJOCO_PYTHON_BUILD_CORE "Build core MuJoCo Python extensions." ON)
 option(MUJOCO_PYTHON_BUILD_STUDIO "Build Studio and Filament Python extensions." OFF)
+option(MUJOCO_PYTHON_BUILD_USD "Build OpenUSD Python extensions." OFF)
 
 # Support new IN_LIST if() operator.
 set(CMAKE_POLICY_DEFAULT_CMP0057 NEW)
@@ -392,6 +393,24 @@ macro(mujoco_pybind11_module name)
 endmacro()
 
 if(MUJOCO_PYTHON_BUILD_CORE)
+  add_library(structs_wrappers STATIC
+    structs_wrappers.cc
+    serialization.h
+    indexers.cc
+  )
+  target_include_directories(structs_wrappers PRIVATE ${Python3_INCLUDE_DIRS})
+  target_link_libraries(
+    structs_wrappers
+    PRIVATE absl::flat_hash_map
+            absl::span
+            crossplatform
+            mujoco
+            raw
+            structs_header
+            pybind11::headers
+            Eigen3::Eigen
+  )
+
   set(SIMULATE_BUILD_EXECUTABLE OFF)
   set(SIMULATE_GLFW_DYNAMIC_SYMBOLS ON)
   add_subdirectory(simulate)
@@ -453,24 +472,6 @@ if(MUJOCO_PYTHON_BUILD_CORE)
               func_wrap
               mujoco
               mujoco_private_api_header
-  )
-
-  add_library(structs_wrappers STATIC
-    structs_wrappers.cc
-    serialization.h
-    indexers.cc
-  )
-  target_include_directories(structs_wrappers PRIVATE ${Python3_INCLUDE_DIRS})
-  target_link_libraries(
-    structs_wrappers
-    PRIVATE absl::flat_hash_map
-            absl::span
-            crossplatform
-            mujoco
-            raw
-            structs_header
-            pybind11::headers
-            Eigen3::Eigen
   )
 
   add_library(functions_header INTERFACE)
@@ -654,6 +655,10 @@ if(MUJOCO_PYTHON_BUILD_STUDIO)
   add_subdirectory(studio)
 endif()
 
+if(MUJOCO_PYTHON_BUILD_USD)
+  add_subdirectory(usd)
+endif()
+
 set(MUJOCO_CORE_WHEEL_TARGETS)
 if(MUJOCO_PYTHON_BUILD_CORE)
   list(APPEND MUJOCO_CORE_WHEEL_TARGETS
@@ -673,7 +678,6 @@ endif()
 if(TARGET _render_filament)
   list(APPEND MUJOCO_CORE_WHEEL_TARGETS _render_filament)
 endif()
-
 set(LIBRARIES_FOR_WHEEL)
 if(MUJOCO_PYTHON_BUILD_CORE)
   list(APPEND LIBRARIES_FOR_WHEEL "$<TARGET_FILE:mujoco>")

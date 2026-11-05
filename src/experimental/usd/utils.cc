@@ -45,6 +45,9 @@ void SetUsdPrimPathUserValue(mjsElement* element,
 }
 
 pxr::SdfPath GetUsdPrimPathUserValue(mjsElement* element) {
+  if (!element) {
+    return pxr::SdfPath();
+  }
   const void* user_data = mjs_getUserValue(element, kUsdPrimPathKey);
   if (user_data) {
     return *static_cast<const pxr::SdfPath*>(user_data);
@@ -92,13 +95,16 @@ bool RegisterMujocoUsdPlugins() {
 
   if (!plugin_path.empty()) {
 #if defined(_WIN32) || defined(__CYGWIN__)
-    std::string full_path =
-        plugin_path + "\\" + "mujoco-usd-resources" + "\\**\\plugInfo.json";
+    pxr::PlugRegistry::GetInstance().RegisterPlugins(
+        plugin_path + "\\mujoco-usd-resources\\**\\plugInfo.json");
+    pxr::PlugRegistry::GetInstance().RegisterPlugins(
+        plugin_path + "\\..\\lib\\mujoco-usd-resources\\**\\plugInfo.json");
 #else
-    std::string full_path =
-        plugin_path + "/" + "mujoco-usd-resources" + "/**/plugInfo.json";
+    pxr::PlugRegistry::GetInstance().RegisterPlugins(
+        plugin_path + "/mujoco-usd-resources/**/plugInfo.json");
+    pxr::PlugRegistry::GetInstance().RegisterPlugins(
+        plugin_path + "/../lib/mujoco-usd-resources/**/plugInfo.json");
 #endif
-    pxr::PlugRegistry::GetInstance().RegisterPlugins(full_path);
   }
   return true;
 }
