@@ -513,6 +513,16 @@ limitations under the License.
       fitCanvas();
       window.addEventListener("resize", fitCanvas);
 
+      // Release the WebGL context on pagehide so Chrome's GPU process
+      // immediately frees VRAM across page reloads instead of retaining
+      // detached contexts until V8 garbage-collects the old document.
+      window.addEventListener("pagehide", () => {
+        const gl =
+          Module.canvas.getContext("webgl2") ||
+          Module.canvas.getContext("webgl");
+        gl?.getExtension("WEBGL_lose_context")?.loseContext();
+      });
+
       // Drag & drop: upload dropped model files to the viewer over the
       // /drop WebSocket. Each file is one binary frame ([u32 path length]
       // [relative path utf-8][file bytes], little-endian), an empty frame
