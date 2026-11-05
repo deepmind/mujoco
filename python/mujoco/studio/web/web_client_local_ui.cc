@@ -225,6 +225,8 @@ void RoleWindow::DrawBar(const SessionView& view, SessionActions& actions,
     }
     DotSeparator();
     DrawDataRate(view);
+    DotSeparator();
+    DrawFpsCapToken(view, actions);
 
     // The right-aligned cluster of buttons: placed with last frame's width,
     // measured again as it draws. Never starts left of the chip's tokens.
@@ -356,6 +358,36 @@ void RoleWindow::DrawCapacityToken(const SessionView& view,
   ImGui::SameLine(0.0f, 4.0f);
   ImGui::AlignTextToFramePadding();
   ImGui::TextColored(color, "spectators");
+}
+
+void RoleWindow::DrawFpsCapToken(const SessionView& view,
+                                 SessionActions& actions) {
+  static constexpr const char* kLabels[] = {"30 FPS", "60 FPS", "120 FPS",
+                                            "Uncapped"};
+  static constexpr int kValues[] = {30, 60, 120, 0};
+  constexpr int kNumOptions = 4;
+  float widest = 0.0f;
+  for (const char* label : kLabels) {
+    widest = std::max(widest, ImGui::CalcTextSize(label).x);
+  }
+  ImGui::SetNextItemWidth(widest + 2.0f * ImGui::GetStyle().FramePadding.x);
+  int current = 1;  // Default: 60 FPS
+  for (int i = 0; i < kNumOptions; ++i) {
+    if (view.fps_cap == kValues[i]) {
+      current = i;
+      break;
+    }
+  }
+  if (ImGui::BeginCombo("##fps_cap", kLabels[current],
+                        ImGuiComboFlags_NoArrowButton)) {
+    for (int i = 0; i < kNumOptions; ++i) {
+      if (ImGui::Selectable(kLabels[i], i == current)) {
+        actions.SetFpsCap(kValues[i]);
+      }
+    }
+    ImGui::EndCombo();
+  }
+  ImGui::SetItemTooltip("Client framerate cap");
 }
 
 void RoleWindow::DrawActions(const SessionView& view, SessionActions& actions,

@@ -94,9 +94,11 @@ _THEME_PREFIX = "theme="
 # Sent to the page whose control claim the controller slot is reserved for.
 _GRANT_MESSAGE = "grant"
 # Sent by the browser after applying each state payload (keep in sync:
-# web_client_session.cc). Flow control for the /state stream: at most one
-# payload is in flight per client, so a slow link carries the freshest state
-# it can instead of buffering seconds of stale payloads in the socket.
+# web_client_session.cc). Flow control for the /state stream: at most
+# _STATE_MAX_IN_FLIGHT payloads are in flight per client, so a slow link
+# carries the freshest state it can instead of buffering seconds of stale
+# payloads in the socket, while links with non-zero round-trip latency
+# (~20-50ms over reverse proxies) keep streaming smoothly at 60Hz.
 _STATE_ACK_MESSAGE = "state_ack"
 # Sent to every browser when it joins and whenever its list of cached model
 # bundles changes: "prefetch=<crc32>:<bytes>,<crc32>:<bytes>,..." in the order
@@ -106,6 +108,12 @@ _STATE_ACK_MESSAGE = "state_ack"
 _PREFETCH_PREFIX = "prefetch="
 
 _THEMES = ("light", "dark", "classic")
+
+# Maximum unacknowledged /state payloads in flight per client before
+# send_payloads() waits for an ack and coalesces intermediate updates.
+# An 8-frame window keeps 60-240 FPS streaming across proxy RTTs without
+# letting slow connections build up multi-second queues.
+_STATE_MAX_IN_FLIGHT = 8
 
 # A lost ack must not stall the stream forever; after this long the next
 # payload is sent unacked.
@@ -895,12 +903,12 @@ def _run_server(
           return None
         return gen, data
 
-      # See _STATE_ACK_MESSAGE: one payload in flight at a time, so the latest
-      # wins read below always ships the freshest state a slow link can carry
-      # (the camera rides this stream, so socket buffering shows up directly as
-      # input latency).
+      # See _STATE_ACK_MESSAGE: at most _STATE_MAX_IN_FLIGHT payloads in flight
+      # at a time, so the latest-wins read below ships the freshest state a slow
+      # link can carry without stalling 60Hz ticks over ~20-50ms proxy RTTs.
       payload_acked = asyncio.Event()
       payload_acked.set()
+      in_flight = 0
       # Set initially so a browser that connects between payloads gets the
       # current one right away.
       state_ready = asyncio.Event()
@@ -908,6 +916,7 @@ def _run_server(
       state_waiters.add(state_ready)
 
       async def send_payloads() -> None:
+        nonlocal in_flight
         last_gen = 0
         # The bundles this browser may prefetch: sent on join and again
         # whenever its list changes (add_model wakes the stream like a payload
@@ -923,7 +932,8 @@ def _run_server(
                 payload_acked.wait(), timeout=_STATE_ACK_TIMEOUT_SEC
             )
           except asyncio.TimeoutError:
-            pass  # Lost ack; send anyway rather than stalling forever.
+            in_flight = 0
+            payload_acked.set()  # Lost ack; send anyway rather than stalling forever.
           # Cleared before the read: an update racing with it sets the event
           # again and is picked up on the next pass instead of being lost.
           state_ready.clear()
@@ -938,10 +948,13 @@ def _run_server(
           if result is None or result[0] == last_gen:
             continue
           last_gen, data = result
-          payload_acked.clear()
+          in_flight += 1
+          if in_flight >= _STATE_MAX_IN_FLIGHT:
+            payload_acked.clear()
           await ws.send(data)
 
       async def recv_messages() -> None:
+        nonlocal in_flight
         async for message in ws:
           if isinstance(message, str):
             if message == _STATE_ACK_MESSAGE:
@@ -949,7 +962,9 @@ def _run_server(
               # hidden tabs (WebSocket events are not requestAnimationFrame
               # gated), and the inactivity policy must still see those tabs as
               # silent.
-              payload_acked.set()
+              in_flight = max(0, in_flight - 1)
+              if in_flight < _STATE_MAX_IN_FLIGHT:
+                payload_acked.set()
               continue
             await handle_session_message(sid, message)
 

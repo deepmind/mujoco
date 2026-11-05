@@ -325,6 +325,8 @@ void Session::ReleaseControl() {
 
 void Session::SetCameraMode(int mode) { callbacks_.SetCameraMode(mode); }
 
+void Session::SetFpsCap(int fps_cap) { callbacks_.SetFpsCap(fps_cap); }
+
 void Session::SetMaxSpectators(int count) {
   char msg[48];
   snprintf(msg, sizeof(msg), "%s%d", kMsgMaxSpectatorsPrefix, count);

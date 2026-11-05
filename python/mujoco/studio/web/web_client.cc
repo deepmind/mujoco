@@ -120,6 +120,7 @@ class AppCallbacks final : public RemoteUi::Callbacks,
   void ConnectRemoteUi() override;
   void ShutdownRemoteUi() override;
   void SetCameraMode(int mode) override;
+  void SetFpsCap(int fps_cap) override;
 };
 
 struct App {
@@ -155,10 +156,14 @@ struct App {
   int frame_count = 0;
   int last_state_retry_frame = 0;
 
-  // Backend state received from the Python simulation via WebSocket.
-  std::vector<mjtNum> backend_state;
-  int backend_state_sig = 0;
-  bool backend_state_dirty = false;
+  // Client framerate cap in Hz (0 for Uncapped; defaults to 60).
+  int fps_cap = 60;
+  double next_frame_time_ms = 0.0;
+
+  // FIFO jitter buffer for state payloads received from the Python simulation
+  // via WebSocket, plus a reusable scratch entry for popping on each frame.
+  mujoco::studio::StateQueue state_queue;
+  mujoco::studio::StateQueue::Entry scratch_state;
 
   // User-injected geoms received with the state payload.
   std::vector<mjvGeom> extra_geoms;
@@ -221,65 +226,24 @@ bool IsFilamentReady() {
   return g_app.renderer && g_app.model_holder && g_app.model_holder->ok();
 }
 
-// Applies a parsed state payload to the app. Called via AppCallbacks::OnPayload
-// after Session validates model CRC and payload readiness.
+// Enqueues a parsed state payload to be applied on the next rendered frame.
+// Called via AppCallbacks::OnPayload after Session validates model CRC and
+// payload readiness.
 void ApplyStatePayload(const StatePayloadView& view) {
   // Physics state. While a new model is downloading, buffer it unconditionally
   // (the current model's state size is the old model's); MainLoopImpl checks
   // the size against the model actually in use right before mj_setState.
-  if (view.physics != nullptr) {
-    bool accept = true;
-    if (!g_app.download_status.is_downloading) {
-      mjModel* model = g_app.model_holder->model();
-      const size_t expected_bytes =
-          mj_stateSize(model, view.physics_spec) * sizeof(mjtNum);
-      accept = view.physics_bytes == expected_bytes;
-      if (!accept) {
-        LOG(Warning, "Physics state size mismatch (%zu != %zu); dropping",
-            view.physics_bytes, expected_bytes);
-      }
-    }
-    if (accept) {
-      g_app.backend_state.resize(view.physics_bytes / sizeof(mjtNum));
-      memcpy(g_app.backend_state.data(), view.physics, view.physics_bytes);
-      g_app.backend_state_sig = view.physics_spec;
-      g_app.backend_state_dirty = true;
+  if (view.physics != nullptr && !g_app.download_status.is_downloading) {
+    mjModel* model = g_app.model_holder->model();
+    const size_t expected_bytes =
+        mj_stateSize(model, view.physics_spec) * sizeof(mjtNum);
+    if (view.physics_bytes != expected_bytes) {
+      LOG(Warning, "Physics state size mismatch (%zu != %zu); dropping",
+          view.physics_bytes, expected_bytes);
+      return;
     }
   }
-
-  // Render state. The headless viewer owns the camera and perturbation state
-  // (all input is forwarded to it and handled by the same code as the native
-  // viewer); the browser just renders them.
-  if (view.render_state != nullptr) {
-    mujoco::studio::RenderStateView rs;
-    mujoco::studio::ParseRenderState(view.render_state, &rs);
-
-    // Spectators in a free camera mode keep their own local camera; everyone
-    // else (the controller, and spectators in Follow Controller) mirrors the
-    // controller's camera.
-    if (g_app.session.Role() != SessionRole::kSpectating ||
-        g_app.spectator_cam_mode == kSpecCamFollow) {
-      g_app.camera = rs.camera;
-    }
-
-    g_app.perturb = rs.perturb;
-    g_app.vis_options = rs.vis_options;
-    if (!g_app.download_status.is_downloading) {
-      mjModel* model = g_app.model_holder->model();
-      model->opt = rs.opt;
-      model->vis = rs.vis;
-      model->stat = rs.stat;
-    }
-
-    memcpy(g_app.render_flags, rs.render_flags, mjNRNDFLAG);
-  }
-
-  // Extra geoms. memcpy since the payload data is not guaranteed to be aligned.
-  g_app.extra_geoms.resize(view.extra_geom_count);
-  if (view.extra_geom_count > 0) {
-    memcpy(g_app.extra_geoms.data(), view.extra_geoms,
-           view.extra_geom_count * sizeof(mjvGeom));
-  }
+  g_app.state_queue.Push(view);
 }
 
 void SetSpectatorCameraMode(int mode) {
@@ -479,6 +443,7 @@ void AppCallbacks::OnModelChanged(uint32_t model_crc32) {
   // and fetches it by crc32 otherwise. The crc32 crosses as a signed int; the
   // page restores the unsigned value.
   g_app.download_status.is_downloading = true;
+  g_app.state_queue.Clear();
   EM_ASM({ reloadModel($0); }, model_crc32);
 }
 
@@ -487,6 +452,15 @@ void AppCallbacks::ConnectRemoteUi() { g_app.remote_ui.Connect(WsUrl("/ui")); }
 void AppCallbacks::ShutdownRemoteUi() { g_app.remote_ui.Shutdown(); }
 
 void AppCallbacks::SetCameraMode(int mode) { SetSpectatorCameraMode(mode); }
+
+void AppCallbacks::SetFpsCap(int fps_cap) {
+  fps_cap = std::max(0, fps_cap);
+  g_app.fps_cap = fps_cap;
+  g_app.next_frame_time_ms = 0.0;
+  const std::string script = "try { localStorage.setItem('mjwv_fps_cap', '" +
+                             std::to_string(fps_cap) + "'); } catch (e) {}";
+  emscripten_run_script(script.c_str());
+}
 
 void BuildBrowserGui() {
   // Refresh the byte-rate telemetry the role bar shows.
@@ -512,6 +486,7 @@ void BuildBrowserGui() {
   view.have_remote_frame = g_app.remote_ui.RemoteDrawData() != nullptr;
   view.seconds_since_last_payload = stale_sec;
   view.camera_mode = g_app.spectator_cam_mode;
+  view.fps_cap = g_app.fps_cap;
   view.is_downloading = g_app.download_status.is_downloading;
   view.bytes_downloaded = g_app.download_status.bytes_downloaded;
   view.total_bytes = g_app.download_status.total_bytes;
@@ -645,6 +620,23 @@ void MainLoop() {
 }
 
 void MainLoopImpl() {
+  if (g_app.fps_cap > 0) {
+    const double now_ms = emscripten_get_now();
+    const double period_ms = 1000.0 / static_cast<double>(g_app.fps_cap);
+    // Allow 2ms of VSync timestamp jitter so a 60 FPS cap on a 60Hz display
+    // never skips a VSync, while cleanly throttling on 120Hz+ displays.
+    if (g_app.next_frame_time_ms > 0.0 &&
+        now_ms + 2.0 < g_app.next_frame_time_ms) {
+      return;
+    }
+    if (g_app.next_frame_time_ms <= 0.0 ||
+        now_ms - g_app.next_frame_time_ms > period_ms) {
+      g_app.next_frame_time_ms = now_ms + period_ms;
+    } else {
+      g_app.next_frame_time_ms += period_ms;
+    }
+  }
+
   g_app.frame_count++;
 
   // Session upkeep (the liveness heartbeat).
@@ -726,18 +718,40 @@ void MainLoopImpl() {
   // ImGui::Begin("labels", ...).
   bool can_submit = false;
   if (g_app.renderer && g_app.model_holder && g_app.model_holder->ok()) {
-    // Apply backend state if available.
-    if (g_app.backend_state_dirty && !g_app.download_status.is_downloading) {
+    // Pop one queued state payload per rendered frame so network micro-bursts
+    // play out smoothly across consecutive VSync intervals with physics state,
+    // camera, perturbation, options, and extra geoms kept in sync.
+    if (!g_app.download_status.is_downloading &&
+        g_app.state_queue.Pop(&g_app.scratch_state)) {
       mjModel* model = g_app.model_holder->model();
       mjData* data = g_app.model_holder->data();
-      const size_t expected_size =
-          static_cast<size_t>(mj_stateSize(model, g_app.backend_state_sig));
-      if (g_app.backend_state.size() == expected_size) {
-        mj_setState(model, data, g_app.backend_state.data(),
-                    g_app.backend_state_sig);
-        mj_forward(model, data);
+      if (g_app.scratch_state.has_render_state) {
+        const mujoco::studio::RenderStateView& rs =
+            g_app.scratch_state.render_state;
+        // Spectators in a free camera mode keep their own local camera;
+        // everyone else (the controller, and spectators in Follow Controller)
+        // mirrors the controller's camera.
+        if (g_app.session.Role() != SessionRole::kSpectating ||
+            g_app.spectator_cam_mode == kSpecCamFollow) {
+          g_app.camera = rs.camera;
+        }
+        g_app.perturb = rs.perturb;
+        g_app.vis_options = rs.vis_options;
+        model->opt = rs.opt;
+        model->vis = rs.vis;
+        model->stat = rs.stat;
+        memcpy(g_app.render_flags, rs.render_flags, mjNRNDFLAG);
       }
-      g_app.backend_state_dirty = false;
+      if (!g_app.scratch_state.state.empty()) {
+        const size_t expected_size =
+            static_cast<size_t>(mj_stateSize(model, g_app.scratch_state.sig));
+        if (g_app.scratch_state.state.size() == expected_size) {
+          mj_setState(model, data, g_app.scratch_state.state.data(),
+                      g_app.scratch_state.sig);
+          mj_forward(model, data);
+        }
+      }
+      g_app.extra_geoms.swap(g_app.scratch_state.extra_geoms);
     }
 
     const int width = FramebufferWidth();
@@ -1159,6 +1173,19 @@ void StartApp() {
 
   NetImgui::Internal::Network::Startup();
   SDL_StartTextInput();
+
+  const char* saved_fps_str = emscripten_run_script_string(
+      "(function() { try { return localStorage.getItem('mjwv_fps_cap') || ''; "
+      "} catch (e) { return ''; } })()");
+  int saved_fps_cap = 60;
+  if (saved_fps_str != nullptr && saved_fps_str[0] != '\0') {
+    char* end = nullptr;
+    const long parsed = std::strtol(saved_fps_str, &end, 10);
+    if (end != saved_fps_str && *end == '\0' && parsed >= 0) {
+      saved_fps_cap = static_cast<int>(parsed);
+    }
+  }
+  g_app.callbacks.SetFpsCap(saved_fps_cap);
 
   // The UI stream is a path on the page's own host and port.
   g_app.remote_ui.Connect(WsUrl("/ui"));

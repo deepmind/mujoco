@@ -62,6 +62,7 @@ struct SessionView {
   // negative before the first payload.
   double seconds_since_last_payload = -1.0;
   int camera_mode = 0;  // [SpectatorCamMode].
+  int fps_cap = 60;     // 30, 60, 120, or 0 (Uncapped).
   bool is_downloading = true;
   size_t bytes_downloaded = 0;
   size_t total_bytes = 0;
@@ -79,6 +80,7 @@ class SessionActions {
   virtual void ReleaseControl() = 0;
   virtual void SetCameraMode(int mode) = 0;      // mode is [SpectatorCamMode].
   virtual void SetMaxSpectators(int count) = 0;  // Already clamped by the UI.
+  virtual void SetFpsCap(int fps_cap) = 0;  // 30, 60, 120, or 0 (Uncapped).
 };
 
 // The roster: the server's membership broadcast, sent as a text frame on
@@ -125,6 +127,8 @@ class Session : public SessionActions {
     virtual void ShutdownRemoteUi() = 0;
     // Spectator camera mode change.
     virtual void SetCameraMode(int mode) = 0;
+    // Client framerate cap change (30, 60, 120, or 0 for Uncapped).
+    virtual void SetFpsCap(int fps_cap) {}
   };
 
   explicit Session(Callbacks& callbacks) : callbacks_(callbacks) {}
@@ -192,6 +196,7 @@ class Session : public SessionActions {
   void ReleaseControl() override;
   void SetCameraMode(int mode) override;
   void SetMaxSpectators(int count) override;
+  void SetFpsCap(int fps_cap) override;
 
   // Remembers this page's theme name ("light", "dark" or "classic") and sends
   // it to the server, which applies it to the remote UI if this page controls.

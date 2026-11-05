@@ -126,6 +126,8 @@ class RemoteUi {
   void ProcessCmdClipboard(NetImgui::Internal::CmdClipboard* cmd);
 
  private:
+  void RebuildDrawData();
+
   Callbacks& callbacks_;
 
   float screen_area_[2] = {0.0f, 0.0f};

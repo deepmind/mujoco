@@ -87,6 +87,13 @@ class SnapshotChannel(Protocol):
     """Returns the latest pending snapshots of each type."""
     ...
 
+  def reclaim_unconsumed(
+      self, snapshot_type: type[Snapshot]
+  ) -> Snapshot | None:
+    """Pops and returns an unconsumed pending snapshot of ``snapshot_type``."""
+    del snapshot_type
+    return None
+
   def close(self) -> None:
     """Releases resources held by the channel."""
     ...

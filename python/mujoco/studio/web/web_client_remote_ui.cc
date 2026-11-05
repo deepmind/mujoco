@@ -310,6 +310,7 @@ void RemoteUi::UpdateTextures() {
   // Upload only textures with no GPU handle yet; the rest survive a model swap
   // along with the Filament context. In particular, do not reset the ImGui font
   // atlas here: that trips an assert in ImFontAtlasUpdateNewFrame.
+  bool uploaded_any = false;
   for (auto& [tex_id, entry] : texture_cpu_) {
     uintptr_t& local_tex = texture_map_[tex_id];
     if (local_tex == 0 && !entry.pixels.empty()) {
@@ -319,7 +320,13 @@ void RemoteUi::UpdateTextures() {
       LOG(Info, "UpdateTextures: uploaded tex_id=%lu -> filament=%lu",
           static_cast<unsigned long>(tex_id),
           static_cast<unsigned long>(local_tex));
+      if (local_tex != 0) {
+        uploaded_any = true;
+      }
     }
+  }
+  if (uploaded_any && last_uncompressed_frame_ != nullptr) {
+    RebuildDrawData();
   }
 }
 
@@ -441,12 +448,16 @@ void RemoteUi::ProcessCmdTexture(CmdTexture* cmd_texture) {
   // If it isn't yet (model still loading), the texture stays in texture_cpu_
   // and will be flushed by UpdateTextures() later.
   if (callbacks_.GpuReady()) {
+    const bool was_unmapped = (local_tex == 0);
     local_tex = callbacks_.UploadTexture(
         local_tex, reinterpret_cast<const std::byte*>(entry.pixels.data()),
         entry.width, entry.height);
     VLOG(1, "uploadGuiImage for client_tex_id=%lu -> filament=%lu",
          static_cast<unsigned long>(tex_id),
          static_cast<unsigned long>(local_tex));
+    if (was_unmapped && local_tex != 0 && last_uncompressed_frame_ != nullptr) {
+      RebuildDrawData();
+    }
   } else {
     VLOG(1, "ProcessCmdTexture: buffered tex_id=%lu, deferring GPU upload",
          static_cast<unsigned long>(tex_id));
@@ -491,6 +502,12 @@ void RemoteUi::ProcessCmdDrawFrame(CmdDrawFrame* cmd_draw_frame) {
   // Release previous cached frame and store current for the next delta
   // decompression.
   last_uncompressed_frame_.reset(cmd_draw_frame);
+  RebuildDrawData();
+}
+
+void RemoteUi::RebuildDrawData() {
+  CmdDrawFrame* cmd_draw_frame = last_uncompressed_frame_.get();
+  if (!cmd_draw_frame) return;
 
   if (!remote_draw_data_.Valid) {
     LOG(Info, "First remote draw frame applied (%u windows, %u draws, %u vtx)",
@@ -536,10 +553,12 @@ void RemoteUi::ProcessCmdDrawFrame(CmdDrawFrame* cmd_draw_frame) {
 
     cmd_list->IdxBuffer.resize(draw_group.mIndiceCount);
     cmd_list->VtxBuffer.resize(draw_group.mVerticeCount);
-    // Start from zeroed commands (ImVector::resize() doesn't construct), so
-    // the draws skipped below stay empty.
+    // Omit skipped draws from CmdBuffer rather than leaving zeroed ImDrawCmd
+    // entries (Filament's Renderable::SetMesh treats elem_count == 0 as "draw
+    // the entire remainder of the index buffer" and binds ObjectManager::kDecor
+    // when color_texture is nullptr).
     cmd_list->CmdBuffer.resize(0);
-    cmd_list->CmdBuffer.resize(draw_group.mDrawCount, ImDrawCmd());
+    cmd_list->CmdBuffer.reserve(draw_group.mDrawCount);
     cmd_list->Flags =
         ImDrawListFlags_AllowVtxOffset | ImDrawListFlags_AntiAliasedLines |
         ImDrawListFlags_AntiAliasedFill |
@@ -590,15 +609,24 @@ void RemoteUi::ProcessCmdDrawFrame(CmdDrawFrame* cmd_draw_frame) {
 
     // Draw commands.
     const ImguiDraw* draw_src = draw_group.mpDraws.Get();
-    ImDrawCmd* command_dst = cmd_list->CmdBuffer.Data;
     for (uint32_t draw_idx(0); draw_idx < draw_group.mDrawCount; ++draw_idx) {
       uint32_t idx_off = draw_src[draw_idx].mIdxOffset;
       uint32_t elem_count = draw_src[draw_idx].mIdxCount;
 
-      // The draw range comes off the wire: skip (leave empty) draws that
-      // would index past the buffer.
-      if (static_cast<uint64_t>(idx_off) + elem_count >
-          static_cast<uint64_t>(cmd_list->IdxBuffer.Size)) {
+      // The draw range comes off the wire: skip draws that are empty or would
+      // index past the buffer.
+      if (elem_count == 0 ||
+          static_cast<uint64_t>(idx_off) + elem_count >
+              static_cast<uint64_t>(cmd_list->IdxBuffer.Size)) {
+        continue;
+      }
+
+      // Map remote ClientTextureID -> local GL handle.
+      ClientTextureID client_tex_id = draw_src[draw_idx].mClientTexId;
+      auto it = texture_map_.find(client_tex_id);
+      if (it == texture_map_.end() || it->second == 0) {
+        LogUnmappedTexture(client_tex_id, texture_map_.size(), draw_idx,
+                           texture_map_);
         continue;
       }
 
@@ -611,29 +639,19 @@ void RemoteUi::ProcessCmdDrawFrame(CmdDrawFrame* cmd_draw_frame) {
       float cw = std::max(
           cy, std::min(screen_area_[1], draw_src[draw_idx].mClipRect[3]));
 
-      command_dst[draw_idx].ClipRect.x = cx;
-      command_dst[draw_idx].ClipRect.y = cy;
-      command_dst[draw_idx].ClipRect.z = cz;
-      command_dst[draw_idx].ClipRect.w = cw;
-      command_dst[draw_idx].VtxOffset = 0;
-      command_dst[draw_idx].IdxOffset = idx_off;
-      command_dst[draw_idx].ElemCount = elem_count;
-      command_dst[draw_idx].UserCallback = nullptr;
-      command_dst[draw_idx].UserCallbackData = nullptr;
-
-      // Map remote ClientTextureID -> local GL handle.
-      ClientTextureID client_tex_id = draw_src[draw_idx].mClientTexId;
-      auto it = texture_map_.find(client_tex_id);
-      if (it != texture_map_.end() && it->second != 0) {
-        command_dst[draw_idx].TexRef._TexData = nullptr;
-        command_dst[draw_idx].TexRef._TexID =
-            static_cast<ImTextureID>(it->second);
-      } else {
-        LogUnmappedTexture(client_tex_id, texture_map_.size(), draw_idx,
-                           texture_map_);
-        // Skip draw commands with unmapped textures.
-        command_dst[draw_idx].ElemCount = 0;
-      }
+      ImDrawCmd cmd;
+      cmd.ClipRect.x = cx;
+      cmd.ClipRect.y = cy;
+      cmd.ClipRect.z = cz;
+      cmd.ClipRect.w = cw;
+      cmd.VtxOffset = 0;
+      cmd.IdxOffset = idx_off;
+      cmd.ElemCount = elem_count;
+      cmd.UserCallback = nullptr;
+      cmd.UserCallbackData = nullptr;
+      cmd.TexRef._TexData = nullptr;
+      cmd.TexRef._TexID = static_cast<ImTextureID>(it->second);
+      cmd_list->CmdBuffer.push_back(cmd);
     }
 
     // ImGui's AddDrawList() asserts that these point at the end of the buffers,

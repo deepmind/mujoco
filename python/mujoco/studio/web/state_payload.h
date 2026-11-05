@@ -46,6 +46,7 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <cstring>
 #include <string>
 #include <string_view>
 #include <vector>
@@ -200,6 +201,79 @@ struct ModelBundleView {
 // Parses a bundle produced by SerializeModelBundle. Returns false if the
 // buffer is malformed.
 bool ParseModelBundle(const void* data, size_t size, ModelBundleView* out);
+
+// Fixed-capacity FIFO jitter buffer for incoming state payloads.
+// Absorbs WebSocket arrival jitter (e.g. 2 packets arriving in one VSync
+// interval and 0 in the next) by popping one snapshot per rendered frame,
+// keeping physics state, render state (camera, perturbation, options), and
+// extra geoms synchronized while dropping the oldest unconsumed snapshot when
+// full so latency stays bounded.
+class StateQueue {
+ public:
+  static constexpr size_t kMaxDepth = 3;
+
+  struct Entry {
+    std::vector<mjtNum> state;
+    int sig = 0;
+    bool has_render_state = false;
+    RenderStateView render_state{};
+    std::vector<mjvGeom> extra_geoms;
+  };
+
+  void Push(const StatePayloadView& view) {
+    const size_t count = view.physics_bytes / sizeof(mjtNum);
+    Entry& slot = slots_[(head_ + size_) % kMaxDepth];
+    slot.state.resize(count);
+    if (count > 0 && view.physics != nullptr) {
+      std::memcpy(slot.state.data(), view.physics, count * sizeof(mjtNum));
+    }
+    slot.sig = view.physics_spec;
+    slot.has_render_state = view.render_state != nullptr;
+    if (slot.has_render_state) {
+      ParseRenderState(view.render_state, &slot.render_state);
+    }
+    slot.extra_geoms.resize(view.extra_geom_count);
+    if (view.extra_geom_count > 0 && view.extra_geoms != nullptr) {
+      std::memcpy(slot.extra_geoms.data(), view.extra_geoms,
+                  view.extra_geom_count * sizeof(mjvGeom));
+    }
+    if (size_ == kMaxDepth) {
+      head_ = (head_ + 1) % kMaxDepth;
+    } else {
+      ++size_;
+    }
+  }
+
+  bool Pop(Entry* out) {
+    if (size_ == 0) {
+      return false;
+    }
+    Entry& slot = slots_[head_];
+    out->state.swap(slot.state);
+    out->sig = slot.sig;
+    out->has_render_state = slot.has_render_state;
+    if (slot.has_render_state) {
+      out->render_state = slot.render_state;
+    }
+    out->extra_geoms.swap(slot.extra_geoms);
+    head_ = (head_ + 1) % kMaxDepth;
+    --size_;
+    return true;
+  }
+
+  void Clear() {
+    head_ = 0;
+    size_ = 0;
+  }
+
+  size_t Size() const { return size_; }
+  bool Empty() const { return size_ == 0; }
+
+ private:
+  Entry slots_[kMaxDepth];
+  size_t head_ = 0;
+  size_t size_ = 0;
+};
 
 }  // namespace mujoco::studio
 

@@ -95,6 +95,7 @@ class RoleWindow {
                    GuiTheme* theme);
   void DrawThemeButton(GuiTheme* theme);
   void DrawDataRate(const SessionView& view);
+  void DrawFpsCapToken(const SessionView& view, SessionActions& actions);
   void DrawToast(const SessionView& view, double now);
 
   // The theme being drawn this frame.
