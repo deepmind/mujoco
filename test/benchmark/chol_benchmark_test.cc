@@ -47,9 +47,11 @@ struct HessianData {
   std::vector<int> HT_rowadr;
   std::vector<int> HT_colind;
 
-  // L factor structure
+  // L and LT factor structure
   std::vector<int> L_rownnz;
   std::vector<int> L_rowadr;
+  std::vector<int> LT_rownnz;
+  std::vector<int> LT_rowadr;
 
   // L initial values for BM_chol_old (lower triangle of H, zero-filled for
   // fill-in)
@@ -156,12 +158,12 @@ struct HessianData {
     // count L fill-in (also counts LT structure)
     L_rownnz.resize(nv);
     L_rowadr.resize(nv);
-    std::vector<int> LT_rownnz_temp(nv);
-    std::vector<int> LT_rowadr_temp(nv);
-    nL = mju_cholFactorSymbolic(
-        nullptr, L_rownnz.data(), L_rowadr.data(), nullptr,
-        LT_rownnz_temp.data(), LT_rowadr_temp.data(), nullptr, HT_rownnz.data(),
-        HT_rowadr.data(), HT_colind.data(), nv, d);
+    LT_rownnz.resize(nv);
+    LT_rowadr.resize(nv);
+    nL = mju_cholFactorSymbolic(nullptr, L_rownnz.data(), L_rowadr.data(),
+                                nullptr, LT_rownnz.data(), LT_rowadr.data(),
+                                nullptr, HT_rownnz.data(), HT_rowadr.data(),
+                                HT_colind.data(), nv, d);
 
     // precompute initial L state for BM_chol_old
     // extract lower triangle of H into L format, zero-fill for fill-in
@@ -256,15 +258,13 @@ static void BM_chol_symbolic(benchmark::State& state) {
   HessianData& hd = GetHessianData<S>();
 
   std::vector<int> L_colind_work(hd.nL);
-  std::vector<int> LT_rownnz_work(hd.nv);
-  std::vector<int> LT_rowadr_work(hd.nv);
   std::vector<int> LT_colind_work(hd.nL);
   std::vector<int> LT_pos_work(hd.nL);
 
   for (auto s : state) {
     mju_cholFactorSymbolic(L_colind_work.data(), hd.L_rownnz.data(),
                            hd.L_rowadr.data(), LT_colind_work.data(),
-                           LT_rownnz_work.data(), LT_rowadr_work.data(),
+                           hd.LT_rownnz.data(), hd.LT_rowadr.data(),
                            LT_pos_work.data(), hd.HT_rownnz.data(),
                            hd.HT_rowadr.data(), hd.HT_colind.data(), hd.nv, d);
   }
@@ -283,8 +283,6 @@ static void BM_chol_numeric(benchmark::State& state) {
 
   std::vector<mjtNum> L_work(hd.nL);
   std::vector<int> L_colind_work(hd.nL);
-  std::vector<int> LT_rownnz_work(hd.nv);
-  std::vector<int> LT_rowadr_work(hd.nv);
   std::vector<int> LT_colind_work(hd.nL);
   std::vector<int> LT_pos_work(hd.nL);
   std::vector<mjtNum> scratch(hd.nv);
@@ -292,17 +290,17 @@ static void BM_chol_numeric(benchmark::State& state) {
   // symbolic setup (not benchmarked)
   mju_cholFactorSymbolic(L_colind_work.data(), hd.L_rownnz.data(),
                          hd.L_rowadr.data(), LT_colind_work.data(),
-                         LT_rownnz_work.data(), LT_rowadr_work.data(),
+                         hd.LT_rownnz.data(), hd.LT_rowadr.data(),
                          LT_pos_work.data(), hd.HT_rownnz.data(),
                          hd.HT_rowadr.data(), hd.HT_colind.data(), hd.nv, d);
 
   for (auto s : state) {
-    mju_cholFactorNumeric(
-        L_work.data(), hd.nv, mjMINVAL, hd.L_rownnz.data(), hd.L_rowadr.data(),
-        L_colind_work.data(), LT_rownnz_work.data(), LT_rowadr_work.data(),
-        LT_colind_work.data(), LT_pos_work.data(), hd.H.data(),
-        hd.H_rownnz.data(), hd.H_rowadr.data(), hd.H_colind.data(),
-        scratch.data());
+    mju_cholFactorNumeric(L_work.data(), hd.nv, mjMINVAL, hd.L_rownnz.data(),
+                          hd.L_rowadr.data(), L_colind_work.data(),
+                          hd.LT_rownnz.data(), hd.LT_rowadr.data(),
+                          LT_colind_work.data(), LT_pos_work.data(),
+                          hd.H.data(), hd.H_rownnz.data(), hd.H_rowadr.data(),
+                          hd.H_colind.data(), scratch.data());
   }
 
   mj_deleteData(d);
@@ -345,6 +343,63 @@ void BM_numeric_XL(benchmark::State& state) {
 }
 BENCHMARK(BM_numeric_XL);
 
+// sparse Cholesky solve benchmark
+template <Size S>
+static void BM_chol_solve(benchmark::State& state) {
+  mjModel* m = GetModel<S>();
+  mjData* d = mj_makeData(m);
+  mj_resetDataKeyframe(m, d, 0);
+  mj_forward(m, d);
+
+  HessianData& hd = GetHessianData<S>();
+
+  std::vector<mjtNum> L_work(hd.nL);
+  std::vector<int> L_colind_work(hd.nL);
+  std::vector<int> LT_colind_work(hd.nL);
+  std::vector<int> LT_pos_work(hd.nL);
+  std::vector<mjtNum> scratch(hd.nv);
+
+  mju_cholFactorSymbolic(L_colind_work.data(), hd.L_rownnz.data(),
+                         hd.L_rowadr.data(), LT_colind_work.data(),
+                         hd.LT_rownnz.data(), hd.LT_rowadr.data(),
+                         LT_pos_work.data(), hd.HT_rownnz.data(),
+                         hd.HT_rowadr.data(), hd.HT_colind.data(), hd.nv, d);
+  mju_cholFactorNumeric(L_work.data(), hd.nv, mjMINVAL, hd.L_rownnz.data(),
+                        hd.L_rowadr.data(), L_colind_work.data(),
+                        hd.LT_rownnz.data(), hd.LT_rowadr.data(),
+                        LT_colind_work.data(), LT_pos_work.data(), hd.H.data(),
+                        hd.H_rownnz.data(), hd.H_rowadr.data(),
+                        hd.H_colind.data(), scratch.data());
+
+  std::vector<mjtNum> rhs(hd.nv);
+  std::vector<mjtNum> res(hd.nv);
+  for (int i = 0; i < hd.nv; i++) {
+    rhs[i] = d->qfrc_smooth[i];
+  }
+
+  for (auto s : state) {
+    mju_cholSolveSparse(res.data(), L_work.data(), rhs.data(), hd.nv,
+                        hd.L_rownnz.data(), hd.L_rowadr.data(),
+                        L_colind_work.data());
+    benchmark::DoNotOptimize(res.data());
+  }
+
+  mj_deleteData(d);
+  state.SetItemsProcessed(state.iterations());
+}
+
+void BM_solve_L(benchmark::State& state) {
+  MujocoErrorTestGuard guard;
+  BM_chol_solve<Size::L>(state);
+}
+BENCHMARK(BM_solve_L);
+
+void BM_solve_XL(benchmark::State& state) {
+  MujocoErrorTestGuard guard;
+  BM_chol_solve<Size::XL>(state);
+}
+BENCHMARK(BM_solve_XL);
+
 // -------------------- rank-1 update/downdate benchmarks ----------------------
 
 constexpr int kNumUpdateVectors = 25;
@@ -353,9 +408,8 @@ constexpr int kNumUpdateVectors = 25;
 // the shared library; copying it here keeps that symbol internal and freezes
 // the behavior the old implementation below is benchmarked against
 static void combineSparseInc_local(mjtNum* dst, const mjtNum* src, int n,
-                                   mjtNum a, mjtNum b, int dst_nnz,
-                                   int src_nnz, const int* dst_ind,
-                                   const int* src_ind) {
+                                   mjtNum a, mjtNum b, int dst_nnz, int src_nnz,
+                                   const int* dst_ind, const int* src_ind) {
   // check for identical pattern
   if (dst_nnz == src_nnz) {
     if (mju_compare(dst_ind, src_ind, dst_nnz)) {
@@ -414,8 +468,8 @@ int ABSL_ATTRIBUTE_NOINLINE mju_cholUpdateSparse_old(
     mat[adr + nnz - 1] = r;
     combineSparseInc_local(mat + adr, x, n, 1 / c, (flg_plus ? s / c : -s / c),
                            nnz - 1, i, colind + adr, x_ind);
-    int new_x_nnz = mju_combineSparse(x, mat + adr, c, -s, i, nnz - 1, x_ind,
-                                      colind + adr);
+    int new_x_nnz =
+        mju_combineSparse(x, mat + adr, c, -s, i, nnz - 1, x_ind, colind + adr);
     i = i - 1 + (new_x_nnz - i);
   }
   return rank;
@@ -499,23 +553,21 @@ static void BM_update_new(benchmark::State& state) {
   // factorize L using new method
   std::vector<mjtNum> L_work(hd.nL);
   std::vector<int> L_colind_work(hd.nL);
-  std::vector<int> LT_rownnz_work(nv);
-  std::vector<int> LT_rowadr_work(nv);
   std::vector<int> LT_colind_work(hd.nL);
   std::vector<int> LT_pos_work(hd.nL);
   std::vector<mjtNum> scratch(nv);
 
   mju_cholFactorSymbolic(L_colind_work.data(), hd.L_rownnz.data(),
                          hd.L_rowadr.data(), LT_colind_work.data(),
-                         LT_rownnz_work.data(), LT_rowadr_work.data(),
+                         hd.LT_rownnz.data(), hd.LT_rowadr.data(),
                          LT_pos_work.data(), hd.HT_rownnz.data(),
                          hd.HT_rowadr.data(), hd.HT_colind.data(), nv, d);
-  mju_cholFactorNumeric(
-      L_work.data(), nv, mjMINVAL, hd.L_rownnz.data(), hd.L_rowadr.data(),
-      L_colind_work.data(), LT_rownnz_work.data(), LT_rowadr_work.data(),
-      LT_colind_work.data(), LT_pos_work.data(), hd.H.data(),
-      hd.H_rownnz.data(), hd.H_rowadr.data(), hd.H_colind.data(),
-      scratch.data());
+  mju_cholFactorNumeric(L_work.data(), nv, mjMINVAL, hd.L_rownnz.data(),
+                        hd.L_rowadr.data(), L_colind_work.data(),
+                        hd.LT_rownnz.data(), hd.LT_rowadr.data(),
+                        LT_colind_work.data(), LT_pos_work.data(), hd.H.data(),
+                        hd.H_rownnz.data(), hd.H_rowadr.data(),
+                        hd.H_colind.data(), scratch.data());
 
   // prepare update vectors: pick kNumUpdateVectors rows from J (constraint
   // rows) Each J row has DoF indices which is correct for updating L (nv x nv)

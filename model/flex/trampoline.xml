@@ -16,7 +16,7 @@
 <mujoco model="Trampoline">
   <include file="scene.xml"/>
 
-  <option timestep="0.001" solver="CG" tolerance="1e-6" integrator="Euler"/>
+  <option timestep="0.001" solver="Newton" tolerance="1e-6" integrator="Euler"/>
 
   <size memory="10M"/>
 
@@ -39,7 +39,7 @@
               radius=".001" mass="10" name="plate" dim="2">
       <contact condim="3" solref="0.01 1" solimp=".95 .99 .0001"/>
       <edge equality="false" damping="10"/>
-      <elasticity young="3e5" poisson="0" thickness="1e-2" elastic2d="stretch"/>
+      <elasticity young="75000" poisson="0" thickness="1e-2" elastic2d="stretch"/>
       <pin id="0 15 240 255"/>
     </flexcomp>
   </worldbody>

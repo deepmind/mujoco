@@ -24,6 +24,8 @@ from mujoco.mjx.third_party.mujoco_warp._src import types
 from mujoco.mjx.third_party.mujoco_warp._src.types import MJ_MAXVAL
 from mujoco.mjx.third_party.mujoco_warp._src.types import MJ_MINVAL
 from mujoco.mjx.third_party.mujoco_warp._src.types import GeomType
+from mujoco.mjx.third_party.mujoco_warp._src.types import ObjType
+from mujoco.mjx.third_party.mujoco_warp._src.types import TrnType
 from mujoco.mjx.third_party.mujoco_warp._src.types import WrapType
 from mujoco.mjx.third_party.mujoco_warp._src.types import vec10
 
@@ -103,6 +105,12 @@ def length_circle(p0: wp.vec2, p1: wp.vec2, ind: int, radius: float) -> float:
 
 
 @wp.func
+def _winding_angle(p: wp.vec2, q: wp.vec2) -> float:
+  """Signed angle swept from p to q around the origin, in (-pi, pi]."""
+  return wp.atan2(p[0] * q[1] - p[1] * q[0], wp.dot(p, q))
+
+
+@wp.func
 def wrap_circle(end: wp.vec4, side: wp.vec2, radius: float) -> Tuple[float, wp.vec2, wp.vec2]:
   """2D circle wrap.
 
@@ -137,9 +145,19 @@ def wrap_circle(end: wp.vec4, side: wp.vec2, radius: float) -> Tuple[float, wp.v
   a = -wp.dot(dif, end0) / dd
   a = wp.clamp(a, 0.0, 1.0)
 
-  # check for intersection and side
+  # check for intersection
   tmp = a * dif + end0
-  if (wp.dot(tmp, tmp) > sqrad) and (not valid_side or wp.dot(side, tmp) >= 0.0):
+  clear = wp.dot(tmp, tmp) > sqrad
+
+  # side: the path is homotopic to the polyline end0 -> side -> end1, whose winding angle around
+  # the center determines the wrap orientation; the segment end0 -> end1 is in the same homotopy
+  # class iff its winding angle is the same (they differ by multiples of 2 * pi)
+  wside = float(0.0)
+  if valid_side:
+    wside = _winding_angle(end0, side) + _winding_angle(side, end1)
+    if clear and wp.abs(wside - _winding_angle(end0, end1)) < wp.pi:
+      return -1.0, wp.vec2(MJ_MAXVAL), wp.vec2(MJ_MAXVAL)
+  elif clear:
     return -1.0, wp.vec2(MJ_MAXVAL), wp.vec2(MJ_MAXVAL)
 
   sqrt0 = wp.sqrt(sqlen0 - sqrad)
@@ -164,17 +182,11 @@ def wrap_circle(end: wp.vec4, side: wp.vec2, radius: float) -> Tuple[float, wp.v
     math.safe_div(end[3] * sqrad - radius * end[2] * sqrt1, sqlen1),
   )
 
-  # goodness: close to sd, or shorter path
-  if valid_side:
-    tmp0, _ = math.normalize_with_norm(sol00 + sol01)
-    good0 = wp.dot(tmp0, side)
-    tmp1, _ = math.normalize_with_norm(sol10 + sol11)
-    good1 = wp.dot(tmp1, side)
-  else:
-    tmp0 = sol00 - sol01
-    good0 = -wp.dot(tmp0, tmp0)
-    tmp1 = sol10 - sol11
-    good1 = -wp.dot(tmp1, tmp1)
+  # goodness: shorter path
+  tmp0 = sol00 - sol01
+  good0 = -wp.dot(tmp0, tmp0)
+  tmp1 = sol10 - sol11
+  good1 = -wp.dot(tmp1, tmp1)
 
   # penalize for intersection
   intersect0 = is_intersect(end0, sol00, end1, sol01)
@@ -184,19 +196,30 @@ def wrap_circle(end: wp.vec4, side: wp.vec2, radius: float) -> Tuple[float, wp.v
   if intersect1:
     good1 = -10000.0
 
-  # select the better solution
-  if good0 > good1:
-    if intersect0:
-      return -1.0, wp.vec2(MJ_MAXVAL), wp.vec2(MJ_MAXVAL)
+  # select the solution: with side, by orientation (ind=1 is counterclockwise), otherwise the better
+  if valid_side:
+    ind = wp.where(wside > 0.0, 1, 0)
+  else:
+    ind = wp.where(good0 > good1, 0, 1)
+
+  if ind == 0:
+    intersect = intersect0
     pnt0 = sol00
     pnt1 = sol01
-    ind = 0
   else:
-    if intersect1:
-      return -1.0, wp.vec2(MJ_MAXVAL), wp.vec2(MJ_MAXVAL)
+    intersect = intersect1
     pnt0 = sol10
     pnt1 = sol11
-    ind = 1
+
+  # check for intersection
+  if intersect:
+    return -1.0, wp.vec2(MJ_MAXVAL), wp.vec2(MJ_MAXVAL)
+
+  # side: the path winds like the polyline, so the arc angle is its winding minus that of the
+  # tangent segments; unlike length_circle, this is accurate for wraps close to 2 * pi
+  if valid_side:
+    arc = wside - _winding_angle(end0, pnt0) - _winding_angle(pnt1, end1)
+    return radius * wp.abs(arc), pnt0, pnt1
 
   # return curve length
   return length_circle(pnt0, pnt1, ind, radius), pnt0, pnt1
@@ -418,7 +441,9 @@ def wrap(
       wp.dot(sidepnt, axis1),
     )
 
-    sidepnt_proj, _ = math.normalize_with_norm(sidepnt_proj)
+    sidepnt_proj, sidenrm = math.normalize_with_norm(sidepnt_proj)
+    if sidenrm < MJ_MINVAL:
+      sidepnt_proj = wp.vec2(1.0, 0.0)
     sidepnt_proj *= radius
   else:
     sidepnt_proj = wp.vec2(MJ_MAXVAL)
@@ -784,6 +809,38 @@ def dcmotor_resistance(
 
 
 @wp.func
+def dcmotor_mech_force(
+  # Data in:
+  act_in: wp.array2d[float],
+  act_dot_in: wp.array2d[float],
+  # In:
+  worldid: int,
+  actadr: int,
+  length: float,
+  dynprm: types.vec10,
+  gainprm: types.vec10,
+  biasprm: types.vec10,
+) -> float:
+  """Compute DC motor mechanical force (cogging torque and LuGre friction)."""
+  mech = 0.0
+
+  # cogging torque
+  A = biasprm[0]
+  if A != 0.0:
+    mech += A * wp.sin(biasprm[1] * length + biasprm[2])
+
+  # LuGre friction
+  sigma0 = dynprm[5]
+  if actadr >= 0 and sigma0 > 0.0:
+    sigma1 = dynprm[6]
+    slots = dcmotor_slots(dynprm, gainprm)
+    adr = actadr + slots[3]
+    mech -= sigma0 * act_in[worldid, adr] + sigma1 * act_dot_in[worldid, adr]
+
+  return mech
+
+
+@wp.func
 def lugre_stribeck(velocity: float, F_C: float, F_S: float, v_S: float) -> float:
   ratio = velocity / wp.max(MJ_MINVAL, v_S)
   return F_C + (F_S - F_C) * wp.exp(-ratio * ratio)
@@ -917,3 +974,206 @@ def poly_potential(linear: float, poly: wp.vec2, x: float, flg_odd: int) -> floa
   res += poly[0] * wp.static(1.0 / 3.0) * x_val3
   res += poly[1] * 0.25 * x_val4
   return res
+
+
+@wp.func
+def _actuator_target(
+  # Model:
+  actuator_trntype: wp.array[int],
+  actuator_trnid: wp.array[wp.vec2i],
+  # In:
+  objtype: int,
+  objid: int,
+  actuatorid: int,
+) -> bool:
+  """Returns whether an actuator's transmission target is a given joint or tendon."""
+  if actuator_trnid[actuatorid][0] != objid:
+    return False
+  trntype = actuator_trntype[actuatorid]
+  if objtype == ObjType.JOINT:
+    return trntype == TrnType.JOINT or trntype == TrnType.JOINTINPARENT
+  return trntype == TrnType.TENDON
+
+
+@wp.func
+def actuator_target_damping(
+  # Model:
+  actuator_trntype: wp.array[int],
+  actuator_trnid: wp.array[wp.vec2i],
+  actuator_damping: wp.array2d[float],
+  actuator_dampingpoly: wp.array2d[wp.vec2],
+  actuator_gear: wp.array2d[wp.spatial_vector],
+  # In:
+  worldid: int,
+  objtype: int,
+  objid: int,
+  actuatorid: int,
+) -> Tuple[float, wp.vec2]:
+  """Returns actuator damping and high-order damping contributions to a joint or tendon.
+
+  Contributions are scaled by gear^2. actuatorid is jnt_actuatorid or tendon_actuatorid of objid:
+  -1: no actuator, >= 0: single actuator, < -1: scan all actuators.
+  """
+  damping = float(0.0)
+  dpoly = wp.vec2(0.0)
+
+  # single actuator contributes damping
+  if actuatorid >= 0:
+    gear = actuator_gear[worldid % actuator_gear.shape[0], actuatorid][0]
+    damping = actuator_damping[worldid % actuator_damping.shape[0], actuatorid] * gear * gear
+    dpoly = actuator_dampingpoly[worldid % actuator_dampingpoly.shape[0], actuatorid] * gear * gear
+
+  # scan all actuators for contributions
+  elif actuatorid < -1:
+    for k in range(actuator_trntype.shape[0]):
+      if not _actuator_target(actuator_trntype, actuator_trnid, objtype, objid, k):
+        continue
+      gear = actuator_gear[worldid % actuator_gear.shape[0], k][0]
+      damping += actuator_damping[worldid % actuator_damping.shape[0], k] * gear * gear
+      dpoly += actuator_dampingpoly[worldid % actuator_dampingpoly.shape[0], k] * gear * gear
+
+  return damping, dpoly
+
+
+@wp.func
+def actuator_target_armature(
+  # Model:
+  actuator_trntype: wp.array[int],
+  actuator_trnid: wp.array[wp.vec2i],
+  actuator_armature: wp.array2d[float],
+  actuator_gear: wp.array2d[wp.spatial_vector],
+  # In:
+  worldid: int,
+  objtype: int,
+  objid: int,
+  actuatorid: int,
+) -> float:
+  """Returns actuator armature contribution to a joint or tendon.
+
+  Contributions are scaled by gear^2. actuatorid is jnt_actuatorid or tendon_actuatorid of objid:
+  -1: no actuator, >= 0: single actuator, < -1: scan all actuators.
+  """
+  armature = float(0.0)
+
+  # single actuator contributes armature
+  if actuatorid >= 0:
+    gear = actuator_gear[worldid % actuator_gear.shape[0], actuatorid][0]
+    armature = actuator_armature[worldid % actuator_armature.shape[0], actuatorid] * gear * gear
+
+  # scan all actuators for contributions
+  elif actuatorid < -1:
+    for k in range(actuator_trntype.shape[0]):
+      if not _actuator_target(actuator_trntype, actuator_trnid, objtype, objid, k):
+        continue
+      gear = actuator_gear[worldid % actuator_gear.shape[0], k][0]
+      armature += actuator_armature[worldid % actuator_armature.shape[0], k] * gear * gear
+
+  return armature
+
+
+@wp.func
+def dof_damping_total(
+  # Model:
+  jnt_actuatorid: wp.array[int],
+  dof_jntid: wp.array[int],
+  dof_damping: wp.array2d[float],
+  dof_dampingpoly: wp.array2d[wp.vec2],
+  actuator_trntype: wp.array[int],
+  actuator_trnid: wp.array[wp.vec2i],
+  actuator_damping: wp.array2d[float],
+  actuator_dampingpoly: wp.array2d[wp.vec2],
+  actuator_gear: wp.array2d[wp.spatial_vector],
+  # In:
+  worldid: int,
+  dofid: int,
+) -> Tuple[float, wp.vec2]:
+  """Returns dof damping and high-order damping, including actuator contributions."""
+  jntid = dof_jntid[dofid]
+  damping, dpoly = actuator_target_damping(
+    actuator_trntype,
+    actuator_trnid,
+    actuator_damping,
+    actuator_dampingpoly,
+    actuator_gear,
+    worldid,
+    ObjType.JOINT,
+    jntid,
+    jnt_actuatorid[jntid],
+  )
+  damping += dof_damping[worldid % dof_damping.shape[0], dofid]
+  dpoly += dof_dampingpoly[worldid % dof_dampingpoly.shape[0], dofid]
+  return damping, dpoly
+
+
+@wp.func
+def tendon_damping_total(
+  # Model:
+  tendon_actuatorid: wp.array[int],
+  tendon_damping: wp.array2d[float],
+  tendon_dampingpoly: wp.array2d[wp.vec2],
+  actuator_trntype: wp.array[int],
+  actuator_trnid: wp.array[wp.vec2i],
+  actuator_damping: wp.array2d[float],
+  actuator_dampingpoly: wp.array2d[wp.vec2],
+  actuator_gear: wp.array2d[wp.spatial_vector],
+  # In:
+  worldid: int,
+  tenid: int,
+) -> Tuple[float, wp.vec2]:
+  """Returns tendon damping and high-order damping, including actuator contributions."""
+  damping, dpoly = actuator_target_damping(
+    actuator_trntype,
+    actuator_trnid,
+    actuator_damping,
+    actuator_dampingpoly,
+    actuator_gear,
+    worldid,
+    ObjType.TENDON,
+    tenid,
+    tendon_actuatorid[tenid],
+  )
+  damping += tendon_damping[worldid % tendon_damping.shape[0], tenid]
+  dpoly += tendon_dampingpoly[worldid % tendon_dampingpoly.shape[0], tenid]
+  return damping, dpoly
+
+
+@wp.func
+def dof_armature_total(
+  # Model:
+  jnt_actuatorid: wp.array[int],
+  dof_jntid: wp.array[int],
+  dof_armature: wp.array2d[float],
+  actuator_trntype: wp.array[int],
+  actuator_trnid: wp.array[wp.vec2i],
+  actuator_armature: wp.array2d[float],
+  actuator_gear: wp.array2d[wp.spatial_vector],
+  # In:
+  worldid: int,
+  dofid: int,
+) -> float:
+  """Returns dof armature, including actuator contributions."""
+  jntid = dof_jntid[dofid]
+  armature = actuator_target_armature(
+    actuator_trntype, actuator_trnid, actuator_armature, actuator_gear, worldid, ObjType.JOINT, jntid, jnt_actuatorid[jntid]
+  )
+  return dof_armature[worldid % dof_armature.shape[0], dofid] + armature
+
+
+@wp.func
+def tendon_armature_total(
+  # Model:
+  tendon_actuatorid: wp.array[int],
+  tendon_armature: wp.array2d[float],
+  actuator_trntype: wp.array[int],
+  actuator_trnid: wp.array[wp.vec2i],
+  actuator_armature: wp.array2d[float],
+  actuator_gear: wp.array2d[wp.spatial_vector],
+  # In:
+  worldid: int,
+  tenid: int,
+) -> float:
+  """Returns tendon armature, including actuator contributions."""
+  armature = actuator_target_armature(
+    actuator_trntype, actuator_trnid, actuator_armature, actuator_gear, worldid, ObjType.TENDON, tenid, tendon_actuatorid[tenid]
+  )
+  return tendon_armature[worldid % tendon_armature.shape[0], tenid] + armature

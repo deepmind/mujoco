@@ -13,6 +13,7 @@
 // limitations under the License.
 
 //  Python bindings for the MuJoCo filament renderer (mjrf) API.
+#include "render_filament.h"
 
 #include <Python.h>
 
@@ -72,37 +73,6 @@
 namespace mujoco::python {
 namespace {
 
-// Creates a new object of type T using one of the mjrf_create functions.
-template <typename T, typename... Args>
-T* Create(Args&&... args) {
-  if constexpr (std::is_same_v<T, mjrfContext>) {
-    return mjrf_createContext(std::forward<Args>(args)...);
-  } else if constexpr (std::is_same_v<T, mjrfTexture>) {
-    return mjrf_createTexture(std::forward<Args>(args)...);
-  } else if constexpr (std::is_same_v<T, mjrfMesh>) {
-    return mjrf_createMesh(std::forward<Args>(args)...);
-  } else if constexpr (std::is_same_v<T, mjrfScene>) {
-    return mjrf_createScene(std::forward<Args>(args)...);
-  } else if constexpr (std::is_same_v<T, mjrfLight>) {
-    return mjrf_createLight(std::forward<Args>(args)...);
-  } else if constexpr (std::is_same_v<T, mjrfRenderable>) {
-    return mjrf_createRenderable(std::forward<Args>(args)...);
-  } else if constexpr (std::is_same_v<T, mjrfRenderTarget>) {
-    return mjrf_createRenderTarget(std::forward<Args>(args)...);
-  } else {
-    static_assert(!sizeof(T), "Unsupported type for Create");
-  }
-}
-
-// Corresponding Destroy function matching the above Create.
-void Destroy(mjrfContext* obj)         { mjrf_destroyContext(obj); }
-void Destroy(mjrfTexture* obj)         { mjrf_destroyTexture(obj); }
-void Destroy(mjrfMesh* obj)            { mjrf_destroyMesh(obj); }
-void Destroy(mjrfScene* obj)           { mjrf_destroyScene(obj); }
-void Destroy(mjrfLight* obj)           { mjrf_destroyLight(obj); }
-void Destroy(mjrfRenderable* obj)      { mjrf_destroyRenderable(obj); }
-void Destroy(mjrfRenderTarget* obj)    { mjrf_destroyRenderTarget(obj); }
-
 // Initializers for structs.
 void Init(mjrfContextConfig& obj)      { mjrf_defaultContextConfig(&obj); }
 void Init(mjrfFrameStats& obj)         { mjrf_defaultFrameStats(&obj); }
@@ -121,37 +91,7 @@ void Init(mjrRect& obj)                { std::memset(&obj, 0, sizeof(obj)); }
 void Init(mjrCamera& obj)              { std::memset(&obj, 0, sizeof(obj)); }
 void Init(mjrVertexAttribute& obj)     { std::memset(&obj, 0, sizeof(obj)); }
 
-// Either owns the lifetime of the wrapped object (using a PyCapsule) or acts as
-// a simple wrapper around an existing instance of the object. The former is
-// used when creating objects in python code.  The latter is used when returning
-// objects from the C API.
-#define DEFINE_WRAPPED_OBJECT(PY_TYPE_, TYPE_)                                \
-  class PY_TYPE_ : public _impl::WrapperBase<TYPE_> {                         \
-    static void DestroyCapsule(PyObject* pyobj) {                             \
-      void* ptr = (PyCapsule_GetPointer(pyobj, nullptr));                     \
-      if (ptr) {                                                              \
-        Destroy(static_cast<TYPE_*>(ptr));                                    \
-      }                                                                       \
-    }                                                                         \
-                                                                              \
-   public:                                                                    \
-    template <typename... Args>                                               \
-    PY_TYPE_(Args&&... args)                                                  \
-        : _impl::WrapperBase<TYPE_>(                                          \
-              Create<TYPE_>(std::forward<Args>(args)...), &DestroyCapsule) {} \
-    PY_TYPE_(TYPE_* ptr) : _impl::WrapperBase<TYPE_>(ptr, nullptr) {}         \
-    PY_TYPE_(const TYPE_* ptr)                                                \
-        : _impl::WrapperBase<TYPE_>(const_cast<TYPE_*>(ptr), nullptr) {}      \
-  }
 
-DEFINE_WRAPPED_OBJECT(PyContext, mjrfContext);
-DEFINE_WRAPPED_OBJECT(PyTexture, mjrfTexture);
-DEFINE_WRAPPED_OBJECT(PyMesh, mjrfMesh);
-DEFINE_WRAPPED_OBJECT(PyScene, mjrfScene);
-DEFINE_WRAPPED_OBJECT(PyLight, mjrfLight);
-DEFINE_WRAPPED_OBJECT(PyRenderable, mjrfRenderable);
-DEFINE_WRAPPED_OBJECT(PyRenderTarget, mjrfRenderTarget);
-#undef DEFINE_WRAPPED_OBJECT
 
 template <typename T, std::size_t N>
 struct NumArray {
@@ -164,6 +104,7 @@ struct NumArray {
 using Float3 = NumArray<float, 3>;
 using Float4 = NumArray<float, 4>;
 using Float9 = NumArray<float, 9>;
+using Float16 = NumArray<float, 16>;
 
 template <typename T> struct is_object : std::false_type {};
 template <> struct is_object<PyContext> : std::true_type {};
@@ -178,6 +119,7 @@ template <typename T> struct is_num_array : std::false_type {};
 template <> struct is_num_array<Float3> : std::true_type {};
 template <> struct is_num_array<Float4> : std::true_type {};
 template <> struct is_num_array<Float9> : std::true_type {};
+template <> struct is_num_array<Float16> : std::true_type {};
 
 void Free(mjrfReadRequest& data) {
   data.output = nullptr;
@@ -231,8 +173,16 @@ void Setter(T& dst, const U& src) {
     for (int i = 0; i < 9; ++i) {
       dst[i] = src[i];
     }
+  } else if constexpr (std::is_same_v<T, float[16]>) {
+    for (int i = 0; i < 16; ++i) {
+      dst[i] = src[i];
+    }
   } else if constexpr (std::is_same_v<U, std::vector<mjrVertexAttribute>>) {
-    for (int i = 0; i < src.size(); ++i) {
+    if (src.size() > std::size(dst)) {
+      throw py::value_error("Too many vertex attributes, maximum allowed is " +
+                            std::to_string(std::size(dst)));
+    }
+    for (size_t i = 0; i < src.size(); ++i) {
       dst[i] = src[i];
     }
   } else if constexpr (is_object<std::decay_t<U>>::value) {
@@ -362,6 +312,12 @@ PYBIND11_MODULE(_render_filament, m, pybind11::mod_gil_not_used()) {
   mjrf_mesh_data.def(
       "set_vertices",
       [](mjrfMeshData& data, const mjrfMeshConfig& config, py::bytes vertices) {
+        if (config.num_attributes < 0 ||
+            config.num_attributes >
+                static_cast<int>(std::size(data.vertices))) {
+          throw py::value_error("Invalid num_attributes: " +
+                                std::to_string(config.num_attributes));
+        }
         FreeMeshDataVertices(data);
         std::string_view sv(vertices);
         if (sv.empty()) {

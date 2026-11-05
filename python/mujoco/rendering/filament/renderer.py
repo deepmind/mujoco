@@ -95,6 +95,24 @@ def _validate_buffer(
   return width, height
 
 
+@dataclasses.dataclass
+class View:
+  """A representation of an mjrf.RenderRequest that works with the Renderer."""
+  scene: str
+  target: str
+  viewport: tuple[float, float, float, float] = (0.0, 0.0, 1.0, 1.0)
+  camera: mjrf.Camera | mujoco.MjvGLCamera | None = None
+  draw_mode: mjrf.DrawMode = mjrf.DrawMode.DRAW_MODE_DEFAULT
+  post_processing: bool = True
+  reflections: bool = True
+  shadows: bool = True
+  skybox: bool = True
+  haze: bool = True
+  headlight: bool = False
+  headlight_color: tuple[float, float, float] = (1.0, 1.0, 1.0)
+  headlight_intensity: float = 0.0
+
+
 class Renderer:
   """Coordinates the rendering of scenes to render targets.
 
@@ -120,10 +138,13 @@ class Renderer:
   def __init__(self, ctx: mjrf.Context):
     self._ctx = ctx
     self._scenes: dict[str, mjrf.Scene] = {}
-    self._targets: dict[str, mjrf.RenderTarget] = {}
-    self._views: dict[str, Renderer._View] = {}
     self._reads: dict[str, Renderer._Read] = {}
     self._ctx.set_clear_color([0.0, 0.0, 0.0])
+
+  @property
+  def context(self) -> mjrf.Context:
+    """Returns the underlying mjrf.Context."""
+    return self._ctx
 
   def scene(self, name: str) -> mjrf.Scene:
     """Returns the scene with the given name, creating it if needed."""
@@ -141,98 +162,77 @@ class Renderer:
     raw_buffer = _extract_buffer(buffer)
     size = _validate_buffer(raw_buffer, pixel_format, name)
 
-    # Each target has a 1:1 association with a _Read object.
-    if name not in self._targets:
+    if name not in self._reads:
       target = self._ctx.create_render_target(
           mjrf.RenderTargetConfig(
               color_format=pixel_format,
           )
       )
-
-      r = self._Read(
+      read = self._Read(
           size=size,
+          target=target,
           format=pixel_format,
-          request=mjrf.ReadRequest(),
+          request=mjrf.ReadRequest(target=target),
           buffer=(buffer, raw_buffer),
       )
-      r.request.target = target
-      r.request.set_buffer(raw_buffer)
-      self._targets[name] = target
-      self._reads[name] = r
+      read.request.set_buffer(raw_buffer)
+      self._reads[name] = read
     else:
-      r = self._reads[name]
-      if r.format != pixel_format:
+      read = self._reads[name]
+      if read.format != pixel_format:
         raise ValueError(
             f"Target {name} already exists with a different pixel format."
         )
-      r.request.set_buffer(raw_buffer)
-      r.buffer = (buffer, raw_buffer)
+      read.request.set_buffer(raw_buffer)
+      read.buffer = (buffer, raw_buffer)
 
-    target = self._targets[name]
-    target.resize(size[0], size[1])
-    r.size = size
-    return target
+    read.size = size
+    read.target.resize(size[0], size[1])
+    return read.target
 
-  def view(
-      self,
-      name: str,
-      *,
-      scene: str,
-      target: str,
-      camera: mjrf.Camera | mujoco.MjvGLCamera = mjrf.Camera(),
-      viewport: tuple[float, float, float, float] | None = None,
-      draw_mode: mjrf.DrawMode = mjrf.DrawMode.DRAW_MODE_DEFAULT,
-  ):
-    """Associates a scene, camera, viewport, and target as a rendering operation."""
-    self._views[name] = self._View(
-        scene=scene,
-        target=target,
-        viewport=viewport or (0.0, 0.0, 1.0, 1.0),
-        request=mjrf.RenderRequest(
-            camera=self._to_mjrf_camera(camera),
-            draw_mode=draw_mode,
-        ),
-    )
-
-  def update_camera(
-      self,
-      name: str,
-      camera: mjrf.Camera | mujoco.MjvGLCamera,
-  ):
-    """Updates the camera for the given view."""
-    if name not in self._views:
-      raise ValueError(f"View not found: {name}")
-    self._views[name].request.camera = self._to_mjrf_camera(camera)
-
-  def render(self):
+  def render(self, views: list[View]):
     """Renders all active views."""
     requests: list[mjrf.RenderRequest] = []
-    for view in self._views.values():
+    reads: dict[str, mjrf.ReadRequest] = {}
+    for view in views:
       read = self._reads.get(view.target, None)
       if read is None:
         raise ValueError(f"Target not found: {view.target}")
+      reads[view.target] = read.request
 
       scene = self._scenes.get(view.scene, None)
       if scene is None:
         raise ValueError(f"Scene not found: {view.scene}")
 
-      view.request.scene = scene
-      view.request.target = read.request.target
-      view.request.viewport.left = int(view.viewport[0] * read.size[0])
-      view.request.viewport.bottom = int(view.viewport[1] * read.size[1])
-      view.request.viewport.width = int(view.viewport[2] * read.size[0])
-      view.request.viewport.height = int(view.viewport[3] * read.size[1])
-      requests.append(view.request)
+      req = mjrf.RenderRequest()
+      req.scene = scene
+      req.target = read.request.target
+      req.camera = self._to_mjrf_camera(view.camera)
+      req.viewport.left = int(view.viewport[0] * read.size[0])
+      req.viewport.bottom = int(view.viewport[1] * read.size[1])
+      req.viewport.width = int(view.viewport[2] * read.size[0])
+      req.viewport.height = int(view.viewport[3] * read.size[1])
+      req.draw_mode = view.draw_mode
+      req.post_processing = view.post_processing
+      req.reflections = view.reflections
+      req.shadows = view.shadows
+      req.skybox = view.skybox
+      req.haze = view.haze
+      req.headlight = view.headlight
+      req.headlight_color = view.headlight_color
+      req.headlight_intensity = view.headlight_intensity
+      requests.append(req)
 
-    reads = [read.request for read in self._reads.values()]
-    frame = self._ctx.render(requests, reads)
+    frame = self._ctx.render(requests, reads.values())
     self._ctx.wait_for_frame(frame)
 
   def _to_mjrf_camera(
       self,
-      camera: mjrf.Camera | mujoco.MjvGLCamera,
+      camera: mjrf.Camera | mujoco.MjvGLCamera | None,
   ) -> mjrf.Camera:
     """Converts a MjvGLCamera to an mjrf.Camera."""
+    if camera is None:
+      return mjrf.Camera()
     if isinstance(camera, mujoco.MjvGLCamera):
       # In C, mjrCamera is a type alias for mjvGLCamera. However, they are
       # bound as distinct types in Python, so we convert from MjvGLCamera to
@@ -249,17 +249,10 @@ class Renderer:
     return camera
 
   @dataclasses.dataclass
-  class _View:
-    """Internal wrapper around mjrf.RenderRequest."""
-    scene: str
-    target: str
-    viewport: tuple[float, float, float, float]
-    request: mjrf.RenderRequest
-
-  @dataclasses.dataclass
   class _Read:
     """Internal wrapper around mjrf.ReadRequest."""
     size: tuple[int, int]
+    target: mjrf.RenderTarget
     format: mjrf.PixelFormat
     request: mjrf.ReadRequest
     buffer: tuple[BufferType, Buffer]

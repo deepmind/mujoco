@@ -86,6 +86,8 @@ typedef struct mjrfRenderRequest_ {
   mjtBool post_processing;           // enable post processing, enabled by default
   mjtBool reflections;               // enable reflections, enabled by default
   mjtBool shadows;                   // enable shadows, enabled by default
+  mjtBool skybox;                    // enable skybox rendering, enabled by default
+  mjtBool haze;                      // enable horizon haze, enabled by default
 
   // The headlight is a directional light aligned with this request's camera. It
   // is a property of the request rather than of the scene, so that a scene
@@ -128,6 +130,9 @@ mjrfFrameHandle mjrf_render(mjrfContext* ctx, const mjrfRenderRequest* req, int 
 // Waits for all rendering operations to complete for the given frame handle, triggering any
 // callbacks as needed.
 void mjrf_waitForFrame(mjrfContext* ctx, mjrfFrameHandle frame);
+
+// Flushes pending operations to the rendering backend and invokes any completed callbacks.
+void mjrf_flush(mjrfContext* ctx);
 
 // Sets the clear color for the renderer.
 void mjrf_setClearColor(mjrfContext* ctx, const float color[3]);
@@ -344,9 +349,10 @@ typedef struct mjrfMaterial_ {
   const mjrfTexture* occlusion_texture;   // ambient occlusion texture (R8)
   const mjrfTexture* orm_texture;         // occlusion/roughness/metallic texture (RGB8)
   const mjrfTexture* emissive_texture;    // emissive texture (RGB8)
-  const mjrfTexture* reflection_texture;  // reflection texture, for internal use only
+  const mjrfTexture* reflection_texture;  // reflection texture (internal)
   float reflection_normal[3];      // mirror normal, gates reflection to front face (internal)
   float reflection_view_proj[16];  // main camera view-proj for reflection UV mapping (internal)
+  float haze_ratio;                // horizon haze ratio [0, 1]; disabled if < 0 (internal)
 } mjrfMaterial;
 
 // Initializes the mjrfMaterial to default values.
@@ -393,6 +399,9 @@ void mjrf_setRenderablePose(mjrfRenderable* renderable, const float position[3],
 // the scale. However, for some geom-based renderables, the size scale is not applied uniformly
 // (e.g. the spherical ends of a capsule are scaled such that they always remain spherical).
 void mjrf_setRenderableSize(mjrfRenderable* renderable, const float size[3]);
+
+// Enables or disables whether or not the renderable casts shadows.
+void mjrf_setRenderableCastShadow(mjrfRenderable* renderable, mjtBool enabled);
 
 // Parameters for creating a render target (mjrfRenderTarget).
 typedef struct mjrfRenderTargetConfig_ {

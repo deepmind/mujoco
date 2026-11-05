@@ -84,7 +84,7 @@ Users who wish to build MuJoCo from source should consult the [build from
 source] section of the documentation. However, note that the commit at
 the tip of the `main` branch may be unstable.
 
-### Python (>= 3.10)
+### Python (>= 3.11)
 
 The native Python bindings, which come pre-packaged with a copy of MuJoCo, can
 be installed from [PyPI] via:

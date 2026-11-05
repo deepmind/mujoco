@@ -28,10 +28,17 @@ jobs:
     - name: Setup Emscripten
       run: bash ./.github/workflows/build_steps.sh setup_emsdk
 
+    - name: Cache external dependencies
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+      with:
+        path: ${{ runner.temp }}/external_deps
+        key: external-deps-v2-posix-live-${{ hashFiles('cmake/**') }}
+
     - name: Build MuJoCo Live
       env:
         CC: clang-18
         CXX: clang++-18
+        EXTERNAL_DEPS_DIR: ${{ runner.temp }}/external_deps
       run: bash ./.github/workflows/build_steps.sh build_mujoco_live
 
     - name: Prepare files for GitHub Pages
@@ -39,10 +46,10 @@ jobs:
         mkdir -p dist/bin/ios
         cp -r build_wasm/bin/* dist/bin/
         cp -r build_wasm_ios/bin/* dist/bin/ios/
-        cp src/experimental/studio/live.html dist/index.html
-        cp src/experimental/studio/live.css dist/live.css
-        cp src/experimental/studio/live.js dist/live.js
-        cp src/experimental/studio/favicon.ico dist/favicon.ico
+        cp studio/live.html dist/index.html
+        cp studio/live.css dist/live.css
+        cp studio/live.js dist/live.js
+        cp studio/favicon.ico dist/favicon.ico
         COMMIT_HASH=$(git rev-parse HEAD 2>/dev/null || true)
         if [ -n "$COMMIT_HASH" ]; then
           sed -i "s/__COMMIT_HASH_PLACEHOLDER__/$COMMIT_HASH/g" dist/index.html

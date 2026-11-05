@@ -135,6 +135,27 @@ py::array_t<T> MakeArray(T* base_ptr, int index, std::vector<int>&& shape,
   } else if (MjSize == &raw::MjModel::ntupledata) {
     offset = m.tuple_adr[index];
     shape.insert(shape.begin(), m.tuple_size[index]);
+  } else if (MjSize == &raw::MjModel::nplastic) {
+    if (shape.empty()) {
+      int adr = m.jnt_plasticadr[index];
+      offset = adr < 0 ? 0 : adr;
+      int num = adr < 0 ? 0
+                        : (((index < m.njnt - 1) ? m.jnt_qposadr[index + 1]
+                                                 : m.nq) -
+                           m.jnt_qposadr[index]);
+      shape.push_back(num);
+    } else {
+      int adr = m.tendon_plasticadr[index];
+      offset = adr < 0 ? 0 : adr;
+      if (adr < 0) {
+        shape[0] = 0;
+      }
+    }
+  } else if (MjSize == &raw::MjModel::nJten) {
+    int adr = m.ten_J_rowadr[index];
+    offset = adr < 0 ? 0 : adr;
+    int num = adr < 0 ? 0 : m.ten_J_rownnz[index];
+    shape.push_back(num);
   } else {
     // Do not return a NumPy array with shape () since these aren't very nice
     // to work with. Instead, always return singleton arrays with shape (1,).

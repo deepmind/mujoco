@@ -498,21 +498,23 @@ Here is a minimal example for rendering an mjModel with the filament renderer:
      # associate the pixel buffer with a render target
      r.target("out", pixels)
 
-     # define a view that connects the scene we want to render to an output target
-     r.view("v1", scene="scn", target="out")
+     # update the lights and renderables with the current `data` state
+     ms.update(data)
 
      # define the camera for the view we want to render
      vcam = mujoco.MjvCamera()
      mujoco.mjv_defaultFreeCamera(model, vcam)
      vcam.type = int(mujoco.mjtCamera.mjCAMERA_FIXED)
      vcam.fixedcamid = 0
-     r.update_camera("v1", mujoco.mjv_camera2GLCamera(model, data, vcam))
-
-     # update the lights and renderables with the current `data` state
-     ms.update(data)
+     # define a view that connects the scene we want to render to an output target
+     view = renderer.View(
+         scene="scn",
+         target="out",
+         camera=mujoco.mjv_camera2GLCamera(model, data, vcam),
+     )
 
      # render the scene; blocks until the render has completed writing to the render target
-     r.render()
+     r.render([view])
 
      # return the pixels
      return pixels
@@ -998,8 +1000,8 @@ same way shares the engine with the bindings.
 To run the bindings' tests from the root of the cloned repository, use ``bazel test //python/...``.
 
 The Bazel build supports the Python versions listed in ``MODULE.bazel``, and installs the bindings' PyPI dependencies
-from ``pypi.org``. It covers the core bindings; rendering (``mujoco.Renderer`` and the GL contexts), the interactive
-viewer, MJX, and the USD exporter are not yet supported.
+from ``pypi.org``. It covers the core bindings and offscreen rendering (``mujoco.Renderer`` and the GL contexts, see
+:ref:`PyRender`); the interactive viewer, MJX, and the USD exporter are not yet supported.
 
 
 .. _PyModule:
@@ -1007,7 +1009,9 @@ viewer, MJX, and the USD exporter are not yet supported.
 Modules
 =======
 
-The ``mujoco`` package contains two sub-modules: ``mujoco.rollout`` and ``mujoco.minimize``
+The ``mujoco`` package includes several sub-modules: :ref:`mujoco.rollout <PyRollout>`, :ref:`mujoco.batch <PyBatch>`,
+:ref:`mujoco.minimize <PyMinimize>`, :ref:`mujoco.sysid <PySysid>`, :ref:`mujoco.studio <Studio>`, and
+:ref:`mujoco.usd <PyUSDexport>`.
 
 .. _PyRollout:
 
@@ -1052,7 +1056,8 @@ Therefore, non-increasing time values can be used to detect diverged rollouts.
 The ``rollout`` function is designed to be computationally stateless, so all inputs of the stepping pipeline are set and
 any values already present in the given ``MjData`` instance will have no effect on the output.
 
-``rollout`` threads across rollouts, so an ``MjData`` with a :ref:`mju_threadpool` installed is rejected.
+``rollout`` threads across rollouts, so an ``MjData`` with a :ref:`mju_threadpool` installed is rejected. For
+simulations that persist between calls, see :ref:`batch<PyBatch>`.
 
 By default ``rollout.rollout`` creates a new thread pool every call if ``len(data) > 1``. To reuse the thread pool
 over multiple calls use the ``persistent_pool`` argument. ``rollout.rollout`` is not thread safe when using
@@ -1087,6 +1092,94 @@ is less efficient than using native threads. See the ``test_threading`` function
 `rollout_test.py <https://github.com/google-deepmind/mujoco/blob/main/python/mujoco/rollout_test.py>`__ for an example
 of threaded operation (and for more general usage examples).
 
+.. _PyBatch:
+
+batch
+-----
+``mujoco.batch.Batch`` runs many simulations of one model on a thread pool and exposes their fields as rows of NumPy
+arrays. It wraps the :ref:`batch API<Batchedsimulation>`.
+
+.. code-block:: python
+
+   from mujoco import batch
+
+   b = batch.Batch(model, nsim=1024, nthread=8)
+   qpos, ctrl, xpos = b.bind('qpos'), b.bind('ctrl'), b.bind('xpos')
+   for _ in range(1000):
+     ctrl[:] = policy(qpos, xpos)
+     b.step()
+
+Each simulation is its :ref:`integration state<siIntegrationState>`, one row of ``b.state``. A call loads each
+simulation's row into an ``MjData``, runs, and saves the row back, on ``nthread`` threads including the caller's (by
+default, one per CPU), with the Global Interpreter Lock released. Results are bit-identical to a loop over one
+``MjData`` per simulation, at any thread count.
+
+- ``bind(name)`` returns a live ``nsim x ...`` array over an ``MjData`` field. State fields such as ``qpos``, ``ctrl``
+  and ``mocap_pos`` are views of the rows, and a write is the simulation's state at its next call. Other fields are
+  copied out after every call on a simulation, and are read-only; after ``step`` they lag the state by one substep, as
+  with :ref:`mj_step`. Of the scalars, the counts ``ncon``, ``ne``, ``nf``, ``nl``, ``nefc``, ``nJ``, ``nA``,
+  ``nisland`` and ``nidof`` bind as ``nsim`` int arrays. In a batch that is not persistent, a field bound between calls
+  reads zero until the next call.
+  The rows hold :ref:`mjtNum` values, so ``eq_active`` binds as ``mjtNum`` rather than as ``MjData``'s bytes. Fields
+  are also attributes, as on ``MjData``: ``b.xpos`` binds ``xpos``, and ``b.ctrl = u`` writes every simulation's
+  controls. ``mujoco.batch.DATA_FIELDS`` and ``mujoco.batch.MODEL_FIELDS`` name the fields ``bind`` and ``expand``
+  accept.
+- ``joint(name)``, ``body(name)``, ``site(name)``, ``sensor(name)``, ``actuator(name)``, ``geom(name)``,
+  ``tendon(name)``, ``camera(name)`` and ``light(name)`` give one object's columns of the bound and expanded fields,
+  with the attributes of :ref:`named access<PyNamed>` of both ``MjData`` and ``MjModel``: ``b.joint('hinge').qpos`` is
+  ``nsim x 1``, and ``b.body('pole').mass = masses`` writes per-simulation masses, as ``expand`` does.
+  ``equality(name)``, ``pair(name)``, ``material(name)``, ``numeric(name)`` and ``keyframe(name)`` do the same with
+  the attributes of ``MjModel`` only.
+- ``get_model(sim)`` and ``get_data(sim)`` materialize one simulation as an ``MjModel`` and ``MjData``, for rendering
+  or for any function; see :ref:`mjb_getModel` and :ref:`mjb_getData`.
+- ``set_models(models)`` runs each simulation on a model of the caller's, an ``MjModel`` per simulation or one for all,
+  instead of the batch's model, in place of expanded fields; named views then read model attributes from each
+  simulation's model, and ``models`` returns the models set. See :ref:`mjb_setModels`.
+- ``expand(name)`` gives an ``MjModel`` field, or an ``MjOption`` field named ``opt.<name>``, per-simulation values,
+  applied before each call; ``expanded(name)`` returns a field's read-only per-simulation values without expanding it,
+  or ``None`` if it is still shared. ``set_const`` runs :ref:`mj_setConst` per simulation, and the fields it derives
+  become per-simulation as well. After writing a field that :ref:`mj_setConst` reads, one of
+  ``mujoco.MjModel._setconst_inputs`` or an ``MjOption`` field, call ``set_const`` so that the constants derived from it
+  follow.
+- ``step(ids, nstep)``, ``forward(ids)``, ``reset(ids, keyframe)`` and ``set_const(ids)`` run on the simulations
+  ``ids``, sorted, unique and non-negative integers or a boolean mask, or on all of them. ``reset`` discards writes
+  made before it, and takes a keyframe for every simulation of the call or one each.
+- ``step(nstep, stage=mujoco.mjtStage.mjSTAGE_VEL)`` makes position- and velocity-dependent fields and sensors describe
+  the new state, as :ref:`mj_step1` does, rather than the state before the last substep. In a persistent batch this
+  costs nothing extra; see :ref:`mjb_step`. ``reset`` and ``forward`` take a ``stage`` too, by default
+  ``mjSTAGE_ACC``: ``reset(ids, stage=mujoco.mjtStage.mjSTAGE_NONE)`` skips the forward pass of a reset that is
+  followed by randomization and ``forward(ids)``.
+- ``rollout(nstep, control, control_spec, record, ids)`` steps as :ref:`rollout<PyRollout>` does, records any ``MjData``
+  fields or state vectors after every substep, and returns them as ``n x nstep x ...`` arrays. A simulation whose
+  warning counters rise stops stepping, and its remaining records repeat its last ones.
+- ``jac(body, point, ids)`` and ``ray(pnt, vec, ..., normal=False)`` evaluate :ref:`mj_jac` and :ref:`mj_ray` per
+  simulation, with a body per simulation and a body to exclude per ray if given, and the surface normals of the hits on
+  request. They first compute the kinematics from the state, with :ref:`mj_kinematics` and :ref:`mj_comPos` for
+  ``jac``, and :ref:`mj_kinematics` and, if the model has flexes, :ref:`mj_flex` for ``ray``. The state and bound
+  fields are unchanged; in a persistent batch, the simulation's ``MjData`` keeps these kinematics.
+- ``b.warning`` holds each simulation's warning counters, ``nsim x mjNWARNING x 2`` (``lastinfo`` and ``number`` of
+  :ref:`mjWarningStat`), saved and restored with its state.
+
+If MuJoCo raises an error in some simulations, the call raises ``mujoco.batch.SimulationError`` listing them. They keep
+the state they had before the call, and the others run to completion. ``b.status`` and ``b.error(i)`` hold the outcome
+of each simulation's last call. ``SimulationError`` is a ``RuntimeError`` whose ``ids`` attribute lists the failed
+simulations. Invalid arguments raise ``ValueError``, or ``mujoco.FatalError`` where the batch API rejects them. A
+``Batch`` must not be used from several Python threads at once: its calls are serialized, but each reports its failures
+from this per-simulation outcome, which the next call overwrites.
+
+By default an ``MjData`` serves many simulations, so memory grows with threads rather than simulations, and a field a
+call does not compute, such as ``qfrc_inverse`` after ``step``, holds another simulation's value. ``Batch(model, nsim,
+persistent=True)`` keeps one ``MjData`` per simulation instead, and is required for models with
+:ref:`sleep<option-flag-sleep>` or :ref:`IPC<option-flag-ipc>` enabled. Likewise, :ref:`engine plugins<exPlugin>` that
+keep state outside ``plugin_state`` share it among the simulations a thread runs, unless the batch is persistent.
+
+The batch's threads run across simulations, while :ref:`mju_threadpool` threads one simulation from within; the two are
+not combined. :ref:`Physics callbacks<glPhysics>` must be C functions, installed through ``ctypes``: with a Python
+function installed as one, the batch's calls raise ``ValueError``. A ``ctypes`` function that wraps a Python function
+is accepted, but it holds the Global Interpreter Lock while it runs, which serializes the batch's threads, and its
+exceptions are printed rather than raised. Warnings raised on the batch's threads go to the global log handler, and
+only those raised on the caller's thread also reach a thread-local one; the counters of ``b.warning`` count them all.
+
 .. _PyMinimize:
 
 minimize
@@ -1099,6 +1192,22 @@ Quadratic Programs with :ref:`mju_boxQP`. It is documented in the associated not
 
 .. |lscolab| image:: https://colab.research.google.com/assets/colab-badge.png
              :target: https://colab.research.google.com/github/google-deepmind/mujoco/blob/main/python/least_squares.ipynb
+
+.. _PySysid:
+
+sysid
+-----
+
+The `mujoco.sysid <https://github.com/google-deepmind/mujoco/tree/main/python/mujoco/sysid>`__ toolbox (installed via
+``pip install mujoco[sysid]``) fits model parameters to recorded hardware trajectories using box-constrained nonlinear
+least squares over batched parallel :ref:`rollout <PyRollout>` evaluations. It supports arbitrary :ref:`MjSpec <mjSpec>`
+parameters---with built-in helpers for body mass, center of mass, physically consistent 10-D pseudo-inertias, and
+actuator P/D gains---as well as sensor/actuator delays and biases, and generates interactive HTML diagnostic reports.
+See the `sysid README <https://github.com/google-deepmind/mujoco/blob/main/python/mujoco/sysid/README.md>`__ for API
+details and the associated notebook: |sysid_colab|
+
+.. |sysid_colab| image:: https://colab.research.google.com/assets/colab-badge.png
+                 :target: https://colab.research.google.com/github/google-deepmind/mujoco/blob/main/python/mujoco/sysid/sysid.ipynb
 
 .. _PyUSDexport:
 

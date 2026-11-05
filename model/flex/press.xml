@@ -27,20 +27,6 @@
   </visual>
 
   <worldbody>
-    <flexcomp name="A" type="grid" count="4 4 4" spacing=".2 .2 .2" pos="0 0 .5"
-              radius=".005" rgba="0 .7 .7 1" dim="3" mass="5">
-      <contact condim="3" solref="0.01 1" solimp=".95 .99 .0001" selfcollide="none"/>
-      <edge damping="1"/>
-      <elasticity young="1e4" poisson="0.4"/>
-    </flexcomp>
-
-    <flexcomp name="B" type="grid" count="4 4 4" spacing=".2 .2 .2" pos="1 0 .5"
-              radius=".005" rgba="0 .7 .7 1" dim="3" mass="5">
-      <contact condim="3" solref="0.01 1" solimp=".95 .99 .0001" selfcollide="none"/>
-      <edge damping="1"/>
-      <elasticity young="5e4" poisson="0"/>
-    </flexcomp>
-
     <body>
       <joint name="soft" type="slide" axis="0 0 1" damping="500"/>
       <geom type="box" size=".35 .35 0.05" pos=".1 .1 1" density="300"/>
@@ -49,6 +35,18 @@
       <joint name="stiff" type="slide" axis="0 0 1" damping="500"/>
       <geom type="box" size=".35 .35 0.05" pos="1.1 .1 1" density="300"/>
     </body>
+
+    <flexcomp name="A" type="grid" count="4 4 4" spacing=".2 .2 .2" pos="0 0 .5"
+              radius=".005" rgba="0 .7 .7 1" dim="3" mass="5">
+      <contact condim="3" solref="0.01 1" solimp=".95 .99 .0001" selfcollide="none"/>
+      <elasticity young="10317.4603" poisson="0.444444444" damping="0.01"/>
+    </flexcomp>
+
+    <flexcomp name="B" type="grid" count="4 4 4" spacing=".2 .2 .2" pos="1 0 .5"
+              radius=".005" rgba="0 .7 .7 1" dim="3" mass="5">
+      <contact condim="3" solref="0.01 1" solimp=".95 .99 .0001" selfcollide="none"/>
+      <elasticity young="5e4" poisson="0" damping="0.01"/>
+    </flexcomp>
   </worldbody>
 
   <actuator>

@@ -51,6 +51,10 @@ void mj_assignFriction(const mjModel* m, mjtNum* target, const mjtNum* source);
 // assign/override geom margin
 mjtNum mj_assignMargin(const mjModel* m, mjtNum source);
 
+// compute contact condim, solref, solimp, friction, adhesion
+void mj_contactParam(const mjModel* m, int* condim, mjtNum* solref, mjtNum* solimp,
+                     mjtNum* friction, mjtNum* adhesion, int g1, int g2, int f1, int f2);
+
 // add contact to d->contact list; return 0 if success; 1 if buffer full
 MJAPI int mj_addContact(const mjModel* m, mjData* d, const mjContact* con);
 

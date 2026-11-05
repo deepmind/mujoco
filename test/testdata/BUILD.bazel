@@ -8,6 +8,7 @@ filegroup(
         "catenary.xml",
         "delay.xml",
         "flex.xml",
+        "flex_ipc.xml",
         "frustum.xml",
         "hammock.xml",
         "model.mjz",

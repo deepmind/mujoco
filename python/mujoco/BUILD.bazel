@@ -4,9 +4,9 @@
 load("@bazel_skylib//lib:selects.bzl", "selects")
 load("@pybind11_bazel//:build_defs.bzl", "pybind_library")
 load("@rules_cc//cc:cc_library.bzl", "cc_library")
-load("@rules_cc//cc:cc_shared_library.bzl", "cc_shared_library")
 load("@rules_python//python:py_library.bzl", "py_library")
 load("@rules_python//python:py_test.bzl", "py_test")
+load("//plugin:mujoco_plugin.bzl", "mujoco_plugin")
 load("//python/mujoco:build_defs.bzl", "mujoco_pybind_extension")
 
 package_group(
@@ -29,83 +29,21 @@ exports_files([
 # the shared engine library like the extension modules. In the Bazel build they
 # are data of :mujoco, and __init__.py loads them at import time, as in the
 # CMake-built wheel, which ships the same libraries.
-cc_shared_library(
+mujoco_plugin(
     name = "plugin_actuator",
-    additional_linker_inputs = select({
-        "@platforms//os:macos": ["//:mujoco_plugin.exported_symbols"],
-        "//conditions:default": ["//:mujoco_plugin.lds"],
-    }),
-    dynamic_deps = ["//:mujoco_shared"],
-    shared_lib_name = select({
-        "@platforms//os:macos": "plugin/libactuator.dylib",
-        "//conditions:default": "plugin/libactuator.so",
-    }),
-    user_link_flags = select({
-        "@platforms//os:macos": ["-Wl,-exported_symbols_list,$(execpath //:mujoco_plugin.exported_symbols)"],
-        "//conditions:default": [
-            "-Wl,--version-script=$(execpath //:mujoco_plugin.lds)",
-        ],
-    }),
+    library_name = "plugin/libactuator",
     deps = ["//plugin/actuator:register"],
 )
 
-cc_shared_library(
-    name = "plugin_elasticity",
-    additional_linker_inputs = select({
-        "@platforms//os:macos": ["//:mujoco_plugin.exported_symbols"],
-        "//conditions:default": ["//:mujoco_plugin.lds"],
-    }),
-    dynamic_deps = ["//:mujoco_shared"],
-    shared_lib_name = select({
-        "@platforms//os:macos": "plugin/libelasticity.dylib",
-        "//conditions:default": "plugin/libelasticity.so",
-    }),
-    user_link_flags = select({
-        "@platforms//os:macos": ["-Wl,-exported_symbols_list,$(execpath //:mujoco_plugin.exported_symbols)"],
-        "//conditions:default": [
-            "-Wl,--version-script=$(execpath //:mujoco_plugin.lds)",
-        ],
-    }),
-    deps = ["//plugin/elasticity:register"],
-)
-
-cc_shared_library(
+mujoco_plugin(
     name = "plugin_sdf",
-    additional_linker_inputs = select({
-        "@platforms//os:macos": ["//:mujoco_plugin.exported_symbols"],
-        "//conditions:default": ["//:mujoco_plugin.lds"],
-    }),
-    dynamic_deps = ["//:mujoco_shared"],
-    shared_lib_name = select({
-        "@platforms//os:macos": "plugin/libsdf_plugin.dylib",
-        "//conditions:default": "plugin/libsdf_plugin.so",
-    }),
-    user_link_flags = select({
-        "@platforms//os:macos": ["-Wl,-exported_symbols_list,$(execpath //:mujoco_plugin.exported_symbols)"],
-        "//conditions:default": [
-            "-Wl,--version-script=$(execpath //:mujoco_plugin.lds)",
-        ],
-    }),
+    library_name = "plugin/libsdf_plugin",
     deps = ["//plugin/sdf:register"],
 )
 
-cc_shared_library(
+mujoco_plugin(
     name = "plugin_sensor",
-    additional_linker_inputs = select({
-        "@platforms//os:macos": ["//:mujoco_plugin.exported_symbols"],
-        "//conditions:default": ["//:mujoco_plugin.lds"],
-    }),
-    dynamic_deps = ["//:mujoco_shared"],
-    shared_lib_name = select({
-        "@platforms//os:macos": "plugin/libsensor.dylib",
-        "//conditions:default": "plugin/libsensor.so",
-    }),
-    user_link_flags = select({
-        "@platforms//os:macos": ["-Wl,-exported_symbols_list,$(execpath //:mujoco_plugin.exported_symbols)"],
-        "//conditions:default": [
-            "-Wl,--version-script=$(execpath //:mujoco_plugin.lds)",
-        ],
-    }),
+    library_name = "plugin/libsensor",
     deps = ["//plugin/sensor:register"],
 )
 
@@ -113,12 +51,14 @@ py_library(
     name = "mujoco",
     srcs = [
         "__init__.py",
+        "batch.py",
         "gl_context.py",
         "minimize.py",
         "renderer.py",
         "rollout.py",
     ],
     data = [
+        ":_batch",
         ":_callbacks",
         ":_constants",
         ":_enums",
@@ -129,20 +69,17 @@ py_library(
         ":_specs",
         ":_structs",
         ":plugin_actuator",
-        ":plugin_elasticity",
         ":plugin_sdf",
         ":plugin_sensor",
     ],
     imports = [".."],
     visibility = [":visibility"],
     deps = [
-        "//python/mujoco/pypi:absl_py",
-        "//python/mujoco/pypi:epath",
         "//python/mujoco/pypi:glfw",
         "//python/mujoco/pypi:numpy",  # buildcleaner: keep
         "//python/mujoco/pypi:pyopengl",
-        "//python/mujoco/pypi:typing_extensions",
         "//python/mujoco/pypi:websockets",
+        "//python/mujoco/rendering",
     ],
 )
 
@@ -455,6 +392,60 @@ cc_library(
     deps = ["//:libmujoco_hdrs"],
 )
 
+py_test(
+    name = "renderer_test",
+    srcs = ["renderer_test.py"],
+    env = select({
+        "@platforms//os:linux": {"MUJOCO_GL": "egl"},
+        "//conditions:default": {},
+    }),
+    deps = [
+        ":mujoco",
+        "//python/mujoco/pypi:absltest",
+        "//python/mujoco/pypi:numpy",
+        "//python/mujoco/pypi:parameterized",
+    ],
+)
+
+py_test(
+    name = "render_test",
+    srcs = ["render_test.py"],
+    env = select({
+        "@platforms//os:linux": {"MUJOCO_GL": "egl"},
+        "//conditions:default": {},
+    }),
+    deps = [
+        ":mujoco",
+        "//python/mujoco/pypi:absl_flags",
+        "//python/mujoco/pypi:absltest",
+        "//python/mujoco/pypi:numpy",
+    ],
+)
+
+mujoco_pybind_extension(
+    name = "_batch",
+    srcs = ["batch.cc"],
+    conlyopts = ["-std=c11"],
+    cxxopts = ["-std=c++20"],
+    deps = [
+        ":errors_header",
+        ":raw",
+        ":structs_header",
+        "//:mujoco",  # buildcleaner: keep
+    ],
+)
+
+py_test(
+    name = "batch_test",
+    srcs = ["batch_test.py"],
+    deps = [
+        ":mujoco",
+        "//python/mujoco/pypi:absltest",
+        "//python/mujoco/pypi:numpy",
+        "//python/mujoco/pypi:parameterized",
+    ],
+)
+
 mujoco_pybind_extension(
     name = "_rollout",
     srcs = ["rollout.cc"],
@@ -623,4 +614,11 @@ py_test(
         ":mujoco",
         "//python/mujoco/pypi:absltest",
     ],
+)
+
+py_test(
+    name = "egl_test",
+    srcs = ["egl_test.py"],
+    data = ["//python/mujoco/egl:__init__.py"],
+    deps = ["//python/mujoco/pypi:absltest"],
 )

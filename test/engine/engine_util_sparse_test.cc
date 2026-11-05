@@ -17,6 +17,8 @@
 #include "src/engine/engine_util_sparse.h"
 
 #include <array>
+#include <cstddef>
+#include <cstdint>
 #include <vector>
 
 #include <gmock/gmock.h>
@@ -416,13 +418,13 @@ static void SqrMatTDSplitCol(std::vector<mjtNum>& dense_result, int nr, int nc,
   std::vector<int> H_rowadr(nc, 0);
   int nnz = mju_sqrMatTDSparseSymbolic(
       H_rownnz.data(), H_rowadr.data(), nullptr, out_diagind, nr, nc, rownnz,
-      rowadr, colind, rownnzT, rowadrT, colindT, rowsuperT, d);
+      rowadr, colind, nullptr, rownnzT, rowadrT, colindT, rowsuperT, d);
 
   // fill mode
   std::vector<int> H_colind(nnz);
   mju_sqrMatTDSparseSymbolic(H_rownnz.data(), H_rowadr.data(), H_colind.data(),
                              out_diagind, nr, nc, rownnz, rowadr, colind,
-                             rownnzT, rowadrT, colindT, rowsuperT, d);
+                             nullptr, rownnzT, rowadrT, colindT, rowsuperT, d);
 
   // numeric phase
   std::vector<mjtNum> H(nnz, 0);
@@ -924,8 +926,8 @@ TEST_F(EngineUtilSparseTest, MjuSqrMatTDSparseSymbolic) {
   int rowadrH[] = {0, 0};
 
   int nnz = mju_sqrMatTDSparseSymbolic(rownnzH, rowadrH, nullptr, nullptr, 2, 2,
-                                       rownnz, rowadr, colind, rownnzT, rowadrT,
-                                       colindT, nullptr, data.get());
+                                       rownnz, rowadr, colind, nullptr, rownnzT,
+                                       rowadrT, colindT, nullptr, data.get());
 
   EXPECT_EQ(nnz, nnz_expected);
   EXPECT_THAT(rownnzH, ElementsAre(rownnzH_expected[0], rownnzH_expected[1]));
@@ -935,8 +937,8 @@ TEST_F(EngineUtilSparseTest, MjuSqrMatTDSparseSymbolic) {
   std::vector<int> colindH(nnz, -1);
 
   mju_sqrMatTDSparseSymbolic(rownnzH, rowadrH, colindH.data(), nullptr, 2, 2,
-                             rownnz, rowadr, colind, rownnzT, rowadrT, colindT,
-                             nullptr, data.get());
+                             rownnz, rowadr, colind, nullptr, rownnzT, rowadrT,
+                             colindT, nullptr, data.get());
 
   // verify: row 0 should have {0}, row 1 should have {0, 1}
   EXPECT_THAT(colindH, ElementsAre(0, 0, 1));
@@ -972,9 +974,9 @@ TEST_F(EngineUtilSparseTest, MjuSqrMatTDSparseSymbolicUpper) {
   int rownnzH[] = {0, 0};
   int rowadrH[] = {0, 0};
   int diagindH[] = {0, 0};
-  int nnz = mju_sqrMatTDSparseSymbolic(rownnzH, rowadrH, nullptr, diagindH, 2,
-                                       2, rownnz, rowadr, colind, rownnzT,
-                                       rowadrT, colindT, nullptr, data.get());
+  int nnz = mju_sqrMatTDSparseSymbolic(
+      rownnzH, rowadrH, nullptr, diagindH, 2, 2, rownnz, rowadr, colind,
+      nullptr, rownnzT, rowadrT, colindT, nullptr, data.get());
 
   EXPECT_EQ(nnz, nnz_expected);
   EXPECT_THAT(rownnzH, ElementsAre(rownnzH_expected[0], rownnzH_expected[1]));
@@ -1004,8 +1006,10 @@ TEST_F(EngineUtilSparseTest, MjuSqrMatTDSparseSymbolicSupernode) {
   mju_transposeSparse(matT, mat, 3, 2, rownnzT, rowadrT, colindT, nullptr,
                       rownnz, rowadr, colind);
 
-  // compute rowsuperT
+  // compute rowsuper and rowsuperT
+  int rowsuper[3];
   int rowsuperT[2];
+  mju_superSparse(3, rowsuper, rownnz, rowadr, colind);
   mju_superSparse(2, rowsuperT, rownnzT, rowadrT, colindT);
 
   // use old function as ground truth
@@ -1018,9 +1022,9 @@ TEST_F(EngineUtilSparseTest, MjuSqrMatTDSparseSymbolicSupernode) {
   // test new function with supernodes
   int rownnzH[] = {0, 0};
   int rowadrH[] = {0, 0};
-  int nnz = mju_sqrMatTDSparseSymbolic(rownnzH, rowadrH, nullptr, nullptr, 3, 2,
-                                       rownnz, rowadr, colind, rownnzT, rowadrT,
-                                       colindT, rowsuperT, data.get());
+  int nnz = mju_sqrMatTDSparseSymbolic(
+      rownnzH, rowadrH, nullptr, nullptr, 3, 2, rownnz, rowadr, colind,
+      rowsuper, rownnzT, rowadrT, colindT, rowsuperT, data.get());
 
   EXPECT_EQ(nnz, nnz_expected);
   EXPECT_THAT(rownnzH, ElementsAre(rownnzH_expected[0], rownnzH_expected[1]));
@@ -1029,8 +1033,8 @@ TEST_F(EngineUtilSparseTest, MjuSqrMatTDSparseSymbolicSupernode) {
   // test fill mode with supernodes
   std::vector<int> colindH(nnz, -1);
   mju_sqrMatTDSparseSymbolic(rownnzH, rowadrH, colindH.data(), nullptr, 3, 2,
-                             rownnz, rowadr, colind, rownnzT, rowadrT, colindT,
-                             rowsuperT, data.get());
+                             rownnz, rowadr, colind, rowsuper, rownnzT, rowadrT,
+                             colindT, rowsuperT, data.get());
 
   // verify all filled
   for (int i = 0; i < nnz; i++) {
@@ -1111,13 +1115,14 @@ TEST_F(EngineUtilSparseTest, MjuSqrMatTDSparseNumeric) {
     int diagindH[] = {0, 0};
     int nnz = mju_sqrMatTDSparseSymbolic(
         rownnzH, rowadrH, nullptr, use_diagind ? diagindH : nullptr, 2, 2,
-        rownnz, rowadr, colind, rownnzT, rowadrT, colindT, nullptr, data.get());
+        rownnz, rowadr, colind, nullptr, rownnzT, rowadrT, colindT, nullptr,
+        data.get());
 
     std::vector<int> colindH(nnz);
     mju_sqrMatTDSparseSymbolic(rownnzH, rowadrH, colindH.data(),
                                use_diagind ? diagindH : nullptr, 2, 2, rownnz,
-                               rowadr, colind, rownnzT, rowadrT, colindT,
-                               nullptr, data.get());
+                               rowadr, colind, nullptr, rownnzT, rowadrT,
+                               colindT, nullptr, data.get());
 
     // compute values using numeric phase
     std::vector<mjtNum> resH(nnz);
@@ -1159,6 +1164,31 @@ TEST_F(EngineUtilSparseTest, MjuSqrMatTDSparseNumeric) {
       }
     }
   }
+
+  // Test superset sparsity pattern (as in HessianConeFolded where M is merged
+  // into H_colind):
+  // - col 0 is unconstrained (rownnzT[0] == 0) but present in H_colind
+  // - cols 1, 2 form a JT supernode, with an extra off-diagonal (2, 0) in H
+  int J_colind[] = {1, 2};
+  int J_rownnz[] = {2};
+  int J_rowadr[] = {0};
+  mjtNum J[] = {2, 3};
+  mjtNum D[] = {5};
+
+  mjtNum JT[2];
+  int JT_colind[2], JT_rownnz[3], JT_rowadr[3], JT_rowsuper[3];
+  mju_transposeSparse(JT, J, 1, 3, JT_rownnz, JT_rowadr, JT_colind, JT_rowsuper,
+                      J_rownnz, J_rowadr, J_colind);
+
+  int H_rownnz[] = {1, 1, 3};
+  int H_rowadr[] = {0, 1, 2};
+  int H_colind[] = {0, 1, 0, 1, 2};
+  mjtNum H[] = {-99, -99, -99, -99, -99};
+
+  mju_sqrMatTDSparseNumeric(H, 3, H_rownnz, H_rowadr, H_colind, nullptr, J,
+                            J_rownnz, J_rowadr, J_colind, JT, JT_rownnz,
+                            JT_rowadr, JT_colind, JT_rowsuper, D, data.get());
+  EXPECT_THAT(AsVector(H, 5), ElementsAre(0, 20, 0, 30, 45));
 }
 
 TEST_F(EngineUtilSparseTest, MjuMulMatTVec) {
@@ -1524,6 +1554,218 @@ TEST_F(EngineUtilSparseTest, PermuteMat) {
   mjtNum mixed_back[3 * 4];
   PermuteMat(mixed_back, mixed, 3, 4, perm_r, perm_c, false, true);
   EXPECT_THAT(mixed_back, ElementsAre(1, 2, 0, 0, 0, 0, 3, 4, 0, 0, 5, 6));
+}
+
+TEST_F(EngineUtilSparseTest, MjuSqrMatTDSparseSymbolicEmptyRowAndGuards) {
+  MjModelPtr model = LoadModelFromString("<mujoco/>");
+  MjDataPtr data = MakeData(model);
+
+  // 2x3 matrix M with empty column 1: [[1, 0, 2], [0, 0, 3]]
+  int colind[] = {0, 2, 2};
+  int rownnz[] = {2, 1};
+  int rowadr[] = {0, 2};
+  int colindT[] = {0, 0, 1};
+  int rownnzT[] = {1, 0, 2};
+  int rowadrT[] = {0, 1, 1};
+
+  int rownnzH[] = {0, 0, 0};
+  int rowadrH[] = {0, 0, 0};
+  int diagindH[] = {0, 0, 0};
+
+  int nnz = mju_sqrMatTDSparseSymbolic(
+      rownnzH, rowadrH, nullptr, diagindH, 2, 3, rownnz, rowadr, colind,
+      nullptr, rownnzT, rowadrT, colindT, nullptr, data.get());
+  EXPECT_EQ(nnz, 4);
+  EXPECT_THAT(rownnzH, ElementsAre(2, 0, 2));
+  EXPECT_THAT(rowadrH, ElementsAre(0, 2, 2));
+
+  std::vector<int> colindH(nnz, -1);
+  mju_sqrMatTDSparseSymbolic(rownnzH, rowadrH, colindH.data(), diagindH, 2, 3,
+                             rownnz, rowadr, colind, nullptr, rownnzT, rowadrT,
+                             colindT, nullptr, data.get());
+  EXPECT_EQ(diagindH[0], 0);
+  EXPECT_EQ(diagindH[1], -1);
+  EXPECT_EQ(diagindH[2], 3);
+
+  EXPECT_EQ(
+      mju_sqrMatTDSparseSymbolic(rownnzH, rowadrH, nullptr, diagindH, 0, 3,
+                                 rownnz, rowadr, colind, nullptr, rownnzT,
+                                 rowadrT, colindT, nullptr, data.get()),
+      0);
+  EXPECT_THAT(rownnzH, ElementsAre(0, 0, 0));
+  EXPECT_THAT(rowadrH, ElementsAre(0, 0, 0));
+  EXPECT_THAT(diagindH, ElementsAre(-1, -1, -1));
+
+  // Fill mode with nr == 0, nc > 0 must preserve caller-provided res_rowadr
+  int shifted_rowadrH[] = {0, 2, 5};
+  rownnzH[0] = rownnzH[1] = rownnzH[2] = 7;
+  diagindH[0] = diagindH[1] = diagindH[2] = 7;
+  EXPECT_EQ(mju_sqrMatTDSparseSymbolic(rownnzH, shifted_rowadrH, colindH.data(),
+                                       diagindH, 0, 3, rownnz, rowadr, colind,
+                                       nullptr, rownnzT, rowadrT, colindT,
+                                       nullptr, data.get()),
+            0);
+  EXPECT_THAT(rownnzH, ElementsAre(0, 0, 0));
+  EXPECT_THAT(shifted_rowadrH, ElementsAre(0, 2, 5));
+  EXPECT_THAT(diagindH, ElementsAre(-1, -1, -1));
+
+  EXPECT_EQ(
+      mju_sqrMatTDSparseSymbolic(rownnzH, rowadrH, nullptr, diagindH, 2, 0,
+                                 rownnz, rowadr, colind, nullptr, rownnzT,
+                                 rowadrT, colindT, nullptr, data.get()),
+      0);
+}
+
+TEST_F(EngineUtilSparseTest, MjuSortSparseRowAndPermuteLowerCSR) {
+  int colind[] = {4, 1, 3, 0, 2};
+  mjtNum val[] = {40, 10, 30, 0, 20};
+  mju_sortSparseRow(5, colind, val);
+  EXPECT_THAT(colind, ElementsAre(0, 1, 2, 3, 4));
+  EXPECT_THAT(val, ElementsAre(0, 10, 20, 30, 40));
+
+  // symmetric 3x3 matrix in lower-triangular CSR:
+  // [10,  2,  3]
+  // [ 2, 20,  4]
+  // [ 3,  4, 30]
+  int src_rownnz[] = {1, 2, 3};
+  int src_rowadr[] = {0, 1, 3};
+  int src_colind[] = {0, 0, 1, 0, 1, 2};
+  mjtNum src_val[] = {10, 2, 20, 3, 4, 30};
+
+  // permute old -> new: 0 -> 2, 1 -> 0, 2 -> 1
+  int perm[] = {2, 0, 1};
+  int dst_rownnz[3] = {0};
+  int dst_rowadr[3] = {0};
+  int dst_colind[6] = {0};
+  mjtNum dst_val[6] = {0};
+  mju_permuteLowerCSR(3, perm, dst_rownnz, dst_rowadr, dst_colind, dst_val,
+                      src_rownnz, src_rowadr, src_colind, src_val);
+
+  mjtNum dense_src[9] = {0};
+  mjtNum dense_dst[9] = {0};
+  mju_sym2dense(dense_src, src_val, 3, src_rownnz, src_rowadr, src_colind);
+  mju_sym2dense(dense_dst, dst_val, 3, dst_rownnz, dst_rowadr, dst_colind);
+  for (int i = 0; i < 3; i++) {
+    for (int j = 0; j < 3; j++) {
+      EXPECT_EQ(dense_dst[perm[i] * 3 + perm[j]], dense_src[i * 3 + j]);
+    }
+  }
+}
+
+TEST_F(EngineUtilSparseTest, MjuMinDegreeGrid) {
+  // 8x8 grid graph (nb = 64, words = 1) with uniform block size 3
+  constexpr int side = 8;
+  constexpr int nb = side * side;
+  constexpr int words = (nb + 63) / 64;
+  std::vector<uint64_t> adj(nb * words, 0);
+  std::vector<int> bsz(nb, 3);
+  for (int r = 0; r < side; r++) {
+    for (int c = 0; c < side; c++) {
+      int u = r * side + c;
+      auto connect = [&](int v) {
+        adj[u * words + (v >> 6)] |= 1ULL << (v & 63);
+        adj[v * words + (u >> 6)] |= 1ULL << (u & 63);
+      };
+      if (r + 1 < side) connect((r + 1) * side + c);
+      if (c + 1 < side) connect(r * side + (c + 1));
+    }
+  }
+
+  std::vector<int> perm(nb, -1);
+  std::vector<int> scratch(5 * nb + words, 0);
+  std::vector<uint64_t> nz_bits(words, 0);
+  size_t nL_perm = 0;
+  mjtSize Lflops_perm = 0;
+  int ok = mju_minDegree(perm.data(), adj.data(), nb, bsz.data(), &nL_perm,
+                         &Lflops_perm, /*Lflops_max=*/1000000, scratch.data(),
+                         nz_bits.data());
+  EXPECT_EQ(ok, 1);
+  EXPECT_GT(nL_perm, 0u);
+  EXPECT_GT(Lflops_perm, 0u);
+
+  std::vector<int> seen(nb, 0);
+  for (int i = 0; i < nb; i++) {
+    ASSERT_GE(perm[i], 0);
+    ASSERT_LT(perm[i], nb);
+    seen[perm[i]]++;
+  }
+  for (int i = 0; i < nb; i++) {
+    EXPECT_EQ(seen[i], 1);
+  }
+}
+
+// shuffled rows longer than 24 entries take the gapped pass of the sort
+TEST_F(EngineUtilSparseTest, MjuSortSparseRowLong) {
+  constexpr int nnz = 40;
+  int colind[nnz];
+  mjtNum val[nnz];
+  for (int i = 0; i < nnz; i++) {
+    colind[i] = (i * 17) % nnz;  // 17 is coprime with 40: a permutation
+    val[i] = 10 * colind[i];
+  }
+  mju_sortSparseRow(nnz, colind, val);
+  for (int i = 0; i < nnz; i++) {
+    EXPECT_EQ(colind[i], i);
+    EXPECT_EQ(val[i], 10 * i);
+  }
+}
+
+// grid graph over several bitset words (nb = 144, words = 3): a complete
+// permutation without a flop cap, and an early abort under a tight one
+TEST_F(EngineUtilSparseTest, MjuMinDegreeMultiWordAndAbort) {
+  constexpr int side = 12;
+  constexpr int nb = side * side;
+  constexpr int words = (nb + 63) / 64;
+  auto grid = [&]() {
+    std::vector<uint64_t> adj(nb * words, 0);
+    for (int r = 0; r < side; r++) {
+      for (int c = 0; c < side; c++) {
+        int u = r * side + c;
+        auto connect = [&](int v) {
+          adj[u * words + (v >> 6)] |= 1ULL << (v & 63);
+          adj[v * words + (u >> 6)] |= 1ULL << (u & 63);
+        };
+        if (r + 1 < side) connect((r + 1) * side + c);
+        if (c + 1 < side) connect(r * side + (c + 1));
+      }
+    }
+    return adj;
+  };
+  std::vector<int> bsz(nb, 3);
+  std::vector<int> perm(nb, -1);
+  std::vector<int> scratch(5 * nb + words, 0);
+  std::vector<uint64_t> nz_bits(words, 0);
+
+  // no cap: a permutation of the blocks
+  std::vector<uint64_t> adj = grid();
+  size_t nL = 0;
+  mjtSize flops = 0;
+  ASSERT_EQ(mju_minDegree(perm.data(), adj.data(), nb, bsz.data(), &nL, &flops,
+                          /*max_flops=*/0, scratch.data(), nz_bits.data()),
+            1);
+  EXPECT_GT(nL, 0u);
+  EXPECT_GT(flops, 0u);
+  std::vector<int> seen(nb, 0);
+  for (int i = 0; i < nb; i++) {
+    ASSERT_GE(perm[i], 0);
+    ASSERT_LT(perm[i], nb);
+    seen[perm[i]]++;
+  }
+  for (int i = 0; i < nb; i++) {
+    EXPECT_EQ(seen[i], 1);
+  }
+
+  // cap at half the flops: aborts once the count reaches 4/5 of the cap
+  adj = grid();
+  size_t nL_cap = 0;
+  mjtSize flops_cap = 0;
+  EXPECT_EQ(mju_minDegree(perm.data(), adj.data(), nb, bsz.data(), &nL_cap,
+                          &flops_cap, /*max_flops=*/flops / 2, scratch.data(),
+                          nz_bits.data()),
+            0);
+  EXPECT_GE(5 * flops_cap, 4 * (flops / 2));
+  EXPECT_LT(flops_cap, flops);
+  EXPECT_LT(nL_cap, nL);
 }
 
 }  // namespace

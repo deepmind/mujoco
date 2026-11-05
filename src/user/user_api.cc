@@ -242,7 +242,9 @@ mjtSize mj_encode(const mjSpec*  s,
     return encode_xml(s, m, filename, error, error_sz);
   }
 
-  if (ext == ".mjb") { return encode_mjb(m, filename, error, error_sz); }
+  if (ext == ".mjb" || (content_type && std::strcmp(content_type, "model/vnd.mujoco.mjb") == 0)) {
+    return encode_mjb(m, filename, error, error_sz);
+  }
 
   if (ext == ".txt" || (content_type && std::strcmp(content_type, "text/plain") == 0)) {
     return encode_txt(m, filename, error, error_sz);
@@ -350,6 +352,10 @@ mjModel* mj_compile(mjSpec* s, const mjVFS* vfs) {
     }
   } catch (mjCError& e) {
     modelC->SetError(e);
+
+    // m and d are deleted on failure, as when compilation fails
+    if (d) { mj_deleteData(d); }
+    mj_deleteModel(m);
     return -1;
   }
   return 0;
@@ -510,7 +516,6 @@ mjModel* mj_embedAssets(const mjModel* m, char* error, int error_sz) {
                m->nflexshelldata,
                m->nflextexcoord,
                m->nJfe,
-               m->nJfv,
                m->nmesh,
                m->nmeshvert,
                m->nmeshnormal,
@@ -557,7 +562,8 @@ mjModel* mj_embedAssets(const mjModel* m, char* error, int error_sz) {
                m->nuser_actuator,
                m->nuser_sensor,
                m->nnames,
-               m->npaths);
+               m->npaths,
+               m->nplastic);
   if (!dest) {
     free_pixels();
     CopyError(error, error_sz, "could not allocate model");
@@ -655,18 +661,29 @@ static mjsElement* attachBody(mjCFrame*      parent,
                               const mjCBody* child,
                               const char*    prefix,
                               const char*    suffix) {
-  mjCBody* mutable_child = const_cast<mjCBody*>(child);
-  mutable_child->prefix  = prefix ? prefix : "";
-  mutable_child->suffix  = suffix ? suffix : "";
+  mjCBody*    mutable_child = const_cast<mjCBody*>(child);
+  std::string oldprefix     = mutable_child->prefix;
+  std::string oldsuffix     = mutable_child->suffix;
+  mutable_child->prefix     = prefix ? prefix : "";
+  mutable_child->suffix     = suffix ? suffix : "";
+  mjsElement* result        = nullptr;
   try {
-    *parent += *mutable_child;
-  } catch (mjCError& e) {
-    parent->model->SetError(e);
-    return nullptr;
+    *parent               += *mutable_child;
+    result                 = parent->last_attached->element;
+    parent->last_attached  = nullptr;
+  } catch (mjCError& e) { parent->model->SetError(e); }
+
+  // a copy, or a failed attachment, leaves the child as it was; the namespace which the attachment
+  // gives the model of the child is cleared only when it succeeds
+  if (!result || parent->model->GetDeepCopy()) {
+    mutable_child->prefix = oldprefix;
+    mutable_child->suffix = oldsuffix;
   }
-  mjsBody* attached_body = parent->last_attached;
-  parent->last_attached  = nullptr;
-  return attached_body->element;
+  if (!result) {
+    mutable_child->model->prefix.clear();
+    mutable_child->model->suffix.clear();
+  }
+  return result;
 }
 
 
@@ -675,18 +692,29 @@ static mjsElement* attachFrame(mjCBody*        parent,
                                const mjCFrame* child,
                                const char*     prefix,
                                const char*     suffix) {
-  mjCFrame* mutable_child = const_cast<mjCFrame*>(child);
-  mutable_child->prefix   = prefix ? prefix : "";
-  mutable_child->suffix   = suffix ? suffix : "";
+  mjCFrame*   mutable_child = const_cast<mjCFrame*>(child);
+  std::string oldprefix     = mutable_child->prefix;
+  std::string oldsuffix     = mutable_child->suffix;
+  mutable_child->prefix     = prefix ? prefix : "";
+  mutable_child->suffix     = suffix ? suffix : "";
+  mjsElement* result        = nullptr;
   try {
-    *parent += *mutable_child;
-  } catch (mjCError& e) {
-    parent->model->SetError(e);
-    return nullptr;
+    *parent               += *mutable_child;
+    result                 = parent->last_attached->element;
+    parent->last_attached  = nullptr;
+  } catch (mjCError& e) { parent->model->SetError(e); }
+
+  // a copy, or a failed attachment, leaves the child as it was; the namespace which the attachment
+  // gives the model of the child is cleared only when it succeeds
+  if (!result || parent->model->GetDeepCopy()) {
+    mutable_child->prefix = oldprefix;
+    mutable_child->suffix = oldsuffix;
   }
-  mjsFrame* attached_frame = parent->last_attached;
-  parent->last_attached    = nullptr;
-  return attached_frame->element;
+  if (!result) {
+    mutable_child->model->prefix.clear();
+    mutable_child->model->suffix.clear();
+  }
+  return result;
 }
 
 
@@ -710,7 +738,15 @@ static mjsElement* attachToSite(mjCSite*       parent,
                          spec->compiler.degree,
                          spec->compiler.eulerseq,
                          &parent->spec.alt);
-  return attachBody(frame, child, prefix, suffix);
+
+  // the frame which was added for the attachment is removed if it fails, keeping its error
+  mjsElement* attached = attachBody(frame, child, prefix, suffix);
+  if (!attached) {
+    try {
+      *body->model -= frame;
+    } catch (mjCError&) {}
+  }
+  return attached;
 }
 
 
@@ -736,6 +772,12 @@ static mjsElement* attachFrameToSite(mjCSite*        parent,
                          &parent->spec.alt);
 
   mjsElement* attached_frame = attachFrame(body, child, prefix, suffix);
+  if (!attached_frame) {
+    try {
+      *body->model -= frame;
+    } catch (mjCError&) {}
+    return nullptr;
+  }
   mjs_setFrame(attached_frame, &frame->spec);
   return attached_frame;
 }
@@ -765,6 +807,27 @@ mjsElement* mjs_attach(mjsElement*       parent,
     model->SetError(mjCError(0,
                              "Child spec is already attached by reference; enable deep copy to "
                              "attach a spec more than once."));
+    return nullptr;
+  }
+
+  // check the parent and the child before anything is modified; a spec is attached as a frame
+  if (parent->elemtype != mjOBJ_FRAME &&
+      parent->elemtype != mjOBJ_BODY &&
+      parent->elemtype != mjOBJ_SITE) {
+    model->SetError(mjCError(0, "parent element is not a frame, body or site"));
+    return nullptr;
+  }
+  if (parent->elemtype == mjOBJ_FRAME && !mjs_getParent(parent)) {
+    model->SetError(mjCError(0, "Frame does not have a parent body."));
+    return nullptr;
+  }
+  mjtObj childtype = child->elemtype == mjOBJ_MODEL ? mjOBJ_FRAME : child->elemtype;
+  if (parent->elemtype == mjOBJ_BODY && childtype != mjOBJ_FRAME) {
+    model->SetError(mjCError(0, "child element is not a frame"));
+    return nullptr;
+  }
+  if (childtype != mjOBJ_BODY && childtype != mjOBJ_FRAME) {
+    model->SetError(mjCError(0, "child element is not a body or frame"));
     return nullptr;
   }
 
@@ -836,12 +899,8 @@ mjsElement* mjs_attach(mjsElement*       parent,
                             static_cast<const mjCBody*>(child),
                             prefix,
                             suffix);
-      } else if (child->elemtype == mjOBJ_FRAME) {
-        mjsBody* parent_body = mjs_getParent(parent);
-        if (!parent_body) {
-          model->SetError(mjCError(0, "Frame does not have a parent body."));
-          return nullptr;
-        }
+      } else {
+        mjsBody*    parent_body    = mjs_getParent(parent);
         mjCFrame*   frame          = static_cast<mjCFrame*>(parent);
         mjsElement* attached_frame = attachFrame(static_cast<mjCBody*>(parent_body->element),
                                                  static_cast<const mjCFrame*>(child),
@@ -849,21 +908,13 @@ mjsElement* mjs_attach(mjsElement*       parent,
                                                  suffix);
         if (mjs_setFrame(attached_frame, &frame->spec)) { return nullptr; }
         result = attached_frame;
-      } else {
-        model->SetError(mjCError(0, "child element is not a body or frame"));
-        return nullptr;
       }
       break;
     case mjOBJ_BODY:
-      if (child->elemtype == mjOBJ_FRAME) {
-        result = attachFrame(static_cast<mjCBody*>(parent),
-                             static_cast<const mjCFrame*>(child),
-                             prefix,
-                             suffix);
-      } else {
-        model->SetError(mjCError(0, "child element is not a frame"));
-        return nullptr;
-      }
+      result = attachFrame(static_cast<mjCBody*>(parent),
+                           static_cast<const mjCFrame*>(child),
+                           prefix,
+                           suffix);
       break;
     case mjOBJ_SITE:
       if (child->elemtype == mjOBJ_BODY) {
@@ -871,14 +922,11 @@ mjsElement* mjs_attach(mjsElement*       parent,
                               static_cast<const mjCBody*>(child),
                               prefix,
                               suffix);
-      } else if (child->elemtype == mjOBJ_FRAME) {
+      } else {
         result = attachFrameToSite(static_cast<mjCSite*>(parent),
                                    static_cast<const mjCFrame*>(child),
                                    prefix,
                                    suffix);
-      } else {
-        model->SetError(mjCError(0, "child element is not a body or frame"));
-        return nullptr;
       }
       break;
     default:
@@ -1416,6 +1464,14 @@ int mjs_makeMesh(mjsMesh* mesh, mjtMeshBuiltin builtin, double* params, int npar
         return -1;
       }
       int nedge = static_cast<int>(params[0]);
+      if (nedge < 3) {
+        m->SetError(mjCError(0, "Cone nvert must be at least 3"));
+        return -1;
+      }
+      if (!(params[1] >= 0 && params[1] <= 1)) {
+        m->SetError(mjCError(0, "Cone radius must be in [0, 1]"));
+        return -1;
+      }
       meshC->MakeCone(nedge, params[1]);
       return 0;
     }
@@ -1909,10 +1965,14 @@ const char* mjs_setToMuscle(mjsActuator* actuator,
   if (tausmooth < 0) { return "muscle tausmooth cannot be negative"; }
 
   actuator->dynprm[2] = tausmooth;
-  if (timeconst[0] >= 0) actuator->dynprm[0] = timeconst[0];
-  if (timeconst[1] >= 0) actuator->dynprm[1] = timeconst[1];
-  if (range[0] >= 0) actuator->gainprm[0] = range[0];
-  if (range[1] >= 0) actuator->gainprm[1] = range[1];
+  if (timeconst) {
+    if (timeconst[0] >= 0) actuator->dynprm[0] = timeconst[0];
+    if (timeconst[1] >= 0) actuator->dynprm[1] = timeconst[1];
+  }
+  if (range) {
+    if (range[0] >= 0) actuator->gainprm[0] = range[0];
+    if (range[1] >= 0) actuator->gainprm[1] = range[1];
+  }
   if (force >= 0) actuator->gainprm[2] = force;
   if (scale >= 0) actuator->gainprm[3] = scale;
   if (lmin >= 0) actuator->gainprm[4] = lmin;
@@ -1962,6 +2022,8 @@ const char* mjs_setToDCMotor(mjsActuator* actuator,
   double tau0   = nominal ? nominal[1] : 0;        // stall torque
   double omega0 = nominal ? nominal[2] : 0;        // no-load speed
 
+  if (Kt < 0 || Ke < 0) return "DC motor: motor constants must be non-negative";
+
   // derive Ke from nominal: omega0 = vn*Ke / (Ke^2 + R*B)
   if (vn > 0 && Ke <= 0 && omega0 > 0) {
     // viscous damping (linear)
@@ -1989,7 +2051,8 @@ const char* mjs_setToDCMotor(mjsActuator* actuator,
   // derive R from nominal: tau0 = K*vn/R
   if (R == 0 && vn > 0 && tau0 > 0 && K > 0) { R = K * vn / tau0; }
 
-  if (K <= 0) return "DC motor: motor constant K must be positive";
+  // K = 0 decouples the electrical branch of a passive motor
+  if (K <= 0 && ctrlspec != mjINPUT_NONE) return "DC motor: motor constant K must be positive";
   if (R <= 0) return "DC motor: resistance R must be positive";
 
   // set types
@@ -2020,6 +2083,7 @@ const char* mjs_setToDCMotor(mjsActuator* actuator,
   if (saturation && (saturation[0] > 0 || saturation[1] > 0)) {
     double tau_max = saturation[0];
     if (tau_max == 0 && saturation[1] > 0) {
+      if (K <= 0) return "DC motor: current limit requires a positive motor constant";
       tau_max = K * saturation[1];  // tau_max = K * i_max
     }
     actuator->forcerange[0] = -tau_max;
@@ -2068,7 +2132,8 @@ const char* mjs_setToDCMotor(mjsActuator* actuator,
     double T0    = thermal[4];  // reference temperature
     double Ta    = thermal[5];  // ambient temperature
 
-    if (tth > 0 && RT > 0 && C == 0) {
+    // any two of RT, C, tth; tth takes precedence over C
+    if (tth > 0 && RT > 0) {
       C = tth / RT;
     } else if (tth > 0 && C > 0 && RT == 0) {
       RT = tth / C;

@@ -5,8 +5,6 @@
 
   <worldbody>
     <body name="flex_body">
-      <freejoint/>
-      <inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/>
       <flexcomp name="f1" type="grid" dim="1" count="3 1 1"
                 spacing=".05 .05 .05" radius=".01" mass="1">
         <edge equality="true" solref="0.15 0.2"/>

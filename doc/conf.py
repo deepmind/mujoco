@@ -136,6 +136,7 @@ redirects = {
     'computation': 'computation/index.html',
     'programming': 'programming/index.html',
     'APIreference': 'APIreference/index.html',
+    'studio': 'studio/index.html',
 }
 
 rst_prolog = """

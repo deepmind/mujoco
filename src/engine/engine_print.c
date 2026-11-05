@@ -26,7 +26,6 @@
 #include <mujoco/mjsan.h>  // IWYU pragma: keep
 #include <mujoco/mjtype.h>
 #include <mujoco/mjxmacro.h>
-#include "engine/engine_core_constraint.h"
 #include "engine/engine_core_util.h"
 #include "engine/engine_io.h"
 #include "engine/engine_name.h"
@@ -448,7 +447,8 @@ static bool validateFloatFormat(const char* float_format) {
   const char flag_characters[] = "-+ #0";
   int flag_character_counts[sizeof(flag_characters)] = { 0 };
   const char* c;
-  while (c = strchr(flag_characters, float_format[cur_idx]), c != NULL) {
+  while (float_format[cur_idx] != '\0' &&
+         (c = strchr(flag_characters, float_format[cur_idx])) != NULL) {
     int flag_idx = (c - flag_characters)/sizeof(char);
     flag_character_counts[flag_idx]++;
     if (flag_character_counts[flag_idx] > 1) {
@@ -459,14 +459,16 @@ static bool validateFloatFormat(const char* float_format) {
   }
 
   // width. disallow *, which requires additional argument
-  while (strchr("0123456789", float_format[cur_idx]) != NULL) {
+  while (float_format[cur_idx] != '\0' &&
+         strchr("0123456789", float_format[cur_idx]) != NULL) {
     cur_idx++;
   }
 
   // precision. disallow *, which requires additional argument
   if (float_format[cur_idx] == '.') {
     cur_idx++;
-    while (strchr("0123456789", float_format[cur_idx]) != NULL) {
+    while (float_format[cur_idx] != '\0' &&
+           strchr("0123456789", float_format[cur_idx]) != NULL) {
       cur_idx++;
     }
   }
@@ -477,7 +479,8 @@ static bool validateFloatFormat(const char* float_format) {
   }
 
   // specifier must be a valid float format
-  if (strchr("fgGeE", float_format[cur_idx]) == NULL) {
+  if (float_format[cur_idx] == '\0' ||
+      strchr("fgGeE", float_format[cur_idx]) == NULL) {
     mju_warning("Format string specifier must be one of \"fgGeE\".");
     return false;
   }
@@ -508,7 +511,7 @@ void mj_printFormattedModel(const mjModel* m, const char* filename, const char* 
   // get file
   FILE* fp;
   if (filename) {
-    fp = fopen(filename, "wt");
+    fp = mju_fopen(filename, "wt");
   } else {
     fp = stdout;
   }
@@ -527,7 +530,7 @@ void mj_printFormattedModel(const mjModel* m, const char* filename, const char* 
 
   // compute total body mass
   mjtNum totalmass = 0;
-  for (int i=0; i < m->nbody; i++) {
+  for (int i=1; i < m->nbody; i++) {
     totalmass += m->body_mass[i];
   }
 
@@ -729,6 +732,7 @@ void mj_printFormattedModel(const mjModel* m, const char* filename, const char* 
   (void)na;
   (void)nu;
   (void)nmocap;
+  (void)nplastic;
 
   const mjtSize* object_class;
 
@@ -1146,6 +1150,72 @@ void mj_printFormattedModel(const mjModel* m, const char* filename, const char* 
       fprintf(fp, "\n");
     }
 
+    // check plastic for difference
+    if (m->nplastic) {
+      for (int j=0; j < m->njnt; j++) {
+        if (m->jnt_plasticadr[j] >= 0) {
+          int adr = m->jnt_plasticadr[j];
+          int qposadr = m->jnt_qposadr[j];
+          int jnt_nq = m->jnt_type[j] == mjJNT_FREE ? 7 : (m->jnt_type[j] == mjJNT_BALL ? 4 : 1);
+          for (int d=0; d < jnt_nq; d++) {
+            if (m->qpos_spring[qposadr + d] != m->key_plastic[i*m->nplastic + adr + d]) {
+              k = 7;
+              break;
+            }
+          }
+          if (k == 7) break;
+        }
+      }
+      for (int j=0; j < m->ntendon && k != 7; j++) {
+        if (m->tendon_plasticadr[j] >= 0) {
+          int adr = m->tendon_plasticadr[j];
+          if (m->tendon_lengthspring[2*j] != m->key_plastic[i*m->nplastic + adr] ||
+              m->tendon_lengthspring[2*j+1] != m->key_plastic[i*m->nplastic + adr + 1]) {
+            k = 7;
+            break;
+          }
+        }
+      }
+      for (int j=0; j < m->nflex && k != 7; j++) {
+        if (m->flex_plasticadr[j] >= 0) {
+          int adr = m->flex_plasticadr[j];
+          int pnum = 0;
+          if (m->flex_interp[j] > 0) {
+            pnum = 6 * m->flex_cellnum[3*j+0] * m->flex_cellnum[3*j+1] * m->flex_cellnum[3*j+2];
+          } else if (m->flex_interp[j] < 0) {
+            int cx = m->flex_cellnum[3*j+0];
+            int cy = m->flex_cellnum[3*j+1];
+            int cz = m->flex_cellnum[3*j+2];
+            pnum = 3 * 2 * (cy*cz + cx*cz + cx*cy);
+          } else if (m->flex_dim[j] == 1) {
+            pnum = mj_rodStateSize(m, j);
+          } else {
+            if (m->flex_plasticmode[j] & 2) {
+              pnum += ((m->flex_dim[j] == 2) ? 3 : 6) * m->flex_elemnum[j];
+            }
+            if (m->flex_plasticmode[j] & 1) {
+              pnum += m->flex_edgenum[j];
+            }
+          }
+          for (int d=0; d < pnum; d++) {
+            if (m->key_plastic[i*m->nplastic + adr + d] != 0) {
+              k = 7;
+              break;
+            }
+          }
+        }
+      }
+    }
+
+    // print if different
+    if (k == 7) {
+      fprintf(fp, "key_plastic%d   ", i);
+      for (int j=0; j < m->nplastic; j++) {
+        fprintf(fp, float_format, m->key_plastic[i*m->nplastic + j]);
+      }
+      fprintf(fp, "\n");
+    }
+
 
     // new line if any data was written
     if (k) {
@@ -1223,7 +1293,7 @@ void mj_printFormattedData(const mjModel* m, const mjData* d, const char* filena
   // get file
   FILE* fp;
   if (filename) {
-    fp = fopen(filename, "wt");
+    fp = mju_fopen(filename, "wt");
   } else {
     fp = stdout;
   }
@@ -1388,6 +1458,7 @@ void mj_printFormattedData(const mjModel* m, const mjData* d, const char* filena
 
     fprintf(fp, "\n");
   }
+  printArray2d("PLASTIC", m->nplastic, 1, d->plastic, fp, float_format);
   printArray2d("QACC_WARMSTART", m->nv, 1, d->qacc_warmstart, fp, float_format);
   printArray2d("CTRL", m->nu, 1, d->ctrl, fp, float_format);
   printArray2d("QFRC_APPLIED", m->nv, 1, d->qfrc_applied, fp, float_format);
@@ -1411,12 +1482,15 @@ void mj_printFormattedData(const mjModel* m, const mjData* d, const char* filena
   printArray2d("XQUAT", m->nbody, 4, d->xquat, fp, float_format);
   printArray2d("XMAT", m->nbody, 9, d->xmat, fp, float_format);
   printArray2d("XIPOS", m->nbody, 3, d->xipos, fp, float_format);
+  printArray2d("XIQUAT", m->nbody, 4, d->xiquat, fp, float_format);
   printArray2d("XIMAT", m->nbody, 9, d->ximat, fp, float_format);
   printArray2d("XANCHOR", m->njnt, 3, d->xanchor, fp, float_format);
   printArray2d("XAXIS", m->njnt, 3, d->xaxis, fp, float_format);
   printArray2d("GEOM_XPOS", m->ngeom, 3, d->geom_xpos, fp, float_format);
+  printArray2d("GEOM_XQUAT", m->ngeom, 4, d->geom_xquat, fp, float_format);
   printArray2d("GEOM_XMAT", m->ngeom, 9, d->geom_xmat, fp, float_format);
   printArray2d("SITE_XPOS", m->nsite, 3, d->site_xpos, fp, float_format);
+  printArray2d("SITE_XQUAT", m->nsite, 4, d->site_xquat, fp, float_format);
   printArray2d("SITE_XMAT", m->nsite, 9, d->site_xmat, fp, float_format);
   printArray2d("CAM_XPOS", m->ncam, 3, d->cam_xpos, fp, float_format);
   printArray2d("CAM_XMAT", m->ncam, 9, d->cam_xmat, fp, float_format);
@@ -1744,7 +1818,7 @@ void mj_printFormattedScene(const mjvScene* s, const char* filename, const char*
   // get file
   FILE* fp;
   if (filename) {
-    fp = fopen(filename, "wt");
+    fp = mju_fopen(filename, "wt");
   } else {
     fp = stdout;
   }
@@ -1782,6 +1856,7 @@ void mj_printFormattedScene(const mjvScene* s, const char* filename, const char*
     printNum(fp, "    specular", geom->specular, float_format);
     printNum(fp, "    shininess", geom->shininess, float_format);
     printNum(fp, "    reflectance", geom->reflectance, float_format);
+    printInt(fp, "    castshadow", geom->castshadow);
     fprintf(fp,  "\n");
   }
   fprintf(fp,  "\n");

@@ -308,7 +308,6 @@ static void treeIterInit(const mjModel* m, const mjData* d, int i, mjTreeIter* i
 static int isFlexEquality(const mjModel* m, int efc_type, int efc_id) {
   return efc_type == mjCNSTR_EQUALITY &&
          (m->eq_type[efc_id] == mjEQ_FLEX ||
-          m->eq_type[efc_id] == mjEQ_FLEXVERT ||
           m->eq_type[efc_id] == mjEQ_FLEXSTRAIN);
 }
 
@@ -471,6 +470,24 @@ static const char* unionConstraintTrees(const mjModel* m, const mjData* d, int* 
         tree1 = tree2;
       } else {
         mj_dsuMerge(parent, tree1, tree2);
+      }
+    }
+    if (mj_rodHasTwist(m, f)) {
+      int nedge = (int)m->flex_bending[m->flex_bendingadr[f]] + 1;
+      for (int e=0; e < nedge; e++) {
+        int jnt = mj_rodChainTwistJnt(m, f, e);
+        if (jnt < 0) {
+          continue;
+        }
+        int tree2 = m->body_treeid[m->jnt_bodyid[jnt]];
+        if (tree2 < 0 || tree2 == tree1 || !d->tree_awake[tree2]) {
+          continue;
+        }
+        if (tree1 < 0) {
+          tree1 = tree2;
+        } else {
+          mj_dsuMerge(parent, tree1, tree2);
+        }
       }
     }
   }

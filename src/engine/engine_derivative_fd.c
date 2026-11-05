@@ -20,10 +20,13 @@
 #include <mujoco/mjmacro.h>
 #include <mujoco/mjmodel.h>
 #include <mujoco/mjsan.h>  // IWYU pragma: keep
+#include "engine/engine_core_util.h"
 #include "engine/engine_forward.h"
 #include "engine/engine_inverse.h"
+#include "engine/engine_ipc.h"
 #include "engine/engine_memory.h"
 #include "engine/engine_macro.h"
+#include "engine/engine_sensor.h"
 #include "engine/engine_support.h"
 #include "engine/engine_util_blas.h"
 #include "engine/engine_util_errmem.h"
@@ -75,7 +78,7 @@ static void clampedDiff(mjtNum* dx, const mjtNum* x, const mjtNum* x_plus, const
     diff(dx, x_minus, x, h, nx);
   } else if (x_plus && x_minus) {
     // centered differencing
-    diff(dx, x_plus, x_minus, 2*h, nx);
+    diff(dx, x_minus, x_plus, 2*h, nx);
   } else {
     // differencing failed, write zeros
     mju_zero(dx, nx);
@@ -109,6 +112,34 @@ static int inRange(const mjtNum x1, const mjtNum x2, const mjtNum* range) {
 }
 
 
+// return 1 if Euler damping matrix depends on qvel (nonlinear polynomial damping)
+static int eulerDampDependsOnVel(const mjModel* m) {
+  if (mjDISABLED(mjDSBL_EULERDAMP) || mjDISABLED(mjDSBL_DAMPER)) {
+    return 0;
+  }
+
+  // check DOF damping polynomial
+  for (int i=0; i < m->nv; i++) {
+    if (!mju_isZero(m->dof_dampingpoly + mjNPOLY*i, mjNPOLY)) {
+      return 1;
+    }
+  }
+
+  // check joint actuator damping polynomial
+  for (int i=0; i < m->nu; i++) {
+    mjtTrn trntype = m->actuator_trntype[i];
+    if (trntype == mjTRN_JOINT || trntype == mjTRN_JOINTINPARENT) {
+      mjtNum gear = m->actuator_gear[6*m->actuator_outadr[i]];
+      if (gear && !mju_isZero(m->actuator_dampingpoly + mjNPOLY*i, mjNPOLY)) {
+        return 1;
+      }
+    }
+  }
+
+  return 0;
+}
+
+
 // advance simulation using control callback, skipstage is mjtStage
 void mj_stepSkip(const mjModel* m, mjData* d, int skipstage, int skipsensor) {
   TM_START;
@@ -126,9 +157,12 @@ void mj_stepSkip(const mjModel* m, mjData* d, int skipstage, int skipsensor) {
 
   // use selected integrator
   switch ((mjtIntegrator) m->opt.integrator) {
-  case mjINT_EULER:
-    mj_EulerSkip(m, d, skipstage >= mjSTAGE_POS);
+  case mjINT_EULER: {
+    int skipfactor = (skipstage > mjSTAGE_POS) ||
+                     (skipstage == mjSTAGE_POS && !eulerDampDependsOnVel(m));
+    mj_EulerSkip(m, d, skipfactor);
     break;
+  }
 
   case mjINT_RK4:
     // ignore skipstage
@@ -136,13 +170,21 @@ void mj_stepSkip(const mjModel* m, mjData* d, int skipstage, int skipsensor) {
     break;
 
   case mjINT_IMPLICIT:
-  case mjINT_IMPLICITFAST:
-    mj_implicitSkip(m, d, skipstage >= mjSTAGE_VEL);
+  case mjINT_IMPLICITFAST: {
+    int skipfactor = (skipstage > mjSTAGE_VEL) ||
+                     (skipstage == mjSTAGE_VEL &&
+                      (mjDISABLED(mjDSBL_ACTUATION) || !m->nu));
+    mj_implicitSkip(m, d, skipfactor);
     break;
+  }
 
   case mjINT_DISCRETE:
     // the solve already performed the velocity update: no skip-dependent work
-    mj_discrete(m, d);
+    if (mjENABLED(mjENBL_IPC)) {
+      mj_ipc(m, d);
+    } else {
+      mj_discrete(m, d);
+    }
     break;
 
   default:
@@ -156,11 +198,32 @@ void mj_stepSkip(const mjModel* m, mjData* d, int skipstage, int skipsensor) {
 // compute qfrc_inverse, optionally subtracting qfrc_actuator
 static void inverseSkip(const mjModel* m, mjData* d, mjtStage stage, int skipsensor,
                         int flg_actuation, mjtNum* force) {
-  mj_inverseSkip(m, d, stage, skipsensor);
-  mju_copy(force, d->qfrc_inverse, m->nv);
+  // mirror mj_inverseSkip position and velocity stages before actuation
   if (flg_actuation) {
+    if (stage < mjSTAGE_POS) {
+      mj_invPosition(m, d);
+      if (!skipsensor) {
+        mj_sensorPos(m, d);
+      }
+      if (mjENABLED(mjENBL_ENERGY) && !d->flg_energypos) {
+        mj_energyPos(m, d);
+      }
+    }
+    if (stage < mjSTAGE_VEL) {
+      mj_invVelocity(m, d);
+      if (!skipsensor) {
+        mj_sensorVel(m, d);
+      }
+      if (mjENABLED(mjENBL_ENERGY) && !d->flg_energyvel) {
+        mj_energyVel(m, d);
+      }
+    }
     mj_fwdActuation(m, d);
-    mju_subFrom(force, d->qfrc_actuator, m->nv);
+    mj_inverseSkip(m, d, mjSTAGE_VEL, skipsensor);
+    mju_sub(force, d->qfrc_inverse, d->qfrc_actuator, m->nv);
+  } else {
+    mj_inverseSkip(m, d, stage, skipsensor);
+    mju_copy(force, d->qfrc_inverse, m->nv);
   }
 }
 

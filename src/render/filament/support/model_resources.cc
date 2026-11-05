@@ -18,7 +18,6 @@
 #include <cfloat>
 #include <cstddef>
 #include <cstdint>
-#include <functional>
 #include <limits>
 #include <memory>
 #include <optional>
@@ -145,19 +144,19 @@ static void FillMeshBuffer(MeshBuilder& builder, const mjModel* model, int meshi
     const float2 uv2 = texcoords ? ReadFloat2(texcoords, model->mesh_facetexcoord[face + 1]) : ProjectUv(p2);
     const float2 uv3 = texcoords ? ReadFloat2(texcoords, model->mesh_facetexcoord[face + 2]) : ProjectUv(p3);
 
-    if (UseFaceNormal(face_normal, n1)) {
+    if (!texcoords && UseFaceNormal(face_normal, n1)) {
       builder.Append(p1, CalculateOrientation(face_normal), uv1);
     } else {
       builder.Append(p1, CalculateOrientation(n1), uv1);
     }
 
-    if (UseFaceNormal(face_normal, n2)) {
+    if (!texcoords && UseFaceNormal(face_normal, n2)) {
       builder.Append(p2, CalculateOrientation(face_normal), uv2);
     } else {
       builder.Append(p2, CalculateOrientation(n2), uv2);
     }
 
-    if (UseFaceNormal(face_normal, n3)) {
+    if (!texcoords && UseFaceNormal(face_normal, n3)) {
       builder.Append(p3, CalculateOrientation(face_normal), uv3);
     } else {
       builder.Append(p3, CalculateOrientation(n3), uv3);
@@ -479,20 +478,33 @@ static std::shared_ptr<mjrfTexture> UploadTextureByReference(
     mju_warning("texture %d not loaded, left untextured: %s", id, err);
     return nullptr;
   }
-  return MakeTexture(ctx, id, model->tex_type[id], width, height,
-                     model->tex_nchannel[id], colorspace, data, data, mju_free);
+  std::shared_ptr<mjrfTexture> result =
+      MakeTexture(ctx, id, model->tex_type[id], width, height,
+                  model->tex_nchannel[id], colorspace, data, data, mju_free);
+  // Flush so this decoded buffer is uploaded and freed (via mju_free) before
+  // the next texture is decoded. Without it, every decoded buffer stays alive
+  // until scene setup ends, which can exhaust the 32-bit WASM heap.
+  mjrf_flush(ctx);
+  return result;
 }
 
 ModelResources::ModelResources(const mjModel* model, mjrfContext* ctx)
     : model_(model), ctx_(ctx) {
-
+  textures_.reserve(model_->ntex);
   for (int i = 0; i < model_->ntex; ++i) {
+    textures_.emplace_back();
     UploadTexture(model_, i);
   }
+  meshes_.reserve(model_->nmesh);
+  convex_hulls_.reserve(model_->nmesh);
   for (int i = 0; i < model_->nmesh; ++i) {
+    meshes_.emplace_back(nullptr, nullptr);
+    convex_hulls_.emplace_back(nullptr, nullptr);
     UploadMesh(model_, i);
   }
+  height_fields_.reserve(model_->nhfield);
   for (int i = 0; i < model_->nhfield; ++i) {
+    height_fields_.emplace_back(nullptr, nullptr);
     UploadHeightField(model_, i);
   }
 
@@ -511,8 +523,8 @@ void ModelResources::UploadMesh(const mjModel* model, int id) {
   if (id < 0 || id >= model->nmesh) {
     mju_error("Invalid mesh index %d", id);
   }
-  meshes_.erase(id);
-  convex_hulls_.erase(id);
+  meshes_[id].reset();
+  convex_hulls_[id].reset();
 
   mjrfMeshConfig config;
   mjrf_defaultMeshConfig(&config);
@@ -522,7 +534,7 @@ void ModelResources::UploadMesh(const mjModel* model, int id) {
 
   auto mesh = CreateMesh(ctx_, config);
   mjrf_uploadMesh(mesh.get(), &data);
-  meshes_.insert_or_assign(id, std::move(mesh));
+  meshes_[id] = std::move(mesh);
 
   if (model->mesh_graphadr[id] >= 0) {
     mjrfMeshConfig convex_hull_config;
@@ -534,7 +546,7 @@ void ModelResources::UploadMesh(const mjModel* model, int id) {
 
     auto convex_hull = CreateMesh(ctx_, convex_hull_config);
     mjrf_uploadMesh(convex_hull.get(), &convex_hull_data);
-    convex_hulls_.insert_or_assign(id, std::move(convex_hull));
+    convex_hulls_[id] = std::move(convex_hull);
   }
 }
 
@@ -610,7 +622,7 @@ void ModelResources::UploadHeightField(const mjModel* model, int id) {
     mju_error("Invalid height field index %d", id);
   }
 
-  height_fields_.erase(id);
+  height_fields_[id].reset();
 
   mjrfMeshConfig config;
   mjrf_defaultMeshConfig(&config);
@@ -620,38 +632,43 @@ void ModelResources::UploadHeightField(const mjModel* model, int id) {
 
   auto mesh = CreateMesh(ctx_, config);
   mjrf_uploadMesh(mesh.get(), &data);
-  height_fields_.insert_or_assign(id, std::move(mesh));
+  height_fields_[id] = std::move(mesh);
 }
 
 const mjrfMesh* ModelResources::GetMesh(int data_id) const {
+  if (data_id < 0) {
+    return nullptr;
+  }
   // As defined by mjv_updateScene:
   //   original mesh: mesh_id * 2
   //   convex hull: (mesh_id * 2) + 1
   const int mesh_id = data_id / 2;
   if (data_id % 2 == 0) {
-    auto it = meshes_.find(mesh_id);
-    return it != meshes_.end() ? it->second.get() : nullptr;
+    return mesh_id < meshes_.size() ? meshes_[mesh_id].get() : nullptr;
   } else {
-    auto it = convex_hulls_.find(mesh_id);
-    return it != convex_hulls_.end() ? it->second.get() : nullptr;
+    return mesh_id < convex_hulls_.size() ? convex_hulls_[mesh_id].get()
+                                          : nullptr;
   }
 }
 
 const mjrfMesh* ModelResources::GetHeightField(int hfield_id) const {
-  auto it = height_fields_.find(hfield_id);
-  return it != height_fields_.end() ? it->second.get() : nullptr;
+  if (hfield_id < 0 || hfield_id >= height_fields_.size()) {
+    return nullptr;
+  }
+  return height_fields_[hfield_id].get();
 }
 
 const mjrfTexture* ModelResources::GetTexture(int tex_id) const {
-  auto it = textures_.find(tex_id);
-  return it != textures_.end() ? it->second.texture.get() : nullptr;
+  if (tex_id < 0 || tex_id >= textures_.size()) {
+    return nullptr;
+  }
+  return textures_[tex_id].texture.get();
 }
 
 const mjrfTexture* ModelResources::GetSkyboxTexture() const {
-  for (auto& iter : textures_) {
-    if (iter.second.texture &&
-        model_->tex_type[iter.first] == mjTEXTURE_SKYBOX) {
-      return iter.second.texture.get();
+  for (int i = 0; i < textures_.size(); ++i) {
+    if (model_->tex_type[i] == mjTEXTURE_SKYBOX) {
+      return textures_[i].texture.get();
     }
   }
   return nullptr;

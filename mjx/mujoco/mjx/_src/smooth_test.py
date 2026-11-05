@@ -40,6 +40,107 @@ def _assert_attr_eq(a, b, attr):
   _assert_eq(getattr(a, attr), getattr(b, attr), attr)
 
 
+def _sidesite_wrap_xml(geomtype: str) -> str:
+  """Returns a model with wrapping tendons, with and without sidesites."""
+  # wrap geom in a rotated frame with radius 0.5, and unrotated geoms with
+  # radius 0.5 and 1
+  pos = np.array([0.1, -0.2, 0.3])
+  quat = np.array([0.8, 0.2, -0.3, 0.4])
+  quat /= np.linalg.norm(quat)
+  mat = np.zeros(9)
+  mujoco.mju_quat2Mat(mat, quat)
+  mat = mat.reshape(3, 3)
+
+  # local endpoints and sidesite, geom name, tendon name
+  cases = []
+
+  # wraps constructed from their arcs (start angle a, wrap angle th,
+  # direction), including arcs longer than pi, with the sidesite at the arc
+  # midpoint and the segment cutting the circle
+  r = 0.5
+  for a in (0.1, 1.3, 2.9, 4.4, 5.8):
+    for th in (0.4, 1.5, 2.8, 3.5, 4.5, 5.5):
+      for direction in (1, -1):
+        for len0, len1 in ((0.1, 0.15), (0.6, 0.8), (2.0, 1.7), (0.6, 1.7)):
+          b = a + direction * th
+          t0 = r * np.array([np.cos(a), np.sin(a)])
+          t1 = r * np.array([np.cos(b), np.sin(b)])
+          p0 = t0 + len0 * direction * np.array([np.sin(a), -np.cos(a)])
+          p1 = t1 - len1 * direction * np.array([np.sin(b), -np.cos(b)])
+
+          # keep segments that cut the circle with a margin
+          dif = p1 - p0
+          s = np.clip(-np.dot(dif, p0) / np.dot(dif, dif), 0, 1)
+          if np.linalg.norm(p0 + s * dif) > 0.9 * r:
+            continue
+
+          m = a + direction * th / 2
+          side = [2 * r * np.cos(m), 2 * r * np.sin(m), 0]
+          cases.append(([*p0, 0], [*p1, 0], side, 'rotated', ''))
+
+  # sidesite more than 90 degrees from the segment: no wrap
+  cases.append((
+      [-4.17, -0.44, 0], [-1.13, -1.53, 0], [-0.79 * 1.5, 0.61 * 1.5, 0],
+      'r1', 'nowrap',
+  ))
+
+  # segment through the center wraps on the side of the sidesite
+  cases.append(([0, 2, 0], [0, -1, 0], [1.5, 0, 0], 'r05', ''))
+  cases.append(([0, 2, 0], [0, -1, 0], [-1.5, 0, 0], 'r05', ''))
+
+  # wraps close to 2*pi
+  cases.append(([1.001, -1e-2, 0], [1.001, 1e-2, 0], [-2, 0, 0], 'r1', ''))
+  cases.append(([1, -1e-7, 0], [1, 1e-7, 0], [-2, 0, 0], 'r1', 'fullwrap'))
+
+  sites, tendons = [], []
+  for i, (p0, p1, side, geom, name) in enumerate(cases):
+    p0, p1, side = (np.array(p, dtype=float) for p in (p0, p1, side))
+
+    # cylinder: endpoints at different heights
+    if geomtype == 'cylinder':
+      p0[2], p1[2] = 0.3, -0.2
+
+    if geom == 'rotated':
+      p0, p1, side = (mat @ p + pos for p in (p0, p1, side))
+
+    for site, p in (('a', p0), ('b', p1), ('side', side)):
+      p_str = ' '.join(f'{x:.17g}' for x in p)
+      sites.append(f'<site name="{site}{i}" pos="{p_str}"/>')
+    # no sidesite: skip endpoints on the circle, whose wrap is below float32
+    # resolution
+    sidesites = [f'sidesite="side{i}"'] + ([] if name == 'fullwrap' else [''])
+    for sidesite in sidesites:
+      tendon_name = f'name="{name}"' if name and sidesite else ''
+      path = (
+          f'<site site="a{i}"/><geom geom="{geom}" {sidesite}/>'
+          f'<site site="b{i}"/>'
+      )
+      tendons.append(f'<spatial {tendon_name}>{path}</spatial>')
+
+  pos_str = ' '.join(f'{x:.17g}' for x in pos)
+  quat_str = ' '.join(f'{x:.17g}' for x in quat)
+  sites_str = '\n'.join(sites)
+  tendons_str = '\n'.join(tendons)
+  return f"""
+    <mujoco>
+      <worldbody>
+        <geom name="rotated" type="{geomtype}" size="0.5 1" pos="{pos_str}"
+              quat="{quat_str}"/>
+        <geom name="r05" type="{geomtype}" size="0.5 1"/>
+        <geom name="r1" type="{geomtype}" size="1 1"/>
+        {sites_str}
+        <body>
+          <joint type="slide"/>
+          <geom size="0.1" contype="0" conaffinity="0"/>
+        </body>
+      </worldbody>
+      <tendon>
+        {tendons_str}
+      </tendon>
+    </mujoco>
+  """
+
+
 class SmoothTest(absltest.TestCase):
 
   def setUp(self):
@@ -443,6 +544,38 @@ class TendonTest(parameterized.TestCase):
     dx = mjx.rne(mx, dx)
     dx = mjx.tendon_bias(mx, dx)
     _assert_eq(dx.qfrc_bias, d.qfrc_bias, 'qfrc_bias')
+
+  @parameterized.parameters('sphere', 'cylinder')
+  def test_tendon_wrap_sidesite(self, geomtype):
+    """Tests that the sidesite selects the wrap homotopy class as in MuJoCo."""
+    m = mujoco.MjModel.from_xml_string(_sidesite_wrap_xml(geomtype))
+    d = mujoco.MjData(m)
+    mujoco.mj_forward(m, d)
+    mx = mjx.put_model(m)
+    dx = mjx.put_data(m, d)
+    dx = dx.tree_replace({
+        'ten_length': jp.zeros_like(dx.ten_length),
+        '_impl.wrap_xpos': jp.zeros_like(dx._impl.wrap_xpos),
+    })
+
+    dx = jax.jit(mjx.tendon)(mx, dx)
+
+    _assert_eq(d.ten_length, dx.ten_length, 'ten_length')
+    _assert_eq(d.ten_wrapnum, dx._impl.ten_wrapnum, 'ten_wrapnum')
+    _assert_eq(d.ten_wrapadr, dx._impl.ten_wrapadr, 'ten_wrapadr')
+    _assert_eq(d.wrap_obj, dx._impl.wrap_obj, 'wrap_obj')
+    _assert_eq(d.wrap_xpos, dx._impl.wrap_xpos, 'wrap_xpos')
+
+    # most tendons wrap, including wraps longer than pi
+    self.assertGreater(np.sum(d.ten_wrapnum == 4), m.ntendon // 2)
+
+    # sidesite more than 90 degrees from the segment: no wrap
+    nowrap = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_TENDON, 'nowrap')
+    self.assertEqual(d.ten_wrapnum[nowrap], 2)
+
+    # sidesite on the far side: wrap close to 2*pi
+    fullwrap = mujoco.mj_name2id(m, mujoco.mjtObj.mjOBJ_TENDON, 'fullwrap')
+    self.assertGreater(dx.ten_length[fullwrap], 2 * np.pi - 1e-3)
 
 
 if __name__ == '__main__':

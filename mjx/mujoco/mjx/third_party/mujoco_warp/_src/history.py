@@ -634,8 +634,8 @@ def _reset_sensor_history_kernel(
   values_offset = buf_offset + 2 + nsample
 
   # user slot: last compute time (phase=0 means -period, i.e. first compute at t=0)
+  t0 = phase if phase != 0.0 else -period
   if period > 0.0:
-    t0 = phase if phase != 0.0 else -period
     history_out[worldid, buf_offset] = t0
   else:
     history_out[worldid, buf_offset] = -dt
@@ -645,13 +645,27 @@ def _reset_sensor_history_kernel(
 
   # timestamps
   if period > 0.0:
-    t0 = phase if phase != 0.0 else -period
-    for j in range(nsample):
-      continuous_t = t0 - float(nsample - 1 - j) * period
-      if dt > 0.0:
-        history_out[worldid, times_offset + j] = wp.ceil(continuous_t / dt) * dt
-      else:
-        history_out[worldid, times_offset + j] = continuous_t
+    if dt <= 0.0:
+      for j in range(nsample):
+        history_out[worldid, times_offset + j] = t0 - float(nsample - 1 - j) * period
+    elif period <= dt:
+      offset = nsample if phase == 0.0 else nsample - 1
+      for j in range(nsample):
+        history_out[worldid, times_offset + j] = -float(offset - j) * dt
+    else:
+      # relative near-integer snap and k >= next_k clamp are floating-point safety nets
+      inv_dt = 1.0 / dt
+      next_k = float(0.0)
+      for j in range(nsample - 1, -1, -1):
+        r = (t0 - float(nsample - 1 - j) * period) * inv_dt
+        r_round = wp.floor(r + 0.5)
+        if wp.abs(r - r_round) <= 1.0e-6 * wp.max(1.0, wp.abs(r)):
+          r = r_round
+        k = wp.ceil(r)
+        if j < nsample - 1 and k >= next_k:
+          k = next_k - 1.0
+        history_out[worldid, times_offset + j] = k * dt
+        next_k = k
   else:
     for j in range(nsample):
       history_out[worldid, times_offset + j] = -float(nsample - j) * dt
@@ -994,17 +1008,24 @@ def _init_ctrl_history_kernel(
   # preserve user slot
   user = history_out[worldid, buf_offset]
 
-  # cursor = nsample - 1 (samples in order, newest at index nsample-1)
-  history_out[worldid, buf_offset + 1] = float(nsample - 1)
+  # new times: cursor = nsample - 1 (samples in order, newest at index nsample-1)
+  # existing times: preserve circular cursor
+  cursor = nsample - 1
+  if has_times == 0:
+    buf_cursor = int(history_out[worldid, buf_offset + 1])
+    if buf_cursor >= 0 and buf_cursor < nsample:
+      cursor = buf_cursor
+  history_out[worldid, buf_offset + 1] = float(cursor)
 
   times_offset = buf_offset + 2
   values_offset = buf_offset + 2 + nsample
 
   for i in range(nsample):
+    phys = _history_physical_index(cursor, nsample, i)
     if has_times != 0:
-      history_out[worldid, times_offset + i] = times[i]
+      history_out[worldid, times_offset + phys] = times[i]
     for j in range(dim):
-      history_out[worldid, values_offset + i * dim + j] = values[worldid, i * dim + j]
+      history_out[worldid, values_offset + phys * dim + j] = values[worldid, i * dim + j]
 
   # restore user slot
   history_out[worldid, buf_offset] = user
@@ -1098,17 +1119,24 @@ def _init_sensor_history_kernel(
   if has_phase != 0:
     history_out[worldid, buf_offset] = phase[worldid]
 
-  # cursor = nsample - 1 (samples in order, newest at index nsample-1)
-  history_out[worldid, buf_offset + 1] = float(nsample - 1)
+  # new times: cursor = nsample - 1 (samples in order, newest at index nsample-1)
+  # existing times: preserve circular cursor
+  cursor = nsample - 1
+  if has_times == 0:
+    buf_cursor = int(history_out[worldid, buf_offset + 1])
+    if buf_cursor >= 0 and buf_cursor < nsample:
+      cursor = buf_cursor
+  history_out[worldid, buf_offset + 1] = float(cursor)
 
   times_offset = buf_offset + 2
   values_offset = buf_offset + 2 + nsample
 
   for i in range(nsample):
+    phys = _history_physical_index(cursor, nsample, i)
     if has_times != 0:
-      history_out[worldid, times_offset + i] = times[i]
+      history_out[worldid, times_offset + phys] = times[i]
     for j in range(dim):
-      history_out[worldid, values_offset + i * dim + j] = values[worldid, i * dim + j]
+      history_out[worldid, values_offset + phys * dim + j] = values[worldid, i * dim + j]
 
 
 def init_sensor_history(

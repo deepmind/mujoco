@@ -59,7 +59,7 @@
       <body euler="0 0 0" pos=".2 0 -.2">
         <joint name="hipz_0" class="hip1" axis="0 0 1"/>
         <joint name="hipy_0" class="hip0" axis="0 1 0"/>
-        <geom type="capsule" size=".05" rgba="1 0 0 1" fromto="0 0 0 .3 0 0"/>
+        <geom type="capsule" size=".05" rgba="1 0 0 1" fromto="0 0 0 .3 0 0" castshadow="false"/>
         <body pos=".3 0 0">
           <site name="knee"/>
           <geom type="capsule" size=".05" rgba="1 0 0 1" fromto="0 0 0 .1 0 -.3"/>

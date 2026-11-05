@@ -2646,9 +2646,7 @@ def gjk_phase(
   empty = GJKResult()
 
   # special handling for sphere, capsule, and margin (shrink to underlying geom)
-  has_non_hfield_margin = _supports_multiccd(geom1, geom2, geomtype1, geomtype2) and (
-    orig_margin1 > 0.0 or orig_margin2 > 0.0
-  )
+  has_non_hfield_margin = _supports_multiccd(geom1, geom2, geomtype1, geomtype2) and (orig_margin1 > 0.0 or orig_margin2 > 0.0)
   if geomtype1 == GeomType.SPHERE or geomtype1 == GeomType.CAPSULE:
     full_margin1 = geom1.size[0] + 0.5 * orig_margin1
     geom1.margin = 0.0

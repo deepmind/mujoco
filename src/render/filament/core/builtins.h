@@ -31,6 +31,7 @@ class Builtins {
   const Mesh* Line();
   const Mesh* LineBox();
   const Mesh* Plane();
+  const Mesh* Haze();
   const Mesh* Triangle();
   const Mesh* Box();
   const Mesh* Sphere();
@@ -44,6 +45,7 @@ class Builtins {
   std::unique_ptr<Mesh> line_;
   std::unique_ptr<Mesh> line_box_;
   std::unique_ptr<Mesh> plane_;
+  std::unique_ptr<Mesh> haze_;
   std::unique_ptr<Mesh> triangle_;
   std::unique_ptr<Mesh> box_;
   std::unique_ptr<Mesh> sphere_;

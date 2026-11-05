@@ -9,9 +9,25 @@ cc_library(
     name = "ui_main",
     srcs = ["ui_main.c"],
     hdrs = ["ui_main.h"],
-    conlyopts = ["-std=c11"],
-    copts = ["-I" + MJ_ROOT + "/src"],
-    cxxopts = ["-std=c++20"],
+    conlyopts = [
+        "-std=c11",
+        "-Werror",
+        "-Wall",
+        "-Wpedantic",
+        "-Wstrict-prototypes",
+        "-Wunused",
+        "-Wvla",
+        "-Wimplicit-fallthrough",
+    ],
+    copts = [
+        "-I" + MJ_ROOT + "/src",
+        "-fvisibility=hidden",
+    ],
+    cxxopts = [
+        "-fvisibility-inlines-hidden",
+        "-std=c++20",
+    ],
+    linkstatic = True,
     local_defines = [
         "MUJOCO_DLL_EXPORTS",
         "_GNU_SOURCE",

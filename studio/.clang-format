@@ -1,0 +1,7 @@
+---
+BasedOnStyle: Google
+ColumnLimit: 100
+SortIncludes: false
+IndentPPDirectives: BeforeHash
+MaxEmptyLinesToKeep: 2
+...

@@ -4,7 +4,7 @@ auditwheel==5.4.0; platform_system == 'Linux' \
     --hash=sha256:d8410a17523427ba3f7b60c9701d23de28b8f94fa5dab732aa6c30d160df8127
 build==1.2.2.post1 \
     --hash=sha256:1d61c0887fa860c01971625baae8bdd338e517b836a2f70dd1f7aa3a6b2fc5b5
-etils[epath]==1.10.0; python_version >= '3.10' \
+etils[epath]==1.10.0; python_version >= '3.11' \
     --hash=sha256:0777fe60a234b4c65ca53470fc64f2dd2d0c6bca7fcc623fdaa8d7fa5a317098
 glfw==2.10.2 \
     --hash=sha256:0ffe2b48b51f37b05e8f027f57c0b8cd213affaf22fc83401bd9621692d4c6c8 \
@@ -72,7 +72,7 @@ numpy==2.5.2; python_version >= '3.13' \
     --hash=sha256:eaca7ff36f0f52e2111ec71f169d8fd3e889e7ddc0d2592e0d703fd8d3ce8fac \
     --hash=sha256:f06571a052127dc1b4e8b83029b4d1b20daa2b64a31cdd181fc6bc774e9000eb \
     --hash=sha256:fd0d703772bba096843785bd38371e31bb4a0c1151497ad5739d182114a73f7f
-numpy==2.1.3; python_version >= '3.10' and python_version < '3.13' \
+numpy==2.1.3; python_version >= '3.11' and python_version < '3.13' \
     --hash=sha256:747641635d3d44bcb380d950679462fae44f54b131be347d5ec2bce47d3df9ed \
     --hash=sha256:5641516794ca9e5f8a4d17bb45446998c6554704d888f86df9b200e66bdcce56 \
     --hash=sha256:c181ba05ce8299c7aa3125c27b9c2167bca4a4445b7ce73d5febc411ca692e43 \
@@ -115,7 +115,7 @@ setuptools==78.1.1 \
 # Runtime dependency of the mujoco wheel, needed here because the CI step
 # install_python_bindings installs the built wheel with --no-index and so
 # cannot fetch it. 16.1.1 is the newest release whose requires-python
-# matches the wheel's own >=3.10.
+# matches the wheel's own >=3.11.
 websockets==16.1.1 \
     --hash=sha256:01fbdcbac298efe19360b94bc0039c8f746f0220ba570f327577bfee81059175 \
     --hash=sha256:024193f8551a2b0eafbdd160911012c4e6c228c28430c84433253299a9e42d6a \
@@ -241,8 +241,6 @@ packaging==24.2 \
     --hash=sha256:09abb1bccd265c01f4a3aa3f7a7db064b36514d2cba19a2f694fe6150451a759
 pyproject_hooks==1.2.0 \
     --hash=sha256:9e5c6bfa8dcc30091c74b0cf803c81fdd29d94f01992a7707bc97babb1141913
-tomli==2.1.0; python_version < '3.11' \
-    --hash=sha256:a5c57c3d1c56f5ccdf89f6523458f60ef716e210fc47c4cfb188c5ba473e0391
 
 # Transitive dependencies of etils[epath]
 fsspec==2024.10.0 \
@@ -258,8 +256,6 @@ zipp==3.21.0 \
 # Transitive dependencies of pytest
 attrs==24.2.0; platform_system == 'Windows' \
     --hash=sha256:81921eb96de3191c8258c199618104dd27ac608d9366f5e35d011eae1867ede2
-exceptiongroup==1.2.2; python_version < '3.11' \
-    --hash=sha256:3111b9d131c238bec2f8f516e123e14ba243563fb135d3fe885990585aa7795b
 iniconfig==2.0.0 \
     --hash=sha256:b6a85871a79d2e3b22d2d1b94ac2824226a63c6b741c88f7ae975f18b6778374
 pluggy==1.5.0 \
@@ -418,16 +414,6 @@ pyyaml==6.0.3; python_version < '3.15' \
     --hash=sha256:f7057c9a337546edc7973c0d3ba84ddcdf0daa14533c2065749c9075001090e6 \
     --hash=sha256:fa160448684b4e94d80416c0fa4aac48967a969efe22931448d853ada8baf926 \
     --hash=sha256:fc09d0aa354569bc501d4e787133afc08552722d3ab34836a80547331bb5d4a0
-scipy==1.15.3; python_version == '3.10' \
-    --hash=sha256:a345928c86d535060c9c2b25e71e87c39ab2f22fc96e9636bd74d1dbf9de448c \
-    --hash=sha256:ad3432cb0f9ed87477a8d97f03b763fd1d57709f1bbde3c9369b1dff5503b253 \
-    --hash=sha256:aef683a9ae6eb00728a542b796f52a5477b78252edede72b8327a886ab63293f \
-    --hash=sha256:1c832e1bd78dea67d5c16f786681b28dd695a8cb1fb90af2e27580d3d0967e92 \
-    --hash=sha256:263961f658ce2165bbd7b99fa5135195c3a12d9bef045345016b8b50c315cb82 \
-    --hash=sha256:9e2abc762b0811e09a0d3258abee2d98e0c703eee49464ce0069590846f31d40 \
-    --hash=sha256:ed7284b21a7a0c8f1b6e5977ac05396c0d008b89e05498c8b7e8f4a1423bba0e \
-    --hash=sha256:5380741e53df2c566f4d234b100a484b420af85deb39ea35a1cc1be84ff53a5c \
-    --hash=sha256:9d61e97b186a57350f6d6fd72640f9e99d5a4a2b8fbf4b9ee9a841eab327dc13
 scipy==1.17.0; python_version == '3.11' \
     --hash=sha256:00fb5f8ec8398ad90215008d8b6009c9db9fa924fd4c7d6be307c6f945f9cd73 \
     --hash=sha256:031121914e295d9791319a1875444d55079885bbae5bdc9c5e0f2ee5f09d34ff \
@@ -557,17 +543,6 @@ tabulate==0.9.0 \
     --hash=sha256:024ca478df22e9340661486f85298cff5f6dcdba14f3813e8830015b9ed1948f
 
 # Transitive dependencies of sysid optional deps
-contourpy==1.3.2; python_version == '3.10' \
-    --hash=sha256:ba38e3f9f330af820c4b27ceb4b9c7feee5fe0493ea53a8720f4792667465934 \
-    --hash=sha256:dc41ba0714aa2968d1f8674ec97504a8f7e334f48eeacebcaa6256213acb0989 \
-    --hash=sha256:9be002b31c558d1ddf1b9b415b162c603405414bacd6932d031c5b5a8b757f0d \
-    --hash=sha256:8d2e74acbcba3bfdb6d9d8384cdc4f9260cae86ed9beee8bd5f54fee49a430b9 \
-    --hash=sha256:e259bced5549ac64410162adc973c5e2fb77f04df4a439d00b478e57a0e65512 \
-    --hash=sha256:ad687a04bc802cbe8b9c399c07162a3c35e227e2daccf1668eb1f278cb698631 \
-    --hash=sha256:cdd22595308f53ef2f891040ab2b93d79192513ffccbd7fe19be7aa773a5e09f \
-    --hash=sha256:b4f54d6a2defe9f257327b0f243612dd051cc43825587520b1bf74a31e2f6ef2 \
-    --hash=sha256:f939a054192ddc596e031e50bb13b657ce318cf13d264f095ce9db7dc6ae81c0 \
-    --hash=sha256:c440093bbc8fc21c637c03bafcbef95ccd963bc6e0514ad887932c18ca2a759a
 contourpy==1.3.3; python_version >= '3.11' and python_version < '3.15' \
     --hash=sha256:023b44101dfe49d7d53932be418477dba359649246075c996866106da069af69 \
     --hash=sha256:07ce5ed73ecdc4a03ffe3e1b3e3c1166db35ae7584be76f65dbbe28a7791b0cc \

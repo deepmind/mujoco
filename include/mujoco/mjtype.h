@@ -88,8 +88,9 @@ typedef enum mjtEnableBit {       // enable optional feature bitflags
   mjENBL_SLEEP        = 1<<4,     // sleeping
   mjENBL_DIAGEXACT    = 1<<5,     // exact diagonal of constraint inertia
   mjENBL_IPC          = 1<<6,     // IPC flex contact mode of the discrete integrator
+  mjENBL_SPECULATIVE  = 1<<7,     // speculative contacts
 
-  mjNENABLE           = 7         // number of enable flags
+  mjNENABLE           = 8         // number of enable flags
 } mjtEnableBit;
 
 
@@ -217,10 +218,16 @@ typedef enum mjtEq {              // type of equality constraint
   mjEQ_JOINT,                     // couple the values of two scalar joints with cubic
   mjEQ_TENDON,                    // couple the lengths of two tendons with cubic
   mjEQ_FLEX,                      // fix all edge lengths of a flex
-  mjEQ_FLEXVERT,                  // fix all vertex lengths of a flex
+  mjEQ_FLEXVERT,                  // unsupported, will cause an error if used
   mjEQ_FLEXSTRAIN,                // constrain strain of a trilinear/quadratic flex (B-bar)
   mjEQ_DISTANCE                   // unsupported, will cause an error if used
 } mjtEq;
+
+
+typedef enum mjtTendon {          // type of tendon
+  mjTENDON_FIXED      = 0,        // linear combination of joint coordinates
+  mjTENDON_SPATIAL                // path through sites, around geoms
+} mjtTendon;
 
 
 typedef enum mjtWrap {            // type of tendon wrap object
@@ -523,11 +530,13 @@ typedef enum mjtState {             // state elements
   mjSTATE_MOCAP_QUAT     = 1<<11,   // orientations of mocap bodies
   mjSTATE_USERDATA       = 1<<12,   // user data
   mjSTATE_PLUGIN         = 1<<13,   // plugin state
+  mjSTATE_PLASTIC        = 1<<14,   // plastic state
 
-  mjNSTATE               = 14,      // number of state elements
+  mjNSTATE               = 15,      // number of state elements
 
   // convenience values for commonly used state specifications
-  mjSTATE_PHYSICS        = mjSTATE_QPOS | mjSTATE_QVEL | mjSTATE_ACT | mjSTATE_HISTORY,
+  mjSTATE_PHYSICS        = mjSTATE_QPOS | mjSTATE_QVEL | mjSTATE_ACT | mjSTATE_HISTORY |
+                           mjSTATE_PLASTIC,
   mjSTATE_FULLPHYSICS    = mjSTATE_TIME | mjSTATE_PHYSICS | mjSTATE_PLUGIN,
   mjSTATE_USER           = mjSTATE_CTRL | mjSTATE_QFRC_APPLIED | mjSTATE_XFRC_APPLIED |
                            mjSTATE_EQ_ACTIVE | mjSTATE_MOCAP_POS | mjSTATE_MOCAP_QUAT |

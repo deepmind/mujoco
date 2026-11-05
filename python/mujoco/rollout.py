@@ -130,10 +130,19 @@ class Rollout:
       raise ValueError('control_spec can only contain bits in mjSTATE_USER')
 
     # check types
-    if nstep and not isinstance(nstep, (int, np.integer)):
+    if nstep is not None and (
+        not isinstance(nstep, (int, np.integer)) or isinstance(nstep, bool)
+    ):
       raise ValueError('nstep must be an integer')
-    if chunk_size and not isinstance(chunk_size, (int, np.integer)):
+    if nstep is not None and nstep < 0:
+      raise ValueError('nstep must be non-negative')
+    if chunk_size is not None and (
+        not isinstance(chunk_size, (int, np.integer))
+        or isinstance(chunk_size, bool)
+    ):
       raise ValueError('chunk_size must be an integer')
+    if chunk_size is not None and chunk_size <= 0:
+      raise ValueError('chunk_size must be a positive integer')
     _check_must_be_numeric(
         initial_state=initial_state,
         initial_warmstart=initial_warmstart,
@@ -184,7 +193,11 @@ class Rollout:
 
     # infer nstep, check for incompatibilities
     nstep = _infer_dimension(
-        1, nstep or 1, control=control, state=state, sensordata=sensordata
+        1,
+        1 if nstep is None else nstep,
+        control=control,
+        state=state,
+        sensordata=sensordata,
     )
 
     # get nstate/ncontrol/nv/nsensordata
@@ -358,7 +371,7 @@ def _check_number_of_dimensions(ndim, **kwargs):
   for key, value in kwargs.items():
     if value is None:
       continue
-    if value.ndim > ndim:
+    if np.ndim(value) > ndim:
       raise ValueError(f'{key} can have at most {ndim} dimensions')
 
 
@@ -383,6 +396,7 @@ def _ensure_3d(arg):
   if arg is None:
     return None
   else:
+    arg = np.asarray(arg)
     # np.atleast_3d adds both leading and trailing dims, we want only leading
     if arg.ndim == 0:
       arg = arg[np.newaxis, np.newaxis, np.newaxis, ...]

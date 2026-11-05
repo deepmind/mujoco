@@ -17,6 +17,7 @@
 
 #include <float.h>
 #include <stddef.h>
+#include <stdint.h>
 
 #include <mujoco/mjexport.h>
 #include <mujoco/mjmodel.h>
@@ -59,15 +60,6 @@ typedef enum {
   mjEPA_P4_MISSING_ORIGIN,
 } mjEPAStatus;
 
-// vertex in a polytope
-typedef struct {
-  mjtNum vert[3];   // v1 - v2; vertex in Minkowski sum making up polytope
-  mjtNum vert1[3];  // vertex of polytope in obj1
-  mjtNum vert2[3];  // vertex of polytope in obj2
-  int index1;       // vertex index in mesh 1
-  int index2;       // vertex index in mesh 2
-} Vertex;
-
 // configuration for convex collision detection
 typedef struct {
   int max_iterations;  // the maximum number of iterations for GJK and EPA
@@ -98,8 +90,6 @@ typedef struct {
   int gjk_iterations;           // number of iterations that GJK ran
   int epa_iterations;           // number of iterations that EPA ran (zero if EPA did not run)
   mjEPAStatus epa_status;       // status of the EPA run
-  Vertex simplex[4];
-  int nsimplex;
 } mjCCDStatus;
 
 // return size in bytes of the buffer needed for mjc_ccd for a given number of iterations
@@ -111,6 +101,11 @@ MJAPI mjtNum mjc_ccd(const mjCCDConfig* config, mjCCDStatus* status, mjCCDObj* o
 // run warm-started GJK distance query (no EPA), returns positive distance or 0 if penetrating
 MJAPI mjtNum mjc_gjk(mjCCDObj* obj1, mjCCDObj* obj2, mjtNum x1[3], mjtNum x2[3],
                      mjtNum dist_cutoff, mjtNum tolerance, int max_iterations);
+
+// compute multiple contacts from GJK/EPA support vertices, assuming 1 initial contact in x1, x2
+// return number of contacts
+MJAPI int mjc_multicontact(mjCCDObj* obj1, mjCCDObj* obj2, mjtNum* x1, mjtNum* x2, mjtNum* dist,
+                           int nconmax, int nmeshdegmax, int npolygonmax, uint8_t* buffer);
 
 #ifdef __cplusplus
 }

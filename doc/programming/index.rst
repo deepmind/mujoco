@@ -53,18 +53,23 @@ almost entirely self-contained and do not require any other library to be presen
 also hide all symbols apart from those that form MuJoCo's public API, thus ensuring that it can coexist with any other
 libraries that may be loaded into the process (including other versions of libraries that MuJoCo depends on).
 
-The pre-built distribution is a single .zip on Windows, .dmg on macOS, and .tar.gz on Linux. There is no installer.
-On Windows and Linux, simply extract the archive in a directory of your choice. From the ``bin`` subdirectory, you can
-now run the precompiled code samples, for example:
+The pre-built distribution is a single ``.dmg`` on macOS, ``.zip`` on Windows, and ``.tar.gz`` on Linux; there is no
+installer. On macOS and Windows, both :ref:`MuJoCo Studio <StudioApp>` and :ref:`simulate <saSimulate>` are packaged as
+standalone desktop applications (``MuJoCoStudio.app`` and ``MuJoCo.app`` in the macOS ``.dmg``;
+``bin\mujoco_studio.exe`` and ``bin\simulate.exe`` in the Windows ``.zip``) that you can double-click to launch and
+drop model files onto.
+
+On Windows and Linux, extract the archive in a directory of your choice. From a terminal in the ``bin`` subdirectory,
+you can also run :ref:`MuJoCo Studio <StudioApp>` or the precompiled code samples such as :ref:`simulate <saSimulate>`:
 
 .. code-block:: Text
 
-     Windows:           simulate ..\model\humanoid\humanoid.xml
-     Linux and macOS:   ./simulate ../model/humanoid/humanoid.xml
+     Windows:   mujoco_studio ..\model\humanoid\humanoid.xml
+     Linux:     ./mujoco_studio ../model/humanoid/humanoid.xml
 
-The directory structure is shown below. Users can re-organize it if needed, as well as install the dynamic libraries in
-other directories and set the path accordingly. The only file created automatically is MUJOCO_LOG.TXT in the executable
-directory; it contains error and warning messages, and can be deleted at any time.
+The directory structure of the Windows and Linux archives is shown below. Users can re-organize it if needed, as well as
+install the dynamic libraries in other directories and set the path accordingly. The only file created automatically is
+MUJOCO_LOG.TXT in the executable directory; it contains error and warning messages, and can be deleted at any time.
 
 .. code-block:: Text
 
@@ -79,10 +84,10 @@ working development environment. We provide a cross-platform `CMake
 <https://github.com/google-deepmind/mujoco/blob/main/sample/CMakeLists.txt>`__ setup that can be used to build sample
 applications independently of the MuJoCo library itself.
 
-On macOS, the DMG disk image contains ``MuJoCo.app``, which you can double-click to launch the ``simulate`` GUI. You can
-also drag ``MuJoCo.app`` into the ``/Applications`` on your system, as you would to install any other app. As well as the
-``MuJoCo.app`` `Application Bundle <https://developer.apple.com/go/?id=bundle-
-structure>`__, the DMG includes the ``mujoco.framework`` subdirectory containing the MuJoCo dynamic library and all of
+On macOS, you can drag ``MuJoCoStudio.app`` and ``MuJoCo.app`` from the ``.dmg`` into ``/Applications`` to install them
+like any other `application bundle <https://developer.apple.com/go/?id=bundle-structure>`__ (their executables inside
+``Contents/MacOS/`` can also be run from a terminal). Alongside the app bundles, the DMG includes the
+``mujoco.framework`` subdirectory containing the MuJoCo dynamic library and all of
 its public headers. If you are using Xcode, you can import it as a framework dependency on your project. (This also
 works for Swift projects without any modification). If you are building manually, you can use ``-F`` and
 ``-framework mujoco`` to specify the header search path and the library search path respectively.
@@ -162,6 +167,27 @@ The main targets are:
 - ``@mujoco//plugin/<name>:register``, where ``<name>`` is ``actuator``, ``elasticity``, ``sdf`` or ``sensor``: the
   bundled plugins, which register themselves when linked in.
 - ``@mujoco//python/mujoco``: the Python bindings, see :ref:`PyBuildBazel`.
+
+To build your own :ref:`plugin<exPlugin>` as a shared library, like the bundled ones, use the ``mujoco_plugin`` macro.
+The library links against ``@mujoco//:mujoco_shared`` and exports no symbols; load it at run time with
+:ref:`mj_loadPluginLibrary`, which runs its :ref:`registration<exRegistration>` code:
+
+.. code-block:: python
+
+   load("@mujoco//plugin:mujoco_plugin.bzl", "mujoco_plugin")
+
+   cc_library(
+       name = "my_plugin_lib",
+       srcs = ["my_plugin.cc"],
+       deps = ["@mujoco"],
+       alwayslink = True,
+   )
+
+   # Builds libmy_plugin.so (libmy_plugin.dylib on macOS).
+   mujoco_plugin(
+       name = "my_plugin",
+       deps = [":my_plugin_lib"],
+   )
 
 To use single-precision floating point (``mjUSESINGLE``), build with ``--@mujoco//:single_precision``.
 
@@ -317,6 +343,8 @@ Next we list the prefixes corresponding to function definitions. Note that funct
    Functions for computing derivatives, for example :ref:`mjd_transitionFD`.
 ``mjs_``
    Functions for :doc:`procedural model editing <modeledit>`, for example :ref:`mjs_addJoint`.
+``mjb_``
+   Functions for :ref:`batched simulation<siBatch>`, declared in ``mujoco/mjbatch.h``, for example :ref:`mjb_step`.
 
 .. toctree::
     :hidden:

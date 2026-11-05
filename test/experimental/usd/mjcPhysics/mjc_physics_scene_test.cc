@@ -127,6 +127,7 @@ TEST_F(MjcPhysicsSceneTest, TestDefaults) {
   EXPECT_REAL_USD_FALLBACK_EQ_MODEL_DEFAULT(CCDTolerance, ccd_tolerance);
   EXPECT_INT_USD_FALLBACK_EQ_MODEL_DEFAULT(SDFIterations, sdf_iterations);
   EXPECT_INT_USD_FALLBACK_EQ_MODEL_DEFAULT(SDFInitPoints, sdf_initpoints);
+  EXPECT_REAL_USD_FALLBACK_EQ_MODEL_DEFAULT(SleepTolerance, sleep_tolerance);
 
   // We store the actuator disable groups as an array of integers, but the
   // model stores it as a bitmask.
@@ -147,10 +148,8 @@ TEST_F(MjcPhysicsSceneTest, TestDefaults) {
   EXPECT_DISABLE_FLAG_USD_FALLBACK_EQ_MODEL_DEFAULT(LimitFlag, mjDSBL_LIMIT);
   EXPECT_DISABLE_FLAG_USD_FALLBACK_EQ_MODEL_DEFAULT(ContactFlag,
                                                     mjDSBL_CONTACT);
-  EXPECT_DISABLE_FLAG_USD_FALLBACK_EQ_MODEL_DEFAULT(SpringFlag,
-                                                    mjDSBL_SPRING);
-  EXPECT_DISABLE_FLAG_USD_FALLBACK_EQ_MODEL_DEFAULT(DamperFlag,
-                                                    mjDSBL_DAMPER);
+  EXPECT_DISABLE_FLAG_USD_FALLBACK_EQ_MODEL_DEFAULT(SpringFlag, mjDSBL_SPRING);
+  EXPECT_DISABLE_FLAG_USD_FALLBACK_EQ_MODEL_DEFAULT(DamperFlag, mjDSBL_DAMPER);
   EXPECT_DISABLE_FLAG_USD_FALLBACK_EQ_MODEL_DEFAULT(GravityFlag,
                                                     mjDSBL_GRAVITY);
   EXPECT_DISABLE_FLAG_USD_FALLBACK_EQ_MODEL_DEFAULT(ClampCtrlFlag,
@@ -181,6 +180,7 @@ TEST_F(MjcPhysicsSceneTest, TestDefaults) {
   EXPECT_ENABLE_FLAG_USD_FALLBACK_EQ_MODEL_DEFAULT(FwdinvFlag, mjENBL_FWDINV);
   EXPECT_ENABLE_FLAG_USD_FALLBACK_EQ_MODEL_DEFAULT(InvDiscreteFlag,
                                                    mjENBL_INVDISCRETE);
+  EXPECT_ENABLE_FLAG_USD_FALLBACK_EQ_MODEL_DEFAULT(SleepFlag, mjENBL_SLEEP);
 
   mj_deleteModel(default_model);
   mj_deleteSpec(empty_spec);

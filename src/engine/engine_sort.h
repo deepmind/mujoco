@@ -23,11 +23,11 @@
 {                                                                                                  \
   for (int j = start + 1; j < end; j++) {                                                          \
     type tmp = arr[j];                                                                             \
-    int k = j - 1;                                                                                 \
-    for (; k >= start && cmp(arr + k, &tmp, context) > 0; k--) {                                   \
-      arr[k + 1] = arr[k];                                                                         \
+    int i = j - 1;                                                                                 \
+    for (; i >= start && cmp(arr + i, &tmp, context) > 0; i--) {                                   \
+      arr[i+1] = arr[i];                                                                           \
     }                                                                                              \
-    arr[k + 1] = tmp;                                                                              \
+    arr[i+1] = tmp;                                                                                \
   }                                                                                                \
 }
 

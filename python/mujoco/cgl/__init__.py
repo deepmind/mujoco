@@ -15,13 +15,18 @@
 """An Apple CGL context for offscreen rendering on macOS."""
 
 import atexit
+import contextlib
 import ctypes
 import os
+import threading
+import weakref
 
 from mujoco.cgl import cgl
 
 _ATTRIB = cgl.CGLPixelFormatAttribute
 _PROFILE = cgl.CGLOpenGLProfile
+
+_current_context = threading.local()
 
 
 class GLContext:
@@ -54,13 +59,41 @@ class GLContext:
   def make_current(self):
     cgl.CGLSetCurrentContext(self._context)
     cgl.CGLLockContext(self._context)
+    _current_context.ref = weakref.ref(self)
+
+  @contextlib.contextmanager
+  def as_current(self):
+    """Temporarily makes this context current, restoring any prior context."""
+    if not self._context:
+      yield
+      return
+    prev_ref = getattr(_current_context, 'ref', None)
+    prev = prev_ref() if prev_ref is not None else None
+    if prev is self:
+      yield
+      return
+    self.make_current()
+    try:
+      yield
+    finally:
+      prev_ctx = (
+          prev._context if prev is not None else None  # pylint: disable=protected-access
+      )
+      if prev is not None and prev_ctx:
+        prev.make_current()
+      else:
+        cgl.CGLSetCurrentContext(None)
+        _current_context.ref = None
 
   def free(self):
     """Frees resources associated with this context."""
     try:
       if self._context:
         cgl.CGLUnlockContext(self._context)
-        cgl.CGLSetCurrentContext(None)
+        prev_ref = getattr(_current_context, 'ref', None)
+        if prev_ref is None or prev_ref() is self:
+          cgl.CGLSetCurrentContext(None)
+          _current_context.ref = None
         cgl.CGLReleaseContext(self._context)
       self._context = None
 

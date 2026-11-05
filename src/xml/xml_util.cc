@@ -1150,7 +1150,11 @@ static void WriteNumber(stringstream& stream, T number) {
     }
   }
   double doubledata = static_cast<double>(number);
-  if (precision <= 12 && doubledata < INT_MAX && doubledata > -INT_MAX && isint(number)) {
+  if (precision <= 12 &&
+      doubledata < INT_MAX &&
+      doubledata > -INT_MAX &&
+      isint(number) &&
+      (Round(doubledata) != 0 || doubledata == 0)) {
     stream << Round(number);
   } else {
     stream << number;
@@ -1186,12 +1190,25 @@ void mjXUtil::WriteAttr(
   }
 
   // process all numbers
+  T max_abs = 0;
+  if constexpr (std::is_floating_point_v<T>) {
+    if (precision > 0 && precision <= 12) {
+      for (int i = 0; i < n; i++) { max_abs = std::max(max_abs, std::abs(data[i])); }
+    }
+  }
+
   for (int i = 0; i < n; i++) {
     // add space between numbers
     if (i > 0) { stream << " "; }
 
     // append number
-    WriteNumber(stream, data[i]);
+    T val = data[i];
+    if constexpr (std::is_floating_point_v<T>) {
+      if (precision > 0 && precision <= 12 && max_abs > 0 && std::abs(val) <= 1e-12 * max_abs) {
+        val = 0;
+      }
+    }
+    WriteNumber(stream, val);
   }
 
   // set attribute as string
@@ -1223,13 +1240,26 @@ void mjXUtil::Vector2String(string& txt, const vector<T>& vec, int ncol) {
   const int    precision = mujoco::_mjPRIVATE__get_xml_precision();
   if (precision > 0) { strm.precision(precision); }
 
+  T max_abs = 0;
+  if constexpr (std::is_floating_point_v<T>) {
+    if (precision > 0 && precision <= 12) {
+      for (size_t i = 0; i < vec.size(); i++) { max_abs = std::max(max_abs, std::abs(vec[i])); }
+    }
+  }
+
   for (size_t i = 0; i < vec.size(); i++) {
     if (ncol && (i % ncol) == 0) {
       strm << "\n            ";
     } else if (i > 0) {
       strm << " ";
     }
-    WriteNumber(strm, vec[i]);
+    T val = vec[i];
+    if constexpr (std::is_floating_point_v<T>) {
+      if (precision > 0 && precision <= 12 && max_abs > 0 && std::abs(val) <= 1e-12 * max_abs) {
+        val = 0;
+      }
+    }
+    WriteNumber(strm, val);
   }
 
   txt = strm.str();

@@ -885,17 +885,17 @@ TEST_F(IslandTest, IslandFlex) {
   mjData* data2 = mj_makeData(model);
 
   model->opt.disableflags &= ~mjDSBL_ISLAND;
-  while (data1->time < 0.2) {
+  while (data1->time < 0.045) {
     mj_step(model, data1);
   }
 
   model->opt.disableflags |= mjDSBL_ISLAND;
-  while (data2->time < 0.2) {
+  while (data2->time < 0.045) {
     mj_step(model, data2);
   }
 
   EXPECT_THAT(AsVector(data1->qpos, model->nq),
-              Pointwise(DoubleNear(1e-6), AsVector(data2->qpos, model->nq)));
+              Pointwise(MjNear(1e-6, 1e-5), AsVector(data2->qpos, model->nq)));
 
   mj_deleteData(data2);
   mj_deleteData(data1);

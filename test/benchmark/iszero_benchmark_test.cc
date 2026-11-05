@@ -14,7 +14,7 @@
 
 #include <vector>
 
-#include "benchmark/benchmark.h"
+#include <benchmark/benchmark.h>
 #include "absl/base/attributes.h"
 #include <mujoco/mujoco.h>
 #include "src/engine/engine_util_misc.h"
@@ -23,10 +23,10 @@ namespace mujoco {
 namespace {
 
 // Run benchmark for the isZero functions, for mjtNum directly or bytewise.
-ABSL_ATTRIBUTE_NO_TAIL_CALL static void IzZeroBenchmark(
-    benchmark::State& state, int n, bool bytewise) {
+ABSL_ATTRIBUTE_NO_TAIL_CALL static void IzZeroBenchmark(benchmark::State& state,
+                                                        int n, bool bytewise) {
   std::vector<mjtNum> data(n, 0);
-  data[n-1] = 1;
+  data[n - 1] = 1;
 
   if (bytewise) {
     for (auto s : state) {
@@ -41,8 +41,7 @@ ABSL_ATTRIBUTE_NO_TAIL_CALL static void IzZeroBenchmark(
     }
   }
 
-  state.counters["items/s"] =
-      benchmark::Counter(state.iterations() * n, benchmark::Counter::kIsRate);
+  state.SetItemsProcessed(state.iterations() * n);
 }
 
 // Define benchmarks.
@@ -78,9 +77,3 @@ BENCHMARK(BM_isZero_1e5);
 
 }  // namespace
 }  // namespace mujoco
-
-int main(int argc, char** argv) {
-  benchmark::Initialize(&argc, argv);
-  benchmark::RunSpecifiedBenchmarks();
-  return 0;
-}

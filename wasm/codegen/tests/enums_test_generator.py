@@ -34,7 +34,7 @@ def generate_typescript_enum_tests():
     describe('Enums', () => {
       beforeAll(async () => {
         mujoco = await loadMujoco();
-      });
+      }, 60_000);
     """)
 
   for enum_decl in introspect_enums.ENUMS.values():

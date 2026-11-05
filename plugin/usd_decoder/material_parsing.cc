@@ -99,21 +99,17 @@ ResolvedShaderInput<T> ReadUsdUVTexture(mjSpec* spec,
                                         const pxr::UsdShadeShader shader,
                                         unsigned nchannels) {
   ResolvedShaderInput<T> out;
-  mjsTexture* texture = mjs_addTexture(spec, nullptr);
-  texture->type = mjtTexture::mjTEXTURE_2D;
-  mjs_setName(texture->element, shader.GetPath().GetAsString().c_str());
-
-  pxr::TfToken source_color_space = kTokens->auto_;
-  if (auto color_space_input = shader.GetInput(kTokens->sourceColorSpace)) {
-    color_space_input.Get(&source_color_space);
-  }
-
-  if (source_color_space == kTokens->raw) {
-    texture->colorspace = mjtColorSpace::mjCOLORSPACE_LINEAR;
-  } else if (source_color_space == kTokens->srgb) {
-    texture->colorspace = mjtColorSpace::mjCOLORSPACE_SRGB;
-  } else if (source_color_space == kTokens->auto_) {
-    texture->colorspace = mjtColorSpace::mjCOLORSPACE_AUTO;
+  std::string shader_path = shader.GetPath().GetAsString();
+  // Reuse the existing texture when multiple material inputs connect to the
+  // same UsdUVTexture shader prim, widening nchannel if needed.
+  if (mjsElement* elem =
+          mjs_findElement(spec, mjOBJ_TEXTURE, shader_path.c_str())) {
+    mjsTexture* texture = mjs_asTexture(elem);
+    if (nchannels > texture->nchannel) {
+      texture->nchannel = nchannels;
+    }
+    out.sampler = texture;
+    return out;
   }
 
   pxr::SdfAssetPath resolved_texture_asset_path;
@@ -142,7 +138,7 @@ ResolvedShaderInput<T> ReadUsdUVTexture(mjSpec* spec,
 
   if (resolved_path_str.empty()) {
     mju_warning("UsdUVTexture %s: No texture file path specified.",
-                shader.GetPath().GetAsString().c_str());
+                shader_path.c_str());
     return out;
   }
 
@@ -158,6 +154,23 @@ ResolvedShaderInput<T> ReadUsdUVTexture(mjSpec* spec,
         "system. Could not open: %s",
         resolved_path_str.c_str());
     return out;
+  }
+
+  mjsTexture* texture = mjs_addTexture(spec, nullptr);
+  texture->type = mjtTexture::mjTEXTURE_2D;
+  mjs_setName(texture->element, shader_path.c_str());
+
+  pxr::TfToken source_color_space = kTokens->auto_;
+  if (auto color_space_input = shader.GetInput(kTokens->sourceColorSpace)) {
+    color_space_input.Get(&source_color_space);
+  }
+
+  if (source_color_space == kTokens->raw) {
+    texture->colorspace = mjtColorSpace::mjCOLORSPACE_LINEAR;
+  } else if (source_color_space == kTokens->srgb) {
+    texture->colorspace = mjtColorSpace::mjCOLORSPACE_SRGB;
+  } else if (source_color_space == kTokens->auto_) {
+    texture->colorspace = mjtColorSpace::mjCOLORSPACE_AUTO;
   }
 
   texture->nchannel = nchannels;

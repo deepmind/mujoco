@@ -51,6 +51,9 @@ class FilamentContext : public mjrfContext {
   // Blocks until the given frame has completed rendering.
   void WaitForFrame(mjrfFrameHandle frame_handle);
 
+  // Flushes pending commands to the backend and pumps completed callbacks.
+  void Flush();
+
   // Sets the clear color for the renderer.
   void SetClearColor(const filament::math::float4& color);
 
@@ -91,6 +94,7 @@ class FilamentContext : public mjrfContext {
   int offscreen_width_ = 0;
   int offscreen_height_ = 0;
   std::uint64_t frame_counter_ = 0;
+  std::uint64_t completed_frame_ = 0;
 };
 
 }  // namespace mujoco

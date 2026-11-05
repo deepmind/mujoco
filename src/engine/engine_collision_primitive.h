@@ -45,6 +45,12 @@ int mjraw_CapsuleCapsule(mjPreContact* con, mjtNum margin, const mjtNum* pos1, c
 int mjraw_CapsuleBox(mjPreContact* con, mjtNum margin, const mjtNum* pos1, const mjtNum* mat1,
                      const mjtNum* size1, const mjtNum* pos2, const mjtNum* mat2,
                      const mjtNum* size2);
+int mjraw_SphereBox(mjPreContact* con, mjtNum margin, const mjtNum* pos1, const mjtNum* mat1,
+                    const mjtNum* size1, const mjtNum* pos2, const mjtNum* mat2,
+                    const mjtNum* size2);
+int mjraw_BoxBox(mjPreContact* con, mjtNum margin, const mjtNum* pos1, const mjtNum* mat1,
+                 const mjtNum* size1, const mjtNum* pos2, const mjtNum* mat2,
+                 const mjtNum* size2);
 
 // plane collisions
 MJAPI int mjc_PlaneSphere(const mjModel* m, mjData* d, mjPreContact* con, int g1, int g2,

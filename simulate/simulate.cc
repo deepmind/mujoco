@@ -1025,7 +1025,7 @@ void MakeVisualizationSection(mj::Simulate* sim, const mjModel* m) {
     {mjITEM_EDITFLOAT, "Diffuse",         2, &(vis->headlight.diffuse),    "3"},
     {mjITEM_EDITFLOAT, "Specular",        2, &(vis->headlight.specular),   "3"},
     {mjITEM_SEPARATOR, "Free Camera", 1},
-    {mjITEM_RADIO,     "Orthographic",    2, &(vis->global.orthographic),  "No\nYes"},
+    {mjITEM_RADIO,     "Orthographic",    2, &sim->cam.orthographic,       "No\nYes"},
     {mjITEM_EDITFLOAT, "Field of view",   2, &(vis->global.fovy),          "1"},
     {mjITEM_EDITNUM,   "Center",          2, &(stat->center),              "3"},
     {mjITEM_EDITFLOAT, "Azimuth",         2, &(vis->global.azimuth),       "1"},
@@ -1427,6 +1427,16 @@ void CopyKey(mj::Simulate* sim, const mjModel* m, const mjData* d, bool fp) {
     }
   }
 
+  // plastic
+  if (m->nplastic > 0) {
+    mju::strcat_arr(clipboard, "\"\n  plastic=\"");
+    for (int i = 0; i < m->nplastic; i++) {
+      mju::sprintf_arr(buf, format, d->plastic[i]);
+      if (i < m->nplastic - 1) mju::strcat_arr(buf, " ");
+      mju::strcat_arr(clipboard, buf);
+    }
+  }
+
   mju::strcat_arr(clipboard, "\"\n/>");
 
   // copy to clipboard
@@ -1800,7 +1810,13 @@ void UiEvent(mjuiState* state) {
 
     // visualization section
     else if (it && it->sectionid == SECT_VISUALIZATION) {
-      if (!mju::strcmp_arr(it->name, "Align")) { sim->pending_.align = true; }
+      if (!mju::strcmp_arr(it->name, "Align")) {
+        sim->pending_.align = true;
+      } else if (!mju::strcmp_arr(it->name, "Orthographic")) {
+        mjVisual* vis = sim->is_passive_ ? (sim->m_passive_ ? &sim->m_passive_->vis : nullptr)
+                                         : (sim->m_ ? &sim->m_->vis : nullptr);
+        if (vis) { vis->global.orthographic = sim->cam.orthographic; }
+      }
     }
 
     // group section
@@ -2239,7 +2255,8 @@ void Simulate::Sync(bool state_only) {
 
   if (pending_.align) {
     AlignAndScaleView(this, m_);
-    pending_.align = false;
+    pending_.align                   = false;
+    pending_.ui_update_visualization = true;
   }
 
   if (pending_.copy_key) {
@@ -2626,6 +2643,7 @@ void Simulate::LoadOnRenderThread() {
   }
 
   // set keyframe range and divisions
+  this->key = (this->m_->nkey > 0) ? mjMIN(this->key, this->m_->nkey - 1) : -1;
   this->ui0.sect[SECT_SIMULATION].item[6].slider.range[0]  = 0;
   this->ui0.sect[SECT_SIMULATION].item[6].slider.range[1]  = mjMAX(0, this->m_->nkey - 1);
   this->ui0.sect[SECT_SIMULATION].item[6].slider.divisions = mjMAX(1, this->m_->nkey - 1);
@@ -2643,6 +2661,7 @@ void Simulate::LoadOnRenderThread() {
   // full ui update
   UiModify(&this->ui0, &this->uistate, &this->platform_ui->mjr_context());
   UiModify(&this->ui1, &this->uistate, &this->platform_ui->mjr_context());
+  this->pending_.ui_remake_ctrl = false;
   UpdateSettings(this, this->m_);
 
   // clear request
@@ -2777,6 +2796,12 @@ void Simulate::Render() {
     }
 
     if (this->ui0_enable &&
+        this->ui0.sect[SECT_VISUALIZATION].state &&
+        cam_prev_.orthographic != cam.orthographic) {
+      mjui0_update_section(this, SECT_VISUALIZATION);
+    }
+
+    if (this->ui0_enable &&
         this->ui0.sect[SECT_RENDERING].state &&
         (IsDifferent(opt_prev_.geomgroup, opt.geomgroup) ||
          IsDifferent(opt_prev_.sitegroup, opt.sitegroup) ||
@@ -2812,8 +2837,8 @@ void Simulate::Render() {
       MakeControlSection(this);
       this->ui1.nsect = NSECT1;
       UiModify(&this->ui1, &this->uistate, &this->platform_ui->mjr_context());
+      pending_.ui_remake_ctrl = false;
     }
-    pending_.ui_remake_ctrl = false;
   }
 
   if (pending_.ui_update_ctrl) {
@@ -3190,7 +3215,7 @@ void Simulate::InjectNoise(int key) {
     }
 
     // overwrite midpoint with keyframe, if given
-    if (key >= 0) { midpoint = m_->key_ctrl[key * m_->nu + i]; }
+    if (key >= 0 && key < m_->nkey) { midpoint = m_->key_ctrl[key * m_->nu + i]; }
 
     // exponential convergence to midpoint at ctrl_noise_rate
     d_->ctrl[i] = rate * d_->ctrl[i] + (1 - rate) * midpoint;

@@ -186,6 +186,109 @@ class SolverTest(parameterized.TestCase):
     m.opt.cone = cone
     solver.solve(mjx.put_model(m), mjx.put_data(m, mujoco.MjData(m)))
 
+  def test_elliptic_linesearch_cancellation(self):
+    """Elliptic linesearch preserves orthogonal tangential curvature under cancellation."""
+    m = mujoco.MjModel.from_xml_string("""
+      <mujoco>
+        <option cone="elliptic"/>
+        <worldbody>
+          <geom type="plane" size="1 1 1"/>
+          <body pos="0 0 0.09">
+            <freejoint/>
+            <geom type="sphere" size="0.1" friction="1 1 1"/>
+          </body>
+        </worldbody>
+      </mujoco>
+    """)
+    d = mujoco.MjData(m)
+    mujoco.mj_forward(m, d)
+    mx = mjx.put_model(m)
+    dx = mjx.put_data(m, d)
+    ctx = solver.Context.create(mx, dx)
+
+    # Set u = [0, 1, 2^-13, 0, 0, 0] and search so jv = [0, -1, 0].
+    # In float32, 1 + 2^-26 rounds to 1.0, so naive uu + alpha*(2*uv + alpha*vv)
+    # vanishes at alpha = 1 and loses the middle-zone curvature.
+    eps_perp = np.float32(2.0**-13)
+    u = jax.numpy.array([[0.0, 1.0, eps_perp, 0.0, 0.0, 0.0]])
+    fri = jax.numpy.ones((1, 6))
+    dm = jax.numpy.array([1.0])
+    ctx = ctx.replace(
+        Jaref=jax.numpy.array([0.0, 1.0, eps_perp]),
+        u=u,
+        fri=fri,
+        dm=dm,
+    )
+    jv = jax.numpy.array([0.0, -1.0, 0.0])
+    quad = jax.numpy.zeros((3, 3))
+    quad_gauss = jax.numpy.zeros(3)
+
+    u_tan = u[:, 1:]
+    v_tan = jax.numpy.array([[-1.0, 0.0, 0.0, 0.0, 0.0]])
+    wedge = (
+        u_tan[:, :, None] * v_tan[:, None, :]
+        - u_tan[:, None, :] * v_tan[:, :, None]
+    )
+    det = 0.5 * jax.numpy.sum(jax.numpy.square(wedge), axis=(1, 2))
+    vv = jax.numpy.sum(v_tan * v_tan, axis=1)
+    v_norm = jax.numpy.sqrt(vv)
+    u_par = jax.numpy.sum(u_tan * v_tan, axis=1) / v_norm
+    u_perp_sq = det / vv
+
+    pt = solver._LSPoint.create(
+        mx,
+        dx,
+        ctx,
+        jax.numpy.array(1.0),
+        jv,
+        quad,
+        quad_gauss,
+        u_perp_sq,
+        jax.numpy.array([0.0]),
+        u_par,
+        v_norm,
+    )
+    np.testing.assert_allclose(pt.cost, 0.5 * eps_perp**2, rtol=1e-5)
+    np.testing.assert_allclose(pt.deriv_0, 0.0, atol=1e-7)
+    np.testing.assert_allclose(pt.deriv_1, 1.0, rtol=1e-5)
+
+  @parameterized.parameters(1e-6, 1e-12, 1e-17)
+  def test_elliptic_hessian_small_tangent(self, t):
+    """Elliptic cone Hessian is exact when T^3 < mjMINVAL."""
+    m = mujoco.MjModel.from_xml_string("""
+      <mujoco>
+        <option cone="elliptic" solver="Newton"/>
+        <worldbody>
+          <geom type="plane" size="1 1 1"/>
+          <body pos="0 0 0.09">
+            <freejoint/>
+            <geom type="sphere" size="0.1" friction="1 1 1"/>
+          </body>
+        </worldbody>
+      </mujoco>
+    """)
+    d = mujoco.MjData(m)
+    mujoco.mj_forward(m, d)
+    mx = mjx.put_model(m)
+    dx = mjx.put_data(m, d)
+    ctx = solver.Context.create(mx, dx)
+
+    # middle zone with tiny tangent t along the first tangent direction
+    fri = np.asarray(ctx.fri[0])
+    mu = fri[0]
+    n = -0.5 * t / mu
+    jaref = jax.numpy.array([n / mu, t / fri[1], 0.0])
+    ctx = solver._update_constraint(mx, dx, ctx.replace(Jaref=jaref))
+
+    # H = Dm * F * [[1, -mu, 0], [-mu, mu^2, 0], [0, 0, mu^2 - mu*n/t]] * F
+    h = np.zeros((3, 3))
+    h[0, 0] = 1.0
+    h[0, 1] = h[1, 0] = -mu
+    h[1, 1] = mu * mu
+    h[2, 2] = mu * mu - mu * n / t
+    h *= float(ctx.dm[0]) * np.outer(fri[:3], fri[:3])
+    np.testing.assert_allclose(ctx.h[0, :3, :3], h, rtol=1e-5, atol=1e-6)
+
 
 if __name__ == '__main__':
   absltest.main()

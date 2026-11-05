@@ -49,6 +49,7 @@
 #include <pxr/base/gf/rotation.h>
 #include <pxr/base/gf/vec3d.h>
 #include <pxr/base/tf/staticData.h>
+#include <pxr/base/tf/stringUtils.h>
 #include <pxr/base/tf/token.h>
 #include <pxr/base/vt/types.h>
 #include <pxr/usd/sdf/path.h>
@@ -98,6 +99,31 @@ struct UsdCaches {
 };
 
 constexpr const char* kUsdPrimPathKey = "usd_primpath";
+
+std::string GetStageModelName(const pxr::UsdStageRefPtr& stage) {
+  pxr::UsdPrim default_prim = stage->GetDefaultPrim();
+  if (default_prim) {
+    std::string display_name = default_prim.GetDisplayName();
+    if (!display_name.empty()) {
+      return display_name;
+    }
+    std::string prim_name = default_prim.GetName().GetString();
+    if (!prim_name.empty()) {
+      return prim_name;
+    }
+  }
+
+  pxr::SdfLayerHandle root_layer = stage->GetRootLayer();
+  if (root_layer && !root_layer->IsAnonymous()) {
+    std::string layer_stem =
+        pxr::TfStringGetBeforeSuffix(root_layer->GetDisplayName());
+    if (!layer_stem.empty()) {
+      return layer_stem;
+    }
+  }
+
+  return "";
+}
 
 void SetUsdPrimPathUserValue(mjsElement* element,
                              const pxr::SdfPath& prim_path) {
@@ -174,6 +200,62 @@ bool IsUniformScale(const pxr::GfVec3d& scale) {
          fabs(scale[1] - scale[2]) < epsilon;
 }
 
+template <typename Shape, typename Element>
+bool ParseAxialPrimitive(const Shape& shape, const char* name,
+                         mjtGeom geom_type, const pxr::GfVec3d& scale,
+                         Element* element) {
+  element->type = geom_type;
+  double radius;
+  if (!shape.GetRadiusAttr().template Get<double>(&radius)) {
+    mju_error("Could not get %s radius attr.", name);
+    return false;
+  }
+
+  double height;
+  if (!shape.GetHeightAttr().template Get<double>(&height)) {
+    mju_error("Could not get %s height attr.", name);
+    return false;
+  }
+
+  TfToken axis = pxr::UsdGeomTokens->z;
+  shape.GetAxisAttr().Get(&axis);
+
+  // Scale radius and half-height using the radial and axial components for the
+  // authored USD axis, and rotate local +Z to align with X or Y when needed.
+  double radial_scale_a = std::abs(scale[0]);
+  double radial_scale_b = std::abs(scale[1]);
+  double axial_scale = std::abs(scale[2]);
+  pxr::GfQuatd axis_rot = pxr::GfQuatd::GetIdentity();
+  if (axis == pxr::UsdGeomTokens->x) {
+    radial_scale_a = std::abs(scale[1]);
+    radial_scale_b = std::abs(scale[2]);
+    axial_scale = std::abs(scale[0]);
+    axis_rot =
+        pxr::GfRotation(pxr::GfVec3d::ZAxis(), pxr::GfVec3d::XAxis()).GetQuat();
+  } else if (axis == pxr::UsdGeomTokens->y) {
+    radial_scale_a = std::abs(scale[0]);
+    radial_scale_b = std::abs(scale[2]);
+    axial_scale = std::abs(scale[1]);
+    axis_rot =
+        pxr::GfRotation(pxr::GfVec3d::ZAxis(), pxr::GfVec3d::YAxis()).GetQuat();
+  }
+  if (std::abs(radial_scale_a - radial_scale_b) >= 1e-6) {
+    mju_warning(
+        "Non-uniform radial scale on %s prim %s; using max radial scale.", name,
+        shape.GetPath().GetText());
+  }
+  double radial_scale = std::max(radial_scale_a, radial_scale_b);
+
+  element->size[0] = radial_scale * radius;
+  element->size[1] = axial_scale * height / 2.0;
+  element->size[2] = 0;
+
+  pxr::GfQuatd current_rot(element->quat[0], element->quat[1], element->quat[2],
+                           element->quat[3]);
+  SetDoubleArrFromGfQuatd(element->quat, current_rot * axis_rot);
+  return true;
+}
+
 template <typename T>
 bool MaybeParseGeomPrimitive(const pxr::UsdPrim& prim, T* element,
                              pxr::UsdGeomXformCache& xform_cache) {
@@ -199,58 +281,11 @@ bool MaybeParseGeomPrimitive(const pxr::UsdPrim& prim, T* element,
       element->size[2] = scale[2] * radius;
     }
   } else if (prim.IsA<pxr::UsdGeomCylinder>()) {
-    auto cylinder = pxr::UsdGeomCylinder(prim);
-    element->type = mjGEOM_CYLINDER;
-    double radius;
-    if (!cylinder.GetRadiusAttr().Get<double>(&radius)) {
-      mju_error("Could not get cylinder radius attr.");
-      return false;
-    }
-
-    double height;
-    if (!cylinder.GetHeightAttr().Get<double>(&height)) {
-      mju_error("Could not get cylinder height attr.");
-      return false;
-    }
-    element->size[0] = scale[0] * radius;
-    element->size[1] = scale[1] * height / 2.0f;
-    element->size[2] = 0;
+    return ParseAxialPrimitive(pxr::UsdGeomCylinder(prim), "cylinder",
+                               mjGEOM_CYLINDER, scale, element);
   } else if (prim.IsA<pxr::UsdGeomCapsule>()) {
-    auto capsule = pxr::UsdGeomCapsule(prim);
-    element->type = mjGEOM_CAPSULE;
-    double radius;
-    if (!capsule.GetRadiusAttr().Get<double>(&radius)) {
-      mju_error("Could not get capsule radius attr.");
-      return false;
-    }
-
-    double height;
-    if (!capsule.GetHeightAttr().Get<double>(&height)) {
-      mju_error("Could not get capsule height attr.");
-      return false;
-    }
-    element->size[0] = scale[0] * radius;
-    element->size[1] = scale[1] * height / 2.0f;
-    element->size[2] = 0;
-
-    TfToken axis;
-    capsule.GetAxisAttr().Get(&axis);
-
-    // Mujoco (and USD) capsules are aligned with Z by default.
-    // When USD axis is X or Y, we apply a rotation to align with the Z axis.
-    pxr::GfQuatd axis_rot(1.0);
-    if (axis == pxr::UsdGeomTokens->x) {
-      axis_rot = pxr::GfRotation(pxr::GfVec3d::XAxis(), pxr::GfVec3d::ZAxis())
-                     .GetQuat();
-    } else if (axis == pxr::UsdGeomTokens->y) {
-      axis_rot = pxr::GfRotation(pxr::GfVec3d::YAxis(), pxr::GfVec3d::ZAxis())
-                     .GetQuat();
-    }
-
-    pxr::GfQuatd current_rot(element->quat[0], element->quat[1],
-                             element->quat[2], element->quat[3]);
-    pxr::GfQuatd new_rot = current_rot * axis_rot;
-    SetDoubleArrFromGfQuatd(element->quat, new_rot);
+    return ParseAxialPrimitive(pxr::UsdGeomCapsule(prim), "capsule",
+                               mjGEOM_CAPSULE, scale, element);
   } else if (prim.IsA<pxr::UsdGeomCube>()) {
     element->type = mjGEOM_BOX;
     auto cube = pxr::UsdGeomCube(prim);
@@ -534,6 +569,10 @@ void ParseUsdPhysicsScene(mjSpec* spec,
   mjc_physics_scene.GetCCDToleranceAttr().Get(&ccd_tolerance);
   spec->option.ccd_tolerance = ccd_tolerance;
 
+  double sleep_tolerance;
+  mjc_physics_scene.GetSleepToleranceAttr().Get(&sleep_tolerance);
+  spec->option.sleep_tolerance = sleep_tolerance;
+
   pxr::GfVec3d wind;
   mjc_physics_scene.GetWindAttr().Get(&wind);
   SetMjtNumArrFromGfVec3d(spec->option.wind, wind);
@@ -765,6 +804,18 @@ void ParseUsdPhysicsScene(mjSpec* spec,
   mjc_physics_scene.GetMultiCCDFlagAttr().Get(&multiccd_flag);
   spec->option.disableflags |= (!multiccd_flag ? mjDSBL_MULTICCD : 0);
 
+  pxr::VtArray<int> actuatorgroupdisable;
+  mjc_physics_scene.GetActuatorGroupDisableAttr().Get(&actuatorgroupdisable);
+  for (int group : actuatorgroupdisable) {
+    if (group >= 0 && group < mjNGROUP) {
+      spec->option.disableactuator |= (1 << group);
+    }
+  }
+
+  bool sleep_flag;
+  mjc_physics_scene.GetSleepFlagAttr().Get(&sleep_flag);
+  spec->option.enableflags |= (sleep_flag ? mjENBL_SLEEP : 0);
+
   // Compiler attributes
   auto auto_limits_attr = mjc_physics_scene.GetAutoLimitsAttr();
   if (auto_limits_attr.HasAuthoredValue()) {
@@ -864,18 +915,27 @@ void ParseUsdPhysicsScene(mjSpec* spec,
 
 void ParseUsdPhysicsMassAPIForBody(mjsBody* body,
                                    const pxr::UsdPhysicsMassAPI& mass_api) {
+  bool has_mass = false;
+  bool has_com = false;
+  bool has_diagonal_inertia = false;
+
   auto mass_attr = mass_api.GetMassAttr();
   if (mass_attr.HasAuthoredValue()) {
     float mass;
     mass_attr.Get(&mass);
     body->mass = mass;
+    has_mass = mass > 0;
   }
 
   auto com_attr = mass_api.GetCenterOfMassAttr();
   if (com_attr.HasAuthoredValue()) {
     pxr::GfVec3f com;
     com_attr.Get(&com);
-    SetDoubleArrFromGfVec3d(body->ipos, com);
+    if (std::isfinite(com[0]) && std::isfinite(com[1]) &&
+        std::isfinite(com[2])) {
+      SetDoubleArrFromGfVec3d(body->ipos, com);
+      has_com = true;
+    }
   }
 
   auto principle_axes_attr = mass_api.GetPrincipalAxesAttr();
@@ -890,6 +950,15 @@ void ParseUsdPhysicsMassAPIForBody(mjsBody* body,
     pxr::GfVec3f diag_inertia;
     diag_inertia_attr.Get(&diag_inertia);
     SetDoubleArrFromGfVec3d(body->inertia, diag_inertia);
+    has_diagonal_inertia =
+        diag_inertia[0] > 0 && diag_inertia[1] > 0 && diag_inertia[2] > 0;
+  }
+
+  if (has_mass && has_diagonal_inertia) {
+    body->explicitinertial = true;
+    if (!has_com) {
+      SetDoubleArrFromGfVec3d(body->ipos, pxr::GfVec3d(0, 0, 0));
+    }
   }
 
   auto newton_inertia_attr =
@@ -1129,10 +1198,6 @@ void ParseMjcPhysicsMeshCollisionAPI(
 void ParseMjcPhysicsTendon(mjSpec* spec, const pxr::MjcPhysicsTendon& tendon) {
   pxr::UsdPrim prim = tendon.GetPrim();
   pxr::UsdStageRefPtr stage = prim.GetStage();
-  mjsTendon* mj_tendon = mjs_addTendon(spec, nullptr);
-  mjs_setName(mj_tendon->element, prim.GetPath().GetAsString().c_str());
-
-  SetUsdPrimPathUserValue(mj_tendon->element, prim.GetPath());
 
   pxr::TfToken type;
   tendon.GetTypeAttr().Get(&type);
@@ -1200,10 +1265,15 @@ void ParseMjcPhysicsTendon(mjSpec* spec, const pxr::MjcPhysicsTendon& tendon) {
     // Check that for N targets we have 0 or N elements in coef:
     if (!coefs.empty() && coefs.size() != n_targets) {
       mju_warning(
-          "Spatial tendon %s has %lu coefs but %lu wrap targets, skipping.",
+          "Fixed tendon %s has %lu coefs but %lu wrap targets, skipping.",
           prim.GetPath().GetAsString().c_str(), coefs.size(), n_targets);
+      return;
     }
   }
+
+  mjsTendon* mj_tendon = mjs_addTendon(spec, nullptr);
+  mjs_setName(mj_tendon->element, prim.GetPath().GetAsString().c_str());
+  SetUsdPrimPathUserValue(mj_tendon->element, prim.GetPath());
 
   int last_segment = 0;
   for (int i = 0; i < n_targets; ++i) {
@@ -1220,10 +1290,11 @@ void ParseMjcPhysicsTendon(mjSpec* spec, const pxr::MjcPhysicsTendon& tendon) {
             "Tendon %s has at least %d segments but only %lu divisors, "
             "skipping.",
             prim.GetPath().GetAsString().c_str(), segment + 1, divisors.size());
+        mjs_delete(spec, mj_tendon->element);
         return;
       }
 
-      if (segment > last_segment) {
+      if (segment > last_segment || (i == 0 && divisors[segment] != 1.0)) {
         mjsWrap* pulley_wrap = mjs_wrapPulley(mj_tendon, divisors[segment]);
         mjs_setString(pulley_wrap->info, ("Pulley between segments: " +
                                           std::to_string(last_segment) +
@@ -1252,6 +1323,7 @@ void ParseMjcPhysicsTendon(mjSpec* spec, const pxr::MjcPhysicsTendon& tendon) {
               "skipping.",
               prim.GetPath().GetAsString().c_str(), side_site_index,
               side_site_paths.size());
+          mjs_delete(spec, mj_tendon->element);
           return;
         }
         if (side_site_index >= 0) {
@@ -1263,6 +1335,7 @@ void ParseMjcPhysicsTendon(mjSpec* spec, const pxr::MjcPhysicsTendon& tendon) {
     } else {
       mju_warning("Tendon %s has an invalid wrap target type, skipping.",
                   prim.GetPath().GetAsString().c_str());
+      mjs_delete(spec, mj_tendon->element);
       return;
     }
     mjs_setString(wrap->info, ("Prim: " + wrap_target.GetAsString()).c_str());
@@ -1978,13 +2051,17 @@ void ParseDisplayColorAndOpacity(const pxr::UsdPrim& prim, mjsGeom* geom) {
   }
 }
 
-void ParseUsdGeomGprim(mjSpec* spec, const pxr::UsdPrim& gprim,
-                       const pxr::UsdPrim& body_prim, mjsBody* parent,
-                       UsdCaches& caches) {
+mjsGeom* ParseUsdGeomGprim(mjSpec* spec, const pxr::UsdPrim& gprim,
+                           const pxr::UsdPrim& body_prim, mjsBody* parent,
+                           UsdCaches& caches) {
   mjsGeom* geom = mjs_addGeom(parent, nullptr);
   mjs_setName(geom->element, gprim.GetPath().GetAsString().c_str());
   geom->contype = 0;
   geom->conaffinity = 0;
+  if (!body_prim.IsPseudoRoot() ||
+      gprim.HasAPI<pxr::MjcPhysicsImageableAPI>()) {
+    geom->density = 0;
+  }
 
   SetUsdPrimPathUserValue(geom->element, gprim.GetPath());
 
@@ -2024,6 +2101,13 @@ void ParseUsdGeomGprim(mjSpec* spec, const pxr::UsdPrim& gprim,
     }
   }
 
+  if (gprim.HasAPI<pxr::UsdPhysicsMassAPI>()) {
+    ParseUsdPhysicsMassAPIForGeom(geom, pxr::UsdPhysicsMassAPI(gprim));
+  }
+
+  if (gprim.HasAPI<pxr::MjcPhysicsCollisionAPI>()) {
+    ParseMjcPhysicsCollisionAPI(geom, pxr::MjcPhysicsCollisionAPI(gprim));
+  }
   if (gprim.HasAPI<pxr::MjcPhysicsImageableAPI>()) {
     auto imageable_api = pxr::MjcPhysicsImageableAPI(gprim);
     auto group_attr = imageable_api.GetGroupAttr();
@@ -2031,6 +2115,8 @@ void ParseUsdGeomGprim(mjSpec* spec, const pxr::UsdPrim& gprim,
       group_attr.Get(&geom->group);
     }
   }
+
+  return geom;
 }
 
 void ParseUsdPhysicsCollider(mjSpec* spec,
@@ -2387,14 +2473,17 @@ void ParseConstraint(mjSpec* spec, const pxr::UsdPrim& prim, mjsBody* body,
     auto relpose_quat = localRot0 * localRot1.GetConjugate();
     relpose_quat.Normalize();
 
-    if (prim.HasAPI<pxr::MjcPhysicsEqualityConnectAPI>()) {
+    if (prim.IsA<pxr::UsdPhysicsSphericalJoint>() ||
+        prim.HasAPI<pxr::MjcPhysicsEqualityConnectAPI>()) {
       eq->type = mjEQ_CONNECT;
       eq->data[0] = localPos0[0];
       eq->data[1] = localPos0[1];
       eq->data[2] = localPos0[2];
 
-      pxr::MjcPhysicsEqualityAPI equality_api(prim);
-      ParseMjcEqualityAPISolverParams(eq, equality_api, prim);
+      if (prim.HasAPI<pxr::MjcPhysicsEqualityConnectAPI>()) {
+        pxr::MjcPhysicsEqualityAPI equality_api(prim);
+        ParseMjcEqualityAPISolverParams(eq, equality_api, prim);
+      }
     } else {
       eq->data[0] = localPos1[0];
       eq->data[1] = localPos1[1];
@@ -2478,7 +2567,8 @@ void ParseUsdPhysicsJoint(mjSpec* spec, const pxr::UsdPrim& prim, mjsBody* body,
 
     float lower, upper;
     if (revolute.GetLowerLimitAttr().Get(&lower) &&
-        revolute.GetUpperLimitAttr().Get(&upper)) {
+        revolute.GetUpperLimitAttr().Get(&upper) &&
+        !(std::isinf(lower) && lower < 0 && std::isinf(upper) && upper > 0)) {
       mj_joint->limited = mjLIMITED_TRUE;
       if (spec->compiler.degree) {
         mj_joint->range[0] = lower;
@@ -2507,7 +2597,8 @@ void ParseUsdPhysicsJoint(mjSpec* spec, const pxr::UsdPrim& prim, mjsBody* body,
     }
     float lower, upper;
     if (prismatic.GetLowerLimitAttr().Get(&lower) &&
-        prismatic.GetUpperLimitAttr().Get(&upper)) {
+        prismatic.GetUpperLimitAttr().Get(&upper) &&
+        !(std::isinf(lower) && lower < 0 && std::isinf(upper) && upper > 0)) {
       mj_joint->limited = mjLIMITED_TRUE;
       mj_joint->range[0] = lower;
       mj_joint->range[1] = upper;
@@ -2706,6 +2797,37 @@ bool IsObjectInPhysicsScene(const T& object,
 // Helper type to store all the prims that belong to a body.
 using BodyPrimMap = std::map<pxr::SdfPath, std::vector<pxr::SdfPath>>;
 
+bool HasAuthoredMassOrDensity(const pxr::UsdPrim& prim) {
+  if (!prim.HasAPI<pxr::UsdPhysicsMassAPI>()) {
+    return false;
+  }
+  pxr::UsdPhysicsMassAPI mass_api(prim);
+  return mass_api.GetMassAttr().HasAuthoredValue() ||
+         mass_api.GetDensityAttr().HasAuthoredValue();
+}
+
+bool BodySubtreeHasMass(mjsBody* body) {
+  if (body->explicitinertial || body->mass > 0) {
+    return true;
+  }
+  for (mjsElement* el = mjs_firstChild(body, mjOBJ_GEOM, 0); el != nullptr;
+       el = mjs_nextChild(body, el, 0)) {
+    mjsGeom* geom = mjs_asGeom(el);
+    if (geom->mass > 0 || geom->density > 0) {
+      return true;
+    }
+  }
+  for (mjsElement* el = mjs_firstChild(body, mjOBJ_BODY, 0); el != nullptr;
+       el = mjs_nextChild(body, el, 0)) {
+    mjsBody* child = mjs_asBody(el);
+    if (mjs_firstChild(child, mjOBJ_JOINT, 0) == nullptr &&
+        BodySubtreeHasMass(child)) {
+      return true;
+    }
+  }
+  return false;
+}
+
 // Recursively traverses the kinematic tree, creating bodies, joints, and geoms
 // in the mjSpec.
 void PopulateSpecFromTree(pxr::UsdStageRefPtr stage, mjSpec* spec,
@@ -2749,10 +2871,14 @@ void PopulateSpecFromTree(pxr::UsdStageRefPtr stage, mjSpec* spec,
           ? stage->GetPseudoRoot()
           : stage->GetPrimAtPath(current_node->body_path);
 
+  std::vector<mjsGeom*> unauthored_visual_geoms;
   for (const auto& gprim_path : current_node->visual_gprims) {
     auto gprim = stage->GetPrimAtPath(gprim_path);
-    ParseUsdGeomGprim(spec, gprim, body_prim_for_xform, current_mj_body,
-                      caches);
+    mjsGeom* geom = ParseUsdGeomGprim(spec, gprim, body_prim_for_xform,
+                                      current_mj_body, caches);
+    if (!HasAuthoredMassOrDensity(gprim)) {
+      unauthored_visual_geoms.push_back(geom);
+    }
   }
 
   for (const auto& collider_path : current_node->colliders) {
@@ -2771,12 +2897,34 @@ void PopulateSpecFromTree(pxr::UsdStageRefPtr stage, mjSpec* spec,
     PopulateSpecFromTree(stage, spec, current_mj_body, current_node,
                          child_node.get(), caches);
   }
+
+  if (!unauthored_visual_geoms.empty() &&
+      mjs_firstChild(current_mj_body, mjOBJ_JOINT, 0) != nullptr &&
+      !BodySubtreeHasMass(current_mj_body)) {
+    mju_warning(
+        "Body '%s' has only visual gprims and no colliders or explicit "
+        "inertia; falling back to default density on visual geoms.",
+        current_node->body_path.GetText());
+    mjsGeom default_geom;
+    mjs_defaultGeom(&default_geom);
+    for (mjsGeom* geom : unauthored_visual_geoms) {
+      geom->density = default_geom.density;
+    }
+  }
 }
 
 mjSpec* ParseStage(const pxr::UsdStageRefPtr stage) {
   mjSpec* spec = mj_makeSpec();
+  std::string model_name = GetStageModelName(stage);
+  if (!model_name.empty()) {
+    mjs_setString(spec->modelname, model_name.c_str());
+  }
 
   std::unique_ptr<Node> root = BuildKinematicTree(stage);
+  if (!root) {
+    mj_deleteSpec(spec);
+    return nullptr;
+  }
 
   // First parse the physics scene and other root elements such as keyframes
   // and actuators.

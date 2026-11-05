@@ -202,9 +202,8 @@ std::string ModelDifferences(const mjModel* m1, const mjModel* m2, double tol,
 
 // the values which compilation derives once from the conventions of the spec,
 // which mj_setConst leaves as compiled: the damping of actuators given a
-// damping ratio, the stiffness and damping of joints given a spring-damper, the
-// spring length of tendons and the relative pose of welds between bodies which
-// have none
+// damping ratio, the stiffness and damping of joints given a spring-damper, and
+// the spring length of tendons which have none
 ModelValues CompiledValues(const mjSpec* s, const mjModel* m) {
   ModelValues values;
   mjSpec* spec = const_cast<mjSpec*>(s);
@@ -233,16 +232,6 @@ ModelValues CompiledValues(const mjSpec* s, const mjModel* m) {
     if (springlength[0] == -1 && springlength[1] == -1) {
       values.insert({"tendon_lengthspring", 2 * mjs_getId(e)});
       values.insert({"tendon_lengthspring", 2 * mjs_getId(e) + 1});
-    }
-  }
-  for (mjsElement* e = mjs_firstElement(spec, mjOBJ_EQUALITY); e;
-       e = mjs_nextElement(spec, e)) {
-    const mjsEquality* eq = mjs_asEquality(e);
-    if (eq->type == mjEQ_WELD && eq->objtype == mjOBJ_BODY && !eq->data[6] &&
-        !eq->data[7] && !eq->data[8] && !eq->data[9]) {
-      for (int k = 3; k < 10; k++) {
-        values.insert({"eq_data", mjNEQDATA * mjs_getId(e) + k});
-      }
     }
   }
   return values;

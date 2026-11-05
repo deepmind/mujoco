@@ -1422,19 +1422,25 @@ TEST_F(XMLWriterTest, FramesInAlignedBody) {
 
 // a body's plugin is written once, not again inside each of the body's frames
 TEST_F(XMLWriterTest, BodyPluginWrittenOnce) {
+  mjpPlugin plugin;
+  mjp_defaultPlugin(&plugin);
+  plugin.name = "mujoco.test.passive";
+  plugin.capabilityflags |= mjPLUGIN_PASSIVE;
+  plugin.nstate = +[](const mjModel* m, int instance) { return 0; };
+  plugin.compute =
+      +[](const mjModel* m, mjData* d, int instance, int capability_bit) {};
+  mjp_registerPlugin(&plugin);
+
   static constexpr char xml[] = R"(
   <mujoco>
     <extension>
-      <plugin plugin="mujoco.elasticity.cable"/>
+      <plugin plugin="mujoco.test.passive"/>
     </extension>
     <worldbody>
       <body name="body">
         <joint type="ball"/>
         <geom type="capsule" size=".01" fromto="0 0 0 .1 0 0"/>
-        <plugin plugin="mujoco.elasticity.cable">
-          <config key="twist" value="1e6"/>
-          <config key="bend" value="1e6"/>
-        </plugin>
+        <plugin plugin="mujoco.test.passive"/>
         <frame name="frame" pos="0 0 1">
           <site name="site"/>
         </frame>
@@ -1724,6 +1730,51 @@ TEST_F(XMLWriterTest, WritesPinnedFlexNodes) {
   EXPECT_EQ(SaveAndReadXml(mtemp.get()), saved_xml);
 }
 
+TEST_F(XMLWriterTest, WritesFlexYield) {
+  static constexpr char xml[] = R"(
+  <mujoco>
+    <worldbody>
+      <flexcomp name="one" type="grid" count="3 3 1" spacing=".1 .1 .1" dim="2">
+        <elasticity young="1000" thickness="0.01" elastic2d="both" yield="0.02"/>
+      </flexcomp>
+      <flexcomp name="two" type="grid" count="3 3 1" spacing=".1 .1 .1" dim="2">
+        <elasticity young="1000" thickness="0.01" elastic2d="both" yield="0 0.004"/>
+      </flexcomp>
+      <flexcomp name="none" type="grid" count="3 3 1" spacing=".1 .1 .1" dim="2">
+        <elasticity young="1000" thickness="0.01" elastic2d="both"/>
+      </flexcomp>
+      <flexcomp name="box" type="grid" count="2 2 2" spacing=".1 .1 .1" dim="3">
+        <elasticity young="1000" yield="0.05"/>
+      </flexcomp>
+    </worldbody>
+  </mujoco>
+  )";
+
+  MjModelPtr model = LoadModelFromString(xml);
+  ASSERT_THAT(model.get(), NotNull());
+
+  // yield strains are saved as one value if it gives the bending yield strain
+  // (equal in 2D, zero in 3D), else as two, and zeros not at all
+  std::string saved_xml = SaveAndReadXml(model.get());
+  EXPECT_THAT(saved_xml, HasSubstr("yield=\"0.02\""));
+  EXPECT_THAT(saved_xml, HasSubstr("yield=\"0 0.004\""));
+  EXPECT_THAT(saved_xml, HasSubstr("yield=\"0.05\""));
+  EXPECT_THAT(saved_xml, Not(HasSubstr("yield=\"0\"")));
+
+  char error[1024];
+  MjModelPtr mtemp = LoadModelFromString(saved_xml, error, sizeof(error));
+  ASSERT_THAT(mtemp.get(), NotNull()) << error;
+  ASSERT_EQ(mtemp->nflex, model->nflex);
+  for (int i = 0; i < 2 * model->nflex; i++) {
+    EXPECT_EQ(mtemp->flex_yield[i], model->flex_yield[i]);
+  }
+  for (int i = 0; i < model->nflex; i++) {
+    EXPECT_EQ(mtemp->flex_plasticmode[i], model->flex_plasticmode[i]);
+  }
+  EXPECT_EQ(mtemp->nplastic, model->nplastic);
+  EXPECT_EQ(SaveAndReadXml(mtemp.get()), saved_xml);
+}
+
 TEST_F(XMLWriterTest, KeepsEmptyFlexCells) {
   // no element uses the last point, which widens the grid: cells 1 and 2 are
   // empty and have no stiffness; the second flexcomp is in a rotated body
@@ -1731,16 +1782,12 @@ TEST_F(XMLWriterTest, KeepsEmptyFlexCells) {
   <mujoco>
     <worldbody>
       <body name="parent">
-        <freejoint/>
-        <inertial mass="0.01" pos="0 0 0" diaginertia="0.001 0.001 0.001"/>
         <flexcomp name="test" type="direct" dim="3" dof="quadratic" mass="1" cellcount="3 1 1" point="0.0 0.0 0.0  0.3 0.0 0.0  0.0 1.0 0.0  0.3 1.0 0.0  0.0 0.0 1.0  0.3 0.0 1.0  0.0 1.0 1.0  0.3 1.0 1.0  1.0 0.5 0.5" element="0 1 3 2 4 5 7 6">
           <contact selfcollide="none"/>
           <elasticity young="1"/>
         </flexcomp>
       </body>
       <body name="rotated" euler="30 20 10">
-        <freejoint/>
-        <inertial mass="0.01" pos="0 0 0" diaginertia="0.001 0.001 0.001"/>
         <flexcomp name="turned" type="direct" dim="3" dof="quadratic" mass="1" cellcount="3 1 1" point="0.0 0.0 0.0  0.3 0.0 0.0  0.0 1.0 0.0  0.3 1.0 0.0  0.0 0.0 1.0  0.3 0.0 1.0  0.0 1.0 1.0  0.3 1.0 1.0  1.0 0.5 0.5" element="0 1 3 2 4 5 7 6">
           <contact selfcollide="none"/>
           <elasticity young="1"/>
@@ -3532,6 +3579,50 @@ TEST_F(AsWrittenTest, SavesGeneralWhenShortcutDoesNotFit) {
   mj_deleteSpec(spec);
 }
 
+// zeros which disable features of a dcmotor default keep the dcmotor tag
+TEST_F(AsWrittenTest, SavesDCMotorZeroOverrides) {
+  static constexpr char xml[] = R"(
+  <mujoco>
+    <default>
+      <dcmotor motorconst="0.5" resistance="2" saturation="1.5"
+               inductance="0.002"/>
+    </default>
+    <worldbody>
+      <body>
+        <joint name="j"/>
+        <geom size="1"/>
+      </body>
+    </worldbody>
+    <actuator>
+      <dcmotor joint="j" saturation="0" inductance="0"/>
+    </actuator>
+  </mujoco>
+  )";
+  mjSpec* spec = ParseAsWritten(xml);
+  ASSERT_THAT(spec, NotNull());
+  mjModel* model = mj_compile(spec, nullptr);
+  ASSERT_THAT(model, NotNull()) << mjs_getError(spec);
+  EXPECT_EQ(model->actuator_forcelimited[0], 0);
+  EXPECT_EQ(model->actuator_actnum[0], 0);
+
+  std::string saved = SaveAndReadXml(spec);
+  EXPECT_THAT(saved, HasSubstr(R"(<dcmotor joint="j" saturation="0")"));
+
+  std::array<char, 1024> error;
+  mjSpec* reloaded =
+      mj_parseXMLString(saved.c_str(), nullptr, error.data(), error.size());
+  ASSERT_THAT(reloaded, NotNull()) << error.data() << "\n" << saved;
+  mjModel* remodel = mj_compile(reloaded, nullptr);
+  ASSERT_THAT(remodel, NotNull()) << mjs_getError(reloaded);
+  std::string field;
+  EXPECT_EQ(CompareModel(model, remodel, field), 0) << field << "\n" << saved;
+
+  mj_deleteModel(remodel);
+  mj_deleteSpec(reloaded);
+  mj_deleteModel(model);
+  mj_deleteSpec(spec);
+}
+
 // a full inertia which the spec gives in a rotated frame, as one which is read
 // from URDF, is saved rotated: MJCF has no orientation beside a full inertia
 TEST_F(AsWrittenTest, SavesFullInertiaOfRotatedFrame) {
@@ -3562,6 +3653,47 @@ TEST_F(AsWrittenTest, SavesFullInertiaOfRotatedFrame) {
           HasSubstr(
               R"(<inertial pos="0 0 0.1" mass="2" fullinertia="0.2 0.3 0.4 -0.01 -0.02 0.03"/>)"))
           << saved;
+    }
+
+    std::array<char, 1024> error;
+    mjSpec* reloaded =
+        mj_parseXMLString(saved.c_str(), nullptr, error.data(), error.size());
+    ASSERT_THAT(reloaded, NotNull()) << error.data() << "\n" << saved;
+    mjModel* remodel = mj_compile(reloaded, nullptr);
+    ASSERT_THAT(remodel, NotNull()) << mjs_getError(reloaded);
+    std::string field;
+    EXPECT_EQ(CompareModel(model, remodel, field), 0) << field;
+
+    mj_deleteModel(remodel);
+    mj_deleteSpec(reloaded);
+    mj_deleteModel(model);
+    mj_deleteSpec(spec);
+  }
+}
+
+// a singular fullinertia with positive boundinertia can be saved canonically
+TEST_F(AsWrittenTest, SavesSingularFullInertiaWithBoundInertia) {
+  static constexpr char xml[] = R"(
+  <mujoco>
+    <compiler boundinertia="0.01"/>
+    <worldbody>
+      <body name="body">
+        <inertial pos="0 0 0.1" mass="2" fullinertia="1 1 0 0 0 0"/>
+        <geom size="1"/>
+      </body>
+    </worldbody>
+  </mujoco>
+  )";
+  for (bool canonical : {false, true}) {
+    mjSpec* spec = ParseAsWritten(xml, canonical);
+    ASSERT_THAT(spec, NotNull());
+    mjModel* model = mj_compile(spec, nullptr);
+    ASSERT_THAT(model, NotNull()) << mjs_getError(spec);
+    std::string saved = SaveAndReadXml(spec);
+    if (canonical) {
+      EXPECT_THAT(saved, HasSubstr("diaginertia=")) << saved;
+    } else {
+      EXPECT_THAT(saved, HasSubstr("fullinertia=")) << saved;
     }
 
     std::array<char, 1024> error;
@@ -3902,9 +4034,8 @@ TEST_F(XMLWriterTest, OmitsDefaultEqualityData) {
   EXPECT_THAT(saved_xml, Not(HasSubstr("anchor=")));
   EXPECT_THAT(saved_xml, Not(HasSubstr("torquescale=")));
   EXPECT_THAT(saved_xml, Not(HasSubstr("polycoef=")));
-  // relpose is legitimately saved: the compiler resolves the zero-quat
-  // "compute current pose" sentinel into the actual relative pose
-  EXPECT_THAT(saved_xml, HasSubstr("relpose=\"0 0 0 1 0 0 0\""));
+  // the relative pose, which mj_setConst computes
+  EXPECT_THAT(saved_xml, Not(HasSubstr("relpose=")));
 }
 
 TEST_F(XMLWriterTest, WritesDefaultClassJointPosAxis) {
@@ -3986,6 +4117,446 @@ TEST_F(XMLWriterTest, MeshGeomRoundTripPreservesSurfacevel) {
   EXPECT_THAT(
       AsVector(reloaded->geom_surfacevel, 6),
       Pointwise(MjNear(1e-12, 1e-6), AsVector(model->geom_surfacevel, 6)));
+}
+
+TEST_F(XMLWriterTest, TextureGridsizeWithoutGridlayoutAndCompiledNchannel) {
+  static constexpr char xml[] = R"(
+  <mujoco>
+    <default>
+      <default class="grid_cls">
+        <texture type="skybox" gridsize="2 4" gridlayout="LFRB.D.."/>
+      </default>
+    </default>
+    <asset>
+      <texture name="sky1" type="skybox" file="dummy.png" gridsize="2 3"/>
+      <texture name="sky2" class="grid_cls" file="dummy.png" gridsize="2 3"/>
+      <texture name="ktx" type="2d" file="tex.ktx" content_type="image/ktx"/>
+    </asset>
+  </mujoco>
+  )";
+  mjVFS vfs;
+  mj_defaultVFS(&vfs);
+  static constexpr char kDummy[] = "ktxblob";
+  mj_addBufferVFS(&vfs, "tex.ktx", kDummy, sizeof(kDummy));
+
+  std::array<char, 1024> error;
+  mjSpec* spec = mj_parseXMLString(xml, &vfs, error.data(), error.size());
+  ASSERT_THAT(spec, NotNull()) << error.data();
+
+  // authored save: sky1 and sky2 omit default-dots gridlayout, resetting sky2
+  spec->compiler.savecompiled = 0;
+  std::string saved_authored = SaveToString(spec);
+  EXPECT_THAT(saved_authored, Not(HasSubstr("gridlayout=\".")));
+  mjSpec* reloaded_authored = mj_parseXMLString(saved_authored.c_str(), &vfs,
+                                                error.data(), error.size());
+  ASSERT_THAT(reloaded_authored, NotNull()) << error.data() << "\n"
+                                            << saved_authored;
+  mjsTexture* sky2 =
+      mjs_asTexture(mjs_findElement(reloaded_authored, mjOBJ_TEXTURE, "sky2"));
+  ASSERT_THAT(sky2, NotNull());
+  EXPECT_EQ(std::string(sky2->gridlayout, 12), "............");
+  mj_deleteSpec(reloaded_authored);
+
+  // compiled save on ktx texture: compiled nchannel=1 is written
+  mjs_delete(spec, mjs_findElement(spec, mjOBJ_TEXTURE, "sky1"));
+  mjs_delete(spec, mjs_findElement(spec, mjOBJ_TEXTURE, "sky2"));
+  mjModel* model = mj_compile(spec, &vfs);
+  ASSERT_THAT(model, NotNull()) << mjs_getError(spec);
+  EXPECT_EQ(model->tex_nchannel[0], 1);
+  spec->compiler.savecompiled = 1;
+  std::string saved_compiled = SaveToString(spec);
+  EXPECT_THAT(saved_compiled, HasSubstr("nchannel=\"1\""));
+
+  mj_deleteModel(model);
+  mj_deleteSpec(spec);
+  mj_deleteVFS(&vfs);
+}
+
+TEST_F(XMLWriterTest, MaterialDefaultLayerRoundtrip) {
+  static constexpr char xml[] = R"(
+  <mujoco>
+    <default>
+      <default class="layered">
+        <material>
+          <layer role="normal" texture="norm"/>
+        </material>
+      </default>
+    </default>
+    <asset>
+      <texture name="rgb" type="2d" builtin="flat" width="4" height="4"/>
+      <texture name="norm" type="2d" builtin="flat" width="4" height="4"/>
+      <material name="m" class="layered" texture="rgb"/>
+    </asset>
+  </mujoco>
+  )";
+  std::array<char, 1024> error;
+  MjModelPtr model = LoadModelFromString(xml, error.data(), error.size());
+  ASSERT_THAT(model.get(), NotNull()) << error.data();
+
+  std::string saved = SaveAndReadXml(model.get());
+  MjModelPtr reloaded =
+      LoadModelFromString(saved.c_str(), error.data(), error.size());
+  ASSERT_THAT(reloaded.get(), NotNull()) << error.data() << "\n" << saved;
+  EXPECT_EQ(reloaded->mat_texid[mjNTEXROLE * 0 + mjTEXROLE_RGB], 0);
+  EXPECT_EQ(reloaded->mat_texid[mjNTEXROLE * 0 + mjTEXROLE_NORMAL], 1);
+}
+
+TEST_F(XMLWriterTest, CameraDefaultSensorsizeAndDefaultLightTexture) {
+  static constexpr char xml[] = R"(
+  <mujoco>
+    <default>
+      <default class="cam_cls">
+        <camera sensorsize="0.036 0.024" focal="0.05 0.05" resolution="640 480"/>
+        <light directional="true"/>
+      </default>
+    </default>
+    <worldbody>
+      <camera name="c1" class="cam_cls"/>
+      <camera name="c2" class="cam_cls" sensorsize="0.02 0.02"/>
+      <light name="l1" class="cam_cls"/>
+    </worldbody>
+  </mujoco>
+  )";
+  std::array<char, 1024> error;
+  mjSpec* spec = mj_parseXMLString(xml, nullptr, error.data(), error.size());
+  ASSERT_THAT(spec, NotNull()) << error.data();
+  mjsDefault* def = mjs_findDefault(spec, "cam_cls");
+  ASSERT_THAT(def, NotNull());
+  mjs_setString(def->light->texture, "ignored_in_default");
+
+  mjModel* model = mj_compile(spec, nullptr);
+  ASSERT_THAT(model, NotNull()) << mjs_getError(spec);
+  spec->compiler.savecompiled = 1;
+  std::string saved = SaveToString(spec);
+  EXPECT_THAT(saved, HasSubstr("<camera name=\"c1\" class=\"cam_cls\"/>"));
+  EXPECT_THAT(
+      saved,
+      HasSubstr(
+          "<camera name=\"c2\" class=\"cam_cls\" sensorsize=\"0.02 0.02\"/>"));
+  EXPECT_THAT(saved, Not(HasSubstr("ignored_in_default")));
+
+  MjModelPtr reloaded =
+      LoadModelFromString(saved.c_str(), error.data(), error.size());
+  ASSERT_THAT(reloaded.get(), NotNull()) << error.data() << "\n" << saved;
+
+  mj_deleteModel(model);
+  mj_deleteSpec(spec);
+}
+
+TEST_F(XMLWriterTest, PluginMeshPreservesAttributes) {
+  static constexpr char xml[] = R"(
+  <mujoco>
+    <extension>
+      <plugin plugin="mujoco.sdf.torus"/>
+    </extension>
+    <asset>
+      <material name="mat"/>
+      <mesh name="torus" refpos="0.1 0.2 0.3" refquat="0 1 0 0"
+            maxhullvert="16" material="mat">
+        <plugin plugin="mujoco.sdf.torus"/>
+      </mesh>
+    </asset>
+    <worldbody>
+      <geom type="sdf" mesh="torus">
+        <plugin plugin="mujoco.sdf.torus"/>
+      </geom>
+    </worldbody>
+  </mujoco>
+  )";
+  std::array<char, 1024> error;
+  mjSpec* spec = mj_parseXMLString(xml, nullptr, error.data(), error.size());
+  ASSERT_THAT(spec, NotNull()) << error.data();
+  mjModel* model = mj_compile(spec, nullptr);
+  std::string compile_error = model ? "" : mjs_getError(spec);
+  if (!model) {
+    mj_deleteSpec(spec);
+  }
+  ASSERT_THAT(model, NotNull()) << compile_error;
+
+  for (int savecompiled : {0, 1}) {
+    spec->compiler.savecompiled = savecompiled;
+    std::string saved = SaveToString(spec);
+    EXPECT_THAT(saved, HasSubstr("refpos=\"0.1 0.2 0.3\""));
+    EXPECT_THAT(saved, HasSubstr("refquat=\"0 1 0 0\""));
+    EXPECT_THAT(saved, HasSubstr("maxhullvert=\"16\""));
+    EXPECT_THAT(saved, HasSubstr("material=\"mat\""));
+    EXPECT_THAT(saved, Not(HasSubstr("vertex=")));
+    MjModelPtr reloaded =
+        LoadModelFromString(saved.c_str(), error.data(), error.size());
+    ASSERT_THAT(reloaded.get(), NotNull()) << error.data() << "\n" << saved;
+    EXPECT_EQ(reloaded->geom_matid[0], 0);
+  }
+
+  mj_deleteModel(model);
+  mj_deleteSpec(spec);
+}
+
+TEST_F(XMLWriterTest, PluginSensorPreservesReftypeRefname) {
+  static constexpr char xml[] = R"(
+  <mujoco>
+    <extension>
+      <plugin plugin="mujoco.sensor.touch_grid"/>
+    </extension>
+    <worldbody>
+      <site name="ref_site"/>
+      <body>
+        <geom size="0.1"/>
+        <site name="touch_site"/>
+      </body>
+    </worldbody>
+    <sensor>
+      <plugin name="touch" plugin="mujoco.sensor.touch_grid"
+              objtype="site" objname="touch_site"
+              reftype="site" refname="ref_site">
+        <config key="size" value="4 4"/>
+        <config key="fov" value="10 10"/>
+        <config key="gamma" value="0"/>
+        <config key="nchannel" value="1"/>
+      </plugin>
+    </sensor>
+  </mujoco>
+  )";
+  std::array<char, 1024> error;
+  mjSpec* spec = mj_parseXMLString(xml, nullptr, error.data(), error.size());
+  ASSERT_THAT(spec, NotNull()) << error.data();
+  mjModel* model = mj_compile(spec, nullptr);
+  ASSERT_THAT(model, NotNull()) << mjs_getError(spec);
+
+  for (int savecompiled : {0, 1}) {
+    spec->compiler.savecompiled = savecompiled;
+    std::string saved = SaveToString(spec);
+    EXPECT_THAT(saved, HasSubstr("reftype=\"site\""));
+    EXPECT_THAT(saved, HasSubstr("refname=\"ref_site\""));
+    MjModelPtr reloaded =
+        LoadModelFromString(saved.c_str(), error.data(), error.size());
+    ASSERT_THAT(reloaded.get(), NotNull()) << error.data() << "\n" << saved;
+    EXPECT_EQ(reloaded->sensor_reftype[0], mjOBJ_SITE);
+    EXPECT_EQ(reloaded->sensor_refid[0],
+              mj_name2id(reloaded.get(), mjOBJ_SITE, "ref_site"));
+  }
+
+  mj_deleteModel(model);
+  mj_deleteSpec(spec);
+}
+
+TEST_F(XMLWriterTest, AttachEmptyAffixWithChildDefaultsRoundTrips) {
+  mock_warning_handler.ExpectWarnings();
+
+  static constexpr char parent_xml[] = R"(
+  <mujoco>
+    <default>
+      <geom friction="0.8 0.005 0.0001"/>
+    </default>
+    <worldbody>
+      <geom name="parent_geom" size="0.2"/>
+      <frame name="mount"/>
+    </worldbody>
+  </mujoco>
+  )";
+  static constexpr char child_xml[] = R"(
+  <mujoco>
+    <default>
+      <geom friction="0.3 0.005 0.0001"/>
+      <default class="sub">
+        <geom density="500"/>
+      </default>
+    </default>
+    <worldbody>
+      <body name="child_body">
+        <geom name="main_geom" size="0.1"/>
+        <geom name="sub_geom" class="sub" size="0.15"/>
+      </body>
+    </worldbody>
+  </mujoco>
+  )";
+
+  std::array<char, 1024> error;
+  mjSpec* parent =
+      mj_parseXMLString(parent_xml, nullptr, error.data(), error.size());
+  mjSpec* child =
+      mj_parseXMLString(child_xml, nullptr, error.data(), error.size());
+  ASSERT_THAT(parent, NotNull()) << error.data();
+  ASSERT_THAT(child, NotNull()) << error.data();
+
+  mjsFrame* mount = mjs_findFrame(parent, "mount");
+  mjsBody* body = mjs_findBody(child, "child_body");
+  ASSERT_THAT(mjs_attach(mount->element, body->element, "", ""), NotNull())
+      << mjs_getError(parent);
+
+  mjModel* model = mj_compile(parent, nullptr);
+  ASSERT_THAT(model, NotNull()) << mjs_getError(parent);
+
+  for (int savecompiled : {0, 1}) {
+    parent->compiler.savecompiled = savecompiled;
+    std::string saved = SaveToString(parent);
+    MjModelPtr reloaded =
+        LoadModelFromString(saved.c_str(), error.data(), error.size());
+    ASSERT_THAT(reloaded.get(), NotNull()) << error.data() << "\n" << saved;
+    EXPECT_MJTNUM_EQ(reloaded->geom_friction[0], 0.8);
+    EXPECT_MJTNUM_EQ(reloaded->geom_friction[3], 0.3);
+    EXPECT_MJTNUM_EQ(reloaded->geom_friction[6], 0.3);
+    EXPECT_NEAR(reloaded->body_mass[1], model->body_mass[1],
+                MjTol(1e-12, 1e-5));
+  }
+
+  mj_deleteModel(model);
+  mj_deleteSpec(child);
+  mj_deleteSpec(parent);
+}
+
+TEST_F(XMLWriterTest, InertiaFromGeomTruePreservesGeomlessInertial) {
+  static constexpr char xml[] = R"(
+  <mujoco>
+    <compiler inertiafromgeom="true"/>
+    <worldbody>
+      <body name="geomless">
+        <joint type="free"/>
+        <inertial pos="0 0 0" mass="2" diaginertia="0.1 0.2 0.3"/>
+      </body>
+      <flexcomp name="fc" type="grid" count="2 2 1" spacing="0.1 0.1 0.1"
+                mass="1" radius="0.01"/>
+    </worldbody>
+  </mujoco>
+  )";
+  std::array<char, 1024> error;
+  MjModelPtr model = LoadModelFromString(xml, error.data(), error.size());
+  ASSERT_THAT(model.get(), NotNull()) << error.data();
+
+  std::string saved = SaveAndReadXml(model.get());
+  MjModelPtr reloaded =
+      LoadModelFromString(saved.c_str(), error.data(), error.size());
+  ASSERT_THAT(reloaded.get(), NotNull()) << error.data() << "\n" << saved;
+  for (int i = 0; i < model->nbody; ++i) {
+    EXPECT_NEAR(reloaded->body_mass[i], model->body_mass[i], MjTol(1e-6, 1e-5))
+        << "body " << i;
+  }
+}
+
+TEST_F(XMLWriterTest, SmallPositiveNumberNotRoundedToZero) {
+  static constexpr char xml[] = R"(
+  <mujoco>
+    <worldbody>
+      <body>
+        <joint type="free"/>
+        <inertial pos="0 0 0" mass="1e-6"
+          diaginertia="5.67e-13 5.67e-13 5.67e-13"/>
+      </body>
+    </worldbody>
+  </mujoco>
+  )";
+  std::array<char, 1024> error;
+  MjModelPtr model = LoadModelFromString(xml, error.data(), error.size());
+  ASSERT_THAT(model.get(), NotNull()) << error.data();
+
+  std::string saved = SaveAndReadXml(model.get());
+  EXPECT_THAT(saved, Not(HasSubstr("diaginertia=\"0 0 0\"")));
+  MjModelPtr reloaded =
+      LoadModelFromString(saved.c_str(), error.data(), error.size());
+  ASSERT_THAT(reloaded.get(), NotNull()) << error.data() << "\n" << saved;
+  EXPECT_NEAR(reloaded->body_inertia[3], 5.67e-13, MjTol(1e-18, 1e-18));
+}
+
+TEST_F(XMLWriterTest, QuatTrigNoiseSnapsToZero) {
+  static constexpr char xml[] = R"(
+  <mujoco>
+    <worldbody>
+      <body name="noisy" quat="6.12323e-17 0 0 1">
+        <geom size="0.1"/>
+      </body>
+    </worldbody>
+  </mujoco>
+  )";
+  std::array<char, 1024> error;
+  MjModelPtr model = LoadModelFromString(xml, error.data(), error.size());
+  ASSERT_THAT(model.get(), NotNull()) << error.data();
+
+  std::string saved = SaveAndReadXml(model.get());
+  EXPECT_THAT(saved, HasSubstr("quat=\"0 0 0 1\""));
+  EXPECT_THAT(saved, Not(HasSubstr("6.12323e-17")));
+}
+
+TEST_F(XMLWriterTest, DeleteAttachedSubDefault) {
+  mock_warning_handler.ExpectWarnings();
+
+  static constexpr char parent_xml[] = R"(
+  <mujoco>
+    <default>
+      <geom friction="0.8 0.005 0.0001"/>
+    </default>
+    <worldbody>
+      <frame name="mount"/>
+    </worldbody>
+  </mujoco>
+  )";
+  static constexpr char child_xml[] = R"(
+  <mujoco>
+    <default>
+      <geom friction="0.3 0.005 0.0001"/>
+      <default class="sub">
+        <geom density="500"/>
+      </default>
+    </default>
+    <worldbody>
+      <body name="child_body"/>
+    </worldbody>
+  </mujoco>
+  )";
+
+  std::array<char, 1024> error;
+  mjSpec* parent =
+      mj_parseXMLString(parent_xml, nullptr, error.data(), error.size());
+  mjSpec* child =
+      mj_parseXMLString(child_xml, nullptr, error.data(), error.size());
+  ASSERT_THAT(parent, NotNull()) << error.data();
+  ASSERT_THAT(child, NotNull()) << error.data();
+
+  mjsFrame* mount = mjs_findFrame(parent, "mount");
+  mjsBody* body = mjs_findBody(child, "child_body");
+  ASSERT_THAT(mjs_attach(mount->element, body->element, "", ""), NotNull())
+      << mjs_getError(parent);
+
+  mjsDefault* sub_def = mjs_findDefault(parent, "sub");
+  ASSERT_THAT(sub_def, NotNull());
+  EXPECT_EQ(mjs_delete(parent, sub_def->element), 0);
+  EXPECT_THAT(mjs_findDefault(parent, "sub"), IsNull());
+
+  mjModel* model = mj_compile(parent, nullptr);
+  ASSERT_THAT(model, NotNull()) << mjs_getError(parent);
+
+  mj_deleteModel(model);
+  mj_deleteSpec(child);
+  mj_deleteSpec(parent);
+}
+
+TEST_F(XMLWriterTest, BodyToFrameGeomlessBodyPreservesInertial) {
+  static constexpr char xml[] = R"(
+  <mujoco>
+    <compiler inertiafromgeom="true"/>
+    <worldbody>
+      <body name="parent">
+        <joint type="free"/>
+        <inertial pos="0 0 0" mass="1" diaginertia="0.1 0.1 0.1"/>
+        <body name="child">
+          <inertial pos="0 0 0" mass="2" diaginertia="0.1 0.2 0.3"/>
+        </body>
+      </body>
+    </worldbody>
+  </mujoco>
+  )";
+  std::array<char, 1024> error;
+  mjSpec* spec = mj_parseXMLString(xml, nullptr, error.data(), error.size());
+  ASSERT_THAT(spec, NotNull()) << error.data();
+
+  mjsBody* child = mjs_findBody(spec, "child");
+  ASSERT_THAT(child, NotNull());
+  ASSERT_THAT(mjs_bodyToFrame(&child), NotNull()) << mjs_getError(spec);
+
+  mjModel* model = mj_compile(spec, nullptr);
+  ASSERT_THAT(model, NotNull()) << mjs_getError(spec);
+  EXPECT_NEAR(model->body_mass[1], 3.0, MjTol(1e-6, 1e-5));
+
+  mj_deleteModel(model);
+  mj_deleteSpec(spec);
 }
 
 }  // namespace

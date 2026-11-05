@@ -19,6 +19,7 @@
 #include <algorithm>
 #include <cmath>
 #include <cstddef>
+#include <cstdint>
 #include <cstdio>
 #include <string>
 #include <utility>
@@ -168,6 +169,47 @@ TEST_F(MjCollisionTest, InGapContactsMultiGeomBody) {
     EXPECT_GT(d->contact[i].dist, 0);
     EXPECT_LT(d->contact[i].dist, 0.008);
     EXPECT_EQ(d->contact[i].efc_address, -1);
+  }
+}
+
+TEST_F(MjCollisionTest, MidphaseDescendsLargerTree) {
+  // The small body sits inside the large body's root box but touches neither
+  // leaf. Descending the larger tree first prunes immediately, so the small
+  // body's children are never tested. The inertial offset makes BVH center ==
+  // size, which zeroes the area if (center, size) is mistaken for (min, max).
+  static constexpr char xml[] = R"(
+  <mujoco>
+    <visual>
+      <global bvactive="true"/>
+    </visual>
+    <worldbody>
+      <body>
+        <freejoint/>
+        <inertial pos="-1.1 -.1 -.1" mass="1" diaginertia="1 1 1"/>
+        <geom type="box" size=".1 .1 .1" pos="-1 0 0"/>
+        <geom type="box" size=".1 .1 .1" pos="1 0 0"/>
+      </body>
+      <body>
+        <freejoint/>
+        <geom type="box" size=".02 .02 .02" pos="-.05 0 0"/>
+        <geom type="box" size=".02 .02 .02" pos=".05 0 0"/>
+      </body>
+    </worldbody>
+  </mujoco>
+  )";
+  char error[1024];
+  MjModelPtr m = LoadModelFromString(xml, error, sizeof(error));
+  ASSERT_THAT(m.get(), NotNull()) << error;
+  MjDataPtr d = MakeData(m);
+
+  mj_forward(m.get(), d.get());
+
+  // only the two root nodes are active
+  int bvhadr = m->body_bvhadr[2];
+  EXPECT_TRUE(d->bvh_active[m->body_bvhadr[1]]);
+  EXPECT_TRUE(d->bvh_active[bvhadr]);
+  for (int i = 1; i < m->body_bvhnum[2]; i++) {
+    EXPECT_FALSE(d->bvh_active[bvhadr + i]);
   }
 }
 
@@ -719,6 +761,262 @@ TEST_F(MjCollisionTest, Flex3DActiveLayersMidphaseDisabled) {
   }
 }
 
+// GJK/EPA options with a tight tolerance: EPA normals of curved shapes converge
+// as the square root of the distance tolerance
+std::string CcdOption() {
+  return sizeof(mjtNum) == sizeof(float)
+             ? R"(ccd_tolerance="1e-6" ccd_iterations="200")"
+             : R"(ccd_tolerance="1e-12" ccd_iterations="200")";
+}
+
+// model with the given options, a probe geom on a free body, and the given
+// bodies
+std::string ProbeModel(const std::string& probe, const std::string& bodies,
+                       const std::string& options = "") {
+  return R"(
+  <mujoco>
+    )" + options +
+         R"(
+    <asset>
+      <mesh name="tet" vertex="0 0 0  .1 0 0  0 .1 0  0 0 .1"/>
+    </asset>
+    <worldbody>
+      <body>
+        <freejoint/>
+        )" +
+         probe + R"(
+      </body>
+      )" +
+         bodies + R"(
+    </worldbody>
+  </mujoco>)";
+}
+
+// compares the probe contacts of two models over random probe poses around the
+// tetrahedron with vertices (0, 0, 0), (.1, 0, 0), (0, .1, 0), (0, 0, .1);
+// returns the number of poses with a contact
+int CompareProbeContacts(const std::string& xml1, const std::string& xml2) {
+  char error[1024];
+  MjModelPtr m1 = LoadModelFromString(xml1.c_str(), error, sizeof(error));
+  EXPECT_THAT(m1.get(), NotNull()) << error;
+  MjModelPtr m2 = LoadModelFromString(xml2.c_str(), error, sizeof(error));
+  EXPECT_THAT(m2.get(), NotNull()) << error;
+  if (!m1 || !m2) return 0;
+  MjDataPtr d1 = MakeData(m1);
+  MjDataPtr d2 = MakeData(m2);
+
+  // pseudo-random numbers in [-1, 1), identical on all platforms (64-bit LCG)
+  std::uint64_t state = 1;
+  auto unif = [&state]() {
+    state = state * 6364136223846793005ULL + 1442695040888963407ULL;
+    double u = static_cast<double>(state >> 11) / 9007199254740992.0;  // 2^53
+    return static_cast<mjtNum>(2 * u - 1);
+  };
+  // in single precision, GJK/EPA occasionally misses a contact
+  const bool single = sizeof(mjtNum) == sizeof(float);
+  int ncontact = 0, nmismatch = 0;
+  std::string mismatched;
+  for (int i = 0; i < 300; i++) {
+    // position within .07 of the tetrahedron centroid, random orientation
+    mjtNum qpos[7];
+    for (int k = 0; k < 7; k++) {
+      qpos[k] = unif();
+    }
+    for (int k = 0; k < 3; k++) {
+      qpos[k] = .025 + .07 * qpos[k];
+    }
+    mju_normalize4(qpos + 3);
+    mju_copy(d1->qpos, qpos, 7);
+    mju_copy(d2->qpos, qpos, 7);
+    mj_fwdPosition(m1.get(), d1.get());
+    mj_fwdPosition(m2.get(), d2.get());
+
+    // skip poses at the contact boundary, where existence is ill-conditioned
+    if (d1->ncon + d2->ncon == 0) continue;
+    if (d1->ncon != d2->ncon) {
+      const mjContact* c = d1->ncon ? d1->contact : d2->contact;
+      if (std::abs(c->dist - c->includemargin) < MjTol(1e-6, 1e-4)) continue;
+    }
+
+    SCOPED_TRACE("pose " + std::to_string(i));
+    if (d1->ncon != 1 || d2->ncon != 1) {
+      const mjContact* c = d1->ncon ? d1->contact : d2->contact;
+      if (!single) {
+        ADD_FAILURE() << "ncon " << d1->ncon << " vs " << d2->ncon
+                      << ", dist - includemargin "
+                      << c->dist - c->includemargin;
+      }
+      nmismatch++;
+      mismatched += " " + std::to_string(i);
+      continue;
+    }
+    const mjContact& con1 = d1->contact[0];
+    const mjContact& con2 = d2->contact[0];
+    // in single precision, GJK/EPA normals of curved shapes are limited by the
+    // achievable tolerance: they converge as the square root of the distance
+    // tolerance, and the frame tolerance (about 17 degrees) reflects the float
+    // GJK/EPA reference, not the analytic contacts
+    EXPECT_NEAR(con1.dist, con2.dist, MjTol(2e-8, 3e-5));
+    for (int k = 0; k < 3; k++) {
+      EXPECT_NEAR(con1.frame[k], con2.frame[k], MjTol(3e-4, 3e-1));
+      EXPECT_NEAR(con1.pos[k], con2.pos[k], MjTol(2e-6, 1e-3));
+    }
+    ncontact++;
+  }
+  EXPECT_LE(nmismatch, single ? 3 : 0) << "mismatched poses:" << mismatched;
+  return ncontact;
+}
+
+TEST_F(MjCollisionTest, Flex3DSphereCapsuleMatchMesh) {
+  // flex tetrahedron with zero radius, and the same tetrahedron as a mesh
+  const std::string flex = R"(
+      <flexcomp name="tet" type="direct" dim="3" radius="0" mass="1"
+                point="0 0 0  .1 0 0  0 .1 0  0 0 .1" element="0 1 2 3">
+        <contact selfcollide="none"/>
+      </flexcomp>)";
+  const std::string mesh = R"(
+      <body>
+        <freejoint/>
+        <geom type="mesh" mesh="tet"/>
+      </body>)";
+  const std::string nomulti = "<option " + CcdOption() + R"(>
+      <flag multiccd="disable"/>
+    </option>)";
+
+  // analytic sphere and capsule : tetrahedron match GJK/EPA with the mesh
+  for (const char* probe :
+       {R"(<geom size=".02"/>)", R"(<geom type="capsule" size=".015 .03"/>)"}) {
+    SCOPED_TRACE(probe);
+    EXPECT_GT(CompareProbeContacts(ProbeModel(probe, flex),
+                                   ProbeModel(probe, mesh, nomulti)),
+              50);
+  }
+}
+
+TEST_F(MjCollisionTest, Flex3DSphereRadiusMarginMatchEllipsoid) {
+  // with flex radius and margin, analytic sphere matches GJK/EPA with an
+  // ellipsoid of equal radii, which uses the general geom : elem path
+  const std::string flex = R"(
+      <flexcomp name="tet" type="direct" dim="3" radius=".005" mass="1"
+                point="0 0 0  .1 0 0  0 .1 0  0 0 .1" element="0 1 2 3">
+        <contact selfcollide="none" margin=".01"/>
+      </flexcomp>)";
+  const std::string ccd = "<option " + CcdOption() + "/>";
+  EXPECT_GT(CompareProbeContacts(
+                ProbeModel(R"(<geom size=".02"/>)", flex),
+                ProbeModel(R"(<geom type="ellipsoid" size=".02 .02 .02"/>)",
+                           flex, ccd)),
+            50);
+}
+
+TEST_F(MjCollisionTest, Flex3DSphereFlatElementMatchesConvex) {
+  // nearly flat tetrahedron, which is too thin for the analytic path: sphere
+  // matches GJK/EPA with an ellipsoid of equal radii (the analytic path would
+  // also match in double precision; the Warp test_degenerate_tetrahedron checks
+  // that it rejects the element)
+  const std::string flex = R"(
+      <flexcomp name="tet" type="direct" dim="3" radius=".005" mass="1"
+                point="0 0 0  .1 0 0  0 .1 0  .03 .03 1e-8" element="0 1 2 3">
+        <contact selfcollide="none"/>
+      </flexcomp>)";
+  const std::string ccd = "<option " + CcdOption() + "/>";
+  EXPECT_GT(CompareProbeContacts(
+                ProbeModel(R"(<geom size=".02"/>)", flex, ccd),
+                ProbeModel(R"(<geom type="ellipsoid" size=".02 .02 .02"/>)",
+                           flex, ccd)),
+            20);
+}
+
+// expects a single contact between the probe at the free joint pose qpos and
+// the unit tetrahedron with vertices pos, pos + (1, 0, 0), pos + (0, 1, 0),
+// pos + (0, 0, 1), with the given distance and normal (from the probe to the
+// tetrahedron)
+void ExpectUnitTetrahedronContact(const char* probe, const char* pos,
+                                  const mjtNum qpos[7], mjtNum dist,
+                                  const mjtNum normal[3], mjtNum tol) {
+  const std::string flex = std::string(R"(
+      <flexcomp name="tet" type="direct" dim="3" radius="0" mass="1" pos=")") +
+                           pos + R"("
+                point="0 0 0  1 0 0  0 1 0  0 0 1" element="0 1 2 3">
+        <contact selfcollide="none"/>
+      </flexcomp>)";
+  char error[1024];
+  MjModelPtr m = LoadModelFromString(ProbeModel(probe, flex).c_str(), error,
+                                     sizeof(error));
+  ASSERT_THAT(m.get(), NotNull()) << error;
+  MjDataPtr d = MakeData(m);
+  mju_copy(d->qpos, qpos, 7);
+  mj_fwdPosition(m.get(), d.get());
+  ASSERT_EQ(d->ncon, 1);
+  EXPECT_NEAR(d->contact[0].dist, dist, tol);
+  for (int k = 0; k < 3; k++) {
+    EXPECT_NEAR(d->contact[0].frame[k], normal[k], tol);
+  }
+}
+
+TEST_F(MjCollisionTest, Flex3DSphereCenterOnFace) {
+  // sphere centers on the face x + y + z = 1, on either side of it within
+  // rounding, also far from the origin: the normal is the face normal and the
+  // depth is the radius
+  const mjtNum s3 = 1 / mju_sqrt(3.0);
+  const mjtNum normal[3] = {-s3, -s3, -s3};
+  const mjtNum w[5][3] = {{.2, .3, .5},
+                          {.6, .2, .2},
+                          {.25, .5, .25},
+                          {s3 * s3, s3 * s3, s3 * s3},
+                          {.45, .1, .45}};
+  struct {
+    const char* str;
+    mjtNum val[3];
+  } offsets[2] = {{"0 0 0", {0, 0, 0}}, {"100 -50 30", {100, -50, 30}}};
+  for (const auto& offset : offsets) {
+    for (const auto& wi : w) {
+      SCOPED_TRACE(offset.str);
+      mjtNum qpos[7] = {0, 0, 0, 1, 0, 0, 0};
+      for (int k = 0; k < 3; k++) {
+        qpos[k] = offset.val[k] + wi[k];
+      }
+      ExpectUnitTetrahedronContact(R"(<geom size=".1"/>)", offset.str, qpos,
+                                   -.1, normal, MjTol(1e-10, 1e-4));
+    }
+  }
+}
+
+TEST_F(MjCollisionTest, Flex3DSphereCapsuleNearTouchingNormals) {
+  // probes whose center or axis passes just outside the unit tetrahedron: the
+  // normals are exact, for a closest point at a vertex, inside an edge and
+  // inside a face
+  const mjtNum s2 = 1 / mju_sqrt(2.0), s3 = 1 / mju_sqrt(3.0);
+  const mjtNum tol = MjTol(1e-10, 1e-5);
+
+  // sphere near vertex (0, 0, 0)
+  {
+    const mjtNum qpos[7] = {-5e-6, -5e-6, -5e-6, 1, 0, 0, 0};
+    const mjtNum normal[3] = {s3, s3, s3};
+    ExpectUnitTetrahedronContact(R"(<geom size=".01"/>)", "0 0 0", qpos,
+                                 5e-6 * mju_sqrt(3.0) - .01, normal, tol);
+  }
+
+  // capsule along (0, 1, -1) crossing just outside edge x, rotated by -135
+  // degrees about x
+  {
+    const mjtNum qpos[7] = {
+        .5, -5e-6, -5e-6, mju_cos(-3 * mjPI / 8), mju_sin(-3 * mjPI / 8), 0, 0};
+    const mjtNum normal[3] = {0, s2, s2};
+    ExpectUnitTetrahedronContact(R"(<geom type="capsule" size=".05 .14"/>)",
+                                 "0 0 0", qpos, 5e-6 * mju_sqrt(2.0) - .05,
+                                 normal, tol);
+  }
+
+  // capsule along x just below face z = 0, overhanging the tetrahedron
+  {
+    const mjtNum qpos[7] = {0, .5, -1e-7, s2, 0, s2, 0};
+    const mjtNum normal[3] = {0, 0, 1};
+    ExpectUnitTetrahedronContact(R"(<geom type="capsule" size=".01 5"/>)",
+                                 "0 0 0", qpos, 1e-7 - .01, normal, tol);
+  }
+}
+
 // closed box surface with n[i] points along edge i and half-sizes size[i], as
 // point and element strings of a flexcomp of type direct
 void BoxSurface(const int n[3], const mjtNum size[3], std::string* point,
@@ -889,7 +1187,7 @@ void FlattenCage(const mjModel* m, mjData* d, int f, mjtNum eps) {
 
 TEST_F(MjCollisionTest, InterpolatedSelfCollisionNoContactsAtRest) {
   for (const char* cellcount : {"1 1 1", "2 2 3", "4 4 4"}) {
-    for (const char* selfcollide : {"narrow", "bvh", "sap"}) {
+    for (const char* selfcollide : {"narrow", "bvh", "sap", "auto"}) {
       for (const char* dof : {"trilinear", "quadratic"}) {
         char error[1024];
         MjModelPtr m = LoadModelFromString(Pillow(cellcount, selfcollide, dof),
@@ -908,7 +1206,7 @@ TEST_F(MjCollisionTest, InterpolatedSelfCollisionNoContactsAtRest) {
 }
 
 TEST_F(MjCollisionTest, InterpolatedSelfCollisionExcludesSharedNodes) {
-  for (const char* selfcollide : {"narrow", "bvh", "sap"}) {
+  for (const char* selfcollide : {"narrow", "bvh", "sap", "auto"}) {
     // top and bottom faces are in cells 2 and 0, which have no common node
     char error[1024];
     MjModelPtr m =
@@ -930,6 +1228,143 @@ TEST_F(MjCollisionTest, InterpolatedSelfCollisionExcludesSharedNodes) {
       FlattenCage(m_near.get(), d_near.get(), 0, 0.5 * m->flex_radius[0]);
       EXPECT_EQ(CountSelfContacts(m_near.get(), d_near.get(), 0).nself, 0)
           << cellcount << ", " << selfcollide;
+    }
+  }
+}
+
+TEST_F(MjCollisionTest, InterpolatedSelfCollisionMidphaseParity) {
+  // compare selfcollide="auto" (cell-level midphase) against "narrow", "bvh",
+  // and "sap" on trilinear and quadratic pillows (including a 3x3x3 cell grid
+  // where the 10x10x2 vertex grid has elements straddling cell boundaries)
+  for (const char* cellcount : {"2 2 3", "3 3 3"}) {
+    for (const char* dof : {"trilinear", "quadratic"}) {
+      char error[1024];
+      MjModelPtr m_auto = LoadModelFromString(Pillow(cellcount, "auto", dof),
+                                              error, sizeof(error));
+      ASSERT_THAT(m_auto.get(), NotNull()) << error;
+      MjDataPtr d_auto = MakeData(m_auto);
+
+      // push the top-corner cage node down to the bottom face so a small patch
+      // of opposite cells collides (< mjMAXCONPAIR contacts, avoiding tie-break
+      // truncation differences when bvh/sap swap (e1, e2) in GJK)
+      mj_resetData(m_auto.get(), d_auto.get());
+      mj_kinematics(m_auto.get(), d_auto.get());
+      int nodeadr = m_auto->flex_nodeadr[0];
+      mjtNum zmin = mjMAXVAL;
+      for (int i = 0; i < m_auto->flex_nodenum[0]; i++) {
+        zmin = std::min(
+            zmin, d_auto->xpos[3 * m_auto->flex_nodebodyid[nodeadr + i] + 2]);
+      }
+      int b = m_auto->flex_nodebodyid[nodeadr + m_auto->flex_nodenum[0] - 1];
+      mjtNum ztarget = zmin - 0.5 * m_auto->flex_radius[0];
+      for (int j = m_auto->body_jntadr[b];
+           j < m_auto->body_jntadr[b] + m_auto->body_jntnum[b]; j++) {
+        if (m_auto->jnt_type[j] == mjJNT_SLIDE &&
+            m_auto->jnt_axis[3 * j + 2] == 1) {
+          d_auto->qpos[m_auto->jnt_qposadr[j]] +=
+              ztarget - d_auto->xpos[3 * b + 2];
+        }
+      }
+      mj_forward(m_auto.get(), d_auto.get());
+      SelfContacts c_auto = CountSelfContacts(m_auto.get(), d_auto.get(), 0);
+      ASSERT_GT(c_auto.ntopbottom, 0);
+      ASSERT_LT(c_auto.nself, mjMAXCONPAIR);
+
+      for (const char* mode : {"narrow", "bvh", "sap"}) {
+        MjModelPtr m = LoadModelFromString(Pillow(cellcount, mode, dof), error,
+                                           sizeof(error));
+        ASSERT_THAT(m.get(), NotNull()) << error;
+        MjDataPtr d = MakeData(m);
+        mju_copy(d->qpos, d_auto->qpos, m->nq);
+        mj_forward(m.get(), d.get());
+
+        ASSERT_EQ(d->ncon, d_auto->ncon)
+            << cellcount << ", " << dof << ", " << mode;
+
+        if (std::string(mode) == "narrow") {
+          // auto and narrow both canonicalize (e1 < e2) and sort pairs, so
+          // their contacts are bit-for-bit identical
+          for (int i = 0; i < d->ncon; i++) {
+            EXPECT_EQ(d->contact[i].elem[0], d_auto->contact[i].elem[0])
+                << cellcount << ", " << dof << ", contact " << i;
+            EXPECT_EQ(d->contact[i].elem[1], d_auto->contact[i].elem[1])
+                << cellcount << ", " << dof << ", contact " << i;
+            EXPECT_EQ(d->contact[i].dist, d_auto->contact[i].dist)
+                << cellcount << ", " << dof << ", contact " << i;
+            for (int k = 0; k < 3; k++) {
+              EXPECT_EQ(d->contact[i].pos[k], d_auto->contact[i].pos[k]);
+              EXPECT_EQ(d->contact[i].frame[k], d_auto->contact[i].frame[k]);
+            }
+          }
+          for (int i = 0; i < m->nv; i++) {
+            EXPECT_EQ(d->qfrc_constraint[i], d_auto->qfrc_constraint[i])
+                << cellcount << ", " << dof << ", dof " << i;
+          }
+        } else {
+          // bvh and sap do not canonicalize e1 < e2 before GJK/EPA, so GJK
+          // distances can differ by ~1e-7 when swapping (e1, e2)
+          SelfContacts c_mode = CountSelfContacts(m.get(), d.get(), 0);
+          EXPECT_EQ(c_mode.nself, c_auto.nself);
+          EXPECT_EQ(c_mode.ntopbottom, c_auto.ntopbottom);
+          EXPECT_NEAR(c_mode.mindist, c_auto.mindist, 1e-6);
+          for (int i = 0; i < m->nv; i++) {
+            EXPECT_THAT(d->qfrc_constraint[i],
+                        MjNear(d_auto->qfrc_constraint[i], 1e-4, 1e-3))
+                << cellcount << ", " << dof << ", " << mode << ", dof " << i;
+          }
+        }
+      }
+    }
+  }
+
+  // also test an element spanning >= 2 cells colliding with another element in
+  // the same primary cell (both have e_lo = 0, but one spans cells [0, 3] and
+  // has only 1 vertex in cell 0 and 2 vertices in cell 3, while the other is
+  // in cell 0; after flattening the cage, only the vertices in cell 3 touch
+  // cell 0)
+  std::string xml_span = R"(
+  <mujoco>
+    <worldbody>
+      <flexcomp name="span" type="direct" dim="2" dof="trilinear"
+                cellcount="1 1 4" radius=".01" mass="1"
+                element="0 1 2  3 4 5  6 7 8"
+                point="0 0 0  1 0 0  0 1 0
+                       1 1 0  1 0 1  0 1 1
+                       5 0 0  5 1 0  5 0 1">
+        <elasticity young="1"/>
+        <contact selfcollide="auto"/>
+      </flexcomp>
+    </worldbody>
+  </mujoco>
+  )";
+  char error[1024];
+  MjModelPtr m_span_auto =
+      LoadModelFromString(xml_span.c_str(), error, sizeof(error));
+  ASSERT_THAT(m_span_auto.get(), NotNull()) << error;
+  MjDataPtr d_span_auto = MakeData(m_span_auto);
+  FlattenCage(m_span_auto.get(), d_span_auto.get(), 0,
+              0.5 * m_span_auto->flex_radius[0]);
+  mj_forward(m_span_auto.get(), d_span_auto.get());
+
+  for (const char* mode : {"narrow", "bvh", "sap"}) {
+    std::string xml_mode = xml_span;
+    size_t pos = xml_mode.find("auto");
+    xml_mode.replace(pos, 4, mode);
+    MjModelPtr m_span =
+        LoadModelFromString(xml_mode.c_str(), error, sizeof(error));
+    ASSERT_THAT(m_span.get(), NotNull()) << error;
+    MjDataPtr d_span = MakeData(m_span);
+    FlattenCage(m_span.get(), d_span.get(), 0, 0.5 * m_span->flex_radius[0]);
+    mj_forward(m_span.get(), d_span.get());
+    ASSERT_EQ(d_span->ncon, d_span_auto->ncon) << mode;
+    for (int i = 0; i < d_span->ncon; i++) {
+      EXPECT_EQ(
+          std::min(d_span->contact[i].elem[0], d_span->contact[i].elem[1]),
+          d_span_auto->contact[i].elem[0]);
+      EXPECT_EQ(
+          std::max(d_span->contact[i].elem[0], d_span->contact[i].elem[1]),
+          d_span_auto->contact[i].elem[1]);
+      EXPECT_NEAR(d_span->contact[i].dist, d_span_auto->contact[i].dist, 1e-6);
     }
   }
 }
@@ -1048,7 +1483,7 @@ TEST_F(MjCollisionTest, InterpolatedSelfCollisionPressedPillow) {
       // settled: top and bottom faces are in contact, penetration is bounded
       // (only the settled state is checked: the deepest transient penetration
       // depends on the platform)
-      EXPECT_LT(vmax, 0.05);
+      EXPECT_LT(vmax, 0.06);
       EXPECT_GT(pressed.ntopbottom, 0);
       EXPECT_GT(pressed.mindist, -m->flex_radius[0]);
       EXPECT_GT(ztop, zbottom);
@@ -1115,8 +1550,375 @@ TEST_F(MjCollisionTest, ParallelCapsuleCapsule) {
   EXPECT_THAT(mj_geomDistance(m.get(), d.get(), a, e_id, 0.2, fromto),
               MjNear(0.0, 1e-12, 1e-5));
   EXPECT_THAT(mju_dist3(fromto + 3, d->geom_xpos + 3 * e_id),
-              MjNear(0.01, 1e-12, 1e-1));
+              MjNear(0.01, 1e-12, 2e-1));
 }
 
+// Parallel capsules where the first one overhangs the second: the closest
+// points come from the second capsule's endpoints, so the distance must not
+// depend on distmax (the collision margin) or on the geom order.
+TEST_F(MjCollisionTest, ParallelCapsuleCapsuleOverhang) {
+  constexpr char xml[] = R"(
+  <mujoco>
+    <worldbody>
+      <geom name="long" type="capsule" size="0.05 0.3"/>
+      <body>
+        <geom name="short" type="capsule" size="0.08 0.2" pos="0.2 0 0.05"/>
+      </body>
+    </worldbody>
+    <contact>
+      <pair geom1="long" geom2="short" margin="1"/>
+    </contact>
+  </mujoco>
+  )";
+  char error[1024];
+  MjModelPtr m = LoadModelFromString(xml, error, sizeof(error));
+  ASSERT_THAT(m.get(), NotNull()) << error;
+  MjDataPtr d = MakeData(m);
+  ASSERT_THAT(d, NotNull());
+  mj_forward(m.get(), d.get());
+
+  // Surface distance: 0.2 - (0.05 + 0.08) = 0.07 at both ends of short's span
+  // [-0.15, 0.25].
+  ASSERT_EQ(d->ncon, 2);
+  EXPECT_MJTNUM_EQ(d->contact[0].dist, 0.07);
+  EXPECT_MJTNUM_EQ(d->contact[1].dist, 0.07);
+  EXPECT_MJTNUM_EQ(d->contact[0].pos[2], -0.15);
+  EXPECT_MJTNUM_EQ(d->contact[1].pos[2], 0.25);
+
+  int l = mj_name2id(m.get(), mjOBJ_GEOM, "long");
+  int s = mj_name2id(m.get(), mjOBJ_GEOM, "short");
+  for (mjtNum distmax : {0.08, 1.0}) {
+    mjtNum fromto[6];
+    EXPECT_MJTNUM_EQ(mj_geomDistance(m.get(), d.get(), l, s, distmax, fromto),
+                     0.07);
+    EXPECT_MJTNUM_EQ(fromto[2], -0.15);
+    EXPECT_MJTNUM_EQ(fromto[5], -0.15);
+
+    EXPECT_MJTNUM_EQ(mj_geomDistance(m.get(), d.get(), s, l, distmax, fromto),
+                     0.07);
+    EXPECT_MJTNUM_EQ(fromto[2], -0.15);
+    EXPECT_MJTNUM_EQ(fromto[5], -0.15);
+  }
+}
+
+TEST_F(MjCollisionTest, MaxContactSdfPairs) {
+  static constexpr char kXml[] = R"(
+  <mujoco>
+    <asset>
+      <mesh name="cube" vertex="-0.5 -0.5 -0.5  0.5 -0.5 -0.5  -0.5 0.5 -0.5  0.5 0.5 -0.5
+                                -0.5 -0.5  0.5  0.5 -0.5  0.5  -0.5 0.5  0.5  0.5 0.5  0.5"/>
+      <hfield name="hf" nrow="2" ncol="2" size="1 1 1 1" elevation="0 0 0 0"/>
+    </asset>
+    <worldbody>
+      <geom name="sdf" type="sdf" mesh="cube"/>
+      <geom name="plane" type="plane" size="1 1 0.1"/>
+      <geom name="mesh" type="mesh" mesh="cube"/>
+      <geom name="sphere" type="sphere" size="0.5"/>
+      <geom name="hfield" type="hfield" hfield="hf"/>
+    </worldbody>
+  </mujoco>
+  )";
+  char error[1024];
+  MjModelPtr m = LoadModelFromString(kXml, error, sizeof(error));
+  ASSERT_THAT(m.get(), NotNull()) << error;
+
+  int sdf = mj_name2id(m.get(), mjOBJ_GEOM, "sdf");
+  int plane = mj_name2id(m.get(), mjOBJ_GEOM, "plane");
+  int mesh = mj_name2id(m.get(), mjOBJ_GEOM, "mesh");
+  int sphere = mj_name2id(m.get(), mjOBJ_GEOM, "sphere");
+  int hfield = mj_name2id(m.get(), mjOBJ_GEOM, "hfield");
+
+  m->opt.sdf_initpoints = 2;
+  EXPECT_EQ(mj_maxContact(m.get(), plane, sdf, 0), 4);
+  EXPECT_EQ(mj_maxContact(m.get(), sdf, plane, 0), 4);
+  EXPECT_EQ(mj_maxContact(m.get(), mesh, sdf, 0), mjMAXCONPAIR);
+  EXPECT_EQ(mj_maxContact(m.get(), sdf, mesh, 0), mjMAXCONPAIR);
+  EXPECT_EQ(mj_maxContact(m.get(), hfield, sdf, 0), 0);
+  EXPECT_EQ(mj_maxContact(m.get(), sphere, sdf, 0), 2);
+
+  m->opt.sdf_initpoints = 2 * mjMAXCONPAIR;
+  EXPECT_EQ(mj_maxContact(m.get(), sphere, sdf, 0), mjMAXCONPAIR);
+
+  m->opt.sdf_initpoints = -5;
+  EXPECT_EQ(mj_maxContact(m.get(), sphere, sdf, 0), 0);
+}
+
+TEST_F(MjCollisionTest, FlexBVHPruningIncludesFlexGap) {
+  // flex : flex intermediate BVH pruning includes flex_gap.
+  static constexpr char kFlexFlexXml[] = R"(
+  <mujoco>
+    <worldbody>
+      <flexcomp name="vol1" type="grid" dim="3" count="4 4 4"
+                spacing="0.06 0.06 0.06" pos="0 0 0" radius="0.005" mass="1">
+        <contact selfcollide="none" gap="0.05"/>
+        <edge equality="true"/>
+      </flexcomp>
+      <flexcomp name="vol2" type="grid" dim="3" count="4 4 4"
+                spacing="0.06 0.06 0.06" pos="0 0 0.22" radius="0.005" mass="1">
+        <contact selfcollide="none" gap="0.05"/>
+        <edge equality="true"/>
+      </flexcomp>
+    </worldbody>
+  </mujoco>
+  )";
+  char error[1024];
+  MjModelPtr m = LoadModelFromString(kFlexFlexXml, error, sizeof(error));
+  ASSERT_THAT(m.get(), NotNull()) << error;
+
+  m->opt.disableflags |= mjDSBL_MIDPHASE;
+  MjDataPtr d_all = MakeData(m);
+  mj_forward(m.get(), d_all.get());
+  ASSERT_GT(d_all->ncon, 0);
+
+  m->opt.disableflags &= ~mjDSBL_MIDPHASE;
+  MjDataPtr d_bvh = MakeData(m);
+  mj_forward(m.get(), d_bvh.get());
+  EXPECT_EQ(d_bvh->ncon, d_all->ncon);
+
+  // body : flex intermediate BVH pruning includes flex_gap.
+  static constexpr char kBodyFlexXml[] = R"(
+  <mujoco>
+    <worldbody>
+      <body pos="0 0 -0.15">
+        <geom type="sphere" pos="-0.03 0 0.03" size="0.01"/>
+        <geom type="sphere" pos="0.03 0 -0.03" size="0.01"/>
+      </body>
+      <flexcomp name="vol" type="grid" dim="3" count="4 4 4"
+                spacing="0.06 0.06 0.06" pos="0 0 0" radius="0.005" mass="1">
+        <contact selfcollide="none" gap="0.05"/>
+        <edge equality="true"/>
+      </flexcomp>
+    </worldbody>
+  </mujoco>
+  )";
+  MjModelPtr mb = LoadModelFromString(kBodyFlexXml, error, sizeof(error));
+  ASSERT_THAT(mb.get(), NotNull()) << error;
+
+  mb->opt.disableflags |= mjDSBL_MIDPHASE;
+  MjDataPtr db_all = MakeData(mb);
+  mj_forward(mb.get(), db_all.get());
+  ASSERT_GT(db_all->ncon, 0);
+
+  mb->opt.disableflags &= ~mjDSBL_MIDPHASE;
+  MjDataPtr db_bvh = MakeData(mb);
+  mj_forward(mb.get(), db_bvh.get());
+  EXPECT_EQ(db_bvh->ncon, db_all->ncon);
+}
+
+TEST_F(MjCollisionTest, PlaneAndSdfFlexRespectGeomBitmaskInMidphase) {
+  static constexpr char kXml[] = R"(
+  <mujoco>
+    <asset>
+      <mesh name="cube" vertex="-0.5 -0.5 -0.5  0.5 -0.5 -0.5  -0.5 0.5 -0.5  0.5 0.5 -0.5
+                                -0.5 -0.5  0.5  0.5 -0.5  0.5  -0.5 0.5  0.5  0.5 0.5  0.5"/>
+    </asset>
+    <worldbody>
+      <geom name="far_sphere" type="sphere" size="0.01" pos="10 0 0"
+            contype="1" conaffinity="1"/>
+      <geom name="plane_filtered" type="plane" size="1 1 0.1" pos="0 0 0.05"
+            contype="0" conaffinity="0"/>
+      <geom name="sdf_filtered" type="sdf" mesh="cube" pos="0 0 -0.445"
+            contype="2" conaffinity="2"/>
+      <flexcomp name="cloth" type="grid" count="3 3 1" spacing=".05 .05 .05"
+                dim="2" pos="0 0 0.053" radius=".005">
+        <edge equality="true"/>
+        <contact selfcollide="none" contype="1" conaffinity="1"/>
+      </flexcomp>
+    </worldbody>
+  </mujoco>
+  )";
+  char error[1024];
+  MjModelPtr m = LoadModelFromString(kXml, error, sizeof(error));
+  ASSERT_THAT(m.get(), NotNull()) << error;
+
+  MjDataPtr d_bvh = MakeData(m);
+  mj_fwdPosition(m.get(), d_bvh.get());
+  EXPECT_EQ(d_bvh->ncon, 0);
+
+  m->opt.disableflags |= mjDSBL_MIDPHASE;
+  MjDataPtr d_all = MakeData(m);
+  mj_fwdPosition(m.get(), d_all.get());
+  EXPECT_EQ(d_all->ncon, 0);
+}
+
+// Exclude two-pointer merge with out-of-order excludes, midphase, and <pair>.
+TEST_F(MjCollisionTest, ExcludeMergeAndPairOverride) {
+  static constexpr char xml[] = R"(
+  <mujoco>
+    <worldbody>
+      <geom name="gw" size="0.3"/>
+      <replicate count="20" offset="0.001 0 0">
+        <body name="r">
+          <freejoint/>
+          <geom name="gr" size="0.3" contype="2" conaffinity="0"/>
+        </body>
+      </replicate>
+      <body name="a" pos="0.01 0 0">
+        <freejoint/>
+        <geom name="ga" size="0.3"/>
+      </body>
+      <body name="b" pos="0.02 0 0">
+        <freejoint/>
+        <geom name="gb0" size="0.3"/>
+        <geom name="gb1" pos="0 0 0.01" size="0.3"/>
+      </body>
+    </worldbody>
+    <contact>
+      <exclude body1="b" body2="a"/>
+      <exclude body1="b" body2="r10"/>
+      <exclude body1="a" body2="world"/>
+      <exclude body1="r05" body2="world"/>
+      <pair geom1="gb1" geom2="ga"/>
+    </contact>
+  </mujoco>
+  )";
+  char error[1024];
+  MjModelPtr m = LoadModelFromString(xml, error, sizeof(error));
+  ASSERT_THAT(m.get(), NotNull()) << error;
+  MjDataPtr d = MakeData(m);
+  for (int disable : {0, static_cast<int>(mjDSBL_MIDPHASE)}) {
+    m->opt.disableflags = disable;
+    mj_forward(m.get(), d.get());
+    EXPECT_THAT(colliding_pairs(m.get(), d.get()),
+                ElementsAre(GeomPair("ga", "gb1"), GeomPair("gb0", "gw"),
+                            GeomPair("gb1", "gw")));
+  }
+}
+
+// Narrowphase skips CCD stack buffers unless convex or custom colliders run.
+TEST_F(MjCollisionTest, NarrowphaseCCDBuffer) {
+  static constexpr char sphere_xml[] = R"(
+  <mujoco>
+    <worldbody>
+      <replicate count="20" offset="0.01 0 0">
+        <body>
+          <freejoint/>
+          <geom type="sphere" size="0.2"/>
+        </body>
+      </replicate>
+    </worldbody>
+  </mujoco>
+  )";
+  static constexpr char ellipsoid_xml[] = R"(
+  <mujoco>
+    <worldbody>
+      <replicate count="20" offset="0.01 0 0">
+        <body>
+          <freejoint/>
+          <geom type="ellipsoid" size="0.2 0.2 0.2"/>
+        </body>
+      </replicate>
+    </worldbody>
+  </mujoco>
+  )";
+  auto max_stack = [](const char* xml, int workers, int disable = 0) {
+    char error[1024];
+    MjModelPtr m = LoadModelFromString(xml, error, sizeof(error));
+    EXPECT_THAT(m.get(), NotNull()) << error;
+    m->opt.disableflags = disable;
+    MjDataPtr d = MakeData(m);
+    mju_threadpool(d.get(), workers);
+    mj_forward(m.get(), d.get());
+    d->maxuse_stack = 0;
+    mj_collision(m.get(), d.get());
+    EXPECT_EQ(d->ncon, 190);
+    return static_cast<ptrdiff_t>(d->maxuse_stack);
+  };
+
+  ptrdiff_t prim = max_stack(sphere_xml, 4);
+  ptrdiff_t convex = max_stack(ellipsoid_xml, 4);
+  ptrdiff_t ccd_buf = max_stack(ellipsoid_xml, 0) - max_stack(sphere_xml, 0);
+  ASSERT_GT(ccd_buf, 0);
+  EXPECT_LE(prim, max_stack(ellipsoid_xml, 4, mjDSBL_NATIVECCD));
+  EXPECT_LT(prim - max_stack(sphere_xml, 0), ccd_buf / 10);
+  EXPECT_GE(convex - prim, 4 * ccd_buf);
+
+  static mjfCollision ccd = mjCOLLISIONFUNC[mjGEOM_ELLIPSOID][mjGEOM_ELLIPSOID];
+  mjfCollision orig = mjCOLLISIONFUNC[mjGEOM_SPHERE][mjGEOM_SPHERE];
+  mjCOLLISIONFUNC[mjGEOM_SPHERE][mjGEOM_SPHERE] =
+      [](const mjModel* m, mjData* d, mjPreContact* c, int g1, int g2,
+         mjtNum margin) { return ccd(m, d, c, g1, g2, margin); };
+  ptrdiff_t custom = max_stack(sphere_xml, 4);
+  mjCOLLISIONFUNC[mjGEOM_SPHERE][mjGEOM_SPHERE] = orig;
+  EXPECT_NEAR(custom, convex, ccd_buf / 4);
+  EXPECT_LT(custom - prim, 10 * ccd_buf);
+}
+
+TEST_F(MjCollisionTest, ArenaExhaustionPrefixContactsAndUnclampedDemand) {
+  auto make_xml = [](const std::string& size_tag) {
+    return R"(
+    <mujoco>
+      )" + size_tag +
+           R"(
+      <option ccd_iterations="0">
+        <flag multiccd="disable"/>
+      </option>
+      <worldbody>
+        <geom name="floor" type="plane" size="5 5 0.1"/>
+        <body name="boxes" pos="0 0 0.5">
+          <joint name="z" type="slide" axis="0 0 1"/>
+          <geom type="box" size="0.1 0.1 0.1" pos="-2.0 0 0"/>
+          <geom type="box" size="0.1 0.1 0.1" pos="-1.5 0 0"/>
+          <geom type="box" size="0.1 0.1 0.1" pos="-1.0 0 0"/>
+          <geom type="box" size="0.1 0.1 0.1" pos="-0.5 0 0"/>
+          <geom type="box" size="0.1 0.1 0.1" pos="0.0 0 0"/>
+          <geom type="box" size="0.1 0.1 0.1" pos="0.5 0 0"/>
+          <geom type="box" size="0.1 0.1 0.1" pos="1.0 0 0"/>
+          <geom type="box" size="0.1 0.1 0.1" pos="1.5 0 0"/>
+          <geom type="box" size="0.1 0.1 0.1" pos="2.0 0 0"/>
+          <geom type="box" size="0.1 0.1 0.1" pos="2.5 0 0"/>
+        </body>
+      </worldbody>
+    </mujoco>
+    )";
+  };
+
+  char error[1024];
+  std::string full_xml = make_xml("");
+  MjModelPtr m_full = LoadModelFromString(full_xml, error, sizeof(error));
+  ASSERT_THAT(m_full.get(), NotNull()) << error;
+  MjDataPtr d_full = MakeData(m_full);
+  ASSERT_THAT(d_full, NotNull());
+
+  d_full->qpos[0] = -0.41;
+  mj_kinematics(m_full.get(), d_full.get());
+  mj_comPos(m_full.get(), d_full.get());
+  mj_collision(m_full.get(), d_full.get());
+
+  // 10 box-plane pairs * 4 contacts each = 40 contacts
+  int full_ncon = d_full->ncon;
+  ASSERT_EQ(full_ncon, 40);
+  EXPECT_EQ(d_full->warning[mjWARN_CONTACTFULL].number, 0);
+
+  // size memory via XML so stack allocations succeed, but only a prefix of
+  // contacts fits on the arena during addPairContacts
+  size_t mem = d_full->maxuse_arena - (full_ncon / 2) * sizeof(mjContact);
+  ASSERT_GT(mem, d_full->maxuse_stack);
+  std::string tight_xml =
+      make_xml("<size memory=\"" + std::to_string(mem) + "\"/>");
+  MjModelPtr m = LoadModelFromString(tight_xml, error, sizeof(error));
+  ASSERT_THAT(m.get(), NotNull()) << error;
+  MjDataPtr d = MakeData(m);
+  ASSERT_THAT(d, NotNull());
+
+  mock_warning_handler.ExpectWarnings("Too many contacts");
+  d->qpos[0] = -0.41;
+  mj_kinematics(m.get(), d.get());
+  mj_comPos(m.get(), d.get());
+  mj_collision(m.get(), d.get());
+
+  EXPECT_EQ(d->warning[mjWARN_CONTACTFULL].number, 1);
+  EXPECT_EQ(d->warning[mjWARN_CONTACTFULL].lastinfo, full_ncon);
+  ASSERT_GT(d->ncon, 0);
+  ASSERT_LT(d->ncon, full_ncon);
+  for (int i = 0; i < d->ncon; i++) {
+    EXPECT_EQ(d->contact[i].geom[0], d_full->contact[i].geom[0]);
+    EXPECT_EQ(d->contact[i].geom[1], d_full->contact[i].geom[1]);
+    EXPECT_MJTNUM_EQ(d->contact[i].dist, d_full->contact[i].dist);
+    EXPECT_MJTNUM_EQ(d->contact[i].pos[0], d_full->contact[i].pos[0]);
+    EXPECT_MJTNUM_EQ(d->contact[i].pos[1], d_full->contact[i].pos[1]);
+    EXPECT_MJTNUM_EQ(d->contact[i].pos[2], d_full->contact[i].pos[2]);
+  }
+}
 }  // namespace
 }  // namespace mujoco

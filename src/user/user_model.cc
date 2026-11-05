@@ -112,6 +112,8 @@ bool IsNullPose(const T pos[3], const T quat[4] = nullptr) {
 int GetBodyIdFromWrap(const mjCWrap* wrap) {
   if (!wrap || !wrap->obj) return -1;
   switch (wrap->Type()) {
+    case mjWRAP_JOINT:
+      return static_cast<mjCJoint*>(wrap->obj)->GetParent()->id;
     case mjWRAP_SITE:
       return static_cast<mjCSite*>(wrap->obj)->Body()->id;
     case mjWRAP_CYLINDER:
@@ -357,26 +359,49 @@ void mjCModel::ResetTreeLists() {
 
 // save associated state addresses in related elements
 void mjCModel::SaveDofOffsets(bool computesize) {
-  int qposadr  = 0;
-  int dofadr   = 0;
-  int actadr   = 0;
-  int ctrladr  = 0;
-  int outadr   = 0;
-  int mocapadr = 0;
+  int qposadr    = 0;
+  int dofadr     = 0;
+  int actadr     = 0;
+  int ctrladr    = 0;
+  int outadr     = 0;
+  int mocapadr   = 0;
+  int plasticadr = 0;
 
   for (auto joint : joints_) {
-    joint->qposadr_  = qposadr;
-    joint->dofadr_   = dofadr;
-    qposadr         += joint->nq();
-    dofadr          += joint->nv();
+    joint->qposadr_     = qposadr;
+    joint->dofadr_      = dofadr;
+    joint->plasticadr_  = joint->spec.springyield > 0 ? plasticadr : -1;
+    qposadr            += joint->nq();
+    dofadr             += joint->nv();
+    if (joint->spec.springyield > 0) { plasticadr += joint->nq(); }
+  }
+
+  for (auto tendon : tendons_) {
+    tendon->plasticadr_ = tendon->spec.springyield > 0 ? plasticadr : -1;
+    if (tendon->spec.springyield > 0) { plasticadr += 2; }
+  }
+
+  for (auto flex : flexes_) {
+    int pnum           = flex->PlasticNum();
+    flex->plasticnum_  = pnum;
+    flex->plasticadr_  = pnum > 0 ? plasticadr : -1;
+    plasticadr        += pnum;
   }
 
   for (auto actuator : actuators_) {
-    if (actuator->actdim > 0) {
+    // an actdim of 0 is explicit
+    if (actuator->actdim >= 0) {
       actuator->actdim_ = actuator->actdim;
-    } else if (actuator->spec.actdim > 0) {
+    } else if (actuator->spec.actdim >= 0) {
       actuator->actdim_ = actuator->spec.actdim;
+    } else if (actuator->spec.dyntype == mjDYN_DCMOTOR && !actuator->spec.plugin.active) {
+      actuator->actdim_ = (actuator->spec.dynprm[7] > 0) +
+                          (actuator->spec.gainprm[5] > 0) +
+                          (actuator->spec.dynprm[2] > 0) +
+                          (actuator->spec.dynprm[5] > 0) +
+                          (actuator->spec.dynprm[0] > 0);
     } else {
+      // TODO: handle SO3 integrator (3) and PID (nslot) actdim before compile
       actuator->actdim_ = (actuator->spec.dyntype != mjDYN_NONE);
     }
     actuator->actadr_  = actuator->actdim_ ? actadr : -1;
@@ -409,6 +434,7 @@ void mjCModel::SaveDofOffsets(bool computesize) {
     nactuator = (int)actuators_.size();
     nout      = outadr;
     nmocap    = mocapadr;
+    nplastic  = plasticadr;
   }
 }
 
@@ -500,13 +526,21 @@ mjCModel& mjCModel::operator+=(const mjCModel& other) {
     // do not copy assets for self-attach
     // TODO: asset should be copied only when referenced
     CopyList(meshes_, other.meshes_, other);
-    CopyList(skins_, other.skins_, other);
     CopyList(hfields_, other.hfields_, other);
     CopyList(textures_, other.textures_, other);
     CopyList(materials_, other.materials_, other);
     CopyList(numerics_, other.numerics_, other);
     CopyList(texts_, other.texts_, other);
+    CopyList(skins_, other.skins_, other);
+  } else {
+    // on self-attach, only copy skins whose spec explicitly lists bones (not file-only skins)
+    std::vector<mjCSkin*> explicit_skins;
+    for (mjCSkin* skin : other.skins_) {
+      if (skin->spec.bodyname && !skin->spec.bodyname->empty()) { explicit_skins.push_back(skin); }
+    }
+    CopyList(skins_, explicit_skins, other);
   }
+
   CopyList(flexes_, other.flexes_, other);
   CopyList(pairs_, other.pairs_, other);
   CopyList(excludes_, other.excludes_, other);
@@ -542,11 +576,9 @@ mjCModel& mjCModel::operator+=(const mjCModel& other) {
 
 template <class T>
 void mjCModel::RemoveFromList(std::vector<T*>& list, const mjCModel& other) {
-  int nlist   = (int)list.size();
-  int removed = 0;
+  int nlist = (int)list.size();
   for (int i = 0; i < nlist; i++) {
-    T* element   = list[i];
-    element->id -= removed;
+    T* element = list[i];
     try {
       // check if the element contains an error
       element->NameSpace(&other);
@@ -566,12 +598,12 @@ void mjCModel::RemoveFromList(std::vector<T*>& list, const mjCModel& other) {
       list.erase(list.begin() + i);
       nlist--;
       i--;
-      removed++;
+      for (int k = 0; k < nlist; k++) { list[k]->id = -1; }
+      if (!list.empty()) {
+        ids[list[0]->elemtype].clear();
+        ProcessList_(ids, list, list[0]->elemtype, /*checkrepeat=*/false);
+      }
     }
-  }
-  if (removed > 0 && !list.empty()) {
-    // if any elements were removed, update ids using processlist
-    ProcessList_(ids, list, list[0]->elemtype, /*checkrepeat=*/false);
   }
 }
 
@@ -752,13 +784,21 @@ mjCModel& mjCModel::RemoveSubtree(const T& subtree) {
   MakeTreeLists();
   ProcessLists(/*checkrepeat=*/false);
 
-  // check if we have to remove anything else
+  // check if we have to remove anything else; flexes before the elements that can reference them,
+  // tuples last, since they can reference any of them
+  RemoveFromList(skins_, oldmodel);
+  RemoveFromList(flexes_, oldmodel);
   RemoveFromList(pairs_, oldmodel);
   RemoveFromList(excludes_, oldmodel);
   RemoveFromList(tendons_, oldmodel);
   RemoveFromList(equalities_, oldmodel);
   RemoveFromList(actuators_, oldmodel);
   RemoveFromList(sensors_, oldmodel);
+  size_t ntuples;
+  do {
+    ntuples = tuples_.size();
+    RemoveFromList(tuples_, oldmodel);
+  } while (tuples_.size() != ntuples);
 
   // structure changed, the signature is no longer valid
   InvalidateSignature();
@@ -783,6 +823,18 @@ mjCModel& mjCModel::operator-=(const mjCFrame& frame) {
 
 // add default tree to this model
 mjCModel& mjCModel::operator+=(mjCDef& subtree) {
+  // when attaching with empty prefix and suffix, keep parent 'main' and attach child sub-classes
+  if (!defaults_.empty() && subtree.name == "main") {
+    for (mjCDef* def : subtree.child) {
+      def->parent  = nullptr;
+      *this       += *def;
+    }
+    subtree.child.clear();
+    delete &subtree;
+    return *this;
+  }
+
+  subtree.id = (int)defaults_.size();
   defaults_.push_back(&subtree);
   def_map[subtree.name] = &subtree;
   subtree.model         = this;
@@ -836,6 +888,7 @@ mjCModel& mjCModel::operator-=(const mjCDef& subtree) {
   std::sort(default_ids_to_remove.begin(), default_ids_to_remove.end(), std::greater<int>());
 
   for (int id : default_ids_to_remove) {
+    def_map.erase(defaults_[id]->name);
     defaults_[id]->id = -1;
     defaults_[id]->Release();
     defaults_.erase(defaults_.begin() + id);
@@ -885,6 +938,9 @@ void mjCModel::operator-=(mjsElement* el) {
     }
   }
 
+  mjCModel oldmodel(*this);
+  oldmodel.ProcessLists(/*checkrepeat=*/false);
+
   // plugin instances referenced before the deletion, mjs_bodyToFrame removes the body from the tree
   mjCBody* body = el->elemtype == mjOBJ_BODY ? static_cast<mjCBody*>(el) : nullptr;
   std::unordered_set<const mjsElement*> referenced = ReferencedPlugins(body);
@@ -895,6 +951,17 @@ void mjCModel::operator-=(mjsElement* el) {
   if (el->elemtype == mjOBJ_FRAME) {
     mjCFrame* frame  = static_cast<mjCFrame*>(el);
     *this           -= *frame;
+  }
+
+  // an element with values in the keyframes of a compiled model: they are now pending, the next
+  // compilation reassembles them without it; bodies and frames do this when their subtree is
+  // removed. In an uncompiled model, authored keyframe vectors are raw arrays that are laid out
+  // directly at compile time, so only compiled models re-store keyframes upon element deletion.
+  if (IsCompiled() && (el->elemtype == mjOBJ_JOINT ||
+                       el->elemtype == mjOBJ_ACTUATOR ||
+                       el->elemtype == mjOBJ_TENDON ||
+                       el->elemtype == mjOBJ_FLEX)) {
+    StoreKeyframes(this);
   }
 
   ResetTreeLists();
@@ -948,6 +1015,12 @@ void mjCModel::operator-=(mjsElement* el) {
 
   MakeTreeLists();
   ProcessLists(/*checkrepeat=*/false);
+
+  size_t ntuples;
+  do {
+    ntuples = tuples_.size();
+    RemoveFromList(tuples_, oldmodel);
+  } while (tuples_.size() != ntuples);
 
   // delete the plugin instances that only the removed elements referenced
   RemovePlugins(referenced);
@@ -1152,9 +1225,17 @@ void mjCModel::ComputeSparseSizes() {
     }
   }
 
-  // tendon-armature-based demotion
+  // tendon-armature-based demotion, including the armature of actuators on the tendon
   for (const auto* tendon : tendons_) {
-    if (tendon->armature > 0) {
+    bool armature = tendon->armature > 0;
+    for (const auto* actuator : actuators_) {
+      if (actuator->trntype == mjTRN_TENDON &&
+          actuator->trnid[0] == tendon->id &&
+          actuator->armature != 0) {
+        armature = true;
+      }
+    }
+    if (armature) {
       for (const auto* wrap : tendon->path) {
         int bodyId = GetBodyIdFromWrap(wrap);
         if (bodyId != -1) { body_simple_pre[bodyId] = 0; }
@@ -1194,7 +1275,7 @@ void mjCModel::ComputeSparseSizes() {
   if (nv > 0) {
     std::vector<bool> dof_bitmap(nv, false);
     for (const auto* tendon : tendons_) {
-      if (!tendon->path.empty() && tendon->path[0]->Type() == mjWRAP_JOINT) {
+      if (tendon->Type() == mjTENDON_FIXED) {
         nJten += tendon->path.size();
         continue;
       }
@@ -1302,7 +1383,6 @@ void mjCModel::Clear() {
   nflexshelldata = 0;
   nflextexcoord  = 0;
   nJfe           = 0;
-  nJfv           = 0;
   nmeshvert      = 0;
   nmeshnormal    = 0;
   nmeshtexcoord  = 0;
@@ -1320,6 +1400,8 @@ void mjCModel::Clear() {
   ntexdata       = 0;
   nwrap          = 0;
   nsensordata    = 0;
+  nhistory       = 0;
+  nplastic       = 0;
   nnumericdata   = 0;
   ntextdata      = 0;
   ntupledata     = 0;
@@ -2278,27 +2360,6 @@ void mjCModel::SetSizes() {
       }
       for (mjCBody* b : bodies_in_jac) { nJfe += b->dofnum; }
     }
-
-    // compute nJfv
-    std::vector<std::vector<int>> adj(flexes_[i]->nvert);
-    for (const auto& edge : flexes_[i]->edge) {
-      adj[edge.first].push_back(edge.second);
-      adj[edge.second].push_back(edge.first);
-    }
-    for (int j = 0; j < flexes_[i]->nvert; j++) {
-      std::unordered_set<int> vert_bodies;
-      vert_bodies.insert(flexes_[i]->vertbodyid[j]);
-      for (int neighbor : adj[j]) { vert_bodies.insert(flexes_[i]->vertbodyid[neighbor]); }
-      std::unordered_set<mjCBody*> bodies_in_jac;
-      for (int body_id : vert_bodies) {
-        mjCBody* b = bodies_[body_id];
-        while (b) {
-          bodies_in_jac.insert(b);
-          b = b->parent;
-        }
-      }
-      for (mjCBody* b : bodies_in_jac) { nJfv += b->dofnum; }
-    }
   }
 
   // bending factor sizes: symbolic reverse-Cholesky count on the (M + K_bend) pattern.
@@ -2388,15 +2449,17 @@ void mjCModel::SetSizes() {
     nefm0L   = nnz;
   }
 
-  // sparse metric factor ordering slots, filled by mj_setConst (mj_effCholSetConst): only models
-  // that enable IPC use the factor, on 2D flexes; the covered vertices are disjoint dof triples
+  // sparse metric factor ordering slots, filled by mj_setConst
+  // (mj_effCholSetConst): 1D rods and 2D/3D flexes use the ordering; the
+  // covered vertices are disjoint dof triples
   nefmCvert = 0;
-  if (option.enableflags & mjENBL_IPC) {
-    for (int i = 0; i < nflex; i++) {
-      if (flexes_[i]->dim == 2) { nefmCvert += flexes_[i]->nvert; }
+  for (int i = 0; i < nflex; i++) {
+    if (flexes_[i]->interpolated || flexes_[i]->rigid) { continue; }
+    if ((flexes_[i]->dim == 1 && !flexes_[i]->bending.empty()) || flexes_[i]->dim >= 2) {
+      nefmCvert += flexes_[i]->nvert;
     }
-    nefmCvert = mjMIN(nefmCvert, nv / 3);
   }
+  nefmCvert = mjMIN(nefmCvert, nv / 3);
 
   // mesh counts
   for (int i = 0; i < nmesh; i++) {
@@ -2451,6 +2514,16 @@ void mjCModel::SetSizes() {
       nhistory += 2 + sensors_[i]->nsample + sensors_[i]->nsample * sensors_[i]->dim;
     }
   }
+
+  // nplastic
+  nplastic = 0;
+  for (int i = 0; i < njnt; i++) {
+    if (joints_[i]->springyield > 0) { nplastic += joints_[i]->nq(); }
+  }
+  for (int i = 0; i < ntendon; i++) {
+    if (tendons_[i]->springyield > 0) { nplastic += 2; }
+  }
+  for (int i = 0; i < nflex; i++) { nplastic += flexes_[i]->PlasticNum(); }
 
   // nnumericdata
   for (int i = 0; i < nnumeric; i++) { nnumericdata += numerics_[i]->size; }
@@ -2844,10 +2917,11 @@ void mjCModel::CopyPaths(mjModel* m) {
 
 // copy objects inside kinematic tree
 void mjCModel::CopyTree(mjModel* m) {
-  int jntadr  = 0;  // addresses in global arrays
-  int dofadr  = 0;
-  int qposadr = 0;
-  int bvh_adr = 0;
+  int jntadr     = 0;  // addresses in global arrays
+  int dofadr     = 0;
+  int qposadr    = 0;
+  int bvh_adr    = 0;
+  int plasticadr = 0;
 
   m->body_sameframe[0] = mjSAMEFRAME_BODY;
 
@@ -2934,8 +3008,11 @@ void mjCModel::CopyTree(mjModel* m) {
       int       jid = pj->id;
 
       // set joint fields
-      m->jnt_type[jid]          = pj->type;
-      m->jnt_group[jid]         = pj->group;
+      m->jnt_type[jid]       = pj->type;
+      m->jnt_group[jid]      = pj->group;
+      m->jnt_plasticadr[jid] = pj->springyield > 0 ? plasticadr : -1;
+      pj->plasticadr_        = m->jnt_plasticadr[jid];
+      if (pj->springyield > 0) { plasticadr += pj->nq(); }
       m->jnt_limited[jid]       = (mjtBool)pj->is_limited();
       m->jnt_actfrclimited[jid] = (mjtBool)pj->is_actfrclimited();
       m->jnt_actgravcomp[jid]   = pj->actgravcomp;
@@ -2946,6 +3023,7 @@ void mjCModel::CopyTree(mjModel* m) {
       mjuu_copyvec(m->jnt_axis + 3 * jid, pj->axis, 3);
       m->jnt_stiffness[jid] = (mjtNum)pj->stiffness[0];
       mjuu_copyvec(m->jnt_stiffnesspoly + mjNPOLY * jid, pj->stiffness + 1, mjNPOLY);
+      m->jnt_springyield[jid] = (mjtNum)pj->springyield;
       mjuu_copyvec(m->jnt_range + 2 * jid, pj->range, 2);
       mjuu_copyvec(m->jnt_actfrcrange + 2 * jid, pj->actfrcrange, 2);
       mjuu_copyvec(m->jnt_solref + mjNREF * jid, pj->solref_limit, mjNREF);
@@ -3047,9 +3125,10 @@ void mjCModel::CopyTree(mjModel* m) {
       } else {
         m->geom_dataid[gid] = -1;
       }
-      m->geom_matid[gid]    = pg->matid;
-      m->geom_group[gid]    = pg->group;
-      m->geom_priority[gid] = pg->priority;
+      m->geom_matid[gid]      = pg->matid;
+      m->geom_group[gid]      = pg->group;
+      m->geom_priority[gid]   = pg->priority;
+      m->geom_castshadow[gid] = (mjtBool)pg->castshadow;
       mjuu_copyvec(m->geom_size + 3 * gid, pg->size, 3);
       mjuu_copyvec(m->geom_aabb + 6 * gid, pg->aabb, 6);
       mjuu_copyvec(m->geom_pos + 3 * gid, pg->pos, 3);
@@ -3316,7 +3395,7 @@ int mjCModel::CountTendonDofs(const mjModel* m, int id) {
   int adr = m->tendon_adr[id];
   int num = m->tendon_num[id];
 
-  if (m->wrap_type[adr] == mjWRAP_JOINT) { return num; }
+  if (m->tendon_type[id] == mjTENDON_FIXED) { return num; }
 
   std::fill(dof_used.begin(), dof_used.end(), false);
   for (int j = 0; j < num; j++) {
@@ -3582,6 +3661,13 @@ void mjCModel::CopyObjects(mjModel* m) {
   texcoord_adr  = 0;
   stiffness_adr = 0;
   bending_adr   = 0;
+  int flex_padr = 0;
+  for (int i = 0; i < njnt; i++) {
+    if (joints_[i]->springyield > 0) { flex_padr += joints_[i]->nq(); }
+  }
+  for (int i = 0; i < ntendon; i++) {
+    if (tendons_[i]->springyield > 0) { flex_padr += 2; }
+  }
   for (int i = 0; i < nflex; i++) {
     // get pointer
     mjCFlex* pfl = flexes_[i];
@@ -3590,10 +3676,10 @@ void mjCModel::CopyObjects(mjModel* m) {
     m->flex_contype[i]     = pfl->contype;
     m->flex_conaffinity[i] = pfl->conaffinity;
     m->flex_condim[i]      = pfl->condim;
-    m->flex_matid[i]       = pfl->matid;
-    m->flex_group[i]       = pfl->group;
-    m->flex_priority[i]    = pfl->priority;
-    m->flex_solmix[i]      = (mjtNum)pfl->solmix;
+    memcpy(m->flex_matid + elem_adr, pfl->elemmatid_.data(), pfl->nelem * sizeof(int));
+    m->flex_group[i]    = pfl->group;
+    m->flex_priority[i] = pfl->priority;
+    m->flex_solmix[i]   = (mjtNum)pfl->solmix;
     mjuu_copyvec(m->flex_solref + mjNREF * i, pfl->solref, mjNREF);
     mjuu_copyvec(m->flex_solimp + mjNIMP * i, pfl->solimp, mjNIMP);
     m->flex_radius[i] = (mjtNum)pfl->radius;
@@ -3621,6 +3707,13 @@ void mjCModel::CopyObjects(mjModel* m) {
                    pfl->bending.size());
     }
     m->flex_damping[i] = (mjtNum)pfl->damping;
+    mjuu_copyvec(m->flex_yield + 2 * i, pfl->stressyield, 2);
+    int flex_pnum           = pfl->PlasticNum();
+    m->flex_plasticadr[i]   = flex_pnum > 0 ? flex_padr : -1;
+    m->flex_plasticmode[i]  = flex_pnum > 0 ? pfl->PlasticMode() : 0;
+    pfl->plasticadr_        = m->flex_plasticadr[i];
+    pfl->plasticnum_        = flex_pnum;
+    flex_padr              += flex_pnum;
 
     // set fields: mesh-like
     m->flex_dim[i]          = pfl->dim;
@@ -3677,10 +3770,6 @@ void mjCModel::CopyObjects(mjModel* m) {
           m->flex_edgeequality[i] = 1;
           break;
         }
-        if (equalities_[k]->type == mjEQ_FLEXVERT) {
-          m->flex_edgeequality[i] = 2;
-          break;
-        }
         if (equalities_[k]->type == mjEQ_FLEXSTRAIN) {
           m->flex_edgeequality[i] = 3;
           break;
@@ -3726,8 +3815,9 @@ void mjCModel::CopyObjects(mjModel* m) {
       mjuu_copyvec(m->flex_node + 3 * node_adr, pfl->node_.data(), 3 * pfl->nnode);
     }
 
-    // copy vert0
+    // copy vert0 and vertcell
     mjuu_copyvec(m->flex_vert0 + 3 * vert_adr, pfl->vert0_.data(), 3 * pfl->nvert);
+    memcpy(m->flex_vertcell + vert_adr, pfl->vertcell_.data(), pfl->nvert * sizeof(int));
 
     // copy node0
     mjuu_copyvec(m->flex_node0 + 3 * node_adr, pfl->node0_.data(), 3 * pfl->nnode);
@@ -3753,11 +3843,11 @@ void mjCModel::CopyObjects(mjModel* m) {
     // set interpolation type: positive = volumetric, negative = shell mode
     m->flex_interp[i] = pfl->spec.elastic2d ? -pfl->spec.order : pfl->spec.order;
 
-    if (m->flex_passive[i] && (m->flex_rigid[i] || m->flex_interp[i] || m->flex_dim[i] < 2)) {
+    if (m->flex_passive[i] && (m->flex_rigid[i] || m->flex_dim[i] < 2)) {
       AddWarning("flex '" +
                      pfl->name +
-                     "' has passive contact, which is not supported for rigid, "
-                     "interpolated or 1D flexes: attribute ignored",
+                     "' has passive contact, which is not supported for rigid "
+                     "or 1D flexes: attribute ignored",
                  pfl);
     }
 
@@ -3983,16 +4073,24 @@ void mjCModel::CopyObjects(mjModel* m) {
   }
 
   // tendons and wraps
-  adr = 0;
+  adr             = 0;
+  int plastic_adr = 0;
+  for (int i = 0; i < njnt; i++) {
+    if (joints_[i]->springyield > 0) { plastic_adr += joints_[i]->nq(); }
+  }
   for (int i = 0; i < ntendon; i++) {
     // get pointer
     mjCTendon* pte = tendons_[i];
 
     // set fields
-    m->tendon_adr[i]           = adr;
-    m->tendon_num[i]           = (int)pte->path.size();
-    m->tendon_matid[i]         = pte->matid;
-    m->tendon_group[i]         = pte->group;
+    m->tendon_type[i]       = pte->Type();
+    m->tendon_adr[i]        = adr;
+    m->tendon_num[i]        = (int)pte->path.size();
+    m->tendon_matid[i]      = pte->matid;
+    m->tendon_group[i]      = pte->group;
+    m->tendon_plasticadr[i] = pte->springyield > 0 ? plastic_adr : -1;
+    pte->plasticadr_        = m->tendon_plasticadr[i];
+    if (pte->springyield > 0) { plastic_adr += 2; }
     m->tendon_limited[i]       = (mjtBool)pte->is_limited();
     m->tendon_actfrclimited[i] = (mjtBool)pte->is_actfrclimited();
     m->tendon_width[i]         = (mjtNum)pte->width;
@@ -4013,6 +4111,7 @@ void mjCModel::CopyObjects(mjModel* m) {
     m->tendon_frictionloss[i]         = (mjtNum)pte->frictionloss;
     m->tendon_lengthspring[2 * i]     = (mjtNum)pte->springlength[0];
     m->tendon_lengthspring[2 * i + 1] = (mjtNum)pte->springlength[1];
+    m->tendon_springyield[i]          = (mjtNum)pte->springyield;
     mjuu_copyvec(m->tendon_user + nuser_tendon * i, pte->get_userdata().data(), nuser_tendon);
     mjuu_copyvec(m->tendon_rgba + 4 * i, pte->rgba, 4);
 
@@ -4229,6 +4328,20 @@ void mjCModel::CopyObjects(mjModel* m) {
     for (int j = 0; j < nmocap; j++) { mjuu_normvec(m->key_mquat + i * 4 * nmocap + 4 * j, 4); }
 
     mjuu_copyvec(m->key_ctrl + i * nu, keys_[i]->ctrl_.data(), nu);
+    if (nplastic) {
+      mjuu_copyvec(m->key_plastic + i * nplastic, keys_[i]->plastic_.data(), nplastic);
+      for (int j = 0; j < m->njnt; j++) {
+        if (m->jnt_type[j] == mjJNT_BALL && m->jnt_plasticadr[j] >= 0) {
+          mjtNum* q = m->key_plastic + i * nplastic + m->jnt_plasticadr[j];
+          if (mjuu_defined(q[0]) &&
+              mjuu_defined(q[1]) &&
+              mjuu_defined(q[2]) &&
+              mjuu_defined(q[3])) {
+            mjuu_normvec(q, 4);
+          }
+        }
+      }
+    }
   }
 
   // save qpos0 in user model (to recognize changed key_qpos in write)
@@ -4244,13 +4357,23 @@ void mjCModel::CopyObjects(mjModel* m) {
 
 // finalize simple bodies/dofs including tendon information
 void mjCModel::FinalizeSimple(mjModel* m) {
-  // demote bodies affected by inertia-bearing tendon to non-simple
+  // demote bodies affected by inertia-bearing tendon to non-simple, the armature of actuators on
+  // the tendon included, as in ComputeSparseSizes
   for (int i = 0; i < ntendon; i++) {
-    if (m->tendon_armature[i] == 0) { continue; }
+    bool armature = m->tendon_armature[i] != 0;
+    for (int k = 0; k < nactuator; k++) {
+      if (m->actuator_trntype[k] == mjTRN_TENDON &&
+          m->actuator_trnid[2 * k] == i &&
+          m->actuator_armature[k] != 0) {
+        armature = true;
+      }
+    }
+    if (!armature) { continue; }
     int adr = m->tendon_adr[i];
     int num = m->tendon_num[i];
     for (int j = adr; j < adr + num; j++) {
       int objid = m->wrap_objid[j];
+      if (m->wrap_type[j] == mjWRAP_JOINT) { m->body_simple[m->jnt_bodyid[objid]] = 0; }
       if (m->wrap_type[j] == mjWRAP_SITE) { m->body_simple[m->site_bodyid[objid]] = 0; }
       if (m->wrap_type[j] == mjWRAP_CYLINDER || m->wrap_type[j] == mjWRAP_SPHERE) {
         m->body_simple[m->geom_bodyid[objid]] = 0;
@@ -4295,14 +4418,15 @@ void mjCModel::SaveState(const std::string& state_name,
                          const T*           ctrl,
                          const T*           mpos,
                          const T*           mquat,
+                         const T*           plastic,
                          bool               partial) {
   // a component which is not given is forgotten, unless the state is partial: then it stays
   // as it was saved before
-  if (partial && !qpos && !qvel && !act && !ctrl && !mpos && !mquat) { return; }
+  if (partial && !qpos && !qvel && !act && !ctrl && !mpos && !mquat && !plastic) { return; }
 
-  // save qpos and qvel
+  // save qpos, qvel, and joint plastic
   for (auto joint : joints_) {
-    if (joint->qposadr_ < -1 || joint->dofadr_ < -1) {
+    if (joint->qposadr_ < -1 || joint->dofadr_ < -1 || joint->plasticadr_ < -1) {
       throw mjCError(nullptr, "SaveState: joint %s has invalid address", joint->name.c_str());
     }
     if (qpos && joint->qposadr_ != -1) {
@@ -4314,6 +4438,32 @@ void mjCModel::SaveState(const std::string& state_name,
       mjuu_copyvec(joint->qvel(state_name), qvel + joint->dofadr_, joint->nv());
     } else if (qvel || !partial) {
       joint->qvel(state_name)[0] = mjNAN;
+    }
+    if (plastic && joint->plasticadr_ != -1) {
+      mjuu_copyvec(joint->plastic(state_name), plastic + joint->plasticadr_, joint->nq());
+    } else if (plastic || !partial) {
+      joint->plastic(state_name)[0] = mjNAN;
+    }
+  }
+
+  // save tendon plastic
+  for (auto tendon : tendons_) {
+    if (plastic && tendon->plasticadr_ != -1) {
+      mjuu_copyvec(tendon->plastic(state_name), plastic + tendon->plasticadr_, 2);
+    } else if (plastic || !partial) {
+      tendon->plastic(state_name)[0] = mjNAN;
+    }
+  }
+
+  // save flex plastic
+  for (auto flex : flexes_) {
+    if (plastic && flex->plasticadr_ != -1 && flex->plasticnum_ > 0) {
+      flex->plastic(state_name).assign(flex->plasticnum_, 0);
+      mjuu_copyvec(flex->plastic(state_name).data(),
+                   plastic + flex->plasticadr_,
+                   flex->plasticnum_);
+    } else if (plastic || !partial) {
+      flex->plastic(state_name).clear();
     }
   }
 
@@ -4357,14 +4507,15 @@ void mjCModel::SaveState(const std::string& state_name,
   // invalidate addresses of joints whose type changed
   for (auto joint : joints_) {
     if (joint->type != joint->spec.type) {
-      joint->qposadr_ = -1;
-      joint->dofadr_  = -1;
+      joint->qposadr_    = -1;
+      joint->dofadr_     = -1;
+      joint->plasticadr_ = -1;
     }
   }
 
   // save standard state components; they are restored as they are, so if a frame scale changed
   // between the compilations, the lengths in the state of what it holds are not rescaled
-  SaveState(state_name, d->qpos, d->qvel, d->act, d->ctrl, d->mocap_pos, d->mocap_quat);
+  SaveState(state_name, d->qpos, d->qvel, d->act, d->ctrl, d->mocap_pos, d->mocap_quat, d->plastic);
 
   // save time and userdata
   state->time = d->time;
@@ -4373,9 +4524,10 @@ void mjCModel::SaveState(const std::string& state_name,
     state->userdata.assign(d->userdata, d->userdata + nuserdata);
   }
 
-  // save qfrc_applied and qacc_warmstart
+  // save qfrc_applied, qacc_warmstart, and jnt_plastic
   state->qfrc_applied.clear();
   state->qacc_warmstart.clear();
+  state->jnt_plastic.clear();
   for (auto joint : joints_) {
     if (joint->dofadr_ != -1 && joint->nv() > 0) {
       if (d->qfrc_applied) {
@@ -4386,6 +4538,27 @@ void mjCModel::SaveState(const std::string& state_name,
         state->qacc_warmstart[joint].assign(d->qacc_warmstart + joint->dofadr_,
                                             d->qacc_warmstart + joint->dofadr_ + joint->nv());
       }
+    }
+    if (joint->plasticadr_ != -1 && joint->nq() > 0 && d->plastic) {
+      state->jnt_plastic[joint].assign(d->plastic + joint->plasticadr_,
+                                       d->plastic + joint->plasticadr_ + joint->nq());
+    }
+  }
+
+  // save tendon_plastic
+  state->tendon_plastic.clear();
+  for (auto tendon : tendons_) {
+    if (tendon->plasticadr_ != -1 && d->plastic) {
+      mjuu_copyvec(state->tendon_plastic[tendon].data(), d->plastic + tendon->plasticadr_, 2);
+    }
+  }
+
+  // save flex_plastic
+  state->flex_plastic.clear();
+  for (auto flex : flexes_) {
+    if (flex->plasticadr_ != -1 && flex->plasticnum_ > 0 && d->plastic) {
+      state->flex_plastic[flex].assign(d->plastic + flex->plasticadr_,
+                                       d->plastic + flex->plasticadr_ + flex->plasticnum_);
     }
   }
 
@@ -4440,7 +4613,9 @@ void mjCModel::MakeData(const mjModel* m, mjData** dest) {
   mj_makeRawData(dest, m);
   mjData* d = *dest;
   if (d) {
-    mj_initPlugin(m, d);
+    // d belongs to the caller: report a failed plugin init as a compile error
+    int failed = mj_initPlugin(m, d);
+    if (failed >= 0) { throw mjCError(0, "plugin init failed for plugin id %d", nullptr, failed); }
     mj_resetData(m, d);
   }
 }
@@ -4457,8 +4632,9 @@ void mjCModel::RestoreState(const std::string& state_name,
                             T*                 act,
                             T*                 ctrl,
                             T*                 mpos,
-                            T*                 mquat) {
-  // restore qpos and qvel
+                            T*                 mquat,
+                            T*                 plastic) {
+  // restore qpos, qvel, and joint plastic
   for (auto joint : joints_) {
     if (qpos) {
       if (mjuu_defined(joint->qpos(state_name)[0])) {
@@ -4469,6 +4645,38 @@ void mjCModel::RestoreState(const std::string& state_name,
     }
     if (mjuu_defined(joint->qvel(state_name)[0]) && qvel) {
       mjuu_copyvec(qvel + joint->dofadr_, joint->qvel(state_name), joint->nv());
+    }
+    if (plastic && joint->plasticadr_ != -1) {
+      if (mjuu_defined(joint->plastic(state_name)[0])) {
+        mjuu_copyvec(plastic + joint->plasticadr_, joint->plastic(state_name), joint->nq());
+      } else {
+        for (int j = 0; j < joint->nq(); j++) { plastic[joint->plasticadr_ + j] = (T)mjNAN; }
+      }
+    }
+  }
+
+  // restore tendon plastic
+  for (auto tendon : tendons_) {
+    if (plastic && tendon->plasticadr_ != -1) {
+      if (mjuu_defined(tendon->plastic(state_name)[0])) {
+        mjuu_copyvec(plastic + tendon->plasticadr_, tendon->plastic(state_name), 2);
+      } else {
+        plastic[tendon->plasticadr_ + 0] = (T)mjNAN;
+        plastic[tendon->plasticadr_ + 1] = (T)mjNAN;
+      }
+    }
+  }
+
+  // restore flex plastic
+  for (auto flex : flexes_) {
+    if (plastic && flex->plasticadr_ != -1 && flex->plasticnum_ > 0) {
+      if (!flex->plastic(state_name).empty() && mjuu_defined(flex->plastic(state_name)[0])) {
+        int n = std::min((int)flex->plastic(state_name).size(), flex->plasticnum_);
+        mjuu_copyvec(plastic + flex->plasticadr_, flex->plastic(state_name).data(), n);
+        for (int j = n; j < flex->plasticnum_; j++) { plastic[flex->plasticadr_ + j] = (T)mjNAN; }
+      } else {
+        for (int j = 0; j < flex->plasticnum_; j++) { plastic[flex->plasticadr_ + j] = (T)mjNAN; }
+      }
     }
   }
 
@@ -4486,14 +4694,14 @@ void mjCModel::RestoreState(const std::string& state_name,
       mjuu_copyvec(act + actuator->actadr_, actuator->act(state_name).data(), n);
     }
 
-    // restore ctrl
+    // restore ctrl; inputs which were not saved keep the neutral value the caller gave them, e.g.
+    // the identity which mj_resetData gives a quaternion, also when the saved one has another size
     if (actuator->ctrladr_ != -1 && actuator->ctrlnum_ > 0 && ctrl) {
-      if (!actuator->ctrl(state_name).empty() && mjuu_defined(actuator->ctrl(state_name)[0])) {
-        int n = std::min((int)actuator->ctrl(state_name).size(), actuator->ctrlnum_);
-        mjuu_copyvec(ctrl + actuator->ctrladr_, actuator->ctrl(state_name).data(), n);
-        for (int j = n; j < actuator->ctrlnum_; j++) { ctrl[actuator->ctrladr_ + j] = 0; }
-      } else {
-        for (int j = 0; j < actuator->ctrlnum_; j++) { ctrl[actuator->ctrladr_ + j] = 0; }
+      const std::vector<mjtNum>& saved = actuator->ctrl(state_name);
+      bool quat = actuator->gaintype == mjGAIN_SO3 && actuator->ctrlspec_ == mjCHART_QUAT;
+      if (!saved.empty() && mjuu_defined(saved[0]) && (!quat || saved.size() == 4)) {
+        int n = std::min((int)saved.size(), actuator->ctrlnum_);
+        mjuu_copyvec(ctrl + actuator->ctrladr_, saved.data(), n);
       }
     }
   }
@@ -4535,7 +4743,8 @@ void mjCModel::RestoreState(const std::string&      state_name,
                d->act,
                d->ctrl,
                d->mocap_pos,
-               d->mocap_quat);
+               d->mocap_quat,
+               static_cast<mjtNum*>(nullptr));
 
   // restore time and userdata
   d->time = state->time;
@@ -4544,7 +4753,7 @@ void mjCModel::RestoreState(const std::string&      state_name,
     mjuu_copyvec(d->userdata, state->userdata.data(), n);
   }
 
-  // restore qfrc_applied and qacc_warmstart
+  // restore qfrc_applied, qacc_warmstart, and jnt_plastic
   for (auto joint : joints_) {
     if (joint->dofadr_ != -1 && joint->nv() > 0) {
       auto it_qfrc = state->qfrc_applied.find(joint);
@@ -4558,6 +4767,32 @@ void mjCModel::RestoreState(const std::string&      state_name,
           (int)it_warm->second.size() == joint->nv() &&
           d->qacc_warmstart) {
         mjuu_copyvec(d->qacc_warmstart + joint->dofadr_, it_warm->second.data(), joint->nv());
+      }
+    }
+    if (joint->plasticadr_ != -1 && joint->nq() > 0 && d->plastic) {
+      auto it_plastic = state->jnt_plastic.find(joint);
+      if (it_plastic != state->jnt_plastic.end() && (int)it_plastic->second.size() == joint->nq()) {
+        mjuu_copyvec(d->plastic + joint->plasticadr_, it_plastic->second.data(), joint->nq());
+      }
+    }
+  }
+
+  // restore tendon_plastic
+  for (auto tendon : tendons_) {
+    if (tendon->plasticadr_ != -1 && d->plastic) {
+      auto it = state->tendon_plastic.find(tendon);
+      if (it != state->tendon_plastic.end()) {
+        mjuu_copyvec(d->plastic + tendon->plasticadr_, it->second.data(), 2);
+      }
+    }
+  }
+
+  // restore flex_plastic
+  for (auto flex : flexes_) {
+    if (flex->plasticadr_ != -1 && flex->plasticnum_ > 0 && d->plastic) {
+      auto it = state->flex_plastic.find(flex);
+      if (it != state->flex_plastic.end() && (int)it->second.size() == flex->plasticnum_) {
+        mjuu_copyvec(d->plastic + flex->plasticadr_, it->second.data(), flex->plasticnum_);
       }
     }
   }
@@ -4619,6 +4854,7 @@ template void mjCModel::SaveState<mjtNum>(const std::string& name,
                                           const mjtNum*      ctrl,
                                           const mjtNum*      mpos,
                                           const mjtNum*      mquat,
+                                          const mjtNum*      plastic,
                                           bool               partial);
 
 template void mjCModel::RestoreState<mjtNum>(const std::string& name,
@@ -4630,7 +4866,8 @@ template void mjCModel::RestoreState<mjtNum>(const std::string& name,
                                              mjtNum*            act,
                                              mjtNum*            ctrl,
                                              mjtNum*            mpos,
-                                             mjtNum*            mquat);
+                                             mjtNum*            mquat,
+                                             mjtNum*            plastic);
 
 
 // check if a keyframe awaits the next compilation
@@ -4647,7 +4884,10 @@ void mjCModel::ForgetState(const std::string& state_name) {
   for (mjCJoint* joint : joints_) {
     joint->qpos_.erase(state_name);
     joint->qvel_.erase(state_name);
+    joint->plastic_.erase(state_name);
   }
+  for (mjCTendon* tendon : tendons_) { tendon->plastic_.erase(state_name); }
+  for (mjCFlex* flex : flexes_) { flex->plastic_.erase(state_name); }
   for (mjCActuator* actuator : actuators_) {
     actuator->act_.erase(state_name);
     actuator->ctrl_.erase(state_name);
@@ -4664,7 +4904,12 @@ void mjCModel::CopyState(const std::string& state_name, const std::string& copy_
   for (mjCJoint* joint : joints_) {
     mjuu_copyvec(joint->qpos(copy_name), joint->qpos(state_name), 7);
     mjuu_copyvec(joint->qvel(copy_name), joint->qvel(state_name), 6);
+    mjuu_copyvec(joint->plastic(copy_name), joint->plastic(state_name), 7);
   }
+  for (mjCTendon* tendon : tendons_) {
+    mjuu_copyvec(tendon->plastic(copy_name), tendon->plastic(state_name), 2);
+  }
+  for (mjCFlex* flex : flexes_) { flex->plastic(copy_name) = flex->plastic(state_name); }
   for (mjCActuator* actuator : actuators_) {
     actuator->act(copy_name)  = actuator->act(state_name);
     actuator->ctrl(copy_name) = actuator->ctrl(state_name);
@@ -4699,16 +4944,20 @@ void mjCModel::StoreKeyframes(mjCModel* dest) {
   struct CompiledLayout {
     mjCModel*              model;
     std::vector<int>       adr;
-    std::array<mjtSize, 7> size;
+    std::array<mjtSize, 8> size;
     std::vector<mjtNum>    qpos0, body_pos0, body_quat0;
     explicit CompiledLayout(mjCModel* m)
         : model(m),
-          size{m->nq, m->nv, m->na, m->nu, m->nactuator, m->nout, m->nmocap},
+          size{m->nq, m->nv, m->na, m->nu, m->nactuator, m->nout, m->nmocap, m->nplastic},
           qpos0(m->qpos0),
           body_pos0(m->body_pos0),
           body_quat0(m->body_quat0) {
       for (mjCJoint* joint : m->joints_) {
-        adr.insert(adr.end(), {joint->qposadr_, joint->dofadr_});
+        adr.insert(adr.end(), {joint->qposadr_, joint->dofadr_, joint->plasticadr_});
+      }
+      for (mjCTendon* tendon : m->tendons_) { adr.push_back(tendon->plasticadr_); }
+      for (mjCFlex* flex : m->flexes_) {
+        adr.insert(adr.end(), {flex->plasticadr_, flex->plasticnum_});
       }
       for (mjCActuator* actuator : m->actuators_) {
         adr.insert(adr.end(),
@@ -4720,8 +4969,14 @@ void mjCModel::StoreKeyframes(mjCModel* dest) {
     ~CompiledLayout() {
       const int* p = adr.data();
       for (mjCJoint* joint : model->joints_) {
-        joint->qposadr_ = *p++;
-        joint->dofadr_  = *p++;
+        joint->qposadr_    = *p++;
+        joint->dofadr_     = *p++;
+        joint->plasticadr_ = *p++;
+      }
+      for (mjCTendon* tendon : model->tendons_) { tendon->plasticadr_ = *p++; }
+      for (mjCFlex* flex : model->flexes_) {
+        flex->plasticadr_ = *p++;
+        flex->plasticnum_ = *p++;
       }
       for (mjCActuator* actuator : model->actuators_) {
         actuator->actdim_  = *p++;
@@ -4741,6 +4996,7 @@ void mjCModel::StoreKeyframes(mjCModel* dest) {
       model->nactuator  = size[4];
       model->nout       = size[5];
       model->nmocap     = size[6];
+      model->nplastic   = size[7];
       model->qpos0      = std::move(qpos0);
       model->body_pos0  = std::move(body_pos0);
       model->body_quat0 = std::move(body_quat0);
@@ -4776,6 +5032,16 @@ void mjCModel::StoreKeyframes(mjCModel* dest) {
     if (joint->model != this) {
       keep(joint->qposadr_);
       keep(joint->dofadr_);
+      keep(joint->plasticadr_);
+    }
+  }
+  for (mjCTendon* tendon : tendons_) {
+    if (tendon->model != this) { keep(tendon->plasticadr_); }
+  }
+  for (mjCFlex* flex : flexes_) {
+    if (flex->model != this) {
+      keep(flex->plasticadr_);
+      keep(flex->plasticnum_);
     }
   }
   for (mjCActuator* actuator : actuators_) {
@@ -4807,8 +5073,9 @@ void mjCModel::StoreKeyframes(mjCModel* dest) {
     // state is saved for a recompilation
     for (mjCJoint* joint : joints_) {
       if (joint->type != joint->spec.type) {
-        joint->qposadr_ = -1;
-        joint->dofadr_  = -1;
+        joint->qposadr_    = -1;
+        joint->dofadr_     = -1;
+        joint->plasticadr_ = -1;
       }
     }
   }
@@ -4820,12 +5087,13 @@ void mjCModel::StoreKeyframes(mjCModel* dest) {
     // the vectors in the size of the model: one which is shorter gives the leading elements, as
     // when compiling; the positions it does not give are left undefined, and take the default
     // configuration when the keyframe is reassembled
-    std::vector<double> vqpos  = key->spec_qpos_;
-    std::vector<double> vqvel  = key->spec_qvel_;
-    std::vector<double> vact   = key->spec_act_;
-    std::vector<double> vctrl  = key->spec_ctrl_;
-    std::vector<double> vmpos  = key->spec_mpos_;
-    std::vector<double> vmquat = key->spec_mquat_;
+    std::vector<double> vqpos    = key->spec_qpos_;
+    std::vector<double> vqvel    = key->spec_qvel_;
+    std::vector<double> vact     = key->spec_act_;
+    std::vector<double> vctrl    = key->spec_ctrl_;
+    std::vector<double> vmpos    = key->spec_mpos_;
+    std::vector<double> vmquat   = key->spec_mquat_;
+    std::vector<double> vplastic = key->spec_plastic_;
     if (!laidout) {
       // a joint which is given in part takes the rest of its position as authored
       int nqpos = (int)vqpos.size();
@@ -4844,6 +5112,31 @@ void mjCModel::StoreKeyframes(mjCModel* dest) {
       if (vmquat.size() < 4 * nmocap) { vmquat.resize(4 * (vmquat.size() / 4)); }
       completevec(vmpos, 3 * nmocap, mjNAN);
       completevec(vmquat, 4 * nmocap, mjNAN);
+
+      // a plastic joint or tendon which is given in part takes its default plastic configuration
+      int nplas = (int)vplastic.size();
+      completevec(vplastic, nplastic, mjNAN);
+      for (const mjCJoint* joint : joints_) {
+        if (joint->plasticadr_ >= 0 &&
+            joint->plasticadr_ < nplas &&
+            nplas < joint->plasticadr_ + joint->nq()) {
+          vplastic[joint->plasticadr_] = mjNAN;
+        }
+      }
+      for (const mjCTendon* tendon : tendons_) {
+        if (tendon->plasticadr_ >= 0 &&
+            tendon->plasticadr_ < nplas &&
+            nplas < tendon->plasticadr_ + 2) {
+          vplastic[tendon->plasticadr_] = mjNAN;
+        }
+      }
+      for (const mjCFlex* flex : flexes_) {
+        if (flex->plasticadr_ >= 0 &&
+            flex->plasticadr_ < nplas &&
+            nplas < flex->plasticadr_ + flex->plasticnum_) {
+          vplastic[flex->plasticadr_] = mjNAN;
+        }
+      }
     }
 
     // a model to which another one is attached leaves a keyframe which does not fit it as it is:
@@ -4856,7 +5149,8 @@ void mjCModel::StoreKeyframes(mjCModel* dest) {
                fits(vact, na) &&
                fits(vctrl, nu) &&
                fits(vmpos, 3 * nmocap) &&
-               fits(vmquat, 4 * nmocap);
+               fits(vmquat, 4 * nmocap) &&
+               fits(vplastic, nplastic);
     if (!dest && !fit) { continue; }
 
     if (!vqpos.empty() && vqpos.size() != nq) {
@@ -4901,27 +5195,36 @@ void mjCModel::StoreKeyframes(mjCModel* dest) {
                      key->spec_mquat_.size(),
                      4 * nmocap);
     }
+    if (!vplastic.empty() && vplastic.size() != nplastic) {
+      throw mjCError(nullptr,
+                     "Keyframe %s has invalid plastic size, got %d, should be %d",
+                     key->name.c_str(),
+                     key->spec_plastic_.size(),
+                     nplastic);
+    }
 
     // the vectors which the keyframe has
-    const double* qpos  = vqpos.empty() ? nullptr : vqpos.data();
-    const double* qvel  = vqvel.empty() ? nullptr : vqvel.data();
-    const double* act   = vact.empty() ? nullptr : vact.data();
-    const double* ctrl  = vctrl.empty() ? nullptr : vctrl.data();
-    const double* mpos  = vmpos.empty() ? nullptr : vmpos.data();
-    const double* mquat = vmquat.empty() ? nullptr : vmquat.data();
+    const double* qpos    = vqpos.empty() ? nullptr : vqpos.data();
+    const double* qvel    = vqvel.empty() ? nullptr : vqvel.data();
+    const double* act     = vact.empty() ? nullptr : vact.data();
+    const double* ctrl    = vctrl.empty() ? nullptr : vctrl.data();
+    const double* mpos    = vmpos.empty() ? nullptr : vmpos.data();
+    const double* mquat   = vmquat.empty() ? nullptr : vmquat.data();
+    const double* plastic = vplastic.empty() ? nullptr : vplastic.data();
 
     // store the vectors of the keyframe under a new name
     auto store = [&]() {
       mjKeyInfo stored;
-      stored.name  = PendingKeyName();
-      stored.time  = key->spec.time;
-      stored.qpos  = qpos != nullptr;
-      stored.qvel  = qvel != nullptr;
-      stored.act   = act != nullptr;
-      stored.ctrl  = ctrl != nullptr;
-      stored.mpos  = mpos != nullptr;
-      stored.mquat = mquat != nullptr;
-      SaveState(stored.name, qpos, qvel, act, ctrl, mpos, mquat);
+      stored.name    = PendingKeyName();
+      stored.time    = key->spec.time;
+      stored.qpos    = qpos != nullptr;
+      stored.qvel    = qvel != nullptr;
+      stored.act     = act != nullptr;
+      stored.ctrl    = ctrl != nullptr;
+      stored.mpos    = mpos != nullptr;
+      stored.mquat   = mquat != nullptr;
+      stored.plastic = plastic != nullptr;
+      SaveState(stored.name, qpos, qvel, act, ctrl, mpos, mquat, plastic);
       return stored;
     };
 
@@ -4929,14 +5232,15 @@ void mjCModel::StoreKeyframes(mjCModel* dest) {
     // given since then replace what was stored, the others stay as they were stored
     mjKeyInfo& info = key->pending_;
     if (key->ispending_) {
-      SaveState(info.name, qpos, qvel, act, ctrl, mpos, mquat, /*partial=*/true);
-      info.qpos  |= qpos != nullptr;
-      info.qvel  |= qvel != nullptr;
-      info.act   |= act != nullptr;
-      info.ctrl  |= ctrl != nullptr;
-      info.mpos  |= mpos != nullptr;
-      info.mquat |= mquat != nullptr;
-      info.time   = key->spec.time;
+      SaveState(info.name, qpos, qvel, act, ctrl, mpos, mquat, plastic, /*partial=*/true);
+      info.qpos    |= qpos != nullptr;
+      info.qvel    |= qvel != nullptr;
+      info.act     |= act != nullptr;
+      info.ctrl    |= ctrl != nullptr;
+      info.mpos    |= mpos != nullptr;
+      info.mquat   |= mquat != nullptr;
+      info.plastic |= plastic != nullptr;
+      info.time     = key->spec.time;
     }
 
     // the model is being attached: a copy of its keyframe is added to the destination, under the
@@ -4975,6 +5279,7 @@ void mjCModel::StoreKeyframes(mjCModel* dest) {
       key->spec_ctrl_.clear();
       key->spec_mpos_.clear();
       key->spec_mquat_.clear();
+      key->spec_plastic_.clear();
 
       // a deletion moves it to the end of the list, with the keyframes which are kept last
       if (stays && key->inplace_) {
@@ -4993,7 +5298,7 @@ void mjCModel::StoreKeyframes(mjCModel* dest) {
     if (key->inplace_) { inplacekeys_.push_back(key->pending_.name); }
   }
 
-  if (!compiled) { nq = nv = na = nu = nactuator = nout = nmocap = 0; }
+  if (!compiled) { nq = nv = na = nu = nactuator = nout = nmocap = nplastic = 0; }
 
   // the tree of this model changes: until it is compiled again, its keyframes are given their
   // vectors for the tree as it is then
@@ -5635,12 +5940,24 @@ void mjCModel::CopyCompiled(mjCBody* dest, const mjCBody* source) {
   dest->bodyadr_ = source->bodyadr_;
   dest->mocapid  = source->mocapid;
   for (int i = 0; i < dest->joints.size(); i++) {
-    dest->joints[i]->qposadr_ = source->joints[i]->qposadr_;
-    dest->joints[i]->dofadr_  = source->joints[i]->dofadr_;
+    dest->joints[i]->qposadr_    = source->joints[i]->qposadr_;
+    dest->joints[i]->dofadr_     = source->joints[i]->dofadr_;
+    dest->joints[i]->plasticadr_ = source->joints[i]->plasticadr_;
   }
   for (int i = 0; i < dest->bodies.size(); i++) {
     CopyCompiled(dest->bodies[i], source->bodies[i]);
   }
+}
+
+
+void mjCModel::CopyCompiled(mjCTendon* dest, const mjCTendon* source) {
+  dest->plasticadr_ = source->plasticadr_;
+}
+
+
+void mjCModel::CopyCompiled(mjCFlex* dest, const mjCFlex* source) {
+  dest->plasticadr_ = source->plasticadr_;
+  dest->plasticnum_ = source->plasticnum_;
 }
 
 
@@ -6144,6 +6461,9 @@ void mjCModel::ExpandKeyframe(mjCKey*       key,
       key->spec_mquat_[4 * i + 3] = (double)bquat[4 * j + 3];
     }
   }
+  if (!key->spec_plastic_.empty() && nplastic > key->spec_plastic_.size()) {
+    key->spec_plastic_.resize(nplastic, mjNAN);
+  }
 }
 
 // vector of a pending keyframe to reassemble, or null if there is none to reassemble; a vector
@@ -6169,17 +6489,41 @@ static void ScaleInWorld(const mjCBody* body, T* x, bool point, bool inverse) {
 // scale the vectors of a keyframe from the units of the spec to the compiled model, or back; free
 // joints and mocap bodies are posed in the world, and null vectors are left as they are
 template <class T>
-void mjCModel::ScaleKeyframe(T* qpos, T* qvel, T* act, T* ctrl, T* mpos, bool inverse) const {
-  auto scale = [inverse](T& x, double f) { x = (T)(inverse ? x / f : x * f); };
+void mjCModel::ScaleKeyframe(
+    T* qpos, T* qvel, T* act, T* ctrl, T* mpos, T* plastic, bool inverse) const {
+  auto scale = [inverse](T& x, double f) {
+    if (mjuu_defined(x)) { x = (T)(inverse ? x / f : x * f); }
+  };
   for (const mjCJoint* joint : joints_) {
     if (joint->qposadr_ < 0) { continue; }
     if (joint->spec.type == mjJNT_SLIDE) {
       const double f = joint->Gauge().Stretch(joint->spec.axis);
       if (qpos) { scale(qpos[joint->qposadr_], f); }
       if (qvel) { scale(qvel[joint->dofadr_], f); }
+      if (plastic && joint->plasticadr_ >= 0) { scale(plastic[joint->plasticadr_], f); }
     } else if (joint->spec.type == mjJNT_FREE) {
       if (qpos) { ScaleInWorld(joint->body, qpos + joint->qposadr_, true, inverse); }
       if (qvel) { ScaleInWorld(joint->body, qvel + joint->dofadr_, false, inverse); }
+    }
+  }
+  for (const mjCTendon* tendon : tendons_) {
+    if (plastic && tendon->plasticadr_ >= 0 && tendon->Linear()) {
+      const double f = tendon->PathGauge().Shape(1);
+      scale(plastic[tendon->plasticadr_ + 0], f);
+      scale(plastic[tendon->plasticadr_ + 1], f);
+    }
+  }
+  for (const mjCFlex* flex : flexes_) {
+    if (plastic && flex->plasticadr_ >= 0 && flex->plasticnum_ > 0) {
+      if (flex->interpolated || !flex->spec_nodebody_.empty()) { continue; }
+      const mjCGauge g           = flex->BodyGauge();
+      const double   f           = g.Shape(1);
+      const double   fb          = g.Force(-1, 1);
+      const int      stretch_num = flex->PlasticStretchNum();
+      for (int j = 0; j < stretch_num; j++) { scale(plastic[flex->plasticadr_ + j], f * f); }
+      for (int j = stretch_num; j < flex->plasticnum_; j++) {
+        scale(plastic[flex->plasticadr_ + j], fb);
+      }
     }
   }
   for (const mjCActuator* actuator : actuators_) {
@@ -6205,7 +6549,13 @@ void mjCModel::ResolveKeyframes(const mjModel* m) {
   // the default configuration, in the units of the spec
   std::vector<mjtNum> specqpos0(m->qpos0, m->qpos0 + m->nq);
   std::vector<mjtNum> specbodypos(m->body_pos, m->body_pos + 3 * m->nbody);
-  ScaleKeyframe<mjtNum>(specqpos0.data(), nullptr, nullptr, nullptr, nullptr, /*inverse=*/true);
+  ScaleKeyframe<mjtNum>(specqpos0.data(),
+                        nullptr,
+                        nullptr,
+                        nullptr,
+                        nullptr,
+                        nullptr,
+                        /*inverse=*/true);
   for (int i = 0; i < m->nbody; i++) {
     if (bodies_[i]->mocapid >= 0) {
       ScaleInWorld(bodies_[i], specbodypos.data() + 3 * i, true, true);
@@ -6225,7 +6575,8 @@ void mjCModel::ResolveKeyframes(const mjModel* m) {
                  pendingvec(info.act, key->spec_act_, na),
                  pendingvec(info.ctrl, key->spec_ctrl_, nu),
                  pendingvec(info.mpos, key->spec_mpos_, 3 * nmocap),
-                 pendingvec(info.mquat, key->spec_mquat_, 4 * nmocap));
+                 pendingvec(info.mquat, key->spec_mquat_, 4 * nmocap),
+                 pendingvec(info.plastic, key->spec_plastic_, nplastic));
     key->ispending_ = false;
     key->inplace_   = false;
     resolved.push_back(info.name);
@@ -6254,6 +6605,231 @@ struct ScopedDisableThreading {
 };
 #endif
 
+// return true if flex f can generate flex-flex contacts (with itself or another flex)
+static bool FlexCollidesWithFlex(const mjModel* m, int f) {
+  if (m->flex_contype[f] == 0 && m->flex_conaffinity[f] == 0) { return false; }
+  if ((m->flex_contype[f] & m->flex_conaffinity[f]) && m->flex_selfcollide[f] != mjFLEXSELF_NONE) {
+    return true;
+  }
+  for (int f2 = 0; f2 < m->nflex; f2++) {
+    if (f2 != f && ((m->flex_contype[f] & m->flex_conaffinity[f2]) ||
+                    (m->flex_contype[f2] & m->flex_conaffinity[f]))) {
+      return true;
+    }
+  }
+  return false;
+}
+
+// count DOFs and symbolic Hessian/Cholesky nonzeros of non-rigid flexes
+static void EstimateFlexArena(const mjModel* m,
+                              int            njmax,
+                              std::size_t*   nflexdof_out,
+                              std::size_t*   nflexdof_collide_out,
+                              std::size_t*   nH_out,
+                              std::size_t*   nL_out) {
+  *nflexdof_out         = 0;
+  *nflexdof_collide_out = 0;
+  *nH_out               = 0;
+  *nL_out               = 0;
+  if (!m->nflex || !m->nv) { return; }
+
+  // body_slot[b]: -1 if not a flex body, 0 if isolated flex body, 1 if colliding flex body
+  std::vector<int> body_slot(m->nbody, -1);
+  std::vector<int> body_collide(m->nbody, 0);
+  bool             has_flex     = false;
+  bool             has_isolated = false;
+  for (int f = 0; f < m->nflex; f++) {
+    if (m->flex_rigid[f]) { continue; }
+    has_flex     = true;
+    bool collide = FlexCollidesWithFlex(m, f);
+    if (!collide) { has_isolated = true; }
+    int        num    = m->flex_interp[f] ? m->flex_nodenum[f] : m->flex_vertnum[f];
+    int        adr    = m->flex_interp[f] ? m->flex_nodeadr[f] : m->flex_vertadr[f];
+    const int* bodyid = m->flex_interp[f] ? m->flex_nodebodyid : m->flex_vertbodyid;
+    for (int i = 0; i < num; i++) {
+      int b = m->body_weldid[bodyid[adr + i]];
+      if (b > 0 && m->body_dofnum[b] > 0) {
+        body_slot[b] = 0;
+        if (collide) { body_collide[b] = 1; }
+      }
+    }
+  }
+  if (!has_flex) { return; }
+
+  int              nb               = 0;
+  std::size_t      nflexdof         = 0;
+  std::size_t      nflexdof_collide = 0;
+  std::vector<int> nd;
+  nd.reserve(m->nbody);
+  for (int b = 1; b < m->nbody; b++) {
+    if (body_slot[b] == 0) {
+      body_slot[b] = nb++;
+      nd.push_back(m->body_dofnum[b]);
+      nflexdof += m->body_dofnum[b];
+      if (body_collide[b]) { nflexdof_collide += m->body_dofnum[b]; }
+    }
+  }
+  if (!nb || (!has_isolated && nflexdof <= static_cast<std::size_t>(njmax))) { return; }
+
+  // build upper-triangular weld-body adjacency across all static stencils of non-rigid flexes
+  std::vector<std::vector<int>> upper(nb);
+  auto                          add_clique = [&](const int* slots, int k) {
+    for (int a = 0; a < k; a++) {
+      int sa = slots[a];
+      if (sa < 0) continue;
+      for (int b = a + 1; b < k; b++) {
+        int sb = slots[b];
+        if (sb < 0 || sa == sb) continue;
+        if (sa < sb) {
+          upper[sa].push_back(sb);
+        } else {
+          upper[sb].push_back(sa);
+        }
+      }
+    }
+  };
+
+  for (int f = 0; f < m->nflex; f++) {
+    if (m->flex_rigid[f]) { continue; }
+    if (m->flex_interp[f]) {
+      int  order      = m->flex_interp[f];
+      bool shell_mode = order < 0;
+      order           = order < 0 ? -order : order;
+      int cx          = m->flex_cellnum[3 * f + 0];
+      int cy          = m->flex_cellnum[3 * f + 1];
+      int cz          = m->flex_cellnum[3 * f + 2];
+      int npe = shell_mode ? (order + 1) * (order + 1) : (order + 1) * (order + 1) * (order + 1);
+      int nelem_fe      = shell_mode ? 2 * (cy * cz + cx * cz + cx * cy) : cx * cy * cz;
+      const int* bodyid = m->flex_nodebodyid + m->flex_nodeadr[f];
+      int        gindices[125];
+      int        slots[125];
+      for (int fe = 0; fe < nelem_fe; fe++) {
+        if (shell_mode) {
+          mju_flexGatherFaceState(order,
+                                  cx,
+                                  cy,
+                                  cz,
+                                  fe,
+                                  nullptr,
+                                  nullptr,
+                                  nullptr,
+                                  nullptr,
+                                  nullptr,
+                                  nullptr,
+                                  gindices,
+                                  nullptr);
+        } else {
+          int ci = fe / (cy * cz);
+          int cj = (fe / cz) % cy;
+          int ck = fe % cz;
+          mju_flexGatherCellState(order,
+                                  cy,
+                                  cz,
+                                  ci,
+                                  cj,
+                                  ck,
+                                  nullptr,
+                                  nullptr,
+                                  nullptr,
+                                  nullptr,
+                                  nullptr,
+                                  nullptr,
+                                  gindices,
+                                  nullptr);
+        }
+        for (int i = 0; i < npe; i++) { slots[i] = body_slot[m->body_weldid[bodyid[gindices[i]]]]; }
+        add_clique(slots, npe);
+      }
+      continue;
+    }
+
+    int              vadr = m->flex_vertadr[f];
+    int              vnum = m->flex_vertnum[f];
+    std::vector<int> vslot(vnum, -1);
+    for (int v = 0; v < vnum; v++) {
+      vslot[v] = body_slot[m->body_weldid[m->flex_vertbodyid[vadr + v]]];
+    }
+
+    // elements (triangles, tetrahedra, capsules)
+    int dim  = m->flex_dim[f];
+    int eadr = m->flex_elemdataadr[f];
+    for (int e = 0; e < m->flex_elemnum[f]; e++) {
+      const int* elem = m->flex_elem + eadr + e * (dim + 1);
+      int        slots[4];
+      for (int k = 0; k <= dim; k++) { slots[k] = vslot[elem[k]]; }
+      add_clique(slots, dim + 1);
+    }
+
+    // edges and 2D bending flaps
+    int  edgeadr    = m->flex_edgeadr[f];
+    int  edgenum    = m->flex_edgenum[f];
+    bool has_bend2d = (dim == 2 && m->flex_bendingadr[f] >= 0);
+    for (int e = 0; e < edgenum; e++) {
+      int v0       = m->flex_edge[2 * (edgeadr + e) + 0];
+      int v1       = m->flex_edge[2 * (edgeadr + e) + 1];
+      int slots[4] = {vslot[v0], vslot[v1], -1, -1};
+      if (has_bend2d) {
+        int f0 = m->flex_edgeflap[2 * (edgeadr + e) + 0];
+        int f1 = m->flex_edgeflap[2 * (edgeadr + e) + 1];
+        if (f0 >= 0 && f1 >= 0) {
+          slots[2] = vslot[f0];
+          slots[3] = vslot[f1];
+          add_clique(slots, 4);
+          continue;
+        }
+      }
+      add_clique(slots, 2);
+    }
+
+    // 1D rod bending (3-vertex single hinges and 4-vertex hinge pairs)
+    if (dim == 1 && m->flex_bendingadr[f] >= 0) {
+      const mjtNum* bend = m->flex_bending + m->flex_bendingadr[f];
+      for (int h = 0; h < static_cast<int>(bend[0]); h++) {
+        const mjtNum* hinge = bend + 1 + mjROD_HINGE_SIZE * h;
+        int           nr    = mj_rodHingeVert(hinge);
+        int           slots[4];
+        for (int k = 0; k < nr; k++) { slots[k] = vslot[static_cast<int>(hinge[k])]; }
+        add_clique(slots, nr);
+      }
+    }
+  }
+
+  for (int q = 0; q < nb; q++) {
+    auto& row = upper[q];
+    std::sort(row.begin(), row.end());
+    row.erase(std::unique(row.begin(), row.end()), row.end());
+  }
+
+  // block-level symbolic reverse-Cholesky count on the static flex graph
+  std::vector<int>         parent(nb, -1);
+  std::vector<int>         flag(nb, -1);
+  std::vector<std::size_t> offdiag_dofs(nb, 0);
+  std::size_t              nH = 0;
+  for (int q = nb - 1; q >= 0; q--) {
+    flag[q]         = q;
+    std::size_t dq  = static_cast<std::size_t>(nd[q]);
+    nH             += dq * (dq + 1) / 2;
+    for (int p0 : upper[q]) {
+      nH += dq * static_cast<std::size_t>(nd[p0]);
+      for (int p = p0; p >= 0 && flag[p] != q; p = parent[p]) {
+        if (parent[p] == -1) { parent[p] = q; }
+        flag[p]          = q;
+        offdiag_dofs[p] += dq;
+      }
+    }
+  }
+
+  std::size_t nL = 0;
+  for (int p = 0; p < nb; p++) {
+    std::size_t dp  = static_cast<std::size_t>(nd[p]);
+    nL             += dp * offdiag_dofs[p] + dp * (dp + 1) / 2;
+  }
+
+  *nflexdof_out         = nflexdof;
+  *nflexdof_collide_out = nflexdof_collide;
+  *nH_out               = nH;
+  *nL_out               = nL;
+}
 
 // first stage of compilation: the assets and the kinematic tree; keyframes are added and
 // completed only if asked, which a full compilation does and an operation on the spec does not
@@ -6480,7 +7056,6 @@ void mjCModel::TryCompile(mjModel*& m, mjData*& d, const mjVFS* vfs) {
                nflexshelldata,
                nflextexcoord,
                nJfe,
-               nJfv,
                nmesh,
                nmeshvert,
                nmeshnormal,
@@ -6527,7 +7102,8 @@ void mjCModel::TryCompile(mjModel*& m, mjData*& d, const mjVFS* vfs) {
                nuser_actuator,
                nuser_sensor,
                nnames,
-               npaths);
+               npaths,
+               nplastic);
   if (!m) { throw mjCError(0, "could not create mjModel"); }
 
   // copy everything into low-level model
@@ -6553,6 +7129,7 @@ void mjCModel::TryCompile(mjModel*& m, mjData*& d, const mjVFS* vfs) {
                   given(key->act_, key->spec_act_),
                   given(key->ctrl_, key->spec_ctrl_),
                   given(key->mpos_, key->spec_mpos_),
+                  given(key->plastic_, key->spec_plastic_),
                   /*inverse=*/false);
   }
 
@@ -6586,27 +7163,33 @@ void mjCModel::TryCompile(mjModel*& m, mjData*& d, const mjVFS* vfs) {
     // memory size is user-specified in bytes
     m->narena = memory;
   } else {
-    const int nconmax = m->nconmax == -1 ? 100 : m->nconmax;
-    const int njmax   = m->njmax == -1 ? 500 : m->njmax;
-    if (nstack != -1) {
+    const int   nconmax  = m->nconmax == -1 ? 100 : m->nconmax;
+    const int   njmax    = m->njmax == -1 ? 500 : m->njmax;
+    std::size_t nflexdof = 0, nflexdof_collide = 0, nH_flex = 0, nL_flex = 0;
+    if (nstack == -1) {
+      // use a conservative heuristic if neither memory nor nstack is specified in XML; in sparse
+      // mode, size non-rigid flexes symbolically via their static Hessian and Cholesky factor
+      // instead of including their DOFs in the dense quadratic term (MakeHessian falls back to CG
+      // if runtime contact fill-in exhausts the arena)
+      if (mj_isSparse(m)) {
+        EstimateFlexArena(m, njmax, &nflexdof, &nflexdof_collide, &nH_flex, &nL_flex);
+      }
+      const std::size_t ndense  = njmax + m->neq + m->nv - nflexdof;
+      const std::size_t nlinear = m->nq +
+                                  m->nv +
+                                  m->nu +
+                                  m->na +
+                                  m->nbody +
+                                  m->njnt +
+                                  m->ngeom +
+                                  m->nsite +
+                                  m->neq +
+                                  m->ntendon +
+                                  m->nwrap;
+      m->narena                 = sizeof(mjtNum) * mjMAX(1000, 5 * ndense * ndense + 20 * nlinear);
+    } else {
       // (legacy) stack size is user-specified as multiple of sizeof(mjtNum)
       m->narena = sizeof(mjtNum) * nstack;
-    } else {
-      // use a conservative heuristic if neither memory nor nstack is specified in XML
-      m->narena = sizeof(mjtNum) *
-                  static_cast<size_t>(mjMAX(
-                      1000,
-                      5 * (njmax + m->neq + m->nv) * (njmax + m->neq + m->nv) + 20 * (m->nq +
-                                                                                      m->nv +
-                                                                                      m->nu +
-                                                                                      m->na +
-                                                                                      m->nbody +
-                                                                                      m->njnt +
-                                                                                      m->ngeom +
-                                                                                      m->nsite +
-                                                                                      m->neq +
-                                                                                      m->ntendon +
-                                                                                      m->nwrap)));
     }
 
     // add an arena space equal to memory footprint prior to the introduction of the arena
@@ -6616,6 +7199,31 @@ void mjCModel::TryCompile(mjModel*& m, mjData*& d, const mjVFS* vfs) {
                                       njmax * m->nv * (2 * sizeof(int) + 2 * sizeof(mjtNum)) +
                                       njmax * njmax * (sizeof(int) + sizeof(mjtNum)));
     m->narena                     += arena_bytes;
+
+    // if symbolic Hessian + Cholesky factor of flexes exceeds the linear njmax*nflexdof allocation
+    // already included in arena_bytes, add the excess (e.g. 3D grids with higher fill), plus a
+    // bounded allowance for two-sided contact Jacobians/fill on colliding flexes
+    if (nflexdof) {
+      const std::size_t njmax_flex_bytes =
+          static_cast<std::size_t>(njmax) * nflexdof * (2 * sizeof(int) + 2 * sizeof(mjtNum));
+      const std::size_t nL_num            = (m->opt.cone == mjCONE_ELLIPTIC) ? 2 : 1;
+      const std::size_t flex_solver_bytes = nH_flex * (6 * sizeof(int) + 5 * sizeof(mjtNum)) +
+                                            nL_flex * (3 * sizeof(int) + nL_num * sizeof(mjtNum));
+      // 1.5x safety factor on static symbolic Hessian + Cholesky factor bytes
+      if (flex_solver_bytes > njmax_flex_bytes) {
+        m->narena += flex_solver_bytes - njmax_flex_bytes;
+      }
+      m->narena += flex_solver_bytes / 2;
+      if (nflexdof_collide) {
+        // cap contact fill-in allowance at 64 MB so large colliding flexes do not allocate
+        // hundreds of megabytes by default (heavier fill-in falls back to CG)
+        constexpr std::size_t kMaxCollideBytes  = 64 << 20;
+        const std::size_t     collide_bytes     = static_cast<std::size_t>(njmax) *
+                                                  nflexdof_collide *
+                                                  (2 * sizeof(int) + 2 * sizeof(mjtNum));
+        m->narena                              += std::min(collide_bytes, kMaxCollideBytes);
+      }
+    }
 
     // round up to the nearest megabyte
     constexpr std::size_t kMegabyte   = 1 << 20;
@@ -6718,9 +7326,44 @@ void mjCModel::TryCompile(mjModel*& m, mjData*& d, const mjVFS* vfs) {
   // normalize keyframe quaternions
   for (int i = 0; i < m->nkey; i++) { mj_normalizeQuat(m, m->key_qpos + i * m->nq); }
 
-  // set constant fields, after aligning 2D flexes, including those which compilation derives once
-  mj_alignFlex(m);
+  // set constant fields, including those which compilation derives once
   mj_setCompiledConst(m, d);
+
+  // initialize default plastic state and unset key_plastic vectors
+  mj_resetPlastic(m, d);
+  plastic0.assign(d->plastic, d->plastic + m->nplastic);
+  if (m->nplastic && m->nkey) {
+    std::vector<mjtNum> specplastic0(plastic0);
+    ScaleKeyframe<mjtNum>(nullptr,
+                          nullptr,
+                          nullptr,
+                          nullptr,
+                          nullptr,
+                          specplastic0.data(),
+                          /*inverse=*/true);
+    for (int i = 0; i < m->nkey; i++) {
+      if (keys_[i]->spec_plastic_.empty()) {
+        mju_copy(m->key_plastic + i * m->nplastic, d->plastic, m->nplastic);
+        for (int j = 0; j < m->nplastic; j++) { keys_[i]->plastic_[j] = (double)d->plastic[j]; }
+      } else {
+        for (int j = 0; j < m->nplastic; j++) {
+          if (!mjuu_defined(keys_[i]->plastic_[j])) {
+            keys_[i]->plastic_[j]               = (double)d->plastic[j];
+            m->key_plastic[i * m->nplastic + j] = d->plastic[j];
+          }
+          if (j < (int)keys_[i]->spec_plastic_.size() &&
+              !mjuu_defined(keys_[i]->spec_plastic_[j])) {
+            keys_[i]->spec_plastic_[j] = (double)specplastic0[j];
+          }
+        }
+        for (int j = 0; j < m->njnt; j++) {
+          if (m->jnt_type[j] == mjJNT_BALL && m->jnt_plasticadr[j] >= 0) {
+            mjuu_normvec(m->key_plastic + i * m->nplastic + m->jnt_plasticadr[j], 4);
+          }
+        }
+      }
+    }
+  }
 
   // automatic spring-damper adjustment
   AutoSpringDamper(m);
@@ -6988,6 +7631,7 @@ bool mjCModel::CopyBack(const mjModel* m) {
       ntupledata != m->ntupledata ||
       nkey != m->nkey ||
       nmocap != m->nmocap ||
+      nplastic != m->nplastic ||
       nhfielddata != m->nhfielddata ||
       nuser_body != m->nuser_body ||
       nuser_jnt != m->nuser_jnt ||
@@ -7113,18 +7757,29 @@ void mjCModel::BackValues(const mjModel* m, bool tospec, bool write) {
   // data of the model in its reference configuration, made when it is first needed
   std::unique_ptr<mjData, void (*)(mjData*)> reference(nullptr, mj_deleteData);
 
-  // the anchor which a connect between bodies has in its second body, as mj_setConst computes it
-  // from the model as it is now
-  auto secondanchor = [&](int i, mjtNum anchor[3]) {
+  // the anchor which a connect between bodies has in its second body, or the relative pose of a
+  // weld between bodies, as mj_setConst computes it from the model as it is now
+  auto computeddata = [&](int i, mjtNum* computed) {
     if (!reference) {
       reference.reset(mj_makeData(m));
       mj_kinematics(m, reference.get());
     }
-    const mjData* d = reference.get();
-    mjtNum        pos[3];
-    mj_local2Global(reference.get(), pos, 0, m->eq_data + mjNEQDATA * i, 0, m->eq_obj1id[i], 0);
-    mju_subFrom3(pos, d->xpos + 3 * m->eq_obj2id[i]);
-    mju_mulMatTVec3(anchor, d->xmat + 9 * m->eq_obj2id[i], pos);
+    const mjData* d    = reference.get();
+    const mjtNum* data = m->eq_data + mjNEQDATA * i;
+    int           id1  = m->eq_obj1id[i];
+    int           id2  = m->eq_obj2id[i];
+    mjtNum        pos[3], quat[4];
+    if (m->eq_type[i] == mjEQ_CONNECT) {
+      mj_local2Global(reference.get(), pos, 0, data, 0, id1, 0);
+      mju_subFrom3(pos, d->xpos + 3 * id2);
+      mju_mulMatTVec3(computed, d->xmat + 9 * id2, pos);
+    } else {
+      mj_local2Global(reference.get(), pos, 0, data, 0, id2, 0);
+      mju_subFrom3(pos, d->xpos + 3 * id1);
+      mju_mulMatTVec3(computed, d->xmat + 9 * id1, pos);
+      mju_negQuat(quat, d->xquat + 4 * id1);
+      mju_mulQuat(computed + 3, quat, d->xquat + 4 * id2);
+    }
   };
 
   // option and visual
@@ -7257,6 +7912,9 @@ void mjCModel::BackValues(const mjModel* m, bool tospec, bool write) {
     }
     copy(pj->spec.stiffness + 1, pj->stiffness + 1, m->jnt_stiffnesspoly + mjNPOLY * i, mjNPOLY);
     copy(pj->spec.damping + 1, pj->damping + 1, m->dof_dampingpoly + mjNPOLY * dofadr, mjNPOLY);
+    if (copy(&pj->spec.springyield, &pj->springyield, m->jnt_springyield + i) && tospec && write) {
+      if (rotates) { pj->spec.springyield *= degrees; }
+    }
 
     // range: the limits of a rotation are in the unit of the spec if they limit
     copyrange(pj->spec.range,
@@ -7528,11 +8186,14 @@ void mjCModel::BackValues(const mjModel* m, bool tospec, bool write) {
   for (int i = 0; i < nmat; i++) {
     mjCMaterial* pm = materials_[i];
 
+    copy(&pm->spec.texuniform, &pm->texuniform, m->mat_texuniform + i);
     copy(pm->spec.texrepeat, pm->texrepeat, m->mat_texrepeat + 2 * i, 2);
     copy(&pm->spec.emission, &pm->emission, m->mat_emission + i);
     copy(&pm->spec.specular, &pm->specular, m->mat_specular + i);
     copy(&pm->spec.shininess, &pm->shininess, m->mat_shininess + i);
     copy(&pm->spec.reflectance, &pm->reflectance, m->mat_reflectance + i);
+    copy(&pm->spec.metallic, &pm->metallic, m->mat_metallic + i);
+    copy(&pm->spec.roughness, &pm->roughness, m->mat_roughness + i);
     copy(pm->spec.rgba, pm->rgba, m->mat_rgba + 4 * i, 4);
   }
 
@@ -7566,8 +8227,8 @@ void mjCModel::BackValues(const mjModel* m, bool tospec, bool write) {
         // told apart only where it is reported: compilation ends here too, with this anchor new
         if (tospec && !write) {
           mjtNum computed[3];
-          secondanchor(i, computed);
-          if (computed[0] != data[3] || computed[1] != data[4] || computed[2] != data[5]) {
+          computeddata(i, computed);
+          if (Differs(computed, data + 3, 3)) {
             refuse(pe,
                    "the anchor of a connect in its second body",
                    "it is computed from the anchor in the first body");
@@ -7578,15 +8239,28 @@ void mjCModel::BackValues(const mjModel* m, bool tospec, bool write) {
       copy(pe->spec.data + 6, pe->data + 6, data + 6, mjNEQDATA - 6);
     } else if (pe->type == mjEQ_WELD && pe->objtype == mjOBJ_BODY) {
       // a weld between bodies: the anchor and the torque scale are given, and so is the relative
-      // pose unless compilation computes it. One which was computed is given once it is changed
-      // in the model, or once the anchor is: it was computed for the anchor as it was
-      const bool computed =
-          !pe->spec.data[6] && !pe->spec.data[7] && !pe->spec.data[8] && !pe->spec.data[9];
-      const bool anchor = copy(pe->spec.data, pe->data, data, 3);
-      if (Differs(pe->data + 3, data + 3, 7) || (anchor && computed)) {
+      // pose unless it is marked in data[11], computed from the anchor; the spec marks it with a
+      // zero quaternion
+      copy(pe->spec.data, pe->data, data, 3);
+      const bool marked = data[11];
+      if (Differs(pe->data + 3, data + 3, 7) || Differs(pe->data + 11, data + 11, 1)) {
+        if (tospec && !write && marked) {
+          mjtNum computed[7];
+          computeddata(i, computed);
+          if (Differs(computed, data + 3, 7)) {
+            refuse(pe,
+                   "the relative pose of a weld which is marked as computed",
+                   "it is computed from the anchor");
+          }
+        }
         if (write) {
           Back(pe->data + 3, data + 3, 7);
-          if (tospec) { tospecvalues(pe->spec.data + 3, pe->data + 3, 7); }
+          Back(pe->data + 11, data + 11, 1);
+          if (tospec && marked) {
+            std::fill(pe->spec.data + 6, pe->spec.data + 10, 0);
+          } else if (tospec) {
+            tospecvalues(pe->spec.data + 3, pe->data + 3, 7);
+          }
         }
       }
       copy(pe->spec.data + 10, pe->data + 10, data + 10);
@@ -7630,6 +8304,7 @@ void mjCModel::BackValues(const mjModel* m, bool tospec, bool write) {
     copy(&pt->spec.armature, &pt->armature, m->tendon_armature + i);
     copy(&pt->spec.frictionloss, &pt->frictionloss, m->tendon_frictionloss + i);
     copy(pt->spec.springlength, pt->springlength, m->tendon_lengthspring + 2 * i, 2);
+    copy(&pt->spec.springyield, &pt->springyield, m->tendon_springyield + i);
     copyvector(pt->spec_userdata_, pt->userdata_, m->tendon_user + nuser_tendon * i, nuser_tendon);
   }
 
@@ -7753,12 +8428,15 @@ void mjCModel::BackValues(const mjModel* m, bool tospec, bool write) {
     bool mpos = copyvector(pk->spec_mpos_, pk->mpos_, m->key_mpos + i * 3 * nmocap, 3 * nmocap);
     copyvector(pk->spec_mquat_, pk->mquat_, m->key_mquat + i * 4 * nmocap, 4 * nmocap);
     bool ctrl = copyvector(pk->spec_ctrl_, pk->ctrl_, m->key_ctrl + i * nu, nu);
+    bool plastic =
+        copyvector(pk->spec_plastic_, pk->plastic_, m->key_plastic + i * nplastic, nplastic);
     if (tospec && write) {
       ScaleKeyframe(qpos ? pk->spec_qpos_.data() : nullptr,
                     qvel ? pk->spec_qvel_.data() : nullptr,
                     act ? pk->spec_act_.data() : nullptr,
                     ctrl ? pk->spec_ctrl_.data() : nullptr,
                     mpos ? pk->spec_mpos_.data() : nullptr,
+                    plastic ? pk->spec_plastic_.data() : nullptr,
                     /*inverse=*/true);
     }
   }

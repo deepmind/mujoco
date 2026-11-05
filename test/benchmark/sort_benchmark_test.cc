@@ -16,7 +16,7 @@
 #include <random>
 #include <vector>
 
-#include "benchmark/benchmark.h"
+#include <benchmark/benchmark.h>
 #include "absl/base/attributes.h"
 #include <mujoco/mujoco.h>
 #include "src/engine/engine_sort.h"
@@ -81,8 +81,7 @@ ABSL_ATTRIBUTE_NO_TAIL_CALL static void SortBenchmark(
     SortSortable(copy.data(), buf.data(), n, nullptr);
   }
 
-  state.counters["items/s"] =
-      benchmark::Counter(state.iterations() * n, benchmark::Counter::kIsRate);
+  state.SetItemsProcessed(state.iterations() * n);
 }
 
 // Define benchmarks.
@@ -121,8 +120,7 @@ ABSL_ATTRIBUTE_NO_TAIL_CALL static void StdSortBenchmark(
         [](const Sortable& a, const Sortable& b) { return a.value < b.value; });
   }
 
-  state.counters["items/s"] =
-      benchmark::Counter(state.iterations() * n, benchmark::Counter::kIsRate);
+  state.SetItemsProcessed(state.iterations() * n);
 }
 
 void BM_StdSort_1k_AlmostSorted(benchmark::State& state) {
@@ -147,9 +145,3 @@ BENCHMARK(BM_StdSort_100k_Random);
 
 }  // namespace
 }  // namespace mujoco
-
-int main(int argc, char** argv) {
-  benchmark::Initialize(&argc, argv);
-  benchmark::RunSpecifiedBenchmarks();
-  return 0;
-}

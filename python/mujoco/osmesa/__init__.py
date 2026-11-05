@@ -14,7 +14,10 @@
 # ==============================================================================
 """An OSMesa context for software-based OpenGL rendering."""
 
+import contextlib
 import os
+import threading
+import weakref
 
 PYOPENGL_PLATFORM = os.environ.get('PYOPENGL_PLATFORM')
 
@@ -35,6 +38,8 @@ from OpenGL.GL import arrays
 _DEPTH_BITS = 24
 _STENCIL_BITS = 8
 _ACCUM_BITS = 0
+
+_current_context = threading.local()
 
 
 class GLContext:
@@ -68,12 +73,48 @@ class GLContext:
           self._height)
       if not success:
         raise RuntimeError('Failed to make OSMesa context current.')
+      _current_context.ref = weakref.ref(self)
+
+  @contextlib.contextmanager
+  def as_current(self):
+    """Temporarily makes this context current, restoring any prior context."""
+    if not self._context:
+      yield
+      return
+    raw_current = osmesa.OSMesaGetCurrentContext()
+    if raw_current and self._context.address == raw_current.address:
+      yield
+      return
+    prev_ref = getattr(_current_context, 'ref', None)
+    prev = prev_ref() if prev_ref is not None else None
+    self.make_current()
+    try:
+      yield
+    finally:
+      prev_ctx = (
+          prev._context if prev is not None else None  # pylint: disable=protected-access
+      )
+      if (
+          prev is not None
+          and prev_ctx
+          and raw_current
+          and prev_ctx.address == raw_current.address
+      ):
+        prev.make_current()
+      elif not raw_current:
+        osmesa.OSMesaMakeCurrent(None, None, GL.GL_FLOAT, 0, 0)
+        _current_context.ref = None
 
   def free(self):
     """Frees resources associated with this context."""
-    if self._context and self._context == osmesa.OSMesaGetCurrentContext():
-      osmesa.OSMesaMakeCurrent(None, None, GL.GL_FLOAT, 0, 0)
-    osmesa.OSMesaDestroyContext(self._context)
+    if self._context:
+      current_context = osmesa.OSMesaGetCurrentContext()
+      if current_context and self._context.address == current_context.address:
+        osmesa.OSMesaMakeCurrent(None, None, GL.GL_FLOAT, 0, 0)
+      osmesa.OSMesaDestroyContext(self._context)
+    prev_ref = getattr(_current_context, 'ref', None)
+    if prev_ref is not None and prev_ref() is self:
+      _current_context.ref = None
     self._buffer = None
     self._context = None
 

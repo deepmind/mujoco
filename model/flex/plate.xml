@@ -38,7 +38,7 @@
               radius=".001" mass="100" name="plate">
       <contact condim="3" solref="0.01 1" solimp=".95 .99 .0001"/>
       <edge equality="true" damping="0.001"/>
-      <elasticity poisson="0" thickness="1e-2" young="3e7" elastic2d="bend"/>
+      <elasticity poisson="0" thickness="1e-2" young="2.25e7" elastic2d="bend"/>
     </flexcomp>
   </worldbody>
 </mujoco>

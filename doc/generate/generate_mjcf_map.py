@@ -38,7 +38,6 @@ if resource_loader.is_monorepo():
   _INCLUDES = '''\
 #include "third_party/mujoco/include/mjspec.h"
 #include "third_party/mujoco/include/mjtype.h"
-#include "third_party/mujoco/src/user/user_composite.h"
 #include "third_party/mujoco/src/user/user_flexcomp.h"
 #include "third_party/mujoco/src/xml/xml_util.h"'''
 else:
@@ -46,7 +45,6 @@ else:
   _INCLUDES = '''\
 #include <mujoco/mjspec.h>
 #include <mujoco/mjtype.h>
-#include "user/user_composite.h"
 #include "user/user_flexcomp.h"
 #include "xml/xml_util.h"'''
 

@@ -45,6 +45,7 @@ void mj_kinematics1(const mjModel* m, mjData* d) {
   mju_zero3(d->xpos);
   mju_unit4(d->xquat);
   mju_zero3(d->xipos);
+  mju_unit4(d->xiquat);
   mju_zero(d->xmat, 9);
   mju_zero(d->ximat, 9);
   d->xmat[0] = d->xmat[4] = d->xmat[8] = 1;
@@ -183,7 +184,7 @@ void mj_kinematics1(const mjModel* m, mjData* d) {
     // assign xquat and xpos, construct xmat
     mji_copy4(d->xquat+4*i, xquat);
     mji_copy3(d->xpos+3*i, xpos);
-    mju_quat2Mat(d->xmat+9*i, xquat);
+    mji_quat2Mat(d->xmat+9*i, xquat);
   }
 }
 
@@ -201,9 +202,9 @@ void mj_kinematics2(const mjModel* m, mjData* d) {
     // skip static body
     if (sleep_enabled && d->body_awake[i] == mjS_STATIC) continue;
 
-    mj_local2Global(d, d->xipos+3*i, d->ximat+9*i,
-                    m->body_ipos+3*i, m->body_iquat+4*i,
-                    i, m->body_sameframe[i]);
+    mj_local2GlobalQuat(d, d->xipos+3*i, d->xiquat+4*i, d->ximat+9*i,
+                        m->body_ipos+3*i, m->body_iquat+4*i,
+                        i, m->body_sameframe[i]);
   }
 
   // compute/copy Cartesian positions and orientations of geoms
@@ -216,9 +217,9 @@ void mj_kinematics2(const mjModel* m, mjData* d) {
     int start = m->body_geomadr[i];
     int end = start + m->body_geomnum[i];
     for (int g=start; g < end; g++) {
-      mj_local2Global(d, d->geom_xpos+3*g, d->geom_xmat+9*g,
-                      m->geom_pos+3*g, m->geom_quat+4*g,
-                      m->geom_bodyid[g], m->geom_sameframe[g]);
+      mj_local2GlobalQuat(d, d->geom_xpos+3*g, d->geom_xquat+4*g, d->geom_xmat+9*g,
+                          m->geom_pos+3*g, m->geom_quat+4*g,
+                          m->geom_bodyid[g], m->geom_sameframe[g]);
     }
   }
 
@@ -230,9 +231,9 @@ void mj_kinematics2(const mjModel* m, mjData* d) {
     // skip site in sleeping or static body
     if (sleep_enabled && d->body_awake[bodyid] != mjS_AWAKE) continue;
 
-    mj_local2Global(d, d->site_xpos+3*i, d->site_xmat+9*i,
-                    m->site_pos+3*i, m->site_quat+4*i,
-                    bodyid, m->site_sameframe[i]);
+    mj_local2GlobalQuat(d, d->site_xpos+3*i, d->site_xquat+4*i, d->site_xmat+9*i,
+                        m->site_pos+3*i, m->site_quat+4*i,
+                        bodyid, m->site_sameframe[i]);
   }
 }
 
@@ -538,22 +539,10 @@ void mj_updateDynamicBVH(const mjModel* m, mjData* d, int bvhadr, int bvhnum) {
 }
 
 
-// C(3x2) = A(3x2) * B(2x2)
-static inline void mju_mulMatMat322(mjtNum* C, const mjtNum* A, const mjtNum* B) {
-  C[0] = A[0]*B[0] + A[1]*B[2];
-  C[1] = A[0]*B[1] + A[1]*B[3];
-  C[2] = A[2]*B[0] + A[3]*B[2];
-  C[3] = A[2]*B[1] + A[3]*B[3];
-  C[4] = A[4]*B[0] + A[5]*B[2];
-  C[5] = A[4]*B[1] + A[5]*B[3];
-}
-
-
 // compute flex-related quantities, optionally skipping rigid flexes
 void mj_flexSkip(const mjModel* m, mjData* d, int skiprigid) {
   int nv = m->nv;
   int* rowadr = m->flexedge_J_rowadr;
-  int* vrowadr = m->flexvert_J_rowadr, *vrownnz = m->flexvert_J_rownnz;
 
   // skip if no flexes
   if (!m->nflex) {
@@ -626,7 +615,7 @@ void mj_flexSkip(const mjModel* m, mjData* d, int skiprigid) {
         // cell lookup: get local coords and node indices
         mjtNum local[3];
         int nodeindices[27];  // max npc for quadratic: 3^3 = 27
-        mju_cellLookup(m->flex_vert0 + 3*i, m->flex_cellnum+3*f, order, local, nodeindices);
+        mju_cellLookup(m->flex_vert0 + 3*i, m->flex_cellnum+3*f, order, m->flex_vertcell[i], local, nodeindices);
         mju_interpolate3D(d->flexvert_xpos+3*i, local, nodexpos, order, nodeindices);
       }
       mj_freeStack(d);
@@ -636,6 +625,9 @@ void mj_flexSkip(const mjModel* m, mjData* d, int skiprigid) {
   // compute flex element aabb
   for (int f=0; f < m->nflex; f++) {
     int dim = m->flex_dim[f];
+    mjtNum box[2];
+    mjtNum pad = mj_rodBoxSize(m, f, box) ? mju_max(m->flex_radius[f], mju_norm(box, 2))
+                                          : m->flex_radius[f];
 
     // process elements of this flex
     int elemnum = m->flex_elemnum[f];
@@ -660,9 +652,9 @@ void mj_flexSkip(const mjModel* m, mjData* d, int skiprigid) {
       d->flexelem_aabb[6*base+0] = 0.5*(xmax[0]+xmin[0]);
       d->flexelem_aabb[6*base+1] = 0.5*(xmax[1]+xmin[1]);
       d->flexelem_aabb[6*base+2] = 0.5*(xmax[2]+xmin[2]);
-      d->flexelem_aabb[6*base+3] = 0.5*(xmax[0]-xmin[0]) + m->flex_radius[f];
-      d->flexelem_aabb[6*base+4] = 0.5*(xmax[1]-xmin[1]) + m->flex_radius[f];
-      d->flexelem_aabb[6*base+5] = 0.5*(xmax[2]-xmin[2]) + m->flex_radius[f];
+      d->flexelem_aabb[6*base+3] = 0.5*(xmax[0]-xmin[0]) + pad;
+      d->flexelem_aabb[6*base+4] = 0.5*(xmax[1]-xmin[1]) + pad;
+      d->flexelem_aabb[6*base+5] = 0.5*(xmax[2]-xmin[2]) + pad;
     }
   }
 
@@ -695,7 +687,6 @@ void mj_flexSkip(const mjModel* m, mjData* d, int skiprigid) {
   int* chain = mjSTACKALLOC(d, nv, int);
 
   // clear Jacobian
-  mju_zero(d->flexvert_J, 2*m->nJfv);
   mju_zero(d->flexedge_J, m->nJfe);
 
   // compute lengths and Jacobians of edges
@@ -748,185 +739,6 @@ void mj_flexSkip(const mjModel* m, mjData* d, int skiprigid) {
 
       // apply chain rule to compute edge Jacobian
       mju_mulMatTVec(d->flexedge_J + rowadr[ebase+e], jacdif, vec, 3, NV);
-    }
-
-    // if dim=2 and constraints are active we use the vertex-based constraint defined in
-    // Chen, Kry, and Vouga, "Locking-free Simulation of Isometric Thin Plates", 2019.
-    if (m->flex_dim[f] == 2 && m->flex_edgeequality[f] == 2) {
-      int nvert = m->flex_vertnum[f];
-
-      // use global vertex adjacency list
-      int* v_edge_cnt = m->flex_vertedgenum + vbase;
-      int* v_edge_adr = m->flex_vertedgeadr + vbase;
-      int* adj_edges = m->flex_vertedge;
-
-      mj_markStack(d);
-
-      // clear Jacobian and assemble vertex by vertex
-      int* chain1 = mjSTACKALLOC(d, nv, int);
-      int* chain2 = mjSTACKALLOC(d, nv, int);
-      mjtNum* J0_dense = mjSTACKALLOC(d, nv, mjtNum);
-      mjtNum* J1_dense = mjSTACKALLOC(d, nv, mjtNum);
-      mju_zero(J0_dense, nv);
-      mju_zero(J1_dense, nv);
-
-      // temporary buffer for Jacobian accumulation
-      mjtNum* J_local = mjSTACKALLOC(d, nv, mjtNum);
-
-      for (int v = 0; v < nvert; v++) {
-        mjtNum A[6] = {0};
-        int vadr = vbase + v;
-        mjtNum* metric = m->flex_vertmetric + 4 * vadr;
-
-        for (int k = 0; k < v_edge_cnt[v]; k++) {
-          int e = adj_edges[v_edge_adr[v] + k];
-
-          // compute rest configuration edge vector
-          mjtNum dx[3];
-          int v1 = m->flex_edge[2 * (ebase + e)];
-          int v2 = m->flex_edge[2 * (ebase + e) + 1];
-          mju_sub3(dx, m->flex_vert0 + 3 * (vbase + v2), m->flex_vert0 + 3 * (vbase + v1));
-
-          // apply scaling since they are half sizes
-          dx[0] *= 2 * m->flex_size[3 * f + 0];
-          dx[1] *= 2 * m->flex_size[3 * f + 1];
-          dx[2] *= 2 * m->flex_size[3 * f + 2];
-
-          mjtNum dy[3];
-          mju_sub3(dy, d->flexvert_xpos + 3 * (vbase + v2), d->flexvert_xpos + 3 * (vbase + v1));
-
-          // get mass of neighbor vertex
-          mjtNum weight = 1.0;
-          int neighbor_v = (v == v1) ? v2 : v1;
-          int b_neighbor = m->flex_vertbodyid[vbase + neighbor_v];
-          if (b_neighbor >= 0) {
-            weight = m->body_mass[b_neighbor];
-            if (weight < mjMINVAL) weight = mjMINVAL;
-          }
-
-          // accumulate A += w * dy * dx'
-          A[0] += weight * dy[0] * dx[0];
-          A[1] += weight * dy[0] * dx[1];
-          A[2] += weight * dy[1] * dx[0];
-          A[3] += weight * dy[1] * dx[1];
-          A[4] += weight * dy[2] * dx[0];
-          A[5] += weight * dy[2] * dx[1];
-        }
-
-        mjtNum F[6];
-        mju_mulMatMat322(F, A, metric);
-
-        // compute Cauchy strain tensor F^T F
-        mjtNum cauchy[4];
-        cauchy[0] = F[0] * F[0] + F[2] * F[2] + F[4] * F[4];  // c00
-        cauchy[1] = F[0] * F[1] + F[2] * F[3] + F[4] * F[5];  // c01
-        cauchy[2] = F[1] * F[0] + F[3] * F[2] + F[5] * F[4];  // c10
-        cauchy[3] = F[1] * F[1] + F[3] * F[3] + F[5] * F[5];  // c11
-
-        // mass scaling: scale constraint by sqrt(mass) to improve condition number
-        // note: departure from original algorithm in Chen, Kry, and Vouga 2019
-        mjtNum scale = 1.0;
-        int b = m->flex_vertbodyid[vadr];
-        if (b >= 0) {
-          mjtNum mass = m->body_mass[b];
-          if (mass > mjMINVAL) {
-            scale = mju_sqrt(mass);
-          }
-        }
-
-        // compute tensor invariants
-        d->flexvert_length[2 * vadr + 0] = (cauchy[0] + cauchy[3] - 2) * scale;
-        d->flexvert_length[2 * vadr + 1] =
-            (cauchy[0] * cauchy[3] - cauchy[1] * cauchy[2] - 1) * scale;
-
-        // Jacobian computation
-        mjtNum FB[6], adj[4], Fadj[6], FadjBinv[6];
-        mju_mulMatMat322(FB, F, metric);
-
-        adj[0] = cauchy[3];
-        adj[1] = -cauchy[1];
-        adj[2] = -cauchy[2];
-        adj[3] = cauchy[0];
-        mju_mulMatMat322(Fadj, F, adj);
-        mju_mulMatMat322(FadjBinv, Fadj, metric);
-
-        for (int k = 0; k < v_edge_cnt[v]; ++k) {
-          int e = adj_edges[v_edge_adr[v] + k];
-          mjtNum dx[3];  // rest edge vector
-          int v1 = m->flex_edge[2 * (ebase + e)];
-          int v2 = m->flex_edge[2 * (ebase + e) + 1];
-          mju_sub3(dx, m->flex_vert0 + 3 * (vbase + v2), m->flex_vert0 + 3 * (vbase + v1));
-          dx[0] *= 2 * m->flex_size[3 * f + 0];
-          dx[1] *= 2 * m->flex_size[3 * f + 1];
-          dx[2] *= 2 * m->flex_size[3 * f + 2];
-          mjtNum weight = 1.0;
-          int neighbor_v = (v == v1) ? v2 : v1;
-          int b_neighbor = m->flex_vertbodyid[vbase + neighbor_v];
-          if (b_neighbor >= 0) {
-            weight = m->body_mass[b_neighbor];
-            if (weight < mjMINVAL) weight = mjMINVAL;
-          }
-
-          mjtNum dI1dy1[3], dI1dy2[3], dI2dy[3], dI2dy1[3], dI2dy2[3];
-
-          // dI1/dy1, dI1/dy2 (scaled by weight)
-          mju_mulMatVec(dI1dy1, FB, dx, 3, 2);
-          mju_scl3(dI1dy1, dI1dy1, -2 * weight);
-          mju_scl3(dI1dy2, dI1dy1, -1);
-
-          // dI2/dy1, dI2/dy2 (scaled by weight)
-          mju_mulMatVec(dI2dy, FadjBinv, dx, 3, 2);
-          mju_scl3(dI2dy1, dI2dy, -2 * weight);
-          mju_scl3(dI2dy2, dI2dy1, -1);
-
-          // get endpoint Jacobians
-          int b1 = m->flex_vertbodyid[vbase+v1];
-          int b2 = m->flex_vertbodyid[vbase+v2];
-          int NV1 = mj_bodyChain(m, b1, chain1);
-          mj_jacSparse(m, d, jac1, NULL, d->flexvert_xpos + 3*(vbase+v1), b1, NV1, chain1,
-                       /*flg_skipcommon=*/0);
-          int NV2 = mj_bodyChain(m, b2, chain2);
-          mj_jacSparse(m, d, jac2, NULL, d->flexvert_xpos + 3*(vbase+v2), b2, NV2, chain2,
-                       /*flg_skipcommon=*/0);
-
-          // accumulate dense Jacobians for vertex v
-          mju_mulMatTVec(J_local, jac1, dI1dy1, 3, NV1);
-          for (int j=0; j<NV1; j++) {
-            J0_dense[chain1[j]] += J_local[j];
-          }
-          mju_mulMatTVec(J_local, jac2, dI1dy2, 3, NV2);
-          for (int j=0; j<NV2; j++) {
-            J0_dense[chain2[j]] += J_local[j];
-          }
-
-          mju_mulMatTVec(J_local, jac1, dI2dy1, 3, NV1);
-          for (int j=0; j<NV1; j++) {
-            J1_dense[chain1[j]] += J_local[j];
-          }
-          mju_mulMatTVec(J_local, jac2, dI2dy2, 3, NV2);
-          for (int j=0; j<NV2; j++) {
-            J1_dense[chain2[j]] += J_local[j];
-          }
-        }
-
-        // copy to sparse flexvert_J
-        int row0 = 2 * vadr;
-        int nnz0 = vrownnz[row0];
-        for (int j = 0; j < nnz0; j++) {
-          int col = m->flexvert_J_colind[vrowadr[row0] + j];
-          d->flexvert_J[vrowadr[row0] + j] += J0_dense[col] * scale;
-          J0_dense[col] = 0;
-        }
-        int row1 = 2 * vadr + 1;
-        int nnz1 = vrownnz[row1];
-        for (int j = 0; j < nnz1; j++) {
-          int col = m->flexvert_J_colind[vrowadr[row1] + j];
-          d->flexvert_J[vrowadr[row1] + j] += J1_dense[col] * scale;
-          J1_dense[col] = 0;
-        }
-      }
-
-      mj_freeStack(d);
     }
   }
 
@@ -984,7 +796,7 @@ void mj_tendon(const mjModel* m, mjData* d) {
     int tendon_num = m->tendon_num[i];
 
     // process fixed tendon
-    if (m->wrap_type[adr] == mjWRAP_JOINT) {
+    if (m->tendon_type[i] == mjTENDON_FIXED) {
       // process all defined joints
       for (int j=0; j < tendon_num; j++) {
         // get joint id
@@ -1139,8 +951,7 @@ mjtNum mj_tendonDot(const mjModel* m, mjData* d, int id, const mjtNum* vec) {
   }
 
   // fixed tendon has zero Jdot: return
-  int adr = m->tendon_adr[id];
-  if (m->wrap_type[adr] == mjWRAP_JOINT) {
+  if (m->tendon_type[id] == mjTENDON_FIXED) {
     return 0;
   }
 
@@ -1156,6 +967,7 @@ mjtNum mj_tendonDot(const mjModel* m, mjData* d, int id, const mjtNum* vec) {
   // process spatial tendon
   mjtNum divisor = 1;
   int wraptype, j = 0;
+  int adr = m->tendon_adr[id];
   int num = m->tendon_num[id];
   while (j < num-1) {
     // get 1st and 2nd object
@@ -1414,7 +1226,7 @@ void mj_transmission(const mjModel* m, mjData* d) {
       {
         // get data
         int idslider = m->actuator_trnid[2*i+1];
-        mjtNum rod = m->actuator_cranklength[out];
+        mjtNum rod = m->actuator_cranklength[i];
         mjtNum axis[3] = {d->site_xmat[9 * idslider + 2],
                           d->site_xmat[9 * idslider + 5],
                           d->site_xmat[9 * idslider + 8]};
@@ -1520,10 +1332,8 @@ void mj_transmission(const mjModel* m, mjData* d) {
         if (!moment_row) moment_row = mjSTACKALLOC(d, nv, mjtNum);
 
         // relative rotation as expmap in the refsite frame
-        mjtNum quat[4], refquat[4], vec[3];
-        mji_mulQuat(quat, d->xquat+4*m->site_bodyid[id], m->site_quat+4*id);
-        mji_mulQuat(refquat, d->xquat+4*m->site_bodyid[refid], m->site_quat+4*refid);
-        mji_subQuat(vec, quat, refquat);
+        mjtNum vec[3];
+        mji_subQuat(vec, d->site_xquat+4*id, d->site_xquat+4*refid);
 
         // relative rotational Jacobian in global frame
         mj_jacSite(m, d, NULL, jacS, id);
@@ -1680,16 +1490,9 @@ void mj_transmission(const mjModel* m, mjData* d) {
 
         // rotational transmission
         if (!mju_isZero(gear+3, 3)) {
-          mjtNum refquat[4];
-
-          // get site and refsite quats from parent bodies (avoiding mju_mat2Quat)
-          mjtNum quat[4];
-          mji_mulQuat(quat, d->xquat+4*m->site_bodyid[id], m->site_quat+4*id);
-          mji_mulQuat(refquat, d->xquat+4*m->site_bodyid[refid], m->site_quat+4*refid);
-
           // convert difference to expmap (axis-angle)
           mjtNum vec[3];
-          mji_subQuat(vec, quat, refquat);
+          mji_subQuat(vec, d->site_xquat+4*id, d->site_xquat+4*refid);
 
           // add length: dot product with gear
           length[out] += mju_dot3(vec, gear+3);
@@ -1897,6 +1700,10 @@ void mj_tendonArmature(const mjModel* m, mjData* d) {
 
       // M[i,:] += armature * ten_J[i] * ten_J
       int i = J_colind[j];
+      // TODO: wake trees coupled by two-tree armature tendons in mj_wakeTendon
+      if (sleep_filter && mj_sleepState(m, d, mjOBJ_DOF, i) == mjS_ASLEEP) {
+        continue;
+      }
       int M_adr = M_rowadr[i];
       mju_addToSclSparseInc(d->M + M_adr, ten_J,
                             M_rownnz[i], M_colind + M_adr,
@@ -2292,6 +2099,7 @@ void mj_comVel(const mjModel* m, mjData* d) {
 void mj_subtreeVel(const mjModel* m, mjData* d) {
   int sleep_filter = mjENABLED(mjENBL_SLEEP) && d->nbody_awake < m->nbody;
   int nbody = sleep_filter ? d->nbody_awake : m->nbody;
+  int nparent = sleep_filter ? d->nparent_awake : m->nbody;
 
   mj_markStack(d);
   mjtNum* body_vel = mjSTACKALLOC(d, 6*m->nbody, mjtNum);
@@ -2330,23 +2138,29 @@ void mj_subtreeVel(const mjModel* m, mjData* d) {
   }
 
   // subtree angular momentum
-  for (int b=nbody-1; b > 0; b--) {
-    int i = sleep_filter ? d->body_awake_ind[b] : b;
+  for (int b=nparent-1; b >= 0; b--) {
+    int i = sleep_filter ? d->parent_awake_ind[b] : b;
+    if (!i) continue;
 
     int parent = m->body_parentid[i];
-
-    // momentum wrt body i
     mjtNum dx[3], dv[3], dp[3], dL[3];
-    mju_sub3(dx, d->xipos+3*i, d->subtree_com+3*i);
-    mju_sub3(dv, body_vel+6*i+3, d->subtree_linvel+3*i);
-    mju_scl3(dp, dv, m->body_mass[i]);
-    mji_cross(dL, dx, dp);
 
-    // add to subtree i
-    mji_addTo3(d->subtree_angmom+3*i, dL);
+    if (sleep_filter && d->body_awake[i] == mjS_ASLEEP) {
+      mju_zero3(d->subtree_linvel+3*i);
+      mju_zero3(d->subtree_angmom+3*i);
+    } else {
+      // momentum wrt body i
+      mju_sub3(dx, d->xipos+3*i, d->subtree_com+3*i);
+      mju_sub3(dv, body_vel+6*i+3, d->subtree_linvel+3*i);
+      mju_scl3(dp, dv, m->body_mass[i]);
+      mji_cross(dL, dx, dp);
 
-    // add to parent
-    mji_addTo3(d->subtree_angmom+3*parent, d->subtree_angmom+3*i);
+      // add to subtree i
+      mji_addTo3(d->subtree_angmom+3*i, dL);
+
+      // add to parent
+      mji_addTo3(d->subtree_angmom+3*parent, d->subtree_angmom+3*i);
+    }
 
     // momentum wrt parent
     mju_sub3(dx, d->subtree_com+3*i, d->subtree_com+3*parent);
@@ -2369,9 +2183,10 @@ void mj_subtreeVel(const mjModel* m, mjData* d) {
 
 // RNE: compute M(qpos)*qacc + C(qpos,qvel); flg_acc=0 removes inertial term
 void mj_rne(const mjModel* m, mjData* d, int flg_acc, mjtNum* result) {
-  int sleep_filter = mjENABLED(mjENBL_SLEEP) && d->nbody_awake < m->nbody;
+  // filter sleeping bodies only for qfrc_bias; caller buffers require all DOFs
+  int sleep_filter = (result == d->qfrc_bias) &&
+                     mjENABLED(mjENBL_SLEEP) && d->nbody_awake < m->nbody;
   int nbody = sleep_filter ? d->nbody_awake : m->nbody;
-  int nparent = sleep_filter ? d->nparent_awake : m->nbody;
   int nv = sleep_filter ? d->nv_awake : m->nv;
 
   mj_markStack(d);
@@ -2414,8 +2229,8 @@ void mj_rne(const mjModel* m, mjData* d, int flg_acc, mjtNum* result) {
   mju_zero(loc_cfrc_body, 6);
 
   // backward pass over bodies: accumulate cfrc_body from children
-  for (int b=nparent-1; b > 0; b--) {
-    int i = sleep_filter ? d->parent_awake_ind[b] : b;
+  for (int b=nbody-1; b > 0; b--) {
+    int i = sleep_filter ? d->body_awake_ind[b] : b;
     int j = m->body_parentid[i];
 
     if (j) {
@@ -2661,27 +2476,12 @@ void mj_rnePostConstraint(const mjModel* m, mjData* d) {
       }
       break;
 
-    case mjEQ_FLEXVERT:
-      k = m->eq_obj1id[id];
-      i += 2*m->flex_vertnum[k];
-      break;
-
-    case mjEQ_FLEXSTRAIN: {
-      // increment: trilinear uses 2 center (I1,J-1) + 3*ngauss shear, quadratic uses 6*ngauss
-      k = m->eq_obj1id[id];
-      int interp_k = m->flex_interp[k];
-      int order = interp_k < 0 ? -interp_k : interp_k;
-      int nodenum = m->flex_nodenum[k];
-      if (order && nodenum) {
-        int nquad = order + 1;
-        int ngauss = nquad * nquad * nquad;
-        int ncells = m->flex_cellnum[3*k+0]
-                   * m->flex_cellnum[3*k+1]
-                   * m->flex_cellnum[3*k+2];
-        i += ncells * ((order == 1) ? (2 + 3 * ngauss) : (6 * ngauss));
+    case mjEQ_FLEXSTRAIN:
+      // advance past all rows instantiated for this strain constraint
+      while (i < ne && d->efc_id[i] == id) {
+        i++;
       }
       break;
-    }
 
     default:
       mjERROR("unknown constraint type type %d", m->eq_type[id]);    // SHOULD NOT OCCUR
@@ -2715,7 +2515,7 @@ void mj_rnePostConstraint(const mjModel* m, mjData* d) {
     int sleep_filter = mjENABLED(mjENBL_SLEEP) && d->ntree_awake < m->ntree;
     for (int t=0; t < ntendon; t++) {
       // fixed tendon: acts through the joints
-      if (m->wrap_type[m->tendon_adr[t]] == mjWRAP_JOINT) {
+      if (m->tendon_type[t] == mjTENDON_FIXED) {
         continue;
       }
 
@@ -2784,13 +2584,14 @@ void mj_rnePostConstraint(const mjModel* m, mjData* d) {
 
 // add bias force due to tendon armature
 void mj_tendonBias(const mjModel* m, mjData* d, mjtNum* qfrc) {
-  int sleep_filter = mjENABLED(mjENBL_SLEEP) && d->ntree_awake < m->ntree;
+  int sleep = mjENABLED(mjENBL_SLEEP) && d->ntree_awake < m->ntree;
+  int sleep_filter = (qfrc == d->qfrc_bias) && sleep;
   int ntendon = m->ntendon;
 
   // add bias term due to tendon armature
   for (int i=0; i < ntendon; i++) {
     // skip sleeping tendon
-    if (sleep_filter && mj_sleepState(m, d, mjOBJ_TENDON, i) == mjS_ASLEEP) {
+    if (sleep && mj_sleepState(m, d, mjOBJ_TENDON, i) == mjS_ASLEEP) {
       continue;
     }
 
@@ -2814,7 +2615,11 @@ void mj_tendonBias(const mjModel* m, mjData* d, mjtNum* qfrc) {
       const int* colind = m->ten_J_colind + adr;
       const mjtNum* ten_J = d->ten_J + adr;
       for (int j=0; j < nnz; j++) {
-        qfrc[colind[j]] += coef * ten_J[j];
+        int dof = colind[j];
+        if (sleep_filter && mj_sleepState(m, d, mjOBJ_DOF, dof) == mjS_ASLEEP) {
+          continue;
+        }
+        qfrc[dof] += coef * ten_J[j];
       }
     }
   }

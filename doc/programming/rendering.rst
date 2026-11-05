@@ -9,9 +9,8 @@ rendering:
 - :ref:`Filament rendering <FilamentRendering>` (``mjrf``): A modern, physically-based rendering (PBR) engine supporting
   OpenGL, Vulkan, Metal, and WebGL. It uses a **retained-mode**, asynchronous architecture in which meshes, textures,
   lights, and :ref:`renderables <mjrfRenderable>` are created once from :ref:`mjModel` and updated in place from
-  :ref:`mjData` each frame. Filament powers `MuJoCo Studio
-  <https://github.com/google-deepmind/mujoco/blob/main/src/experimental/studio>`__ and is the recommended renderer for
-  new applications.
+  :ref:`mjData` each frame. Filament powers :ref:`MuJoCo Studio <Studio>` and is the recommended renderer for new
+  applications.
 - :ref:`OpenGL rendering <ClassicRendering>` (``mjr``): The classic fixed-function OpenGL 1.5 renderer, now in
   maintenance mode. It uses an **immediate-mode** scene architecture in which :ref:`mjv_updateScene` populates an
   :ref:`mjvScene` with all geometric objects and lights on every frame, and :ref:`mjr_render` draws it. It powers the
@@ -61,9 +60,8 @@ Filament rendering
 
 MuJoCo provides a renderer based on `Filament <https://github.com/google/filament>`__, Google's real-time physically
 based rendering engine. Filament has a small and fast runtime, runs on Linux, Windows, macOS, Android, iOS and the Web,
-and supports the OpenGL, Vulkan, Metal and WebGL graphics backends. The Filament renderer powers `MuJoCo Studio
-<https://github.com/google-deepmind/mujoco/blob/main/src/experimental/studio>`__ and `live.mujoco.org
-<https://live.mujoco.org>`__.
+and supports the OpenGL, Vulkan, Metal and WebGL graphics backends. The Filament renderer powers :ref:`MuJoCo Studio
+<Studio>` and `live.mujoco.org <https://live.mujoco.org>`__.
 
 The Filament renderer is an optional, self-contained library named ``mujoco_filament``. It implements the ``mjrf``
 :ref:`types<tyFilamentRenderStructure>` and :ref:`functions<FilamentRenderingApi>` defined in `mjrfilament.h
@@ -200,7 +198,8 @@ objects are configured and drawn.
    (positions, packed tangent-frame orientations, UVs) and indices uploaded via :ref:`mjrf_uploadMesh`, along with
    bounding boxes used for frustum culling. :ref:`mjrfTexture` stores 2D, cubemap, or KTX-compressed image data uploaded
    via :ref:`mjrf_uploadTexture`. Both upload functions accept an optional completion callback for freeing host memory
-   once the asynchronous GPU transfer finishes.
+   once the asynchronous GPU transfer finishes; calling :ref:`mjrf_flush` flushes pending operations to the rendering
+   backend and invokes any completed callbacks before the next :ref:`mjrf_render` call.
 
 **Renderables and materials** (:ref:`mjrfRenderable`, :ref:`mjrfMaterial`)
    An :ref:`mjrfRenderable` is a persistent drawable entity in a scene, combining surface geometry, material appearance,
@@ -216,10 +215,11 @@ objects are configured and drawn.
      material also carries texture bindings (color, normal, metallic, roughness, occlusion, packed
      ORM, emissive), UV scale/offset, selection highlighting (``selected``), and object/island IDs for segmentation and
      solver-island visualization.
-   - **Pose and size**: On each frame, :ref:`mjrf_setRenderablePose` updates the renderable's 3D position and
-     rotation matrix in place, and :ref:`mjrf_setRenderableSize` updates its scale (handling non-uniform primitive
-     scaling such as keeping capsule end-caps spherical). Renderables are added to or removed from a scene with
-     :ref:`mjrf_addSceneRenderable` and :ref:`mjrf_removeSceneRenderable`.
+   - **Pose, size, and shadows**: On each frame, :ref:`mjrf_setRenderablePose` updates the renderable's 3D position and
+     rotation matrix in place, :ref:`mjrf_setRenderableSize` updates its scale (handling non-uniform primitive scaling
+     such as keeping capsule end-caps spherical), and :ref:`mjrf_setRenderableCastShadow` toggles whether it casts
+     shadows. Renderables are added to or removed from a scene with :ref:`mjrf_addSceneRenderable` and
+     :ref:`mjrf_removeSceneRenderable`.
 
 **Lights** (:ref:`mjrfLight`)
    :ref:`mjrfLight` represents directional, spot, point, or image-based (IBL environment cubemap) light sources added to
@@ -558,6 +558,10 @@ specified in the model use the defaults listed below. All flag names begin with 
         - string
         - "pbr_neutral"
         - Tone mapping operator; "aces", "aces_legacy", "filmic", "linear", or "pbr_neutral".
+      * - ``cg.output_color_space``
+        - string
+        - "srgb"
+        - Output color space; "linear" or "srgb".
       * - ``cg.luminance_scaling``
         - bool
         - 0
@@ -636,6 +640,21 @@ specified in the model use the defaults listed below. All flag names begin with 
         - real
         - [filament default]
         - How close to the corners the vignette is restricted, between 0 and 1.
+
+.. collapse:: Material
+
+   .. list-table::
+      :widths: 32 10 12 46
+      :header-rows: 1
+
+      * - Name (``filament.<name>``)
+        - Type
+        - Default
+        - Description
+      * - ``material.base_color_type``
+        - string
+        - "srgb"
+        - How to interpret the color of a material; "linear" or "srgb".
 
 .. collapse:: Background
 

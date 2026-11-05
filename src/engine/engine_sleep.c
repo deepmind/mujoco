@@ -18,7 +18,9 @@
 #include <stddef.h>
 
 #include <mujoco/mjdata.h>
+#include <mujoco/mjmacro.h>
 #include <mujoco/mjmodel.h>
+#include <mujoco/mjtype.h>
 #include "engine/engine_core_util.h"
 #include "engine/engine_util_blas.h"
 #include "engine/engine_util_errmem.h"
@@ -190,6 +192,19 @@ static inline const char* plural(int n) {
   return n > 1 ? "s" : "";
 }
 
+#ifndef MJ_DISABLE_DEBUG_TRACING
+// append formatted text to buf[pos..sizeof(buf)-1], clamping pos on truncation
+#define MJ_APPEND_BUF(buf, pos, ...)                                        \
+  do {                                                                      \
+    if ((pos) < (int)sizeof(buf) - 1) {                                     \
+      int n_ = snprintf((buf) + (pos), sizeof(buf) - (pos), __VA_ARGS__);   \
+      if (n_ > 0) {                                                         \
+        (pos) = mjMIN((int)sizeof(buf) - 1, (pos) + n_);                    \
+      }                                                                     \
+    }                                                                       \
+  } while (0)
+#endif
+
 
 // wake tree i and its associated cycle, return number of woke trees
 int mj_wakeIsland(int* tree_asleep, int ntree, int i, int wakeval, const char* reason, mjtNum time) {
@@ -238,11 +253,11 @@ int mj_wakeIsland(int* tree_asleep, int ntree, int i, int wakeval, const char* r
 #ifndef MJ_DISABLE_DEBUG_TRACING
     if (reason && mju_isTopicEnabled(mjTOPIC_SLEEP)) {
       int nprint = mjMIN(nwoke, 1024);
-      char buf[1024];
-      int pos = snprintf(buf, sizeof(buf), "t=%6.3g, woke due to %s tree%s ", time, reason, plural(nprint));
+      char buf[1024] = "";
+      int pos = 0;
+      MJ_APPEND_BUF(buf, pos, "t=%6.3g, woke due to %s tree%s ", time, reason, plural(nprint));
       for (int j = 0; j < nprint; j++) {
-        pos += snprintf(buf + pos, sizeof(buf) - pos, "%d%s", woke_trees[j],
-                        (j == nprint - 1) ? "" : " ");
+        MJ_APPEND_BUF(buf, pos, "%d%s", woke_trees[j], (j == nprint - 1) ? "" : " ");
       }
       mjLogMessage msg = {.level = mjLOG_DEBUG, .topic = mjTOPIC_SLEEP, .func = __func__};
       mju_strncpy(msg.subject, buf, sizeof(msg.subject));
@@ -283,6 +298,26 @@ static int wakeNonMetricFlex(const mjModel* m, mjData* d, int flg_wake) {
         }
       } else {
         d->tree_asleep[t] = kAwake;
+      }
+    }
+    if (mj_rodHasTwist(m, f)) {
+      int nedge = (int)m->flex_bending[m->flex_bendingadr[f]] + 1;
+      for (int e = 0; e < nedge; e++) {
+        int jnt = mj_rodChainTwistJnt(m, f, e);
+        if (jnt < 0) {
+          continue;
+        }
+        int t = m->body_treeid[m->jnt_bodyid[jnt]];
+        if (t < 0) {
+          continue;
+        }
+        if (d->tree_asleep[t] >= 0) {
+          if (flg_wake) {
+            nwoke += mj_wakeIsland(d->tree_asleep, m->ntree, t, kAwake, "perturbation", d->time);
+          }
+        } else {
+          d->tree_asleep[t] = kAwake;
+        }
       }
     }
   }
@@ -432,10 +467,14 @@ int mj_wakeTendon(const mjModel* m, mjData* d) {
       continue;
     }
 
-    // skip tendons that are not limited or do not affect the discrete metric
-    int is_limit = (treenum == 2) && tendonLimit(m, d->ten_length, i);
+    // skip tendons that are not constrained or do not affect the discrete metric
+    int has_limit = !mjDISABLED(mjDSBL_CONSTRAINT) && !mjDISABLED(mjDSBL_LIMIT) &&
+                    (treenum == 2) && tendonLimit(m, d->ten_length, i);
+    int has_friction = !mjDISABLED(mjDSBL_CONSTRAINT) && !mjDISABLED(mjDSBL_FRICTIONLOSS) &&
+                       (treenum == 2) && (m->tendon_frictionloss[i] > 0);
+    int is_constraint = has_limit || has_friction;
     int is_metric = mj_isMetric(m) && mj_effTendonPossible(m, i);
-    if (!is_limit && !is_metric) {
+    if (!is_constraint && !is_metric) {
       continue;
     }
 
@@ -448,7 +487,7 @@ int mj_wakeTendon(const mjModel* m, mjData* d) {
       if (awake1 != awake2) {
         int sleeping_tree = awake1 ? tree2 : tree1;
         int wakeval = awake1 ? d->tree_asleep[tree1] : d->tree_asleep[tree2];
-        const char* reason = is_limit ? "tendon constraint" : "tendon metric";
+        const char* reason = is_constraint ? "tendon constraint" : "tendon metric";
         nwoke += mj_wakeIsland(d->tree_asleep, m->ntree, sleeping_tree, wakeval, reason, d->time);
       }
     }
@@ -526,7 +565,6 @@ int mj_wakeEquality(const mjModel* m, mjData* d) {
       continue;
 
     case mjEQ_FLEX:
-    case mjEQ_FLEXVERT:
     case mjEQ_FLEXSTRAIN: {
       int f = id1;
       int num, adr;
@@ -541,25 +579,41 @@ int mj_wakeEquality(const mjModel* m, mjData* d) {
         bodyid = m->flex_vertbodyid;
       }
 
-      // find the first awake tree, if any
-      int awake_tree = -1;
+      int nedge = mj_rodHasTwist(m, f) ? (int)m->flex_bending[m->flex_bendingadr[f]] + 1 : 0;
+
+      // check if any dynamic tree is awake and track most-awake countdown
+      int any_awake = 0, wakeval = 0;
       for (int j = 0; j < num; j++) {
         int treeid = m->body_treeid[bodyid[adr+j]];
         if (treeid >= 0 && d->tree_awake[treeid]) {
-          awake_tree = treeid;
-          break;
+          any_awake = 1;
+          wakeval = mjMIN(wakeval, d->tree_asleep[treeid]);
+        }
+      }
+      for (int e = 0; e < nedge; e++) {
+        int jnt = mj_rodChainTwistJnt(m, f, e);
+        int treeid = jnt >= 0 ? m->body_treeid[m->jnt_bodyid[jnt]] : -1;
+        if (treeid >= 0 && d->tree_awake[treeid]) {
+          any_awake = 1;
+          wakeval = mjMIN(wakeval, d->tree_asleep[treeid]);
         }
       }
 
-      // wake sleeping island: find first sleeping tree, wakeTree wakes them all
-      if (awake_tree >= 0) {
-        int wakeval = d->tree_asleep[awake_tree];
+      // wake all sleeping islands spanned by the flex
+      if (any_awake) {
         for (int j = 0; j < num; j++) {
           int treeid = m->body_treeid[bodyid[adr+j]];
-          if (treeid >= 0 && !d->tree_awake[treeid]) {
+          if (treeid >= 0 && d->tree_asleep[treeid] >= 0) {
             nwoke += mj_wakeIsland(d->tree_asleep, m->ntree, treeid, wakeval,
                                    "flex equality", d->time);
-            break;
+          }
+        }
+        for (int e = 0; e < nedge; e++) {
+          int jnt = mj_rodChainTwistJnt(m, f, e);
+          int treeid = jnt >= 0 ? m->body_treeid[m->jnt_bodyid[jnt]] : -1;
+          if (treeid >= 0 && d->tree_asleep[treeid] >= 0) {
+            nwoke += mj_wakeIsland(d->tree_asleep, m->ntree, treeid, wakeval,
+                                   "flex equality", d->time);
           }
         }
       }
@@ -637,14 +691,20 @@ static inline void mj_sleepTrees(const mjModel* m, mjData* d, const int* tree, i
     int num = m->tree_dofnum[current];
     mju_zero(d->qvel+adr, num);
     mju_zero(d->qacc+adr, num);
+    mju_zero(d->cdof_dot+6*adr, 6*num);
+
+    int badr = m->tree_bodyadr[current];
+    int bnum = m->tree_bodynum[current];
+    mju_zero(d->cvel+6*badr, 6*bnum);
   }
 
 #ifndef MJ_DISABLE_DEBUG_TRACING
   if (mju_isTopicEnabled(mjTOPIC_SLEEP)) {
-    char buf[1024];
-    int pos = snprintf(buf, sizeof(buf), "t=%6.2g, slept tree%s ", d->time, plural(n));
+    char buf[1024] = "";
+    int pos = 0;
+    MJ_APPEND_BUF(buf, pos, "t=%6.2g, slept tree%s ", d->time, plural(n));
     for (int i = 0; i < n; i++) {
-      pos += snprintf(buf + pos, sizeof(buf) - pos, "%d%s", tree[i], (i == n - 1) ? "" : " ");
+      MJ_APPEND_BUF(buf, pos, "%d%s", tree[i], (i == n - 1) ? "" : " ");
     }
     mjLogMessage msg = {.level = mjLOG_DEBUG, .topic = mjTOPIC_SLEEP, .func = __func__};
     mju_strncpy(msg.subject, buf, sizeof(msg.subject));
@@ -774,7 +834,15 @@ static mjtSleepState mj_actuatorSleepState(const mjModel* m, const mjData* d, in
     return mj_tendonSleepState(m, d, trnid);
 
   case mjTRN_SITE:
-    return mj_sleepState(m, d, mjOBJ_SITE, trnid);
+    if (m->actuator_trnid[i*2+1] == -1) {
+      return mj_sleepState(m, d, mjOBJ_SITE, trnid);
+    }
+    s1 = mj_sleepState(m, d, mjOBJ_SITE, trnid);
+    s2 = mj_sleepState(m, d, mjOBJ_SITE, m->actuator_trnid[i*2+1]);
+    if (s1 == mjS_AWAKE || s2 == mjS_AWAKE) {
+      return mjS_AWAKE;
+    }
+    return (s1 == mjS_ASLEEP || s2 == mjS_ASLEEP) ? mjS_ASLEEP : mjS_STATIC;
 
   case mjTRN_SO3:
     // ball joint target or site + refsite target
@@ -813,7 +881,6 @@ static mjtSleepState mj_equalitySleepState(const mjModel* m, const mjData* d, in
       objtype = mjOBJ_TENDON;
       break;
     case mjEQ_FLEX:
-    case mjEQ_FLEXVERT:
     case mjEQ_FLEXSTRAIN:
       objtype = mjOBJ_FLEX;
       break;
@@ -832,11 +899,41 @@ static mjtSleepState mj_equalitySleepState(const mjModel* m, const mjData* d, in
 }
 
 
+// return sleep state of kinematic subtree rooted at body i
+static mjtSleepState mj_subtreeSleepState(const mjModel* m, const mjData* d, int i) {
+  // dynamic or mocap root shares sleep state with its entire subtree
+  if (d->body_awake[i] != mjS_STATIC) {
+    return (mjtSleepState) d->body_awake[i];
+  }
+
+  // bodies are in depth-first order: the subtree is contiguous after i
+  int has_asleep = 0;
+  for (int b = i + 1; b < m->nbody; b++) {
+    int p = b;
+    while (p > i) {
+      p = m->body_parentid[p];
+    }
+    if (p != i) {
+      break;
+    }
+    if (d->body_awake[b] == mjS_AWAKE) {
+      return mjS_AWAKE;
+    }
+    if (d->body_awake[b] == mjS_ASLEEP) {
+      has_asleep = 1;
+    }
+  }
+  return has_asleep ? mjS_ASLEEP : mjS_STATIC;
+}
+
+
 // return sleep state of sensor i (AWAKE or ASLEEP, never STATIC)
 static mjtSleepState mj_sensorSleepState(const mjModel* m, const mjData* d, int i) {
   mjtSensor type = m->sensor_type[i];
   mjtObj objtype = m->sensor_objtype[i];
   mjtObj reftype = m->sensor_reftype[i];
+  int objid = m->sensor_objid[i];
+  int refid = m->sensor_refid[i];
 
   // special handling for specific sensor types
   switch (type) {
@@ -858,13 +955,31 @@ static mjtSleepState mj_sensorSleepState(const mjModel* m, const mjData* d, int 
   case mjSENS_RANGEFINDER:
     return mjS_AWAKE;
 
+  // tactile sensor: sleep iff parent geom is asleep (static geom stays awake)
+  case mjSENS_TACTILE:
+    return mj_sleepState(m, d, reftype, refid) == mjS_ASLEEP ? mjS_ASLEEP : mjS_AWAKE;
+
   default:
     break;
   }
 
   // get sleep state of the primary and reference objects
-  mjtSleepState s_obj = mj_sleepState(m, d, objtype, m->sensor_objid[i]);
-  mjtSleepState s_ref = mj_sleepState(m, d, reftype, m->sensor_refid[i]);
+  mjtSleepState s_obj;
+  if ((type == mjSENS_CONTACT && objtype == mjOBJ_XBODY) ||
+      (type == mjSENS_INSIDESITE && objtype == mjOBJ_XBODY) ||
+      (type == mjSENS_INSIDESITE && objtype == mjOBJ_BODY && objid > 0 &&
+       m->body_mass[objid] < mjMINVAL && m->body_subtreemass[objid] >= mjMINVAL)) {
+    s_obj = mj_subtreeSleepState(m, d, objid);
+  } else {
+    s_obj = mj_sleepState(m, d, objtype, objid);
+  }
+
+  mjtSleepState s_ref;
+  if (type == mjSENS_CONTACT && reftype == mjOBJ_XBODY) {
+    s_ref = mj_subtreeSleepState(m, d, refid);
+  } else {
+    s_ref = mj_sleepState(m, d, reftype, refid);
+  }
 
   // special handling for UNKNOWN objects
 
@@ -912,6 +1027,8 @@ mjtSleepState mj_sleepState(const mjModel* m, const mjData* d, mjtObj type, int 
     return (mjtSleepState) d->body_awake[m->cam_bodyid[i]];
   case mjOBJ_LIGHT:
     return (mjtSleepState) d->body_awake[m->light_bodyid[i]];
+  case mjOBJ_MESH:
+    return mjS_STATIC;
 
   // complex types
   case mjOBJ_EQUALITY:
@@ -924,7 +1041,7 @@ mjtSleepState mj_sleepState(const mjModel* m, const mjData* d, mjtObj type, int 
     return mj_sensorSleepState(m, d, i);
 
   case mjOBJ_FLEX: {
-    // all dynamic bodies share sleep state: find and check the first one
+    // scan all dynamic bodies: awake if any is awake, asleep if all are asleep, else static
     int num, adr;
     const int* bodyid;
     if (m->flex_interp[i]) {
@@ -936,13 +1053,32 @@ mjtSleepState mj_sleepState(const mjModel* m, const mjData* d, mjtObj type, int 
       adr = m->flex_vertadr[i];
       bodyid = m->flex_vertbodyid;
     }
+    int has_asleep = 0;
     for (int j = 0; j < num; j++) {
       int b = bodyid[adr+j];
       if (m->body_treeid[b] >= 0) {
-        return (mjtSleepState) d->body_awake[b];
+        if (d->body_awake[b] == mjS_AWAKE) {
+          return mjS_AWAKE;
+        }
+        has_asleep = 1;
       }
     }
-    return mjS_STATIC;
+    if (mj_rodHasTwist(m, i)) {
+      int nedge = (int)m->flex_bending[m->flex_bendingadr[i]] + 1;
+      for (int e = 0; e < nedge; e++) {
+        int jnt = mj_rodChainTwistJnt(m, i, e);
+        if (jnt >= 0) {
+          int b = m->jnt_bodyid[jnt];
+          if (m->body_treeid[b] >= 0) {
+            if (d->body_awake[b] == mjS_AWAKE) {
+              return mjS_AWAKE;
+            }
+            has_asleep = 1;
+          }
+        }
+      }
+    }
+    return has_asleep ? mjS_ASLEEP : mjS_STATIC;
   }
 
   // undefined sleep state, return AWAKE

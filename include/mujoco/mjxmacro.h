@@ -196,7 +196,6 @@
     X( nflexshelldata )     \
     X( nflextexcoord )      \
     X( nJfe )               \
-    X( nJfv )               \
     X( nmesh )              \
     X( nmeshvert )          \
     X( nmeshnormal )        \
@@ -244,6 +243,7 @@
     X( nuser_sensor )       \
     X( nnames )             \
     X( npaths )             \
+    X( nplastic )           \
     X( nnames_map )         \
     X( nJmom )              \
     X( ngravcomp )          \
@@ -276,7 +276,8 @@
     int nv = m->nv;                         \
     int na = m->na;                         \
     int nu = m->nu;                         \
-    int nmocap = m->nmocap;
+    int nmocap = m->nmocap;                 \
+    int nplastic = m->nplastic;
 
 // macro for annotating that an array size in an X macro is a member of mjModel
 // by default this macro does nothing, but users can redefine it as necessary
@@ -324,6 +325,7 @@
     X   ( int,     jnt_bodyid,            njnt,          1                    ) \
     X   ( int,     jnt_actuatorid,        njnt,          1                    ) \
     X   ( int,     jnt_group,             njnt,          1                    ) \
+    X   ( int,     jnt_plasticadr,        njnt,          1                    ) \
     X   ( mjtBool, jnt_limited,           njnt,          1                    ) \
     X   ( mjtBool, jnt_actfrclimited,     njnt,          1                    ) \
     X   ( mjtBool, jnt_actgravcomp,       njnt,          1                    ) \
@@ -333,6 +335,7 @@
     X   ( mjtNum,  jnt_axis,              njnt,          3                    ) \
     X   ( mjtNum,  jnt_stiffness,         njnt,          1                    ) \
     X   ( mjtNum,  jnt_stiffnesspoly,     njnt,          mjNPOLY              ) \
+    X   ( mjtNum,  jnt_springyield,       njnt,          1                    ) \
     X   ( mjtNum,  jnt_range,             njnt,          2                    ) \
     X   ( mjtNum,  jnt_actfrcrange,       njnt,          2                    ) \
     X   ( mjtNum,  jnt_margin,            njnt,          1                    ) \
@@ -374,6 +377,7 @@
     X   ( int,     geom_priority,         ngeom,         1                    ) \
     X   ( int,     geom_plugin,           ngeom,         1                    ) \
     X   ( mjtByte, geom_sameframe,        ngeom,         1                    ) \
+    X   ( mjtBool, geom_castshadow,       ngeom,         1                    ) \
     X   ( mjtNum,  geom_solmix,           ngeom,         1                    ) \
     X   ( mjtNum,  geom_solref,           ngeom,         mjNREF               ) \
     X   ( mjtNum,  geom_solimp,           ngeom,         mjNIMP               ) \
@@ -461,7 +465,7 @@
     X   ( int,     flex_activelayers,     nflex,         1                    ) \
     X   ( int,     flex_passive,          nflex,         1                    ) \
     X   ( int,     flex_dim,              nflex,         1                    ) \
-    X   ( int,     flex_matid,            nflex,         1                    ) \
+    X   ( int,     flex_matid,            nflexelem,     1                    ) \
     X   ( int,     flex_group,            nflex,         1                    ) \
     X   ( int,     flex_interp,           nflex,         1                    ) \
     X   ( int,     flex_cellnum,          nflex,         3                    ) \
@@ -477,14 +481,14 @@
     X   ( int,     flex_stiffnessadr,     nflex,         1                    ) \
     X   ( int,     flex_elemedgeadr,      nflex,         1                    ) \
     X   ( int,     flex_bendingadr,       nflex,         1                    ) \
+    X   ( int,     flex_plasticadr,       nflex,         1                    ) \
+    X   ( int,     flex_plasticmode,      nflex,         1                    ) \
     X   ( int,     flex_shellnum,         nflex,         1                    ) \
     X   ( int,     flex_shelldataadr,     nflex,         1                    ) \
     X   ( int,     flex_texcoordadr,      nflex,         1                    ) \
     X   ( int,     flex_nodebodyid,       nflexnode,     1                    ) \
     X   ( int,     flex_vertbodyid,       nflexvert,     1                    ) \
-    X   ( int,     flex_vertedgeadr,      nflexvert,     1                    ) \
-    X   ( int,     flex_vertedgenum,      nflexvert,     1                    ) \
-    X   ( int,     flex_vertedge,         nflexedge,     2                    ) \
+    X   ( int,     flex_vertcell,         nflexvert,     1                    ) \
     X   ( int,     flex_edge,             nflexedge,     2                    ) \
     X   ( int,     flex_edgeflap,         nflexedge,     2                    ) \
     X   ( int,     flex_elem,             nflexelemdata, 1                    ) \
@@ -494,7 +498,6 @@
     X   ( int,     flex_shell,            nflexshelldata,1                    ) \
     X   ( mjtNum,  flex_vert,             nflexvert,     3                    ) \
     X   ( mjtNum,  flex_vert0,            nflexvert,     3                    ) \
-    X   ( mjtNum,  flex_vertmetric,       nflexvert,     4                    ) \
     X   ( mjtNum,  flex_node,             nflexnode,     3                    ) \
     X   ( mjtNum,  flex_node0,            nflexnode,     3                    ) \
     X   ( mjtNum,  flexedge_length0,      nflexedge,     1                    ) \
@@ -510,6 +513,7 @@
     X   ( mjtNum,  efm0_L,                nefm0L,        1                    ) \
     X   ( int,     efmC_perm,             nefmCvert,     1                    ) \
     X   ( mjtNum,  flex_damping,          nflex,         1                    ) \
+    X   ( mjtNum,  flex_yield,            nflex,         2                    ) \
     X   ( mjtNum,  flex_edgestiffness,    nflex,         1                    ) \
     X   ( mjtNum,  flex_edgedamping,      nflex,         1                    ) \
     X   ( int,     flex_edgeequality,     nflex,         1                    ) \
@@ -522,9 +526,6 @@
     X   ( int,     flexedge_J_rownnz,     nflexedge,     1                    ) \
     X   ( int,     flexedge_J_rowadr,     nflexedge,     1                    ) \
     X   ( int,     flexedge_J_colind,     nJfe,          1                    ) \
-    X   ( int,     flexvert_J_rownnz,     nflexvert,     2                    ) \
-    X   ( int,     flexvert_J_rowadr,     nflexvert,     2                    ) \
-    X   ( int,     flexvert_J_colind,     nJfv,          2                    ) \
     X   ( float,   flex_rgba,             nflex,         4                    ) \
     X   ( float,   flex_texcoord,         nflextexcoord, 2                    )
 
@@ -646,11 +647,13 @@
     X   ( mjtNum,  eq_data,               neq,           mjNEQDATA            )
 
 #define MJMODEL_POINTERS_TENDON                                                 \
+    X   ( int,     tendon_type,           ntendon,       1                    ) \
     X   ( int,     tendon_adr,            ntendon,       1                    ) \
     X   ( int,     tendon_num,            ntendon,       1                    ) \
     X   ( int,     tendon_matid,          ntendon,       1                    ) \
     X   ( int,     tendon_actuatorid,     ntendon,       1                    ) \
     X   ( int,     tendon_group,          ntendon,       1                    ) \
+    X   ( int,     tendon_plasticadr,     ntendon,       1                    ) \
     X   ( int,     tendon_treenum,        ntendon,       1                    ) \
     X   ( int,     tendon_treeid,         ntendon,       2                    ) \
     X   ( int,     ten_J_rownnz,          ntendon,       1                    ) \
@@ -673,6 +676,7 @@
     X   ( mjtNum,  tendon_armature,       ntendon,       1                    ) \
     X   ( mjtNum,  tendon_frictionloss,   ntendon,       1                    ) \
     X   ( mjtNum,  tendon_lengthspring,   ntendon,       2                    ) \
+    X   ( mjtNum,  tendon_springyield,    ntendon,       1                    ) \
     X   ( mjtNum,  tendon_length0,        ntendon,       1                    ) \
     X   ( mjtNum,  tendon_invweight0,     ntendon,       1                    ) \
     X   ( mjtNum,  tendon_user,           ntendon,       MJ_M(nuser_tendon)   ) \
@@ -793,6 +797,7 @@
     X   ( mjtNum,  key_mpos,              nkey,          MJ_M(nmocap)*3       ) \
     X   ( mjtNum,  key_mquat,             nkey,          MJ_M(nmocap)*4       ) \
     X   ( mjtNum,  key_ctrl,              nkey,          MJ_M(nu)             ) \
+    X   ( mjtNum,  key_plastic,           nkey,          MJ_M(nplastic)       ) \
     X   ( int,     name_bodyadr,          nbody,         1                    ) \
     X   ( int,     name_jntadr,           njnt,          1                    ) \
     X   ( int,     name_geomadr,          ngeom,         1                    ) \
@@ -951,25 +956,21 @@
     X( flex_elemnum,         0,          mjSC_IN,    mjSC_IN,    mjSC_IN    ) \
     X( flex_elemdataadr,     0,          mjSC_IN,    mjSC_IN,    mjSC_IN    ) \
     X( flex_stiffnessadr,    mjSC_IN,    0,          0,          mjSC_IN    ) \
-    X( flex_bendingadr,      mjSC_IN,    0,          0,          mjSC_IN    ) \
+    X( flex_bendingadr,      mjSC_IN,    mjSC_IN,    mjSC_IN,    mjSC_IN    ) \
     X( flex_nodebodyid,      mjSC_IN,    mjSC_IN,    mjSC_IN,    mjSC_IN    ) \
     X( flex_vertbodyid,      mjSC_IN,    mjSC_IN,    mjSC_IN,    mjSC_IN    ) \
-    X( flex_vertedgeadr,     mjSC_OUT,   mjSC_IN,    mjSC_IN,    0          ) \
-    X( flex_vertedgenum,     mjSC_OUT,   mjSC_IN,    mjSC_IN,    0          ) \
-    X( flex_vertedge,        mjSC_OUT,   mjSC_IN,    mjSC_IN,    0          ) \
+    X( flex_vertcell,        0,          mjSC_IN,    mjSC_IN,    0          ) \
     X( flex_edge,            mjSC_IN,    mjSC_IN,    mjSC_IN,    mjSC_IN    ) \
     X( flex_edgeflap,        0,          0,          0,          mjSC_IN    ) \
     X( flex_elem,            0,          mjSC_IN,    mjSC_IN,    mjSC_IN    ) \
     X( flex_vert,            0,          mjSC_IN,    mjSC_IN,    0          ) \
-    X( flex_vert0,           mjSC_IN,    mjSC_IN,    mjSC_IN,    0          ) \
-    X( flex_vertmetric,      mjSC_OUT,   mjSC_IN,    mjSC_IN,    0          ) \
+    X( flex_vert0,           0,          mjSC_IN,    mjSC_IN,    0          ) \
     X( flex_node,            0,          mjSC_IN,    mjSC_IN,    0          ) \
     X( flexedge_length0,     0,          mjSC_OUT,   0,          0          ) \
     X( flexedge_invweight0,  0,          0,          mjSC_OUT,   0          ) \
     X( flex_radius,          0,          mjSC_IN,    mjSC_IN,    0          ) \
-    X( flex_size,            mjSC_IN,    mjSC_IN,    mjSC_IN,    0          ) \
     X( flex_stiffness,       mjSC_IN,    0,          0,          mjSC_IN    ) \
-    X( flex_bending,         mjSC_IN,    0,          0,          mjSC_IN    ) \
+    X( flex_bending,         mjSC_IN,    mjSC_IN,    mjSC_IN,    mjSC_IN    ) \
     X( efm0_dofid,           0,          0,          0,          mjSC_OUT   ) \
     X( efm0_L_rownnz,        0,          0,          0,          mjSC_OUT   ) \
     X( efm0_L_rowadr,        0,          0,          0,          mjSC_OUT   ) \
@@ -988,9 +989,6 @@
     X( flexedge_J_rownnz,    mjSC_OUT,   mjSC_IN,    mjSC_IN,    0          ) \
     X( flexedge_J_rowadr,    mjSC_OUT,   mjSC_IN,    mjSC_IN,    0          ) \
     X( flexedge_J_colind,    mjSC_OUT,   0,          mjSC_IN,    0          ) \
-    X( flexvert_J_rownnz,    mjSC_OUT,   mjSC_IN,    mjSC_IN,    0          ) \
-    X( flexvert_J_rowadr,    mjSC_OUT,   mjSC_IN,    mjSC_IN,    0          ) \
-    X( flexvert_J_colind,    mjSC_OUT,   mjSC_IN,    mjSC_IN,    0          ) \
     X( mesh_polyvertnum,     mjSC_IN,    0,          0,          0          ) \
     X( mesh_polymapnum,      mjSC_IN,    0,          0,          0          ) \
     X( hfield_size,          mjSC_IN,    0,          0,          0          ) \
@@ -1000,6 +998,7 @@
     X( eq_obj2id,            0,          mjSC_IN,    0,          0          ) \
     X( eq_objtype,           0,          mjSC_IN,    0,          0          ) \
     X( eq_data,              0,          mjSC_INOUT, 0,          0          ) \
+    X( tendon_type,          mjSC_IN,    mjSC_IN,    mjSC_IN,    mjSC_IN    ) \
     X( tendon_adr,           mjSC_IN,    mjSC_IN,    mjSC_IN,    mjSC_IN    ) \
     X( tendon_num,           mjSC_IN,    mjSC_IN,    mjSC_IN,    mjSC_IN    ) \
     X( tendon_actuatorid,    mjSC_OUT,   0,          mjSC_IN,    0          ) \
@@ -1051,6 +1050,7 @@
     X   ( mjtNum,    qvel,              nv,          1           ) \
     X   ( mjtNum,    act,               na,          1           ) \
     X   ( mjtNum,    history,           nhistory,    1           ) \
+    X   ( mjtNum,    plastic,           nplastic,    1           ) \
     X   ( mjtNum,    qacc_warmstart,    nv,          1           ) \
     X   ( mjtNum,    plugin_state,      npluginstate, 1          ) \
     X   ( mjtNum,    ctrl,              nu,          1           ) \
@@ -1070,12 +1070,15 @@
     X   ( mjtNum,    xquat,             nbody,       4           ) \
     X   ( mjtNum,    xmat,              nbody,       9           ) \
     X   ( mjtNum,    xipos,             nbody,       3           ) \
+    X   ( mjtNum,    xiquat,            nbody,       4           ) \
     X   ( mjtNum,    ximat,             nbody,       9           ) \
     X   ( mjtNum,    xanchor,           njnt,        3           ) \
     X   ( mjtNum,    xaxis,             njnt,        3           ) \
     X   ( mjtNum,    geom_xpos,         ngeom,       3           ) \
+    X   ( mjtNum,    geom_xquat,        ngeom,       4           ) \
     X   ( mjtNum,    geom_xmat,         ngeom,       9           ) \
     X   ( mjtNum,    site_xpos,         nsite,       3           ) \
+    X   ( mjtNum,    site_xquat,        nsite,       4           ) \
     X   ( mjtNum,    site_xmat,         nsite,       9           ) \
     X   ( mjtNum,    cam_xpos,          ncam,        3           ) \
     X   ( mjtNum,    cam_xmat,          ncam,        9           ) \
@@ -1092,8 +1095,6 @@
     X   ( mjtNum,    flexedge_hessian,  nflexedge,   9           ) \
     X   ( mjtNum,    flexedge_J,        nJfe,        1           ) \
     X   ( mjtNum,    flexedge_length,   nflexedge,   1           ) \
-    X   ( mjtNum,    flexvert_J,        nJfv,        2           ) \
-    X   ( mjtNum,    flexvert_length,   nflexvert,   2           ) \
     X   ( mjtNum,    bvh_aabb_dyn,      nbvhdynamic, 6           ) \
     X   ( mjtNum,    flexvert_lambda,   nflexvert,   1           ) \
     X   ( int,       flexvert_conage,   nflexvert,   1           ) \

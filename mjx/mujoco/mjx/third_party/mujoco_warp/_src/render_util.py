@@ -347,6 +347,7 @@ def create_render_context(
   splat_rgba: np.ndarray | None = None,
   splat_adr: np.ndarray | None = None,
   splat_group_id: np.ndarray | None = None,
+  deterministic: bool = False,
 ) -> RenderContext:
   """Creates a render context on device.
 
@@ -404,6 +405,8 @@ def create_render_context(
                if None then all splats are in one group.
     splat_group_id: Splat id for each world (nworld,). If None then all worlds
                     use the first splat group.
+    deterministic: Whether to use deterministic execution for flex BVH vertex
+                   normal accumulation.
 
   Returns:
     The render context containing rendering fields and output arrays on device.
@@ -514,7 +517,7 @@ def create_render_context(
     else:
       flex_geom_flexid.append(f)
       flex_geom_edgeid.append(-1)
-      fmesh, group_root = bvh.build_flex_bvh(mjm, mjd, nworld, f)
+      fmesh, group_root = bvh.build_flex_bvh(mjm, mjd, nworld, f, deterministic=bool(deterministic))
       flex_registry[f] = fmesh
       flex_bvh_id[f] = fmesh.id
       flex_group_root[:, f] = group_root.numpy()

@@ -250,6 +250,46 @@ TEST_F(UserModelTest, FixedTendonSparsity) {
   EXPECT_THAT(std::vector<int>(colind, colind + 3), ElementsAre(0, 1, 2));
 }
 
+TEST_F(UserModelTest, TendonType) {
+  static constexpr char xml[] = R"(
+  <mujoco>
+    <worldbody>
+      <site name="s0"/>
+      <body pos="1 0 0">
+        <joint name="j"/>
+        <geom size=".1"/>
+        <site name="s1"/>
+      </body>
+    </worldbody>
+
+    <tendon>
+      <fixed>
+        <joint joint="j" coef="1"/>
+      </fixed>
+      <spatial>
+        <site site="s0"/>
+        <site site="s1"/>
+      </spatial>
+    </tendon>
+  </mujoco>
+  )";
+  std::array<char, 1024> error;
+  mjSpec* spec = mj_parseXMLString(xml, nullptr, error.data(), error.size());
+  ASSERT_THAT(spec, NotNull()) << error.data();
+
+  // a tendon added through the spec API is typed by its path
+  mjsTendon* tendon = mjs_addTendon(spec, nullptr);
+  mjs_wrapJoint(tendon, "j", 2);
+
+  mjModel* m = mj_compile(spec, nullptr);
+  ASSERT_THAT(m, NotNull()) << mjs_getError(spec);
+  EXPECT_EQ(m->tendon_type[0], mjTENDON_FIXED);
+  EXPECT_EQ(m->tendon_type[1], mjTENDON_SPATIAL);
+  EXPECT_EQ(m->tendon_type[2], mjTENDON_FIXED);
+  mj_deleteModel(m);
+  mj_deleteSpec(spec);
+}
+
 TEST_F(UserModelTest, NestedZeroMassBodiesOK) {
   static constexpr char xml[] = R"(
   <mujoco>
@@ -3850,6 +3890,55 @@ TEST_F(FrameScaleTest, MeshInstancesDelete) {
   mj_deleteSpec(spec);
 }
 
+// deleting a joint or an actuator of a compiled model removes its values from
+// the keyframes; those of a model which is not compiled are given for the
+// layout after the deletion
+TEST_F(MujocoTest, DeleteJointAndActuatorKeepsKeyframes) {
+  static constexpr char xml[] = R"(
+  <mujoco>
+    <worldbody>
+      <body>
+        <joint name="j1" type="slide" axis="1 0 0"/>
+        <joint name="j2" type="slide" axis="0 1 0"/>
+        <geom size=".1"/>
+      </body>
+    </worldbody>
+    <actuator>
+      <motor name="a1" joint="j1"/>
+      <motor name="a2" joint="j2"/>
+    </actuator>
+    <keyframe>
+      <key qpos=".1 .2" ctrl=".3 .4"/>
+    </keyframe>
+  </mujoco>
+  )";
+  for (bool compile : {false, true}) {
+    std::array<char, 1024> error;
+    mjSpec* spec = mj_parseXMLString(xml, nullptr, error.data(), error.size());
+    ASSERT_THAT(spec, NotNull()) << error.data();
+    if (compile) {
+      mjModel* m = mj_compile(spec, nullptr);
+      ASSERT_THAT(m, NotNull()) << mjs_getError(spec);
+      mj_deleteModel(m);
+    } else {
+      mjsKey* key = mjs_asKey(mjs_firstElement(spec, mjOBJ_KEY));
+      const double qpos = .2, ctrl = .4;
+      mjs_setDouble(key->qpos, &qpos, 1);
+      mjs_setDouble(key->ctrl, &ctrl, 1);
+    }
+    ASSERT_EQ(mjs_delete(spec, mjs_findElement(spec, mjOBJ_ACTUATOR, "a1")), 0);
+    ASSERT_EQ(mjs_delete(spec, mjs_findElement(spec, mjOBJ_JOINT, "j1")), 0);
+    mjModel* m = mj_compile(spec, nullptr);
+    ASSERT_THAT(m, NotNull()) << mjs_getError(spec);
+    ASSERT_EQ(m->nq, 1);
+    ASSERT_EQ(m->nu, 1);
+    EXPECT_MJTNUM_EQ(m->key_qpos[0], .2) << compile;
+    EXPECT_MJTNUM_EQ(m->key_ctrl[0], .4) << compile;
+    mj_deleteModel(m);
+    mj_deleteSpec(spec);
+  }
+}
+
 // a flex made from a mesh asset takes the asset at its own scale, also after a
 // compilation which scaled the asset for a geom
 TEST_F(FrameScaleTest, MeshInstanceMakeFlex) {
@@ -5285,6 +5374,186 @@ TEST_F(FrameScaleTest, AnisotropicSkin) {
               Pointwise(FloatNear(1e-5), {0, 0, 4, 2, 0, 4}));
 }
 
+TEST_F(FrameScaleTest, FlexBoxSectionSize) {
+  static constexpr char xml_scaled[] = R"(
+  <mujoco>
+    <worldbody>
+      <frame scale="2">
+        <body name="holder">
+          <flexcomp name="rod" type="grid" count="4 1 1" spacing="0.1 0.1 0.1"
+                    dim="1" mass="1" radius="0.01">
+            <elasticity young="1e5" section="box" sectionsize="0.02 0.01"/>
+            <contact selfcollide="none"/>
+          </flexcomp>
+        </body>
+      </frame>
+    </worldbody>
+  </mujoco>
+  )";
+  static constexpr char xml_ref[] = R"(
+  <mujoco>
+    <worldbody>
+      <body name="holder">
+        <flexcomp name="rod" type="grid" count="4 1 1" spacing="0.2 0.2 0.2"
+                  dim="1" mass="8" radius="0.02" inertiabox="0.02">
+          <elasticity young="4e5" section="box" sectionsize="0.04 0.02"/>
+          <contact selfcollide="none"/>
+        </flexcomp>
+      </body>
+    </worldbody>
+  </mujoco>
+  )";
+  std::array<char, 1024> error;
+  MjModelPtr scaled =
+      LoadModelFromString(xml_scaled, error.data(), error.size());
+  ASSERT_THAT(scaled.get(), NotNull()) << error.data();
+  MjModelPtr ref = LoadModelFromString(xml_ref, error.data(), error.size());
+  ASSERT_THAT(ref.get(), NotNull()) << error.data();
+  ASSERT_EQ(scaled->nflexbending, ref->nflexbending);
+  ASSERT_GT(scaled->nflexbending, 0);
+  const mjtNum tol = MjTol(1e-10, 1e-4);
+  for (int i = 0; i < scaled->nflexbending; ++i) {
+    EXPECT_NEAR(scaled->flex_bending[i], ref->flex_bending[i],
+                tol * (1 + std::abs(ref->flex_bending[i])))
+        << "i=" << i;
+  }
+}
+
+TEST_F(FrameScaleTest, SiteWeldTorqueScaleAndSensors) {
+  static constexpr char xml[] = R"(
+  <mujoco>
+    <worldbody>
+      <site name="world_site" pos="0 0 0"/>
+      <geom name="world_geom" type="sphere" size="0.1"/>
+      <frame scale="4">
+        <site name="s1" type="box" size="0.5 0.5 0.5"/>
+        <body pos="0 0 0.4">
+          <site name="s2" pos="0.1 0 0"/>
+          <geom name="g1" type="sphere" size="0.1"/>
+        </body>
+        <body pos="0 0 1.2">
+          <site name="s3" pos="0 0.1 0"/>
+          <geom name="g2" type="sphere" size="0.1"/>
+        </body>
+      </frame>
+    </worldbody>
+    <equality>
+      <weld site1="s2" site2="s3" torquescale="1.5"/>
+      <weld site1="s2" site2="world_site" torquescale="1.5"/>
+    </equality>
+    <sensor>
+      <normal name="nrm_same" geom1="g1" geom2="g2" cutoff="0.5" noise="0.1"/>
+      <normal name="nrm_cross" geom1="g1" geom2="world_geom" cutoff="0.5"
+              noise="0.1"/>
+      <insidesite name="in_bool" objtype="geom" objname="g1" site="s1"
+                  enclosed="false" cutoff="0.5" noise="0.1"/>
+      <insidesite name="in_dist" objtype="geom" objname="g1" site="s1"
+                  enclosed="true" cutoff="0.5" noise="0.1"/>
+      <insidesite name="in_cross" objtype="geom" objname="world_geom" site="s1"
+                  enclosed="true" cutoff="0.5" noise="0.1"/>
+    </sensor>
+  </mujoco>
+  )";
+  std::array<char, 1024> error;
+  mjSpec* spec = mj_parseXMLString(xml, nullptr, error.data(), error.size());
+  ASSERT_THAT(spec, NotNull()) << error.data();
+  MjModelPtr m(mj_compile(spec, nullptr));
+  ASSERT_THAT(m.get(), NotNull()) << mjs_getError(spec);
+  const mjtNum tol = MjTol(1e-12, 1e-5);
+
+  // Site-anchored weld torquescale (data[10]) scales by mean length gauge:
+  // 4 for two sites in scale=4, and sqrt(4 * 1) = 2 across frame boundary.
+  EXPECT_NEAR(m->eq_data[0 * mjNEQDATA + 10], 6.0, tol);
+  EXPECT_NEAR(m->eq_data[1 * mjNEQDATA + 10], 3.0, tol);
+
+  // Collision normal sensor uses cutoff as dismax (dimension L) while output is
+  // dimensionless unit normal (noise unchanged).
+  EXPECT_NEAR(m->sensor_cutoff[0], 2.0, tol);
+  EXPECT_NEAR(m->sensor_noise[0], 0.1, tol);
+  EXPECT_NEAR(m->sensor_cutoff[1], 1.0, tol);
+  EXPECT_NEAR(m->sensor_noise[1], 0.1, tol);
+
+  // insidesite outputs boolean (dimension 1) when enclosed="false" and
+  // Hausdorff distance (dimension L, averaged across object and site gauges)
+  // when enclosed="true".
+  EXPECT_NEAR(m->sensor_cutoff[2], 0.5, tol);
+  EXPECT_NEAR(m->sensor_noise[2], 0.1, tol);
+  EXPECT_NEAR(m->sensor_cutoff[3], 2.0, tol);
+  EXPECT_NEAR(m->sensor_noise[3], 0.4, tol);
+  EXPECT_NEAR(m->sensor_cutoff[4], 1.0, tol);
+  EXPECT_NEAR(m->sensor_noise[4], 0.2, tol);
+
+  // Verify mj_copyBack + recompile preserves exact inverse scaling.
+  ASSERT_EQ(mj_copyBack(spec, m.get()), 1) << mjs_getError(spec);
+  MjModelPtr m2(mj_compile(spec, nullptr));
+  ASSERT_THAT(m2.get(), NotNull()) << mjs_getError(spec);
+  std::string field;
+  EXPECT_EQ(CompareModel(m.get(), m2.get(), field), 0) << field;
+  mj_deleteSpec(spec);
+}
+
+TEST_F(FrameScaleTest, AnisotropicActuatorSensorAndDCMotorGeometry) {
+  static constexpr char xml[] = R"(
+  <mujoco>
+    <worldbody>
+      <frame scale="1 8 27" scaling="geometry">
+        <body>
+          <joint name="slide" type="slide" axis="0 0 1"/>
+          <geom type="ellipsoid" size="0.1 0.1 0.1"/>
+        </body>
+      </frame>
+    </worldbody>
+    <actuator>
+      <dcmotor name="dc_pos" joint="slide" input="pos" motorconst="0.05"
+               resistance="2.0" controller="10 5 1 3 4 12"
+               lugre="100 0.5 0.5 0.8 6" cogging="0.2 54 0.1" ctrlrange="-12 12"/>
+      <dcmotor name="dc_ff" joint="slide" input="ff" motorconst="0.05"
+               resistance="2.0" controller="0 0 0 3 0 12" ctrlrange="-5 5"/>
+    </actuator>
+    <sensor>
+      <actuatorpos actuator="dc_pos" cutoff="2" noise="0.5"/>
+      <actuatorvel actuator="dc_pos" cutoff="3" noise="0.25"/>
+    </sensor>
+  </mujoco>
+  )";
+  std::array<char, 1024> error;
+  mjSpec* spec = mj_parseXMLString(xml, nullptr, error.data(), error.size());
+  ASSERT_THAT(spec, NotNull()) << error.data();
+  MjModelPtr m(mj_compile(spec, nullptr));
+  ASSERT_THAT(m.get(), NotNull()) << mjs_getError(spec);
+  const mjtNum tol = MjTol(1e-11, 1e-4);
+
+  // Along z-axis, stretch fq = 27 (whereas isotropic cbrt(1*8*27) = 6).
+  // Position-mode dcmotor scales ctrlrange, slewmax (dynprm[7]), Imax
+  // (dynprm[8]), and LuGre Stribeck velocity (biasprm[5]) by fq = 27, and
+  // divides cogging periodicity (biasprm[1]) by fq = 27.
+  EXPECT_NEAR(m->actuator_ctrlrange[1], 12 * 27, tol);
+  EXPECT_NEAR(m->actuator_dynprm[7], 3 * 27, tol);
+  EXPECT_NEAR(m->actuator_dynprm[8], 4 * 27, tol);
+  EXPECT_NEAR(m->actuator_biasprm[1], 54.0 / 27, tol);
+  EXPECT_NEAR(m->actuator_biasprm[5], 6 * 27, tol);
+
+  // Feedforward-only dcmotor slew limit clamps torque (force-class = 1 under
+  // geometry), so dynprm[7] and ctrlrange remain unscaled.
+  EXPECT_NEAR(m->actuator_ctrlrange[3], 5, tol);
+  EXPECT_NEAR(m->actuator_dynprm[mjNDYN + 7], 3, tol);
+
+  // Actuator position/velocity sensors on a slide joint scale by axis stretch
+  // fq = 27 rather than geometric-mean shape factor 6.
+  EXPECT_NEAR(m->sensor_cutoff[0], 2 * 27, tol);
+  EXPECT_NEAR(m->sensor_noise[0], 0.5 * 27, tol);
+  EXPECT_NEAR(m->sensor_cutoff[1], 3 * 27, tol);
+  EXPECT_NEAR(m->sensor_noise[1], 0.25 * 27, tol);
+
+  // Verify mj_copyBack + recompile round-trips cleanly.
+  ASSERT_EQ(mj_copyBack(spec, m.get()), 1) << mjs_getError(spec);
+  MjModelPtr m2(mj_compile(spec, nullptr));
+  ASSERT_THAT(m2.get(), NotNull()) << mjs_getError(spec);
+  std::string field;
+  EXPECT_EQ(CompareModel(m.get(), m2.get(), field), 0) << field;
+  mj_deleteSpec(spec);
+}
+
 // ------------------------- mju_error during compile --------------------------
 
 // mjCModel::Compile turns mju_error into a compile error via longjmp, skipping
@@ -5422,6 +5691,56 @@ TEST_F(MaterialTest, TextureFromSpec) {
   ASSERT_THAT(m, NotNull()) << mjs_getError(spec);
   EXPECT_EQ(m->ntex, 1);
   EXPECT_EQ(m->mat_texid[mjTEXROLE_RGB], mj_name2id(m, mjOBJ_TEXTURE, "tex2"));
+  mj_deleteModel(m);
+  mj_deleteSpec(spec);
+}
+
+TEST_F(UserModelTest, DeleteDefaultErasesFromDefMap) {
+  mjSpec* spec = mj_makeSpec();
+  mjsDefault* def = mjs_addDefault(spec, "test_class", nullptr);
+  mjsBody* world = mjs_findBody(spec, "world");
+  mjsBody* body = mjs_addBody(world, nullptr);
+  mjsGeom* geom = mjs_addGeom(body, def);
+  geom->type = mjGEOM_SPHERE;
+  geom->size[0] = 0.1;
+
+  EXPECT_THAT(mjs_getDefault(geom->element), NotNull());
+  ASSERT_EQ(mjs_delete(spec, def->element), 0) << mjs_getError(spec);
+  EXPECT_THAT(mjs_getDefault(geom->element), IsNull());
+
+  mj_deleteSpec(spec);
+}
+
+TEST_F(UserModelTest, CopyBackMaterialPbrAndTexuniform) {
+  static constexpr char xml[] = R"(
+  <mujoco>
+    <asset>
+      <material name="mat" texuniform="false" metallic="0.1" roughness="0.2"/>
+    </asset>
+    <worldbody>
+      <geom size="1" material="mat"/>
+    </worldbody>
+  </mujoco>
+  )";
+  std::array<char, 1024> error;
+  mjSpec* spec = mj_parseXMLString(xml, nullptr, error.data(), error.size());
+  ASSERT_THAT(spec, NotNull()) << error.data();
+  mjModel* m = mj_compile(spec, nullptr);
+  ASSERT_THAT(m, NotNull()) << mjs_getError(spec);
+  ASSERT_EQ(m->nmat, 1);
+
+  m->mat_texuniform[0] = 1;
+  m->mat_metallic[0] = 0.75f;
+  m->mat_roughness[0] = 0.85f;
+
+  EXPECT_EQ(mj_copyBack(spec, m), 1) << mjs_getError(spec);
+  mjsMaterial* mat =
+      mjs_asMaterial(mjs_findElement(spec, mjOBJ_MATERIAL, "mat"));
+  ASSERT_THAT(mat, NotNull());
+  EXPECT_EQ(mat->texuniform, 1);
+  EXPECT_FLOAT_EQ(mat->metallic, 0.75f);
+  EXPECT_FLOAT_EQ(mat->roughness, 0.85f);
+
   mj_deleteModel(m);
   mj_deleteSpec(spec);
 }

@@ -1,0 +1,6 @@
+# Description:
+#   MuJoCo plugins
+
+licenses(["notice"])
+
+exports_files([".clang-format"])

@@ -16,10 +16,12 @@
 
 #include <algorithm>
 #include <array>
+#include <cmath>
 #include <cstddef>
 #include <cstring>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <gmock/gmock.h>
@@ -1485,6 +1487,68 @@ TEST_F(MjCJointTest, BodySimpleFalse) {
   EXPECT_THAT(d_ns->xpos[3 * b + 2], MjNear(d->xpos[3 * b + 2], 1e-10, 1e-6));
 }
 
+// the armature of a fixed tendon, or of an actuator on a tendon, couples the
+// dofs of a body which is then not simple
+TEST_F(MjCJointTest, TendonArmatureCouplingDemotesSimpleBody) {
+  constexpr char xml_fixed[] = R"(
+  <mujoco>
+    <worldbody>
+      <body>
+        <joint name="j1" type="slide" axis="1 0 0"/>
+        <joint name="j2" type="slide" axis="0 1 0"/>
+        <geom size=".1"/>
+      </body>
+    </worldbody>
+    <tendon>
+      <fixed name="t" armature="1.5">
+        <joint joint="j1" coef="1"/>
+        <joint joint="j2" coef="1"/>
+      </fixed>
+    </tendon>
+  </mujoco>
+  )";
+
+  constexpr char xml_actuator[] = R"(
+  <mujoco>
+    <worldbody>
+      <body>
+        <joint name="j1" type="slide" axis="1 0 0"/>
+        <joint name="j2" type="slide" axis="0 1 0"/>
+        <geom size=".1"/>
+      </body>
+    </worldbody>
+    <tendon>
+      <fixed name="t">
+        <joint joint="j1" coef="1"/>
+        <joint joint="j2" coef="1"/>
+      </fixed>
+    </tendon>
+    <actuator>
+      <general tendon="t" gear="2" armature="0.5"/>
+    </actuator>
+  </mujoco>
+  )";
+
+  // off-diagonal entry: tendon armature, actuator armature times gear squared
+  for (auto [xml, coupling] :
+       {std::pair{xml_fixed, 1.5}, {xml_actuator, 2.0}}) {
+    char error[1024];
+    MjModelPtr m = LoadModelFromString(xml, error, sizeof(error));
+    ASSERT_THAT(m.get(), NotNull()) << error;
+    EXPECT_EQ(m->body_simple[1], 0);
+    EXPECT_EQ(m->dof_simplenum[0], 0);
+    EXPECT_EQ(m->dof_simplenum[1], 0);
+    EXPECT_EQ(m->M_rownnz[1], 2);
+
+    MjDataPtr d = MakeData(m);
+    mj_forward(m.get(), d.get());
+    mjtNum M[4];
+    mj_fullM(m.get(), d.get(), M);
+    EXPECT_THAT(M[1], MjNear(coupling, 1e-12, 1e-6));
+    EXPECT_THAT(M[2], MjNear(coupling, 1e-12, 1e-6));
+  }
+}
+
 // ------------- test height fields --------------------------------------------
 
 using MjCHFieldTest = MujocoTest;
@@ -2124,6 +2188,37 @@ TEST_F(ActDimTest, ZeroNotAllowedInStateful) {
   EXPECT_THAT(error.data(), HasSubstr("line 10"));
 }
 
+TEST_F(ActDimTest, DCMotorMustMatchParameters) {
+  static constexpr char xml[] = R"(
+  <mujoco>
+    <worldbody>
+      <body>
+        <geom size="1"/>
+        <joint name="hinge"/>
+      </body>
+    </worldbody>
+    <actuator>
+      <general joint="hinge" dyntype="dcmotor" gaintype="dcmotor"
+               biastype="dcmotor" actearly="true" gainprm="1 1"
+               dynprm="0 0 1 1"/>
+    </actuator>
+  </mujoco>
+  )";
+  std::array<char, 1024> error;
+  // unauthored actdim < 0 is inferred from enabled slots
+  MjModelPtr model = LoadModelFromString(xml, error.data(), error.size());
+  ASSERT_THAT(model.get(), NotNull()) << error.data();
+  EXPECT_EQ(model->na, 1);
+
+  // explicit mismatching actdim >= 0 is rejected
+  std::string bad_xml = xml;
+  bad_xml.replace(bad_xml.find("dynprm="), 0, "actdim=\"2\" ");
+  model = LoadModelFromString(bad_xml.c_str(), error.data(), error.size());
+  ASSERT_THAT(model.get(), IsNull());
+  EXPECT_THAT(error.data(), HasSubstr("DC motor parameters in actuator '' (id "
+                                      "= 0) require actdim 1, got 2"));
+}
+
 // ------------- test nuser_xxx fields -----------------------------------------
 
 using UserDataTest = MujocoTest;
@@ -2437,6 +2532,144 @@ TEST_F(TendonTest, SiteBetweenPulleyNotAllowed) {
   EXPECT_THAT(model.get(), IsNull());
   EXPECT_THAT(error.data(), HasSubstr("needs a neighbor that is not a pulley"));
   EXPECT_THAT(error.data(), HasSubstr("line 9"));
+}
+
+TEST_F(TendonTest, PulleyZeroDivisorRejected) {
+  static constexpr char xml[] = R"(
+  <mujoco>
+    <worldbody>
+      <site name="1" pos="0 0 0"/>
+      <site name="2" pos="0 0 1"/>
+      <site name="3" pos="1 0 0"/>
+      <site name="4" pos="1 0 1"/>
+    </worldbody>
+    <tendon>
+      <spatial>
+        <site site="1"/>
+        <site site="2"/>
+        <pulley divisor="0"/>
+        <site site="3"/>
+        <site site="4"/>
+      </spatial>
+    </tendon>
+  </mujoco>
+  )";
+  std::array<char, 1024> error;
+  MjModelPtr model = LoadModelFromString(xml, error.data(), error.size());
+  EXPECT_THAT(model.get(), IsNull());
+  EXPECT_THAT(error.data(), HasSubstr("pulley divisor must be positive"));
+}
+
+TEST_F(TendonTest,
+       FixedTendonRejectsNegativeArmatureNonScalarAndDuplicateJoints) {
+  static constexpr char xml_neg_armature[] = R"(
+  <mujoco>
+    <worldbody>
+      <body>
+        <joint name="j1" type="hinge"/>
+        <geom size="0.1"/>
+      </body>
+    </worldbody>
+    <tendon>
+      <fixed name="t" armature="-1">
+        <joint joint="j1" coef="1"/>
+      </fixed>
+    </tendon>
+  </mujoco>
+  )";
+  std::array<char, 1024> error;
+  MjModelPtr m1 =
+      LoadModelFromString(xml_neg_armature, error.data(), error.size());
+  EXPECT_THAT(m1.get(), IsNull());
+  EXPECT_THAT(error.data(), HasSubstr("tendon armature cannot be negative"));
+
+  static constexpr char xml_ball_joint[] = R"(
+  <mujoco>
+    <worldbody>
+      <body>
+        <joint name="jball" type="ball"/>
+        <geom size="0.1"/>
+      </body>
+    </worldbody>
+    <tendon>
+      <fixed name="t">
+        <joint joint="jball" coef="1"/>
+      </fixed>
+    </tendon>
+  </mujoco>
+  )";
+  MjModelPtr m2 =
+      LoadModelFromString(xml_ball_joint, error.data(), error.size());
+  EXPECT_THAT(m2.get(), IsNull());
+  EXPECT_THAT(error.data(), HasSubstr("must be slide or hinge"));
+
+  static constexpr char xml_dup_joint[] = R"(
+  <mujoco>
+    <worldbody>
+      <body>
+        <joint name="j1" type="hinge"/>
+        <geom size="0.1"/>
+      </body>
+    </worldbody>
+    <tendon>
+      <fixed name="t">
+        <joint joint="j1" coef="1"/>
+        <joint joint="j1" coef="2"/>
+      </fixed>
+    </tendon>
+  </mujoco>
+  )";
+  MjModelPtr m3 =
+      LoadModelFromString(xml_dup_joint, error.data(), error.size());
+  EXPECT_THAT(m3.get(), IsNull());
+  EXPECT_THAT(error.data(), HasSubstr("is repeated"));
+
+  // Attached child with prefix: ball joint must not fall back to unprefixed
+  // hinge joint with the same base name during ResolveReferences.
+  static constexpr char xml_parent[] = R"(
+  <mujoco>
+    <worldbody>
+      <body name="parent_b">
+        <joint name="j1" type="hinge"/>
+        <geom size="0.1"/>
+      </body>
+      <frame name="mount"/>
+    </worldbody>
+  </mujoco>
+  )";
+  static constexpr char xml_child[] = R"(
+  <mujoco>
+    <worldbody>
+      <body>
+        <joint name="j1" type="ball"/>
+        <geom size="0.1"/>
+      </body>
+    </worldbody>
+    <tendon>
+      <fixed name="t">
+        <joint joint="j1" coef="1"/>
+      </fixed>
+    </tendon>
+  </mujoco>
+  )";
+  mjSpec* parent =
+      mj_parseXMLString(xml_parent, nullptr, error.data(), error.size());
+  ASSERT_THAT(parent, NotNull()) << error.data();
+  mjSpec* child =
+      mj_parseXMLString(xml_child, nullptr, error.data(), error.size());
+  ASSERT_THAT(child, NotNull()) << error.data();
+  mjsFrame* mount = mjs_findFrame(parent, "mount");
+  ASSERT_THAT(mount, NotNull());
+  ASSERT_THAT(mjs_attach(mount->element, child->element, "p_", ""), NotNull());
+  mjModel* m4 = mj_compile(parent, nullptr);
+  EXPECT_THAT(m4, IsNull());
+  EXPECT_THAT(mjs_getError(parent), HasSubstr("joint 'p_j1'"));
+  EXPECT_THAT(mjs_getError(parent), HasSubstr("must be slide or hinge"));
+  if (m4) {
+    mj_deleteModel(m4);
+  }
+  mj_deleteSpec(child);
+  mj_deleteSpec(parent);
 }
 
 TEST_F(TendonTest, ActuatorForceRangeNotAllowed) {
@@ -3059,9 +3292,269 @@ TEST_F(UserObjectsTest, ZeroMass) {
   EXPECT_THAT(model.get(), NotNull()) << error;
 }
 
+TEST_F(UserObjectsTest, FullInertiaBoundInertia) {
+  static constexpr char xml[] = R"(
+  <mujoco>
+    <compiler boundinertia="0.01"/>
+    <worldbody>
+      <body>
+        <freejoint/>
+        <inertial mass="1" pos="0 0 0" fullinertia="1 1 0 0 0 0"/>
+      </body>
+    </worldbody>
+  </mujoco>
+  )";
+
+  // singular fullinertia is bounded by boundinertia
+  char error[1024];
+  MjModelPtr m = LoadModelFromString(xml, error, sizeof(error));
+  ASSERT_THAT(m.get(), NotNull()) << error;
+  EXPECT_THAT(AsVector(m->body_inertia + 3, 3),
+              Pointwise(MjNear(1e-12, 1e-6), {1.0, 1.0, 0.01}));
+
+  // without boundinertia: error
+  string bad_xml = xml;
+  bad_xml.replace(bad_xml.find("0.01"), 4, "0");
+  m = LoadModelFromString(bad_xml.c_str(), error, sizeof(error));
+  ASSERT_THAT(m.get(), IsNull());
+  EXPECT_THAT(error, HasSubstr("inertia must have positive eigenvalues"));
+
+  // clearly negative fullinertia: error even with boundinertia
+  static constexpr char neg_xml[] = R"(
+  <mujoco>
+    <compiler boundinertia="0.01"/>
+    <worldbody>
+      <body>
+        <freejoint/>
+        <inertial mass="1" pos="0 0 0" fullinertia="-1 -1 -1 0 0 0"/>
+      </body>
+    </worldbody>
+  </mujoco>
+  )";
+  m = LoadModelFromString(neg_xml, error, sizeof(error));
+  ASSERT_THAT(m.get(), IsNull());
+  EXPECT_THAT(error, HasSubstr("inertia must have positive eigenvalues"));
+}
+
+TEST_F(UserObjectsTest, GeomInferredInertiaBoundInertia) {
+  static constexpr char xml[] = R"(
+  <mujoco>
+    <compiler boundinertia="0.01"/>
+    <worldbody>
+      <body>
+        <freejoint/>
+        <geom type="sphere" size="1e-7" density="2.38732414637843e20" pos="0 0 1"/>
+        <geom type="sphere" size="1e-7" density="2.38732414637843e20" pos="0 0 -1"/>
+      </body>
+    </worldbody>
+  </mujoco>
+  )";
+
+  // singular geom-inferred inertia is bounded by boundinertia
+  char error[1024];
+  MjModelPtr m = LoadModelFromString(xml, error, sizeof(error));
+  ASSERT_THAT(m.get(), NotNull()) << error;
+  EXPECT_THAT(AsVector(m->body_inertia + 3, 3),
+              Pointwise(MjNear(1e-12, 1e-6), {2.0, 2.0, 0.01}));
+
+  // without boundinertia: error
+  string bad_xml = xml;
+  bad_xml.replace(bad_xml.find("0.01"), 4, "0");
+  m = LoadModelFromString(bad_xml.c_str(), error, sizeof(error));
+  ASSERT_THAT(m.get(), IsNull());
+  EXPECT_THAT(error, HasSubstr("inertia must have positive eigenvalues"));
+}
+
+TEST_F(UserObjectsTest, PairUndefinedSolrefFromGeoms) {
+  static constexpr char xml[] = R"(
+  <mujoco>
+    <worldbody>
+      <geom name="g1" size="1" solref="0.02 1"/>
+      <geom name="g2" size="1" solref="0.06 2"/>
+      <geom name="d1" size="1" solref="-1000 -10"/>
+      <geom name="d2" size="1" solref="-2000 -5"/>
+    </worldbody>
+    <contact>
+      <pair geom1="g1" geom2="g2"/>
+      <pair geom1="d1" geom2="d2"/>
+      <pair geom1="g1" geom2="d1"/>
+    </contact>
+  </mujoco>
+  )";
+  std::array<char, 1024> error;
+  mjSpec* spec = mj_parseXMLString(xml, nullptr, error.data(), error.size());
+  ASSERT_THAT(spec, NotNull()) << error.data();
+
+  // mark pair solref as undefined, inherit from geoms
+  for (mjsElement* el = mjs_firstElement(spec, mjOBJ_PAIR); el;
+       el = mjs_nextElement(spec, el)) {
+    mjs_asPair(el)->solref[0] = NAN;
+  }
+  mjModel* m = mj_compile(spec, nullptr);
+  ASSERT_THAT(m, NotNull()) << mjs_getError(spec);
+  ASSERT_EQ(m->npair, 3);
+
+  // standard: mix (equal solmix), direct or mixed: element-wise min
+  EXPECT_THAT(AsVector(m->pair_solref, 6),
+              Pointwise(MjNear(1e-12, 1e-6),
+                        {0.04, 1.5, -2000.0, -10.0, -1000.0, -10.0}));
+  mj_deleteModel(m);
+  mj_deleteSpec(spec);
+}
+
 // ------------- test Octree SDF computation -----------------------------------
 
 using OctreeSDFTest = MujocoTest;
+
+TEST_F(OctreeSDFTest, TetrahedronSDFSign) {
+  // Four outward-facing triangles form a closed tetrahedron in z >= 0.
+  static constexpr char xml[] = R"(
+  <mujoco>
+    <asset>
+      <mesh name="tetra"
+            vertex="0 0 0  2 0 0  0 .2 0  0 0 1"
+            face="0 2 1  0 1 3  0 3 2  1 2 3"/>
+    </asset>
+    <worldbody>
+      <geom type="sdf" mesh="tetra"/>
+    </worldbody>
+  </mujoco>
+  )";
+
+  std::array<char, 1024> error{};
+  std::unique_ptr<mjSpec, decltype(&mj_deleteSpec)> spec(
+      mj_parseXMLString(xml, nullptr, error.data(), error.size()),
+      mj_deleteSpec);
+  ASSERT_THAT(spec.get(), NotNull()) << error.data();
+  mjsMesh* mesh = mjs_asMesh(mjs_firstElement(spec.get(), mjOBJ_MESH));
+  ASSERT_THAT(mesh, NotNull());
+  // Outward unit normals and offsets of the face planes, n.x <= d inside.
+  const mjtNum norm = mju_sqrt(0.25 + 25 + 1);
+  const mjtNum planes[4][4] = {{0, 0, -1, 0},
+                               {0, -1, 0, 0},
+                               {-1, 0, 0, 0},
+                               {1 / (2 * norm), 5 / norm, 1 / norm, 1 / norm}};
+  // Depth one exposes vertex errors; deeper octrees also expose edge errors.
+  for (int depth = 1; depth <= 3; ++depth) {
+    SCOPED_TRACE(depth);
+    mesh->octree_maxdepth = depth;
+    MjModelPtr model(mj_compile(spec.get(), nullptr));
+    ASSERT_THAT(model.get(), NotNull()) << mjs_getError(spec.get());
+    ASSERT_EQ(model->nmesh, 1);
+    ASSERT_GT(model->mesh_octnum[0], 0);
+
+    mjtNum rotation[9];
+    mju_quat2Mat(rotation, model->mesh_quat);
+    int outside_count = 0;
+    int below_count = 0;
+    int inside_count = 0;
+    int start = model->mesh_octadr[0];
+    int stop = start + model->mesh_octnum[0];
+    for (int node = start; node < stop; ++node) {
+      const mjtNum* aabb = model->oct_aabb + 6 * node;
+      for (int corner = 0; corner < 8; ++corner) {
+        // Each box stores its center and half-sizes; corner bits select signs.
+        mjtNum local[3];
+        for (int axis = 0; axis < 3; ++axis) {
+          mjtNum sign = (corner & (1 << axis)) ? 1 : -1;
+          local[axis] = aabb[axis] + sign * aabb[axis + 3];
+        }
+        // Undo the rotation and translation applied by mesh compilation.
+        mjtNum point[3];
+        mju_mulMatVec3(point, rotation, local);
+        mju_addTo3(point, model->mesh_pos);
+        // A convex mesh contains a point iff it is inside every face plane.
+        mjtNum plane_distance = -mjMAXVAL;
+        for (const auto& plane : planes) {
+          plane_distance =
+              std::max(plane_distance, mju_dot3(plane, point) - plane[3]);
+        }
+        // Skip points too close to the surface for a well-defined sign.
+        if (std::abs(plane_distance) < 1e-6) {
+          continue;
+        }
+        bool outside = plane_distance > 0;
+        outside_count += outside;
+        below_count += point[2] < -0.01;
+        inside_count += !outside;
+        EXPECT_EQ(model->oct_coeff[8 * node + corner] > 0, outside)
+            << (outside ? "Outside" : "Inside") << " point (" << point[0]
+            << ", " << point[1] << ", " << point[2] << "), node " << node
+            << ", corner " << corner;
+      }
+    }
+    EXPECT_GT(below_count, 0) << "The test must sample points below the mesh.";
+    EXPECT_GT(outside_count, below_count);
+    if (depth > 1) {
+      EXPECT_GT(inside_count, 0);
+    }
+  }
+}
+
+TEST_F(OctreeSDFTest, BoxSDFCoefficients) {
+  static constexpr char xml[] = R"(
+  <mujoco>
+    <asset>
+      <mesh name="box" vertex="-1 -2 -3  1 -2 -3  -1 2 -3  1 2 -3
+                               -1 -2 3   1 -2 3   -1 2 3   1 2 3"/>
+    </asset>
+    <worldbody>
+      <geom type="sdf" mesh="box"/>
+    </worldbody>
+  </mujoco>
+  )";
+
+  std::array<char, 1024> error{};
+  std::unique_ptr<mjSpec, decltype(&mj_deleteSpec)> spec(
+      mj_parseXMLString(xml, nullptr, error.data(), error.size()),
+      mj_deleteSpec);
+  ASSERT_THAT(spec.get(), NotNull()) << error.data();
+  mjsMesh* mesh = mjs_asMesh(mjs_firstElement(spec.get(), mjOBJ_MESH));
+  ASSERT_THAT(mesh, NotNull());
+  mesh->octree_maxdepth = 1;
+  MjModelPtr model(mj_compile(spec.get(), nullptr));
+  ASSERT_THAT(model.get(), NotNull()) << mjs_getError(spec.get());
+  ASSERT_EQ(model->nmesh, 1);
+  ASSERT_GT(model->mesh_octnum[0], 0);
+
+  const mjtNum half_size[3] = {1, 2, 3};
+  mjtNum rotation[9];
+  mju_quat2Mat(rotation, model->mesh_quat);
+  std::array<int, 4> counts{};
+  int start = model->mesh_octadr[0];
+  int stop = start + model->mesh_octnum[0];
+  for (int node = start; node < stop; ++node) {
+    const mjtNum* aabb = model->oct_aabb + 6 * node;
+    for (int corner = 0; corner < 8; ++corner) {
+      mjtNum local[3], point[3];
+      for (int axis = 0; axis < 3; ++axis) {
+        mjtNum sign = (corner & (1 << axis)) ? 1 : -1;
+        local[axis] = aabb[axis] + sign * aabb[axis + 3];
+      }
+      mju_mulMatVec3(point, rotation, local);
+      mju_addTo3(point, model->mesh_pos);
+
+      // Analytic box SDF: outside Euclidean distance plus inside face distance.
+      mjtNum q[3], outside[3];
+      int outside_axes = 0;
+      for (int axis = 0; axis < 3; ++axis) {
+        q[axis] = std::abs(point[axis]) - half_size[axis];
+        outside[axis] = std::max(q[axis], mjtNum{0});
+        outside_axes += q[axis] > 0;
+      }
+      ++counts[outside_axes];
+      mjtNum expected = mju_norm3(outside) +
+                        std::min(std::max({q[0], q[1], q[2]}), mjtNum{0});
+      EXPECT_THAT(model->oct_coeff[8 * node + corner],
+                  MjNear(expected, 1e-14, 1e-6))
+          << "node " << node << ", corner " << corner;
+    }
+  }
+  // Cover inside points and exterior face, edge, and vertex regions.
+  for (int count : counts) {
+    EXPECT_GT(count, 0);
+  }
+}
 
 TEST_F(OctreeSDFTest, SphereSDF) {
   static constexpr char xml[] = R"(
@@ -3241,6 +3734,102 @@ TEST_F(ActuatorTransmissionTest, ArmatureRejectsSiteTransmission) {
   MjModelPtr m = LoadModelFromString(xml, error.data(), error.size());
   ASSERT_THAT(m.get(), IsNull());
   EXPECT_THAT(error.data(), HasSubstr("armature requires joint or tendon"));
+}
+
+TEST_F(MujocoTest, CamprojectionAndRangefinderCameraValidation) {
+  std::array<char, 1024> error;
+
+  static constexpr char xml_neg_proj[] = R"(
+  <mujoco>
+    <worldbody>
+      <camera name="cam" resolution="-64 -48"/>
+      <site name="s"/>
+    </worldbody>
+    <sensor>
+      <camprojection site="s" camera="cam"/>
+    </sensor>
+  </mujoco>
+  )";
+  MjModelPtr m_neg_proj =
+      LoadModelFromString(xml_neg_proj, error.data(), error.size());
+  EXPECT_THAT(m_neg_proj.get(), IsNull());
+  EXPECT_THAT(error.data(),
+              HasSubstr("camera projection sensor requires camera resolution"));
+
+  static constexpr char xml_neg_rf[] = R"(
+  <mujoco>
+    <worldbody>
+      <camera name="cam" resolution="-4 -4"/>
+    </worldbody>
+    <sensor>
+      <rangefinder camera="cam"/>
+    </sensor>
+  </mujoco>
+  )";
+  MjModelPtr m_neg_rf =
+      LoadModelFromString(xml_neg_rf, error.data(), error.size());
+  EXPECT_THAT(m_neg_rf.get(), IsNull());
+  EXPECT_THAT(
+      error.data(),
+      HasSubstr(
+          "rangefinder camera sensor requires positive camera resolution"));
+
+  static constexpr char xml_base[] = R"(
+  <mujoco>
+    <worldbody>
+      <body name="b">
+        <site name="s"/>
+      </body>
+    </worldbody>
+  </mujoco>
+  )";
+  mjSpec* spec =
+      mj_parseXMLString(xml_base, nullptr, error.data(), error.size());
+  ASSERT_THAT(spec, NotNull()) << error.data();
+  mjsSensor* sen = mjs_addSensor(spec);
+  sen->type = mjSENS_CAMPROJECTION;
+  sen->objtype = mjOBJ_SITE;
+  mjs_setString(sen->objname, "s");
+  sen->reftype = mjOBJ_BODY;
+  mjs_setString(sen->refname, "b");
+  mjModel* m_bad_ref = mj_compile(spec, nullptr);
+  EXPECT_THAT(m_bad_ref, IsNull());
+  EXPECT_THAT(mjs_getError(spec), HasSubstr("camera reference"));
+  if (m_bad_ref) {
+    mj_deleteModel(m_bad_ref);
+  }
+  mj_deleteSpec(spec);
+}
+
+TEST_F(MujocoTest, AddBodyChildrenWithDeletedChildclassDoesNotInsertNullDef) {
+  mjSpec* spec = mj_makeSpec();
+  ASSERT_THAT(spec, NotNull());
+  mjsDefault* main_def = mjs_getSpecDefault(spec);
+  mjsDefault* custom_def = mjs_addDefault(spec, "deleted_cls", nullptr);
+  ASSERT_THAT(custom_def, NotNull());
+
+  mjsBody* world = mjs_findBody(spec, "world");
+  mjsBody* body = mjs_addBody(world, custom_def);
+  ASSERT_THAT(body, NotNull());
+  EXPECT_EQ(mjs_getDefault(body->element), custom_def);
+
+  ASSERT_EQ(mjs_delete(spec, custom_def->element), 0) << mjs_getError(spec);
+  EXPECT_THAT(mjs_getDefault(body->element), IsNull());
+
+  mjsJoint* jnt = mjs_addJoint(body, nullptr);
+  mjsGeom* geom = mjs_addGeom(body, nullptr);
+  mjsSite* site = mjs_addSite(body, nullptr);
+  mjsCamera* cam = mjs_addCamera(body, nullptr);
+  mjsLight* light = mjs_addLight(body, nullptr);
+
+  EXPECT_THAT(mjs_getDefault(body->element), IsNull());
+  EXPECT_EQ(mjs_getDefault(jnt->element), main_def);
+  EXPECT_EQ(mjs_getDefault(geom->element), main_def);
+  EXPECT_EQ(mjs_getDefault(site->element), main_def);
+  EXPECT_EQ(mjs_getDefault(cam->element), main_def);
+  EXPECT_EQ(mjs_getDefault(light->element), main_def);
+
+  mj_deleteSpec(spec);
 }
 
 }  // namespace

@@ -93,6 +93,7 @@ ObjectManager::ObjectManager(filament::Engine* engine) : engine_(engine) {
   materials_[kOutlineFlatten] = LoadMaterial(engine, "outline_flatten.filamat");
   materials_[kOutlineJumpFlood] =
       LoadMaterial(engine, "outline_jumpflood.filamat");
+  materials_[kHaze] = LoadMaterial(engine, "haze.filamat");
 
   static uint8_t black_rgb[3] = {0, 0, 0};
   static uint8_t white_rgb[3] = {255, 255, 255};

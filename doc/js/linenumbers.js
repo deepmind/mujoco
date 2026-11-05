@@ -1,5 +1,6 @@
 // DO NOT EDIT. THE SRCS ARRAY IS AUTOMATICALLY GENERATED.
 const SRCS = [
+  'batch/batch.cc',
   'engine/engine_callback.c',
   'engine/engine_collision_driver.c',
   'engine/engine_collision_sdf.c',

@@ -237,16 +237,23 @@ void mju_unit4(mjtNum res[4]) {
 
 // res = vec
 void mju_copy4(mjtNum res[4], const mjtNum data[4]) {
+#ifdef mjUSEAVX
+  mju_copy4_avx(res, data);
+#else
   res[0] = data[0];
   res[1] = data[1];
   res[2] = data[2];
   res[3] = data[3];
+#endif
 }
 
 
 // normalize vector, return length before normalization
 mjtNum mju_normalize4(mjtNum vec[4]) {
-  mjtNum norm = mju_sqrt(vec[0]*vec[0] + vec[1]*vec[1] + vec[2]*vec[2] + vec[3]*vec[3]);
+#ifdef mjUSEAVX
+  return mju_normalize4_avx(vec);
+#else
+  mjtNum norm = mju_sqrt((vec[0]*vec[0] + vec[1]*vec[1]) + (vec[2]*vec[2] + vec[3]*vec[3]));
 
   if (norm < mjMINVAL) {
     vec[0] = 1;
@@ -262,6 +269,7 @@ mjtNum mju_normalize4(mjtNum vec[4]) {
   }
 
   return norm;
+#endif
 }
 
 
@@ -451,6 +459,10 @@ void mju_addScl(mjtNum* res, const mjtNum* vec1, const mjtNum* vec2, mjtNum scl,
 
 // normalize vector, return length before normalization
 mjtNum mju_normalize(mjtNum* res, int n) {
+  if (n <= 0) {
+    return 0;
+  }
+
   mjtNum norm = mju_sqrt(mju_dot(res, res, n));
 
   if (norm < mjMINVAL) {
@@ -627,27 +639,18 @@ void mju_mulMatMatT(mjtNum* res, const mjtNum* mat1, const mjtNum* mat2,
 
 
 // compute M'*diag*M (diag=NULL: compute M'*M), upper triangle optional
-void mju_sqrMatTD_impl(mjtNum* res, const mjtNum* mat, const mjtNum* diag,
-                       int nr, int nc, int flg_upper) {
-  mjtNum tmp;
-
+void mju_sqrMatTD_impl(mjtNum* restrict res, const mjtNum* restrict mat,
+                       const mjtNum* restrict diag, int nr, int nc, int flg_upper) {
   // half of MatMat routine: only lower triangle
   mju_zero(res, nc*nc);
-  if (diag) {
-    for (int j=0; j < nr; j++) {
-      if (diag[j]) {
-        for (int i=0; i < nc; i++) {
-          if ((tmp = mat[j*nc+i])) {
-            mju_addToScl(res+i*nc, mat+j*nc, tmp*diag[j], i+1);
-          }
-        }
-      }
-    }
-  } else {
-    for (int i=0; i < nc; i++) {
-      for (int j=0; j < nr; j++) {
-        if ((tmp = mat[j*nc+i])) {
-          mju_addToScl(res+i*nc, mat+j*nc, tmp, i+1);
+  for (int j=0; j < nr; j++) {
+    mjtNum dj = diag ? diag[j] : 1;
+    if (dj) {
+      const mjtNum* mat_j = mat + j*nc;
+      for (int i=0; i < nc; i++) {
+        mjtNum tmp = mat_j[i];
+        if (tmp) {
+          mju_addToScl(res+i*nc, mat_j, tmp*dj, i+1);
         }
       }
     }

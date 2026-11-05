@@ -1,0 +1,39 @@
+# Description:
+#   Batched simulation runtime (mjbatch.h).
+
+load("@rules_cc//cc:cc_library.bzl", "cc_library")
+load("//:build_defs.bzl", "MJ_ROOT")
+
+licenses(["notice"])
+
+exports_files([".clang-format"])
+
+cc_library(
+    name = "batch",
+    srcs = ["batch.cc"],
+    conlyopts = ["-std=c11"],
+    copts = [
+        "-I" + MJ_ROOT + "/src",
+        "-Wshadow",
+        "-fexceptions",
+        "-fvisibility=hidden",
+    ],
+    cxxopts = [
+        "-fvisibility-inlines-hidden",
+        "-std=c++20",
+    ],
+    linkstatic = True,
+    local_defines = [
+        "MUJOCO_DLL_EXPORTS",
+        "_GNU_SOURCE",
+    ],
+    visibility = ["//:__subpackages__"],
+    deps = [
+        "//:libmujoco_hdrs",
+        "//src/engine:engine_forward",
+        "//src/engine:engine_io",
+        "//src/engine:engine_setconst",
+        "//src/engine:engine_util_errmem",
+    ],
+    alwayslink = True,
+)

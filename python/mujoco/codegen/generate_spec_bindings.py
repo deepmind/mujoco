@@ -199,9 +199,17 @@ def _array_binding_code(
       return MjTypeVec<char>(self.{fullvarname}, {field.extents[0]});
     }},
     []({rawclassname}& self, py::object rhs) {{
+      char buf[{field.extents[0]}] = {{}};
       int i = 0;
       for (auto val : rhs) {{
-        self.{fullvarname}[i++] = py::cast<char>(val);
+        if (i >= {field.extents[0]}) {{
+          throw py::value_error(
+              "{varname} may have at most {field.extents[0]} characters");
+        }}
+        buf[i++] = py::cast<char>(val);
+      }}
+      for (int j = 0; j < {field.extents[0]}; ++j) {{
+        self.{fullvarname}[j] = buf[j];
       }}
     }}, py::return_value_policy::move);"""
   # all other array types
@@ -310,6 +318,13 @@ def _ptr_binding_code(
       }},
     []({rawclassname}& self, py::object rhs) {{
         self.{fullvarname}->clear();
+        if (py::isinstance<py::str>(rhs)) {{
+          auto s = py::cast<std::string>(rhs);
+          if (!s.empty()) {{
+            self.{fullvarname}->push_back(std::move(s));
+          }}
+          return;
+        }}
         self.{fullvarname}->reserve(py::len(rhs));
         for (auto val : rhs) {{
           self.{fullvarname}->push_back(py::cast<std::string>(val));

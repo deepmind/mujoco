@@ -32,7 +32,7 @@
 
 //---------------------------------- sizes ---------------------------------------------------------
 
-#define mjNEQDATA       11        // number of eq_data fields
+#define mjNEQDATA       12        // number of eq_data fields
 #define mjNDYN          10        // number of actuator dynamics parameters
 #define mjNGAIN         10        // number of actuator gain parameters
 #define mjNBIAS         10        // number of actuator bias parameters
@@ -277,7 +277,6 @@ typedef struct mjModel_ {
   mjtSize nflexshelldata;         // number of shell fragment vertex ids in all flexes
   mjtSize nflextexcoord;          // number of vertices with texture coordinates
   mjtSize nJfe;                   // number of non-zeros in sparse flexedge Jacobian matrix
-  mjtSize nJfv;                   // number of non-zeros in sparse flexvert Jacobian matrix
   mjtSize nmesh;                  // number of meshes
   mjtSize nmeshvert;              // number of vertices in all meshes
   mjtSize nmeshnormal;            // number of normals in all meshes
@@ -325,6 +324,7 @@ typedef struct mjModel_ {
   mjtSize nuser_sensor;           // number of mjtNums in sensor_user
   mjtSize nnames;                 // number of chars in all names
   mjtSize npaths;                 // number of chars in all paths
+  mjtSize nplastic;               // number of mjtNums in plastic state vector
 
   // sizes set after mjModel construction
   mjtSize nnames_map;             // number of slots in the names hash map
@@ -415,6 +415,7 @@ typedef struct mjModel_ {
   int*      jnt_bodyid;           // id of joint's body                       (njnt x 1)
   int*      jnt_actuatorid;       // actuator contributing damping / armature (njnt x 1)
   int*      jnt_group;            // group for visibility                     (njnt x 1)
+  int*      jnt_plasticadr;       // start addr in plastic state (-1: none)   (njnt x 1)
   mjtBool*  jnt_limited;          // does joint have limits                   (njnt x 1)
   mjtBool*  jnt_actfrclimited;    // does joint have actuator force limits    (njnt x 1)
   mjtBool*  jnt_actgravcomp;      // is gravcomp force applied via actuators  (njnt x 1)
@@ -424,6 +425,7 @@ typedef struct mjModel_ {
   mjtNum*   jnt_axis;             // local joint axis                         (njnt x 3)
   mjtNum*   jnt_stiffness;        // linear stiffness coefficient             (njnt x 1)
   mjtNum*   jnt_stiffnesspoly;    // high-order stiffness coefficients        (njnt x mjNPOLY)
+  mjtNum*   jnt_springyield;      // plastic yield threshold                  (njnt x 1)
   mjtNum*   jnt_range;            // joint limits                             (njnt x 2)
   mjtNum*   jnt_actfrcrange;      // range of total actuator force            (njnt x 2)
   mjtNum*   jnt_margin;           // min distance for limit detection         (njnt x 1)
@@ -465,6 +467,7 @@ typedef struct mjModel_ {
   int*      geom_priority;        // geom contact priority                    (ngeom x 1)
   int*      geom_plugin;          // plugin instance id; -1: not in use       (ngeom x 1)
   mjtByte*  geom_sameframe;       // same frame as body (mjtSameframe)        (ngeom x 1)
+  mjtBool*  geom_castshadow;      // does geom cast shadows                   (ngeom x 1)
   mjtNum*   geom_solmix;          // mixing coef for solref/imp in geom pair  (ngeom x 1)
   mjtNum*   geom_solref;          // constraint solver reference: contact     (ngeom x mjNREF)
   mjtNum*   geom_solimp;          // constraint solver impedance: contact     (ngeom x mjNIMP)
@@ -554,7 +557,7 @@ typedef struct mjModel_ {
 
   // flexes: other properties
   int*      flex_dim;             // 1: lines, 2: triangles, 3: tetrahedra    (nflex x 1)
-  int*      flex_matid;           // material id for rendering                (nflex x 1)
+  int*      flex_matid;           // material id for rendering                (nflexelem x 1)
   int*      flex_group;           // group for visibility                     (nflex x 1)
   int*      flex_interp;          // interpolation (0: vertex, 1: nodes)      (nflex x 1)
   int*      flex_cellnum;         // finite cell num per dimension            (nflex x 3)
@@ -570,14 +573,14 @@ typedef struct mjModel_ {
   int*      flex_stiffnessadr;    // stiffness matrix address                 (nflex x 1)
   int*      flex_elemedgeadr;     // first element edge id address            (nflex x 1)
   int*      flex_bendingadr;      // first bending data address               (nflex x 1)
+  int*      flex_plasticadr;      // plastic state address; -1: elastic       (nflex x 1)
+  int*      flex_plasticmode;     // plastic state bits; 1: bend, 2: stretch  (nflex x 1)
   int*      flex_shellnum;        // number of shells                         (nflex x 1)
   int*      flex_shelldataadr;    // first shell data address                 (nflex x 1)
   int*      flex_texcoordadr;     // address in flex_texcoord; -1: none       (nflex x 1)
   int*      flex_nodebodyid;      // node body ids                            (nflexnode x 1)
   int*      flex_vertbodyid;      // vertex body ids                          (nflexvert x 1)
-  int*      flex_vertedgeadr;     // first edge address                       (nflexvert x 1)
-  int*      flex_vertedgenum;     // number of edges                          (nflexvert x 1)
-  int*      flex_vertedge;        // edge indices                             (nflexedge x 2)
+  int*      flex_vertcell;        // finite cell index for vertex; -1: none   (nflexvert x 1)
   int*      flex_edge;            // edge vertex ids (2 per edge)             (nflexedge x 2)
   int*      flex_edgeflap;        // adjacent vertex ids (dim=2 only)         (nflexedge x 2)
   int*      flex_elem;            // element vertex ids (dim+1 per elem)      (nflexelemdata x 1)
@@ -587,7 +590,6 @@ typedef struct mjModel_ {
   int*      flex_shell;           // shell fragment vertex ids (dim per frag) (nflexshelldata x 1)
   mjtNum*   flex_vert;            // vertex positions in local body frames    (nflexvert x 3)
   mjtNum*   flex_vert0;           // vertex positions in qpos0 on [0, 1]^d    (nflexvert x 3)
-  mjtNum*   flex_vertmetric;      // inverse of reference shape matrix        (nflexvert x 4)
   mjtNum*   flex_node;            // node positions in local body frames      (nflexnode x 3)
   mjtNum*   flex_node0;           // Cartesian node positions in qpos0        (nflexnode x 3)
   mjtNum*   flexedge_length0;     // edge lengths in qpos0                    (nflexedge x 1)
@@ -603,9 +605,10 @@ typedef struct mjModel_ {
   mjtNum*   efm0_L;               // factor of M + (dt^2+dt*d)*K_bend         (nefm0L x 1)
   int*      efmC_perm;            // sparse factor order: vertex dof or -1    (nefmCvert x 1)
   mjtNum*   flex_damping;         // Rayleigh's damping coefficient           (nflex x 1)
+  mjtNum*   flex_yield;           // yield strain (stretch, bend); 0: elastic (nflex x 2)
   mjtNum*   flex_edgestiffness;   // edge stiffness                           (nflex x 1)
   mjtNum*   flex_edgedamping;     // edge damping                             (nflex x 1)
-  int*      flex_edgeequality;    // 0:none, 1:edges, 2:vertices, 3:strain    (nflex x 1)
+  int*      flex_edgeequality;    // 0:none, 1:edges, 3:strain                (nflex x 1)
   mjtBool*  flex_rigid;           // are all vertices in the same body        (nflex x 1)
   mjtBool*  flexedge_rigid;       // are both edge vertices in same body      (nflexedge x 1)
   mjtBool*  flex_centered;        // are all vertex coordinates (0,0,0)       (nflex x 1)
@@ -615,9 +618,6 @@ typedef struct mjModel_ {
   int*      flexedge_J_rownnz;    // number of non-zeros in Jacobian row      (nflexedge x 1)
   int*      flexedge_J_rowadr;    // row start address in colind array        (nflexedge x 1)
   int*      flexedge_J_colind;    // column indices in sparse Jacobian        (nJfe x 1)
-  int*      flexvert_J_rownnz;    // number of non-zeros in Jacobian row      (nflexvert x 2)
-  int*      flexvert_J_rowadr;    // row start address in colind array        (nflexvert x 2)
-  int*      flexvert_J_colind;    // column indices in sparse Jacobian        (nJfv x 2)
   float*    flex_rgba;            // rgba when material is omitted            (nflex x 4)
   float*    flex_texcoord;        // vertex texture coordinates               (nflextexcoord x 2)
 
@@ -739,11 +739,13 @@ typedef struct mjModel_ {
   mjtNum*   eq_data;              // numeric data for constraint              (neq x mjNEQDATA)
 
   // tendons
+  int*      tendon_type;          // type of tendon (mjtTendon)               (ntendon x 1)
   int*      tendon_adr;           // address of first object in tendon's path (ntendon x 1)
   int*      tendon_num;           // number of objects in tendon's path       (ntendon x 1)
   int*      tendon_matid;         // material id for rendering                (ntendon x 1)
   int*      tendon_actuatorid;    // actuator contributing damping / armature (ntendon x 1)
   int*      tendon_group;         // group for visibility                     (ntendon x 1)
+  int*      tendon_plasticadr;    // start addr in plastic state (-1: none)   (ntendon x 1)
   int*      tendon_treenum;       // number of trees along tendon's path      (ntendon x 1)
   int*      tendon_treeid;        // first two trees along tendon's path      (ntendon x 2)
   int*      ten_J_rownnz;         // number of non-zeros in Jacobian row      (ntendon x 1)
@@ -766,6 +768,7 @@ typedef struct mjModel_ {
   mjtNum*   tendon_armature;      // inertia associated with tendon velocity  (ntendon x 1)
   mjtNum*   tendon_frictionloss;  // loss due to friction                     (ntendon x 1)
   mjtNum*   tendon_lengthspring;  // spring resting length range              (ntendon x 2)
+  mjtNum*   tendon_springyield;   // plastic yield threshold                  (ntendon x 1)
   mjtNum*   tendon_length0;       // tendon length in qpos0                   (ntendon x 1)
   mjtNum*   tendon_invweight0;    // inv. weight in qpos0                     (ntendon x 1)
   mjtNum*   tendon_user;          // user data                                (ntendon x nuser_tendon)
@@ -866,6 +869,7 @@ typedef struct mjModel_ {
   mjtNum*   key_mpos;             // key mocap position                       (nkey x nmocap*3)
   mjtNum*   key_mquat;            // key mocap quaternion                     (nkey x nmocap*4)
   mjtNum*   key_ctrl;             // key control                              (nkey x nu)
+  mjtNum*   key_plastic;          // key plastic state                        (nkey x nplastic)
 
   // names
   int*      name_bodyadr;         // body name pointers                       (nbody x 1)

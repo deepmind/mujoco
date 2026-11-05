@@ -1,0 +1,68 @@
+<!-- Copyright 2021 DeepMind Technologies Limited
+
+     Licensed under the Apache License, Version 2.0 (the "License");
+     you may not use this file except in compliance with the License.
+     You may obtain a copy of the License at
+
+         http://www.apache.org/licenses/LICENSE-2.0
+
+     Unless required by applicable law or agreed to in writing, software
+     distributed under the License is distributed on an "AS IS" BASIS,
+     WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+     See the License for the specific language governing permissions and
+     limitations under the License.
+-->
+
+<mujoco model="Belt">
+  <include file="scene.xml"/>
+
+  <statistic center="0 0 .2" extent="1"/>
+
+  <visual>
+    <global elevation="-30"/>
+  </visual>
+
+  <option timestep="0.001" integrator="discrete">
+    <flag gravity="disable"/>
+  </option>
+  <compiler autolimits="true"/>
+
+  <worldbody>
+    <flexcomp name="belt" type="direct" dim="1" pos="-.5 0 .05" radius=".005" mass=".05" rgba=".8 .2 .1 1"
+      point="
+      0.    0.   0.
+      0.05  0.   0.05
+      0.1   0.   0.1
+      0.15  0.   0.15
+      0.2   0.   0.2
+      0.25  0.   0.25
+      0.3   0.   0.3
+      0.35  0.   0.35
+      0.4   0.   0.4
+      0.45  0.   0.45
+      0.5   0.   0.5
+      0.55  0.   0.45
+      0.6   0.   0.4
+      0.65  0.   0.35
+      0.7   0.   0.3
+      0.75  0.   0.25
+      0.8   0.   0.2
+      0.85  0.   0.15
+      0.9   0.   0.1
+      0.95  0.   0.05
+      1.0   0.   0.  ">
+      <contact selfcollide="auto"/>
+      <edge equality="true"/>
+      <elasticity young="1e7" shear="1e8" damping=".3" section="box" sectionsize="0.02 0.0015"/>
+      <pin id="0 1"/>
+    </flexcomp>
+  </worldbody>
+
+  <equality>
+    <connect name="right_boundary" body1="belt_20" anchor="0 0 0"/>
+  </equality>
+
+  <actuator>
+    <motor joint="belt_twist" ctrlrange="-.2 .2"/>
+  </actuator>
+</mujoco>

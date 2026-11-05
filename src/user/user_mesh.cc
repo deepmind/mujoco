@@ -497,10 +497,13 @@ void mjCMesh::CacheMesh(mjCCache* cache, const mjResource* resource) {
   mjCMesh* mesh = new mjCMesh();
 
   // mesh properties
-  mesh->maxhullvert_ = maxhullvert_;
-  mesh->inertia      = inertia;
-  mesh->smoothnormal = smoothnormal;
+  mesh->maxhullvert_    = maxhullvert_;
+  mesh->inertia         = inertia;
+  mesh->smoothnormal    = smoothnormal;
+  mesh->octree_maxdepth = octree_maxdepth;
   std::copy(scale, scale + 3, mesh->scale);
+  std::copy(refpos, refpos + 3, mesh->refpos);
+  std::copy(refquat, refquat + 4, mesh->refquat);
 
   // mesh processed data
   mesh->processed_    = processed_;
@@ -825,7 +828,7 @@ void mjCMesh::TryCompile(const mjVFS* vfs) {
       } else if (vert_.empty()) {
         ProcessVertices(spec_vert_);
       }
-      if (!facenormal_.empty() && !spec_normal_.empty()) {
+      if (!facenormal_.empty() && !spec_facenormal_.empty()) {
         throw mjCError(this, "repeated facenormal specification");
       } else if (facenormal_.empty()) {
         facenormal_ = spec_facenormal_;
@@ -1082,8 +1085,26 @@ bool mjCMesh::LoadCachedMesh(mjCCache* cache, const mjResource* resource) {
     // check if normal generation is different
     if (smoothnormal != mesh->smoothnormal) { return false; }
 
+    // check if octree_maxdepth is different
+    if (octree_maxdepth != mesh->octree_maxdepth) { return false; }
+
     // check if scale is different
     if (scale[0] != mesh->scale[0] || scale[1] != mesh->scale[1] || scale[2] != mesh->scale[2]) {
+      return false;
+    }
+
+    // check if refpos is different
+    if (refpos[0] != mesh->refpos[0] ||
+        refpos[1] != mesh->refpos[1] ||
+        refpos[2] != mesh->refpos[2]) {
+      return false;
+    }
+
+    // check if refquat is different
+    if (refquat[0] != mesh->refquat[0] ||
+        refquat[1] != mesh->refquat[1] ||
+        refquat[2] != mesh->refquat[2] ||
+        refquat[3] != mesh->refquat[3]) {
       return false;
     }
 
@@ -1144,8 +1165,6 @@ bool mjCMesh::LoadCachedMesh(mjCCache* cache, const mjResource* resource) {
 
 // load MSH binary mesh
 void mjCMesh::LoadMSH(mjResource* resource, bool remove_repeated) {
-  bool righthand = scale[0] * scale[1] * scale[2] > 0;
-
   // get file data in buffer
   char* buffer    = 0;
   int   buffer_sz = mju_readResource(resource, (const void**)&buffer);
@@ -1217,8 +1236,10 @@ void mjCMesh::LoadMSH(mjResource* resource, bool remove_repeated) {
   }
   if (nfbuf) {
     face_.assign(3 * nfbuf, 0);
-    facenormal_.assign(3 * nfbuf, 0);
     memcpy(face_.data(), fdata, 3 * nfbuf * sizeof(int));
+  }
+  if (nfbuf && !normal_.empty()) {
+    facenormal_.assign(3 * nfbuf, 0);
     memcpy(facenormal_.data(), fdata, 3 * nfbuf * sizeof(int));
   }
   if (nfbuf && !texcoord_.empty()) {
@@ -1226,14 +1247,6 @@ void mjCMesh::LoadMSH(mjResource* resource, bool remove_repeated) {
     memcpy(facetexcoord_.data(), fdata, 3 * nfbuf * sizeof(int));
   }
 
-  // rearrange face data if left-handed scaling
-  if (nfbuf && !righthand) {
-    for (int i = 0; i < nfbuf; i++) {
-      int tmp          = face_[3 * i + 1];
-      face_[3 * i + 1] = face_[3 * i + 2];
-      face_[3 * i + 2] = tmp;
-    }
-  }
   ProcessVertices(vert, remove_repeated);
 }
 
@@ -3572,6 +3585,8 @@ void mjCSkin::PointToLocal() {
 void mjCSkin::NameSpace(const mjCModel* m) {
   mjCBase::NameSpace(m);
   for (auto& name : spec_bodyname_) { name = m->prefix + name + m->suffix; }
+  bone_prefix_ = m->prefix + bone_prefix_;
+  bone_suffix_ = bone_suffix_ + m->suffix;
   if (!spec_material_.empty() && model != m) {
     spec_material_ = m->prefix + spec_material_ + m->suffix;
   }
@@ -3702,6 +3717,9 @@ void mjCSkin::Compile(const mjVFS* vfs) {
       mju_closeResource(resource);
       throw err;
     }
+
+    // the bones loaded from file take the namespace of the attachments
+    for (auto& name : bodyname_) { name = bone_prefix_ + name + bone_suffix_; }
   }
 
   // make sure all data is present
@@ -3721,6 +3739,12 @@ void mjCSkin::Compile(const mjVFS* vfs) {
     throw mjCError(this, "Vertex and texcoord data incompatible size");
   }
   if (face_.size() % 3) { throw mjCError(this, "Face data must be multiple of 3"); }
+  size_t nvert = vert_.size() / 3;
+  for (size_t i = 0; i < face_.size(); i++) {
+    if (face_[i] < 0 || static_cast<size_t>(face_[i]) >= nvert) {
+      throw mjCError(this, "face vertex index %d out of range in skin", nullptr, face_[i]);
+    }
+  }
 
   // check bone sizes
   size_t nbone = bodyname_.size();
@@ -3742,7 +3766,6 @@ void mjCSkin::Compile(const mjVFS* vfs) {
 
   // set total vertex weights to 0
   std::vector<float> vw;
-  size_t             nvert = vert_.size() / 3;
   vw.resize(nvert);
   fill(vw.begin(), vw.end(), 0.0f);
 

@@ -3,15 +3,36 @@ name: mujoco-python
 description: >-
   Python simulation lifecycle (MjSpec, MjModel, MjData), simulation stepping
   (mj_step, mj_step1, mj_step2, mj_forward), named access (data.body, model.geom),
-  bind(), contact and touch sensors, sensordata, keyframe resets, integrators,
+  bind(), multi-threaded CPU batch simulation (mujoco.batch.Batch, mujoco.rollout),
+  optimization and system ID (mujoco.minimize, mujoco.sysid, mjd_transitionFD),
+  contact and touch sensors, sensordata, keyframe resets, integrators,
   mju_ spatial math (quaternions, poses), energy diagnostics.
-  Use for Python physics simulation, state access, stepping loops, sensors.
-  Do NOT use for model building/editing (mujoco-spec-editing), headless rendering (mujoco-rendering), GPU/TPU (mujoco-accelerated), or GUI/viewers (mujoco-gui, mujoco-studio).
+  Use for Python physics simulation, state access, CPU batching, stepping loops, sensors.
+  Do NOT use for model building/editing (mujoco-spec-editing), headless rendering (mujoco-rendering), GPU/TPU (mujoco-accelerated), cross-engine parity debugging (mujoco-parity), or GUI/viewers (mujoco-gui, mujoco-studio).
 ---
 
 # MuJoCo Python: Simulation, Sensors & Math
 
 > [!TIP]
+>
+> **Official MuJoCo documentation (`doc/*.rst`):** Read short chapters like
+> [`../../programming/simulation.rst`](../../programming/simulation.rst)
+> (`.. _Simulation:`) and [`../../overview.rst`](../../overview.rst) directly
+> when in a MuJoCo checkout; for large reference files like
+> [`../../python.rst`](../../python.rst) (`.. _PyStructs:`, `.. _PyNamed:`,
+> `.. _PyBatch:`, `.. _PySysid:`),
+> [`../../modeling.rst`](../../modeling.rst) (`.. _CTuning:`),
+> [`../../computation/index.rst`](../../computation/index.rst) (`.. _Pipeline:`,
+> `.. _geIntegrators:`, `.. _geChoosingTimestepIntegrator:`),
+> [`../../XMLreference.rst`](../../XMLreference.rst), and
+> [`../../APIreference/functions.rst`](../../APIreference/functions.rst), grep
+> the literal `.. _Label:` anchor. Outside a checkout, fetch
+> `https://mujoco.readthedocs.io/en/latest/<path>.html` (or `/en/stable/` for
+> released pages; `functions.rst` renders inside
+> `APIreference/APIfunctions.html`, and Sphinx anchors lowercase the label,
+> e.g. `.. _PyBatch:` → `#pybatch`) and browse repo paths (`../../../`,
+> `python/*.ipynb`) under
+> `https://github.com/google-deepmind/mujoco/tree/main/`.
 >
 > **Related skills:**
 >
@@ -21,6 +42,8 @@ description: >-
 >     cameras, depth, and segmentation.
 > -   [mujoco-accelerated](../accelerated/SKILL.md) — GPU/TPU physics simulation
 >     with MJX (JAX) and MJWarp (CUDA).
+> -   [mujoco-parity](../parity/SKILL.md) — Cross-engine physics parity
+>     comparison against MJWarp and MJX.
 > -   [mujoco-studio](../studio/SKILL.md) — Interactive viewers, Studio viewer
 >     apps, and plugin architecture.
 
@@ -126,7 +149,10 @@ spec.encode('model.xml', model)
 > [!CAUTION]
 >
 > `mujoco.load_model_from_path` does **not exist** in MuJoCo 3.x. Use
-> `mujoco.MjModel.from_xml_path(path)` or `mujoco.MjSpec.from_file(path)`.
+> `mujoco.MjModel.from_xml_path(path)` or `mujoco.MjSpec.from_file(path)`. For
+> ready-to-run models, check `../../../model/` (`humanoid/humanoid.xml`,
+> `tendon_arm/arm26.xml`, `car/car.xml`), `../../../test/engine/testdata/`, and
+> MuJoCo Menagerie ([models.rst](../../models.rst), `.. _Menagerie:`).
 
 ## 2. Accessing State: Named Access & bind()
 
@@ -249,27 +275,24 @@ if (key_id >= 0) {
 
 ### Integrators & Numerical Stability
 
-Configured via `model.opt.integrator`:
--   `mjINT_EULER` (default, kept for compatibility): Semi-implicit Euler; only
-    joint damping is integrated implicitly.
--   `mjINT_IMPLICITFAST` (recommended): Implicit in velocity, i.e. one Newton
-    step linearized in velocity using analytical derivatives of velocity-dependent
-    forces (joint/tendon/actuator damping including `kv`, fluid drag, gyroscopic
-    forces of free bodies). Skips Coriolis/centripetal derivatives and
-    symmetrizes the derivative so it can use Cholesky; cost is similar to Euler.
--   `mjINT_IMPLICIT`: Like `implicitfast` but also includes Coriolis/centripetal
-    derivatives (LU factorization). Helps rapidly spinning multi-link chains.
--   `mjINT_RK4`: 4th-order Runge-Kutta. Most accurate for smooth,
-    energy-conserving systems; costs four force evaluations per step.
--   `mjINT_DISCRETE` (experimental): The only integrator that is also implicit
-    in position, so stiff springs and position servos are treated implicitly,
-    including their interaction with contacts.
+Configured via `model.opt.integrator` (full equations and timestep/integrator
+selection notes in [computation/index.rst](../../computation/index.rst),
+`.. _geIntegrators:` and `.. _geChoosingTimestepIntegrator:`,
+[modeling.rst](../../modeling.rst), `.. _CTuningGlobal:`, and
+[XMLreference.rst](../../XMLreference.rst), `.. _option-integrator:`):
 
-> [!NOTE]
->
-> `implicit`/`implicitfast` are not full backward Euler: they are not implicit
-> in position (stiffness) and do not differentiate constraint/contact forces.
-> Their stability benefit is for large velocity-dependent forces.
+-   `mjINT_IMPLICITFAST` (**recommended**): Velocity-implicit (damping, `kv`,
+    fluid drag, free-body gyroscopic forces) via symmetric Cholesky at ~Euler
+    cost.
+-   `mjINT_IMPLICIT`: Adds asymmetric Coriolis/centripetal velocity derivatives
+    (LU factorization) for rapidly spinning multi-link chains.
+-   `mjINT_EULER` (legacy default): Semi-implicit Euler; implicit in joint
+    damping only.
+-   `mjINT_RK4`: 4th-order Runge-Kutta (4 evaluations/step) for smooth,
+    energy-conserving systems.
+-   `mjINT_DISCRETE` (candidate replacement in trial): Also implicit in
+    *position* (stiff springs, position servos `kp`, and their coupling with
+    contacts; `implicit`/`implicitfast` are velocity-implicit only).
 
 ## 4. Contact & Force Sensing: Declarative Sensors
 
@@ -287,7 +310,8 @@ for c in data.contact:
 
 ### Declarative Contact Sensors
 
-`<contact>` sensors declaratively filter contacts, reduce them to a fixed
+`<contact>` sensors (see [XMLreference.rst](../../XMLreference.rst),
+`.. _sensor-contact:`) declaratively filter contacts, reduce them to a fixed
 number of slots, and write deterministic vectors directly into `data.sensordata`:
 
 ```xml
@@ -314,7 +338,8 @@ contact_data = data.sensor('grip_contact').data  # Always fixed length
 ### Touch Sensors for Scalar Normal Force
 
 For scalar surface contact forces (e.g., fingertips), use `touch` sensors
-attached to a site. Make sure the site is large enough to encompass the geom:
+([XMLreference.rst](../../XMLreference.rst), `.. _sensor-touch:`) attached to a
+site. Make sure the site is large enough to encompass the geom:
 
 ```python
 site = body.add_site(name='fingertip', pos=[0, 0, 0.05], size=[0.02])
@@ -391,20 +416,85 @@ total_energy = potential_energy + kinetic_energy
 In passive, unforced, undamped systems, `total_energy` must remain constant.
 Growing energy indicates numerical integration instability (requiring smaller
 timesteps, or `implicitfast` if large damping or other velocity-dependent forces
-are the cause).
+are the cause). Before stiffening contacts to mask instability, inspect the
+paused model at `t = 0` in Studio/`simulate` for initial penetrations,
+visual/collision geom mismatches, concave collision meshes replaced by convex
+hulls (`.. _coChecking:`), implausible CAD/URDF inertia boxes, and degree/radian
+mismatches (`compiler/angle` defaults to `"degree"`). For priority-ordered
+speed-fidelity tuning, diagnosing divergence, non-SI unit mistakes
+(millimeter/gram meshes), island sleeping, speculative CCD, or fluid drag, read
+[modeling.rst](../../modeling.rst) (`.. _CTuning:`, `.. _CTuningDefaults:`,
+`.. _CTuningGlobal:`, `.. _CTuningModel:`),
+[overview.rst](../../overview.rst) (`.. _Clarifications:`, `.. _Divergence:`,
+`.. _Units:`, `.. _Soft:`),
+[computation/index.rst](../../computation/index.rst) (`.. _Solver:`,
+`.. _Sleeping:`), [programming/simulation.rst](../../programming/simulation.rst)
+(`.. _siSleep:`), [computation/speculative.rst](../../computation/speculative.rst),
+and [computation/fluid.rst](../../computation/fluid.rst).
 
-## 7. Compute Backend Selection
+## 7. CPU Batching (`mujoco.batch` & `mujoco.rollout`), Optimization & Backends
+
+### Stateful Multi-Threaded CPU Batching (`mujoco.batch.Batch`)
+
+For vectorized RL stepping, closed-loop controllers, subset resets, and
+per-simulation domain randomization on CPU across a native C++ thread pool (GIL
+released, bit-identical to serial `MjData` stepping, and supporting all CPU
+solvers/plugins), use `mujoco.batch.Batch` ([python.rst](../../python.rst),
+`.. _PyBatch:`, wrapping C `mjb_*` in
+[APIreference/functions.rst](../../APIreference/functions.rst),
+`.. _Batchedsimulation:`):
+
+```python
+from mujoco import batch
+
+# Pass persistent=True if the model uses sleep, IPC, or stateful plugins
+b = batch.Batch(model, nsim=1024, nthread=8)
+qpos, ctrl, xpos = b.bind('qpos'), b.bind('ctrl'), b.bind('xpos')
+
+# Named views slice (nsim, ...) and expand per-sim model fields
+hinge_qpos = b.joint('hinge').qpos           # (1024, 1)
+b.body('pendulum').mass = per_sim_masses     # Domain randomization
+b.set_const()                                # Recompute derived model constants
+
+for _ in range(1000):
+  ctrl[:] = policy(qpos, xpos)
+  b.step()                                   # Or b.step(ids=active_ids)
+```
+
+### Stateless Trajectory Rollouts, Optimization & System ID
+
+-   **Open-loop trajectory rollouts (`mujoco.rollout`)**: When rolling out fixed
+    control sequences `(nbatch, nstep, ncontrol)` from `initial_state` in one
+    call, use `mujoco.rollout.rollout` ([python.rst](../../python.rst),
+    `.. _PyRollout:`, and `python/rollout.ipynb`) or `b.rollout(...)`.
+-   **Finite-difference derivatives & LQR (`mjd_transitionFD`)**: Compute
+    linearized $A, B, C, D$ transition matrices with `mujoco.mjd_transitionFD`
+    ([APIreference/functions.rst](../../APIreference/functions.rst),
+    `.. _Derivatives-api:`, and `python/LQR.ipynb`).
+-   **Nonlinear least-squares & System ID (`mujoco.minimize`, `mujoco.sysid`)**:
+    Use `mujoco.minimize.least_squares` ([python.rst](../../python.rst),
+    `.. _PyMinimize:`, and `python/least_squares.ipynb`) for box-constrained QP
+    optimization (`mju_boxQP`), and `mujoco.sysid` (`pip install mujoco[sysid]`;
+    see [python.rst](../../python.rst), `.. _PySysid:`,
+    [modeling.rst](../../modeling.rst), `.. _CTuningSysid:`,
+    `python/mujoco/sysid/README.md`, and `python/mujoco/sysid/sysid.ipynb`) for
+    fitting inertias, friction/damping, actuator gains, and delays to hardware
+    logs over batched rollouts.
+
+### Compute Backend Comparison
 
 | Feature | C++ Engine (Default) | MJX (JAX) | MJWarp (CUDA) |
 | :--- | :--- | :--- | :--- |
-| **Import** | `import mujoco` | `from mujoco import mjx` | `import mujoco_warp as mjw` |
-| **Primary Use** | Real-time control, interactive tools, full solver support | Differentiable physics, large batch RL | High-throughput batch rollouts |
-| **Hardware** | CPU | GPU / TPU | NVIDIA GPU |
-| **Precision** | float64 | float32 | float32 |
+| **Import** | `import mujoco` (`mujoco.batch`, `mujoco.rollout`) | `from mujoco import mjx` | `import mujoco_warp as mjw` |
+| **Primary Use** | Real-time control, interactive tools, CPU batch RL/MPC, full solver support | Differentiable physics, large batch RL | High-throughput batch rollouts |
+| **Hardware** | CPU (single or multi-threaded) | GPU / TPU | NVIDIA GPU |
+| **Precision** | float64 (or float32 with `-DmjUSESINGLE` / `--@mujoco//:single_precision`) | float32 | float32 |
 | **Solvers** | Newton, CG, PGS, noslip | Newton, CG | Newton, CG |
 | **Plugins** | All plugins | Not supported | SDF only |
 
-*(For detailed GPU and TPU execution patterns, refer to [`mujoco-accelerated`](../accelerated/SKILL.md).)*
+For GPU and TPU execution patterns (and RL frameworks like `mujoco_playground`
+and `mjlab`), refer to [`mujoco-accelerated`](../accelerated/SKILL.md); for
+cross-engine physics comparison, refer to [`mujoco-parity`](../parity/SKILL.md).
 
 ## 8. Common Gotchas & Best Practices
 
@@ -427,12 +517,45 @@ are the cause).
 
 ### Documentation
 
--   [Python Bindings Reference](../../python.rst)
--   [Simulation & Computation Guide](../../programming/simulation.rst)
--   [C API Functions](../../APIreference/APIfunctions.rst)
--   [C API Types & Structs](../../APIreference/APItypes.rst)
+-   [Python Bindings Reference](../../python.rst) (`.. _PyNotebook:`,
+    `.. _PyStructs:`, `.. _PyNamed:`, `.. _PyModelEdit:`, `.. _PyMJCF:`,
+    `.. _PyRollout:`, `.. _PyBatch:`, `.. _PyMinimize:`, `.. _PySysid:`)
+-   [Model Tuning & Pitfalls](../../modeling.rst) (`.. _CTuning:`,
+    `.. _CTuningDefaults:`, `.. _CTuningGlobal:`, `.. _CTuningModel:`,
+    `.. _CTuningSysid:`) and [Overview](../../overview.rst)
+    (`.. _Clarifications:`, `.. _Divergence:`, `.. _Units:`,
+    `.. _SurprisingCollisions:`, `.. _Soft:`)
+-   [Simulation Loop, Batching & Sleeping](../../programming/simulation.rst)
+    (`.. _siSimulation:`, `.. _siStateControl:`, `.. _siForward:`,
+    `.. _siBatch:`, `.. _siDiagnostics:`, `.. _siSleep:`)
+-   [Computation, Solvers & Integrators](../../computation/index.rst)
+    (`.. _geIntegrators:`, `.. _geChoosingTimestepIntegrator:`, `.. _geState:`,
+    `.. _Solver:`, `.. _Sleeping:`, `.. _Pipeline:`),
+    [Speculative CCD](../../computation/speculative.rst), and
+    [Fluid Dynamics](../../computation/fluid.rst)
+-   [MuJoCo Menagerie Robot Gallery](../../models.rst) (`.. _Menagerie:`) and
+    [MJCF Sensor & Option Reference](../../XMLreference.rst)
+    (`.. _sensor-contact:`, `.. _sensor-touch:`, `.. _option-flag:`,
+    `.. _keyframe:`)
+-   [C API Function Reference](../../APIreference/functions.rst)
+    (`.. _Mainsimulation:`, `.. _Batchedsimulation:`, `.. _Derivatives-api:`,
+    `.. _Quaternions:`, `.. _Poses:`; rendered online inside
+    [`APIfunctions.rst`](../../APIreference/APIfunctions.rst)) and
+    [C API Types & Structs](../../APIreference/APItypes.rst) (`.. _mjModel:`,
+    `.. _mjData:`, `.. _mjtState:`)
 
-### Source Code Examples
+### Notebooks, Models & Ecosystem
 
--   [Python Bindings Tests](../../../python/mujoco/bindings_test.py)
--   [C API Header](../../../include/mujoco/mujoco.h)
+-   **In-repo notebooks**: `python/tutorial.ipynb`, `python/mjspec.ipynb`,
+    `python/rollout.ipynb`, `python/LQR.ipynb`, `python/least_squares.ipynb`,
+    and `python/mujoco/sysid/sysid.ipynb`
+-   **Source & models**:
+    [Python Bindings Tests](../../../python/mujoco/bindings_test.py),
+    [Built-in Showcase Models](../../../model/humanoid/humanoid.xml),
+    [C++ Samples](../../programming/samples.rst) (`.. _Sample:`), and
+    [C API Header](../../../include/mujoco/mujoco.h)
+-   **Downstream control & RL repos**:
+    [MuJoCo MPC (`mujoco_mpc`)](https://github.com/google-deepmind/mujoco_mpc),
+    [`dm_control`](https://github.com/google-deepmind/dm_control),
+    [MuJoCo Playground](https://github.com/google-deepmind/mujoco_playground),
+    and [`mjlab`](https://github.com/mujocolab/mjlab)

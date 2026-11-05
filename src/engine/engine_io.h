@@ -55,7 +55,7 @@ void mj_makeModel(mjModel** dest,
     mjtSize nflex, mjtSize nflexnode, mjtSize nflexvert, mjtSize nflexedge, mjtSize nflexelem,
     mjtSize nflexelemdata, mjtSize nflexstiffness, mjtSize nflexbending,
     mjtSize nefm0dof, mjtSize nefm0L, mjtSize nefmCvert, mjtSize nflexelemedge,
-    mjtSize nflexshelldata, mjtSize nflextexcoord, mjtSize nJfe, mjtSize nJfv,
+    mjtSize nflexshelldata, mjtSize nflextexcoord, mjtSize nJfe,
     mjtSize nmesh, mjtSize nmeshvert, mjtSize nmeshnormal, mjtSize nmeshtexcoord, mjtSize nmeshface,
     mjtSize nmeshgraph, mjtSize nmeshpoly, mjtSize nmeshpolyvert, mjtSize nmeshpolymap,
     mjtSize nskin, mjtSize nskinvert, mjtSize nskintexvert, mjtSize nskinface, mjtSize nskinbone,
@@ -65,7 +65,7 @@ void mj_makeModel(mjModel** dest,
     mjtSize ntextdata, mjtSize ntuple, mjtSize ntupledata, mjtSize nkey, mjtSize nmocap,
     mjtSize nplugin, mjtSize npluginattr, mjtSize nuser_body, mjtSize nuser_jnt, mjtSize nuser_geom,
     mjtSize nuser_site, mjtSize nuser_cam, mjtSize nuser_tendon, mjtSize nuser_actuator,
-    mjtSize nuser_sensor, mjtSize nnames, mjtSize npaths);
+    mjtSize nuser_sensor, mjtSize nnames, mjtSize npaths, mjtSize nplastic);
 
 // set pointers in mjModel buffer from its sizes
 void mj_setPtrModel(mjModel* m);
@@ -130,6 +130,9 @@ MJAPI mjData* mjv_copyData(mjData* dest, const mjModel* m, const mjData* src);
 // set ctrl to neutral values: zero, except quaternion inputs which reset to the identity
 MJAPI void mj_resetCtrl(const mjModel* m, mjData* d);
 
+// initialize plastic state from model spring references
+void mj_resetPlastic(const mjModel* m, mjData* d);
+
 // set data to defaults
 MJAPI void mj_resetData(const mjModel* m, mjData* d);
 
@@ -139,8 +142,9 @@ MJAPI void mj_resetDataDebug(const mjModel* m, mjData* d, unsigned char debug_va
 // Reset data. If 0 <= key < nkey, set fields from specified keyframe.
 MJAPI void mj_resetDataKeyframe(const mjModel* m, mjData* d, int key);
 
-// init plugins
-MJAPI void mj_initPlugin(const mjModel* m, mjData* d);
+// init plugins; on failure, destroy the instances already initialized and return the id of the
+// failed instance, otherwise return -1
+MJAPI int mj_initPlugin(const mjModel* m, mjData* d);
 
 // deallocate data
 MJAPI void mj_deleteData(mjData* d);

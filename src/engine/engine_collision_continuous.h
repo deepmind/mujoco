@@ -152,9 +152,9 @@ MJAPI mjtNum mjc_geomStepMotion(const mjModel* m, const mjData* d, int g, mjtNum
                                 mjtNum dx[3], mjtNum dw[3]);
 
 // conservative advancement between two geoms g1 and g2 over the timestep;
-// return time of impact in [0, 1] and writes the contact for t < 1
-MJAPI mjtNum mjc_advanceGeomPair(const mjModel* m, const mjData* d, int g1, int g2,
-                                 mjtNum margin, mjPreContact* con);
+// write up to 4 contacts into con and return number of contacts
+MJAPI int mjc_advanceGeomPair(const mjModel* m, const mjData* d, int g1, int g2,
+                              mjtNum margin, mjPreContact* con, void* buffer);
 
 #ifdef __cplusplus
 }

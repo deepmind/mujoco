@@ -65,6 +65,7 @@ class ObjectManager {
     kOutlineComposite,
     kOutlineFlatten,
     kOutlineJumpFlood,
+    kHaze,
     kNumMaterials,
   };
 

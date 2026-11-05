@@ -68,28 +68,47 @@ std::string getExecutableDir() {
 #if defined(_WIN32) || defined(__CYGWIN__)
   constexpr char kPathSep = '\\';
   std::string    realpath = [&]() -> std::string {
-    std::unique_ptr<char[]> realpath(nullptr);
-    DWORD                   buf_size = 128;
-    bool                    success  = false;
+    std::unique_ptr<wchar_t[]> wrealpath(nullptr);
+    DWORD                      buf_size = 128;
+    DWORD                      written  = 0;
+    bool                       success  = false;
     while (!success) {
-      realpath.reset(new (std::nothrow) char[buf_size]);
-      if (!realpath) {
+      wrealpath.reset(new (std::nothrow) wchar_t[buf_size]);
+      if (!wrealpath) {
         std::cerr << "cannot allocate memory to store executable path\n";
         return "";
       }
 
-      DWORD written = GetModuleFileNameA(nullptr, realpath.get(), buf_size);
-      if (written < buf_size) {
-        success = true;
-      } else if (written == buf_size) {
-        // realpath is too small, grow and retry
-        buf_size *= 2;
-      } else {
+      written = GetModuleFileNameW(nullptr, wrealpath.get(), buf_size);
+      if (written == 0) {
         std::cerr << "failed to retrieve executable path: " << GetLastError() << "\n";
         return "";
+      } else if (written < buf_size) {
+        success = true;
+      } else {
+        // wrealpath is too small, grow and retry
+        buf_size *= 2;
       }
     }
-    return realpath.get();
+    int len = WideCharToMultiByte(CP_UTF8,
+                                  0,
+                                  wrealpath.get(),
+                                  static_cast<int>(written),
+                                  nullptr,
+                                  0,
+                                  nullptr,
+                                  nullptr);
+    if (len <= 0) { return ""; }
+    std::string out(len, '\0');
+    WideCharToMultiByte(CP_UTF8,
+                        0,
+                        wrealpath.get(),
+                        static_cast<int>(written),
+                        out.data(),
+                        len,
+                        nullptr,
+                        nullptr);
+    return out;
   }();
 #else
   constexpr char kPathSep = '/';

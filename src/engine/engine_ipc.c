@@ -39,6 +39,7 @@
 #include "engine/engine_name.h"
 #include "engine/engine_sensor.h"
 #include "engine/engine_support.h"
+#include "engine/engine_thread.h"
 #include "engine/engine_util_blas.h"
 #include "engine/engine_util_errmem.h"
 
@@ -99,22 +100,71 @@ static mjtNum ipc_muPair(const ipcCon* con, const mjtNum* mass) {
 // cnt -> decay exponent c (AL normal-contact aging): c = cnt>=0 ? cnt : max(-cnt-6, 0).
 static inline int ipc_cntExp(int cnt) { return cnt >= 0 ? cnt : (-cnt - 6 > 0 ? -cnt - 6 : 0); }
 
-// stable per-pair hash for the persistent cnt store: contact type + sorted vertex/feature indices.
-static uint64_t ipc_pairHash(const mjcFlexPair* con) {
-  int id[4];
+// sort two ints ascending in place
+static inline void ipc_sort2(int* a, int* b) {
+  if (*a > *b) {
+    int t = *a;
+    *a = *b;
+    *b = t;
+  }
+}
+
+
+// canonical pair indices: order-independent only within each role, as the roles differ per type
+// (a lone vertex or geom feature vs. the flex points of a triangle or edge), so that permutations
+// of one pair agree while distinct pairs sharing an index multiset do not
+static void ipc_canonIdx(int id[4], const mjcFlexPair* con) {
   for (int k=0; k < 4; k++)
     id[k] = con->idx[k];
-  for (int i=0; i < 3; i++)
-    for (int j=0; j < 3 - i; j++)  // sort idx ascending (order-independent key)
-      if (id[j] > id[j + 1]) {
-        int t = id[j];
-        id[j] = id[j + 1];
-        id[j + 1] = t;
-      }
+  switch (con->type) {
+  case mjcFLEX_VERT_TRI:    // {vertex, triangle}
+  case mjcGEOM_CORNER_TRI:  // {geom corner, triangle}
+    ipc_sort2(id+1, id+2);
+    ipc_sort2(id+2, id+3);
+    ipc_sort2(id+1, id+2);
+    break;
+  case mjcFLEX_EDGE_EDGE:   // {edge, edge}, unordered edges of unordered endpoints
+    ipc_sort2(id+0, id+1);
+    ipc_sort2(id+2, id+3);
+    if (id[0] > id[2] || (id[0] == id[2] && id[1] > id[3])) {
+      int t0 = id[0], t1 = id[1];
+      id[0] = id[2];
+      id[1] = id[3];
+      id[2] = t0;
+      id[3] = t1;
+    }
+    break;
+  case mjcFLEX_VERT_GEOM:   // {vertex}
+    id[1] = id[2] = id[3] = 0;
+    break;
+  case mjcGEOM_EDGE_EDGE:   // {geom edge, flex edge}
+    ipc_sort2(id+1, id+2);
+    id[3] = 0;
+    break;
+  }
+}
+
+
+// per-pair hash for the active-set merge: contact type, geom and canonical indices
+static uint64_t ipc_pairHash(const mjcFlexPair* con) {
+  int id[4];
+  ipc_canonIdx(id, con);
   uint64_t hh = (uint64_t)con->type * 1000003ull + (uint64_t)(con->g + 1);
   for (int k=0; k < 4; k++)
     hh = hh * 1000003ull + (uint64_t)(id[k] + 1);
   return hh;
+}
+
+
+// pair identity: same type, geom and canonical indices
+static int ipc_pairEqual(const mjcFlexPair* a, const mjcFlexPair* b) {
+  if (a->type != b->type || a->g != b->g) {
+    return 0;
+  }
+  int ia[4], ib[4];
+  ipc_canonIdx(ia, a);
+  ipc_canonIdx(ib, b);
+  return ia[0] == ib[0] && ia[1] == ib[1] && ia[2] == ib[2] && ia[3] == ib[3];
 }
 
 
@@ -208,22 +258,30 @@ static void ipc_mergeActiveSet(mjData* d, ipcCon** aset, int* naset, const mjcFl
   if (bound) {
     amerge = (ipcCon*)mj_arenaAllocByte(d, bound * sizeof(ipcCon), _Alignof(ipcCon));
     if (!amerge) {
-      mjERROR("arena too small for the IPC active set (%d pairs): increase the model's memory",
-              bound);
+      ipcCon* old = *aset;
+      int nm = 0;
+      for (int c=0; c < *naset; c++) {
+        if ((old[c].lam <= 0 && old[c].cnt < -IPC_EVICT) || old[c].cnt > IPC_ASET_AGE) continue;
+        old[nm++] = old[c];
+      }
+      *naset = nm;
+      mj_warning(d, mjWARN_CONTACTFULL, bound);
+      return;
     }
   }
   const ipcCon* old = *aset;
-  // presence hash over the merged set, open addressing keyed by pairHash (0 = empty; a true hash
-  // of 0 would at worst admit one duplicate), per-call scratch on the mjData stack sized by the
-  // merged-set bound: only the old set and the admitted candidates are inserted
+  // presence hash over the merged set, open addressing keyed by pairHash and verified by
+  // pairEqual (mtab: 1-based index into amerge, 0 = empty), per-call scratch on the mjData stack
+  // sized by the merged-set bound: only the old set and the admitted candidates are inserted
   int cap = 1;
   while (cap < 2 * bound + 16)
     cap <<= 1;
   mj_markStack(d);
   uint64_t* mkey = mjSTACKALLOC(d, cap, uint64_t);
+  int* mtab = mjSTACKALLOC(d, cap, int);
   uint64_t mask = (uint64_t)(cap - 1);
   for (int i=0; i < cap; i++)
-    mkey[i] = 0;
+    mtab[i] = 0;
   int nm = 0;
   // 1) keep existing pairs that still carry load
   for (int c=0; c < *naset; c++) {
@@ -233,23 +291,24 @@ static void ipc_mergeActiveSet(mjData* d, ipcCon** aset, int* naset, const mjcFl
     // reaching zero), and never-engaged pairs age out on their own counter.
     if ((old[c].lam <= 0 && old[c].cnt < -IPC_EVICT) || old[c].cnt > IPC_ASET_AGE) continue;
     uint64_t key = ipc_pairHash(IPC_PAIR(&old[c])), h = key & mask;
-    while (mkey[h] != 0) {
-      if (mkey[h] == key) break;
+    while (mtab[h] != 0) {
+      if (mkey[h] == key && ipc_pairEqual(IPC_PAIR(&amerge[mtab[h]-1]), IPC_PAIR(&old[c]))) break;
       h = (h + 1) & mask;
     }
-    if (mkey[h] == key) continue;
+    if (mtab[h] != 0) continue;
     mkey[h] = key;
     amerge[nm++] = old[c];
+    mtab[h] = nm;
   }
   // 2) add new admitted broad-phase candidates not already present
   for (int c=0; c < ncand; c++) {
     if (!cadmit[c]) continue;
     uint64_t key = ipc_pairHash(IPC_PAIR(&cand[c])), h = key & mask;
-    while (mkey[h] != 0) {
-      if (mkey[h] == key) break;
+    while (mtab[h] != 0) {
+      if (mkey[h] == key && ipc_pairEqual(IPC_PAIR(&amerge[mtab[h]-1]), &cand[c])) break;
       h = (h + 1) & mask;
     }
-    if (mkey[h] == key) continue;  // dedup: pair already in the merged set
+    if (mtab[h] != 0) continue;  // dedup: pair already in the merged set
     ipcCon con = {0};
     con.type = cand[c].type;
     for (int q=0; q < 4; q++) con.idx[q] = cand[c].idx[q];
@@ -263,10 +322,58 @@ static void ipc_mergeActiveSet(mjData* d, ipcCon** aset, int* naset, const mjcFl
     con.cnt = ipc_conAge(&con, conage, pt2vg);
     mkey[h] = key;
     amerge[nm++] = con;
+    mtab[h] = nm;
   }
   *aset = amerge;
   *naset = nm;
   mj_freeStack(d);
+}
+
+
+// number of distinct pairs among cand and an optional old set, as deduplicated by the active-set
+// merge; allocates from the arena, which is not released until the next reset (for testing only)
+int mj_ipcCountDistinct(mjData* d, const mjcFlexPair* cand, int ncand, const mjcFlexPair* old,
+                        int nold) {
+  int npt = 1;
+  for (int c=0; c < ncand; c++) {
+    int vv[4], nvv = mjc_pairVerts(vv, &cand[c]);
+    for (int q=0; q < nvv; q++)
+      if (vv[q] >= npt) npt = vv[q] + 1;
+  }
+  for (int c=0; c < nold; c++) {
+    int vv[4], nvv = mjc_pairVerts(vv, &old[c]);
+    for (int q=0; q < nvv; q++)
+      if (vv[q] >= npt) npt = vv[q] + 1;
+  }
+  mj_markStack(d);
+  int* cadmit = mjSTACKALLOC(d, ncand, int);
+  mjtNum* pal = mjSTACKALLOC(d, npt, mjtNum);
+  int* conage = mjSTACKALLOC(d, npt, int);
+  int* pt2vg = mjSTACKALLOC(d, npt, int);
+  for (int c=0; c < ncand; c++) cadmit[c] = 1;
+  for (int p=0; p < npt; p++) {
+    pal[p] = 0;
+    conage[p] = 0;
+    pt2vg[p] = p;
+  }
+  ipcCon* aset = NULL;
+  int naset = 0;
+  if (old && nold > 0) {
+    aset = mjSTACKALLOC(d, nold, ipcCon);
+    naset = nold;
+    for (int c=0; c < nold; c++) {
+      ipcCon con = {0};
+      con.type = old[c].type;
+      for (int q=0; q < 4; q++) con.idx[q] = old[c].idx[q];
+      con.gi = old[c].g;
+      con.lam = 0;
+      con.cnt = 0;
+      aset[c] = con;
+    }
+  }
+  ipc_mergeActiveSet(d, &aset, &naset, cand, ncand, cadmit, pal, conage, pt2vg);
+  mj_freeStack(d);
+  return naset;
 }
 
 
@@ -615,6 +722,54 @@ static void ipc_pinnedPos(const mjModel* m, const mjData* d, int npt, const int*
 }
 
 
+// per-pair gap loops on the engine thread pool: either the active set's linearization (con != NULL:
+// ld0, ln, liv, lcw, lniv of each pair) or the candidates' gaps (cand != NULL: gap[c]); each task
+// covers a disjoint range of pairs, so the result is identical to the serial run
+typedef struct {
+  ipcCon* con;
+  const mjcFlexPair* cand;
+  mjtNum* gap;
+  int n, chunk;
+  const mjtNum* x;
+  const mjtNum* gv;
+  const mjtNum* ge;
+  const mjtNum* rad;
+  mjtNum ghat;
+} ipcGapArg;
+
+static void ipc_gapTask(const mjModel* m, mjData* d, void* arg, int thread_id, int task_id) {
+  (void)thread_id;
+  const ipcGapArg* a = (const ipcGapArg*)arg;
+  int c0 = task_id * a->chunk, c1 = c0 + a->chunk < a->n ? c0 + a->chunk : a->n;
+  for (int c=c0; c < c1; c++) {
+    if (a->con) {
+      ipcCon* w = a->con + c;
+      w->ld0 = mjc_pairGap(IPC_PAIR(w), m, d, a->x, a->gv, a->ge, a->rad, w->ln, w->liv, w->lcw,
+                           &w->lniv, a->ghat);
+    } else {
+      mjtNum nn[3], cw[4];
+      int idv[4], ni;
+      a->gap[c] = mjc_pairGap(a->cand + c, m, d, a->x, a->gv, a->ge, a->rad, nn, idv, cw, &ni,
+                              a->ghat);
+    }
+  }
+}
+
+// run the gap loop described by a (chunk is set here) on d's thread pool
+static void ipc_gapLoop(const mjModel* m, mjData* d, ipcGapArg* a) {
+  int nthread = mju_numThread(d);
+  if (nthread < 2 || a->n <= 0) {
+    a->chunk = a->n;
+    if (a->n > 0) ipc_gapTask(m, d, a, 0, 0);
+    return;
+  }
+  int ntask = 8 * nthread;
+  a->chunk = (a->n + ntask - 1) / ntask;
+  if (a->chunk < 256) a->chunk = 256;
+  mju_dispatch(m, d, ipc_gapTask, a, (a->n + a->chunk - 1) / a->chunk);
+}
+
+
 void mj_ipc(const mjModel* m, mjData* d) {
   mjtNum h = m->opt.timestep;
   // every dim-2 flex takes part; their vertices are concatenated in flex order and fxadr[k] is
@@ -666,7 +821,7 @@ void mj_ipc(const mjModel* m, mjData* d) {
   for (int b=0; b < m->nbody; b++)
     nvertbody[b] = 0;
   for (int vg=0; vg < m->nflexvert; vg++)
-    nvertbody[m->flex_vertbodyid[vg]]++;
+    if (m->flex_vertbodyid[vg] >= 0) nvertbody[m->flex_vertbodyid[vg]]++;
   int nfree = 0;
   for (int k=0; k < nfd; k++) {
     int fi = flist[k];
@@ -947,9 +1102,10 @@ void mj_ipc(const mjModel* m, mjData* d) {
     ipcCon* wcon = aset;  // the working set is the persistent active set
     int wncon = naset;
     // linearize the pairs at xfree (Eq. 10): c(x) is linear in x for this iteration
-    for (int c=0; c < wncon; c++)
-      wcon[c].ld0 = mjc_pairGap(IPC_PAIR(&wcon[c]), m, d, xfree, gv, ge, rad, wcon[c].ln, wcon[c].liv,
-                               wcon[c].lcw, &wcon[c].lniv, ghat);
+    {
+      ipcGapArg ga = {wcon, NULL, NULL, wncon, 0, xfree, gv, ge, rad, ghat};
+      ipc_gapLoop(m, d, &ga);
+    }
     // x persists across outer iterations (the paper's warm start)
     int flex_converged_out = 0, artic_converged_out = 0, newton_converged_out = 0;
     for (int it=0; it < inner_cap && nown > 0; it++) {
@@ -1061,10 +1217,9 @@ void mj_ipc(const mjModel* m, mjData* d) {
         }
         int savednefc = d->nefc;
         nefc_qp = d->nefc;
-        // The subproblem is solved by MuJoCo's nonlinear CG on the shared primal path, with no
-        // factorization to go rank-deficient under stiff contact. A fully converged direction per
-        // outer iteration is wasted, since the outer AL converges at the same rate with a loosely
-        // solved subproblem; the iteration cap is the model's opt.iterations.
+        // The subproblem is solved on the shared primal path (Newton or CG) over the monolithic
+        // problem. A loosely solved subproblem suffices per outer AL iteration; the iteration cap
+        // is the model's opt.iterations.
         // solver_niter is zeroed per solve; accumulate it so the step reports its total
         int niter[mjNISLAND];
         for (int i=0; i < mjNISLAND; i++) niter[i] = d->solver_niter[i];
@@ -1072,7 +1227,7 @@ void mj_ipc(const mjModel* m, mjData* d) {
         ipcEfcRows saved;
         ipc_efcPublish(m, d, &saved, npair, esnpt, esbase, esw, esD, esref, esxadr, esxnum, esxdof,
                        esxval);
-        mj_fwdConstraintCG(m, d);  // CG over the monolithic problem, whatever the model's solver
+        mj_fwdConstraint(m, d);  // monolithic primal solve (islands disabled under IPC)
         ipc_efcRowForce(m, d, saved.nefc, qfrc_rows);  // the pairs' share of the solve's force
         ipc_efcRestore(d, &saved);
         for (int i=0; i < mjNISLAND; i++) d->solver_niter[i] += niter[i];
@@ -1167,10 +1322,9 @@ void mj_ipc(const mjModel* m, mjData* d) {
     mjtNum* toi = mjSTACKALLOC(d, nq, mjtNum);
     int* appr = mjSTACKALLOC(d, nq, int);
     int* actc = mjSTACKALLOC(d, nq, int);
-    for (int c=0; c < ncand; c++) {
-      mjtNum nn[3], cw[4];
-      int idv[4], ni;  // gaps at xfree (for CCD + admission)
-      cgap[c] = mjc_pairGap(IPC_PAIR(&cand[c]), m, d, xfree, gv, ge, rad, nn, idv, cw, &ni, ghat);
+    {
+      ipcGapArg ga = {NULL, cand, cgap, ncand, 0, xfree, gv, ge, rad, ghat};
+      ipc_gapLoop(m, d, &ga);
     }
     // conservative-advancement CCD (mjc_advance): the largest fraction of xfree -> x that keeps
     // every gap above a fraction of its current value; appr flags the pairs that close this step

@@ -15,7 +15,7 @@
 
 <mujoco model="Poncho">
   <include file="mannequin.xml"/>
-  <option integrator="discrete" solver="CG" tolerance="1e-6">
+  <option integrator="discrete" tolerance="1e-6">
     <flag energy="enable"/>
   </option>
 
@@ -1413,8 +1413,7 @@
                 402 419 401
                 398 399 418
                 398 376 378">
-      <edge equality="vert" damping="0.1"/>
-      <elasticity young="3e5" poisson="0" thickness="8e-3" elastic2d="bend" damping="0.02"/>
+      <elasticity young="43301.2702" poisson="0" thickness="1.38564065e-2" elastic2d="both" damping="0.02"/>
       <contact solref="0.003"/>
     </flexcomp>
 

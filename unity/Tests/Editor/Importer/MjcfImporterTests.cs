@@ -62,6 +62,26 @@ public class MjcfImporterTests {
     var geomChild = _sceneRoot.transform.GetChild(0).gameObject;
     Assert.That(geomChild, Is.Not.Null);
     Assert.That(geomChild.GetComponent<MjGeom>(), Is.Not.Null);
+    Assert.That(geomChild.GetComponent<MjMeshFilter>(), Is.Not.Null);
+    Assert.That(geomChild.GetComponent<MeshRenderer>(), Is.Not.Null);
+  }
+
+  [Test]
+  public void ParsingHFieldGeomSkipsMeshFilterAndRenderer() {
+    var mjcfString = @"<mujoco>
+      <worldbody>
+        <geom type='hfield'/>
+      </worldbody>
+    </mujoco>";
+    _sceneRoot = _importer.ImportString(
+        name: string.Empty, mjcfString: mjcfString);
+    Assert.That(_sceneRoot.transform.childCount, Is.EqualTo(1));
+    var geomChild = _sceneRoot.transform.GetChild(0).gameObject;
+    var geom = geomChild.GetComponent<MjGeom>();
+    Assert.That(geom, Is.Not.Null);
+    Assert.That(geom.ShapeType, Is.EqualTo(MjShapeComponent.ShapeTypes.HField));
+    Assert.That(geomChild.GetComponent<MjMeshFilter>(), Is.Null);
+    Assert.That(geomChild.GetComponent<MeshRenderer>(), Is.Null);
   }
 
   [TestCase("hinge", typeof(MjHingeJoint))]

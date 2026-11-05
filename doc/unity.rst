@@ -37,14 +37,14 @@ _____
 
 The MuJoCo app needs to be run at least once before the native library can be used, in order to register the library as
 a trusted binary. Then, copy the dynamic library file from
-``/Applications/MuJoCo.app/Contents/Frameworks/mujoco.framework/Versions/Current/libmujoco.3.16.1.dylib`` (it can be
+``/Applications/MuJoCo.app/Contents/Frameworks/mujoco.framework/Versions/Current/libmujoco.4.0.0.dylib`` (it can be
 found by browsing the contents of ``MuJoCo.app``) and rename it as ``mujoco.dylib``.
 
 Linux
 _____
 
 Expand the ``tar.gz`` archive to ``~/.mujoco``. Then copy the dynamic library from
-``~/.mujoco/mujoco-3.16.1/lib/libmujoco.so.3.16.1`` and rename it as ``libmujoco.so``.
+``~/.mujoco/mujoco-4.0.0/lib/libmujoco.so.4.0.0`` and rename it as ``libmujoco.so``.
 
 Windows
 _______
@@ -339,7 +339,7 @@ MuJoCo plugins
 ______________
 
 The current version of the Unity package does not support loading MJCF scenes that use :ref:`MuJoCo plugins<exPlugin>` such as
-`elasticity <https://github.com/google-deepmind/mujoco/tree/main/plugin/elasticity#readme>`__ . Adding basic functionality to do this will be part of an upcoming release.
+`actuator <https://github.com/google-deepmind/mujoco/tree/main/plugin/actuator#readme>`__ . Adding basic functionality to do this will be part of an upcoming release.
 
 Interaction with External Processes
 ___________________________________

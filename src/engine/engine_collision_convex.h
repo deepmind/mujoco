@@ -49,6 +49,9 @@ struct _mjCCDObj {
   int vert;
   mjtNum margin;
   mjtNum rotate[4];
+  mjtNum suppvert[12];
+  int suppind[4];
+  int nsupp;
   union {
     // mesh data from mjModel
     struct {

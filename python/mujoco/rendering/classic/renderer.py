@@ -14,6 +14,7 @@
 # ==============================================================================
 """Defines a renderer class for the MuJoCo Python native bindings."""
 
+import functools
 from typing import Optional, Union
 
 import mujoco
@@ -21,6 +22,17 @@ from mujoco.rendering.classic import gl_context
 import numpy as np
 
 GLContext = gl_context.GLContext if hasattr(gl_context, 'GLContext') else None
+
+
+@functools.lru_cache(maxsize=8)
+def _owned_gl_context_cls(cls):
+  """Returns a `GLContext` subclass whose lifetime is managed by `Renderer`."""
+  if not isinstance(cls, type):
+    return cls
+  # Suppress independent `__del__` during PEP 442 cyclic GC (e.g. under
+  # free-threaded Python) so `Renderer.__del__` always binds this context via
+  # `as_current()` before freeing `MjrContext`, and only then calls `free()`.
+  return type(f'_Owned{cls.__name__}', (cls,), {'__del__': lambda self: None})
 
 
 class Renderer:
@@ -86,7 +98,8 @@ the clause:
     # Create render contexts.
     # TODO(nimrod): Figure out why pytype doesn't like gl_context.GLContext
     if gl_context.GLContext is not None:
-      self._gl_context = gl_context.GLContext(width, height)  # type: ignore
+      gl_context_cls = _owned_gl_context_cls(gl_context.GLContext)
+      self._gl_context = gl_context_cls(width, height)
     if self._gl_context:
       self._gl_context.make_current()
     self._mjr_context = mujoco.MjrContext(model, font_scale.value)
@@ -135,128 +148,141 @@ the clause:
     Args:
       out: Alternative output array in which to place the resulting pixels. It
         must have the same shape as the expected output but the type will be
-        cast if necessary. The expted shape depends on the value of
-        `self._depth_rendering`: when `True`, we expect `out.shape == (width,
-        height)`, and `out.shape == (width, height, 3)` when `False`.
+        cast if necessary. The expected shape depends on the rendering mode:
+        `(height, width)` when `self._depth_rendering` is `True`,
+        `(height, width, 2)` when `self._segmentation_rendering` is `True`, and
+        `(height, width, 3)` otherwise.
 
     Returns:
-      A new numpy array holding the pixels with shape `(H, W)` or `(H, W, 3)`,
-      depending on the value of `self._depth_rendering` unless
-      `out is None`, in which case a reference to `out` is returned.
+      A new numpy array holding the pixels with shape `(H, W)`, `(H, W, 2)`, or
+      `(H, W, 3)` depending on the rendering mode unless `out is not None`, in
+      which case a reference to `out` is returned.
 
     Raises:
       RuntimeError: if this method is called after the close method.
     """
     original_flags = self._scene.flags.copy()
+    try:
+      # Using segmented rendering for depth makes the calculated depth more
+      # accurate at far distances.
+      if self._depth_rendering or self._segmentation_rendering:
+        self._scene.flags[mujoco.mjtRndFlag.mjRND_SEGMENT] = True
+        self._scene.flags[mujoco.mjtRndFlag.mjRND_IDCOLOR] = True
 
-    # Using segmented rendering for depth makes the calculated depth more
-    # accurate at far distances.
-    if self._depth_rendering or self._segmentation_rendering:
-      self._scene.flags[mujoco.mjtRndFlag.mjRND_SEGMENT] = True
-      self._scene.flags[mujoco.mjtRndFlag.mjRND_IDCOLOR] = True
+      if self._mjr_context is None:
+        raise RuntimeError('render cannot be called after close.')
 
-    if self._mjr_context is None:
-      raise RuntimeError('render cannot be called after close.')
+      if self._gl_context:
+        self._gl_context.make_current()
 
-    if self._gl_context:
-      self._gl_context.make_current()
+      if self._depth_rendering:
+        out_shape = (self._height, self._width)
+        out_dtype = np.float32
+      elif self._segmentation_rendering:
+        out_shape = (self._height, self._width, 2)
+        out_dtype = np.int32
+      else:
+        out_shape = (self._height, self._width, 3)
+        out_dtype = np.uint8
 
-    if self._depth_rendering:
-      out_shape = (self._height, self._width)
-      out_dtype = np.float32
-    else:
-      out_shape = (self._height, self._width, 3)
-      out_dtype = np.uint8
-
-    if out is None:
-      out = np.empty(out_shape, dtype=out_dtype)
-    else:
-      if out.shape != out_shape:
+      if out is not None and out.shape != out_shape:
         raise ValueError(
             f'Expected `out.shape == {out_shape}`. Got `out.shape={out.shape}`'
             ' instead. When using depth rendering, the out array should be of'
-            ' shape `(width, height)` and otherwise (width, height, 3).'
-            f' Got `(self.height, self.width)={(self.height, self.width)}` and'
-            f' `self._depth_rendering={self._depth_rendering}`.'
+            ' shape `(height, width)`, when using segmentation rendering'
+            ' `(height, width, 2)`, and otherwise `(height, width, 3)`.'
+            f' Got `(self.height, self.width)={(self.height, self.width)}`,'
+            f' `self._depth_rendering={self._depth_rendering}`, and'
+            f' `self._segmentation_rendering={self._segmentation_rendering}`.'
         )
 
-    # Render scene and read contents of RGB and depth buffers.
-    mujoco.mjr_render(self._rect, self._scene, self._mjr_context)
-    if self._depth_rendering:
-      mujoco.mjr_readPixels(None, out, self._rect, self._mjr_context)
-
-      # Get the distances to the near and far clipping planes.
-      extent = self._model.stat.extent
-      near = self._model.vis.map.znear * extent
-      far = self._model.vis.map.zfar * extent
-
-      # Calculate OpenGL perspective matrix values in float32 precision
-      # so they are close to what glFrustum returns
-      # https://registry.khronos.org/OpenGL-Refpages/gl2.1/xhtml/glFrustum.xml
-      zfar = np.float32(far)
-      znear = np.float32(near)
-
-      # We need 64 bits to convert Z from ndc to metric depth without noticeable
-      # losses in precision
-      out_64 = out.astype(np.float64)
-
-      if self._scene.camera[0].orthographic:
-        # Orthographic cameras: mapping is linear
-        out_64 = zfar - out_64 * (zfar - znear)
+      if out is None or out.dtype != out_dtype or not out.flags.c_contiguous:
+        buffer = np.empty(out_shape, dtype=out_dtype)
       else:
-        # Perspective cameras: mapping is hyperbolic
-        c_coef = -(zfar + znear) / (zfar - znear)
-        d_coef = -(np.float32(2) * zfar * znear) / (zfar - znear)
+        buffer = out
 
-        # In reverse Z mode the perspective matrix is transformed by
-        c_coef = np.float32(-0.5) * c_coef - np.float32(0.5)
-        d_coef = np.float32(-0.5) * d_coef
+      # Render scene and read contents of RGB and depth buffers.
+      mujoco.mjr_render(self._rect, self._scene, self._mjr_context)
+      if self._depth_rendering:
+        mujoco.mjr_readPixels(None, buffer, self._rect, self._mjr_context)
 
-        # Undo OpenGL projection
-        # Note: We do not need to take action to convert from window coordinates
-        # to normalized device coordinates because in reversed Z mode
-        # the mapping is identity
-        out_64 = d_coef / (out_64 + c_coef)
+        # Get the distances to the near and far clipping planes.
+        extent = self._model.stat.extent
+        near = self._model.vis.map.znear * extent
+        far = self._model.vis.map.zfar * extent
 
-      # Cast result back to float32 for backwards compatibility
-      # This has a small accuracy cost
-      out[:] = out_64.astype(np.float32)
+        # Calculate OpenGL perspective matrix values in float32 precision
+        # so they are close to what glFrustum returns
+        # https://registry.khronos.org/OpenGL-Refpages/gl2.1/xhtml/glFrustum.xml
+        zfar = np.float32(far)
+        znear = np.float32(near)
 
-      # Reset scene flags.
+        # We need 64 bits to convert Z from ndc to metric depth without noticeable
+        # losses in precision
+        out_64 = buffer.astype(np.float64)
+
+        if self._scene.camera[0].orthographic:
+          # Orthographic cameras: mapping is linear
+          out_64 = zfar - out_64 * (zfar - znear)
+        else:
+          # Perspective cameras: mapping is hyperbolic
+          c_coef = -(zfar + znear) / (zfar - znear)
+          d_coef = -(np.float32(2) * zfar * znear) / (zfar - znear)
+
+          # In reverse Z mode the perspective matrix is transformed by
+          c_coef = np.float32(-0.5) * c_coef - np.float32(0.5)
+          d_coef = np.float32(-0.5) * d_coef
+
+          # Undo OpenGL projection
+          # Note: We do not need to take action to convert from window coordinates
+          # to normalized device coordinates because in reversed Z mode
+          # the mapping is identity
+          out_64 = d_coef / (out_64 + c_coef)
+
+        # Cast result back to float32 for backwards compatibility
+        # This has a small accuracy cost
+        buffer[:] = out_64.astype(np.float32)
+      elif self._segmentation_rendering:
+        rgb_buffer = np.empty((self._height, self._width, 3), dtype=np.uint8)
+        mujoco.mjr_readPixels(rgb_buffer, None, self._rect, self._mjr_context)
+
+        # Convert 3-channel uint8 to 1-channel uint32.
+        image3 = rgb_buffer.astype(np.uint32)
+        segimage = (
+            image3[:, :, 0]
+            + image3[:, :, 1] * (2**8)
+            + image3[:, :, 2] * (2**16)
+        )
+        # Remap segid to 2-channel (object ID, object type) pair.
+        # Seg ID 0 is background -- will be remapped to (-1, -1).
+        ngeoms = self._scene.ngeom
+        segid2output = np.full(
+            (ngeoms + 1, 2), fill_value=-1, dtype=np.int32
+        )  # Seg id cannot be > ngeom + 1.
+        visible_geoms = [g for g in self._scene.geoms[:ngeoms] if g.segid != -1]
+        visible_segids = np.array(
+            [g.segid + 1 for g in visible_geoms], np.int32
+        )
+        visible_objid = np.array([g.objid for g in visible_geoms], np.int32)
+        visible_objtype = np.array([g.objtype for g in visible_geoms], np.int32)
+        segid2output[visible_segids, 0] = visible_objid
+        segid2output[visible_segids, 1] = visible_objtype
+        buffer[:] = segid2output[segimage]
+      else:
+        mujoco.mjr_readPixels(buffer, None, self._rect, self._mjr_context)
+
+      if self._gl_context:
+        # If using EGL, OSMesa, or GLFW, the output image is flipped vertically.
+        # No flip is needed for Filament.
+        buffer[:] = np.flipud(buffer)
+
+      if out is not None:
+        if out is not buffer:
+          np.copyto(out, buffer, casting='unsafe')
+        return out
+      return buffer
+    finally:
       np.copyto(self._scene.flags, original_flags)
-    elif self._segmentation_rendering:
-      mujoco.mjr_readPixels(out, None, self._rect, self._mjr_context)
-
-      # Convert 3-channel uint8 to 1-channel uint32.
-      image3 = out.astype(np.uint32)
-      segimage = (
-          image3[:, :, 0] + image3[:, :, 1] * (2**8) + image3[:, :, 2] * (2**16)
-      )
-      # Remap segid to 2-channel (object ID, object type) pair.
-      # Seg ID 0 is background -- will be remapped to (-1, -1).
-      ngeoms = self._scene.ngeom
-      segid2output = np.full(
-          (ngeoms + 1, 2), fill_value=-1, dtype=np.int32
-      )  # Seg id cannot be > ngeom + 1.
-      visible_geoms = [g for g in self._scene.geoms[:ngeoms] if g.segid != -1]
-      visible_segids = np.array([g.segid + 1 for g in visible_geoms], np.int32)
-      visible_objid = np.array([g.objid for g in visible_geoms], np.int32)
-      visible_objtype = np.array([g.objtype for g in visible_geoms], np.int32)
-      segid2output[visible_segids, 0] = visible_objid
-      segid2output[visible_segids, 1] = visible_objtype
-      out = segid2output[segimage]
-
-      # Reset scene flags.
-      np.copyto(self._scene.flags, original_flags)
-    else:
-      mujoco.mjr_readPixels(out, None, self._rect, self._mjr_context)
-
-    if self._gl_context:
-      # If using EGL, OSMesa, or GLFW, the output image is flipped vertically.
-      # No flip is needed for Filament.
-      out[:] = np.flipud(out)
-
-    return out
 
   def update_scene(
       self,
@@ -331,12 +357,16 @@ the clause:
       # Use renderer.
     ```
     """
+    if self._mjr_context:
+      if self._gl_context:
+        with self._gl_context.as_current():
+          self._mjr_context.free()
+      else:
+        self._mjr_context.free()
+    self._mjr_context = None
     if self._gl_context:
       self._gl_context.free()
     self._gl_context = None
-    if self._mjr_context:
-      self._mjr_context.free()
-    self._mjr_context = None
 
   def __enter__(self):
     return self

@@ -764,5 +764,69 @@ TEST_F(PidTest, Keyframe) {
   mj_resetDataKeyframe(m.get(), d.get(), 0);
   EXPECT_EQ(d->act[0], 1.0);
 }
+
+TEST_F(PidTest, MultiIoPrecedingActuator) {
+  constexpr absl::string_view kModelXml = R"(
+  <mujoco>
+  <compiler autolimits="true"/>
+  <extension>
+    <plugin plugin="mujoco.pid">
+      <instance name="pid1">
+        <config key="kp" value="10.0"/>
+        <config key="ki" value="5.0"/>
+        <config key="kd" value="2.0"/>
+      </instance>
+    </plugin>
+  </extension>
+
+  <option gravity="0 0 0" timestep="0.01"/>
+
+  <worldbody>
+    <body>
+      <joint name="ball" type="ball"/>
+      <geom size="0.05" mass="1"/>
+    </body>
+    <body pos="0.2 0 0">
+      <joint name="j1" type="slide" axis="1 0 0"/>
+      <geom size="0.05" mass="1"/>
+    </body>
+  </worldbody>
+
+  <actuator>
+    <orientation joint="ball" kp="1" dampratio="1" input="quat"/>
+    <plugin joint="j1" plugin="mujoco.pid" instance="pid1"
+        ctrlrange="-0.5 0.5" actdim="1"/>
+  </actuator>
+  </mujoco>
+  )";
+
+  char error[1024] = {0};
+  MjModelPtr m = LoadModelFromString(kModelXml, error, sizeof(error));
+  ASSERT_THAT(m.get(), NotNull()) << error;
+
+  // actuator 0 (<orientation input="quat"/>) has ctrlnum=4, outnum=3;
+  // actuator 1 (PID) has actuator_idx=1, outadr=3, ctrladr=4.
+  ASSERT_EQ(m->nactuator, 2);
+  ASSERT_EQ(m->nu, 5);
+  ASSERT_EQ(m->nout, 4);
+  ASSERT_EQ(m->actuator_ctrladr[1], 4);
+  ASSERT_EQ(m->actuator_outadr[1], 3);
+
+  MjDataPtr d = MakeData(m);
+  d->qpos[0] = 1.0;
+  d->qpos[4] = 0.2;
+  d->qvel[3] = -0.3;
+  d->ctrl[0] = 1.0;
+  d->ctrl[4] = 1.0;  // clamped to 0.5 via ctrlrange at ctrladr=4
+
+  mj_forward(m.get(), d.get());
+
+  // ctrl = 0.5, error = 0.5 - 0.2 = 0.3, error_dot = 0 - (-0.3) = 0.3,
+  // integral = 0.3 * 0.01 = 0.003
+  EXPECT_THAT(d->act_dot[0], MjNear(0.3, 1e-6, 1e-5));
+  mjtNum expected_force = 10.0 * 0.3 + 2.0 * 0.3 + 5.0 * 0.003;
+  EXPECT_THAT(d->actuator_force[3], MjNear(expected_force, 1e-6, 1e-5));
+  EXPECT_THAT(d->qfrc_actuator[3], MjNear(expected_force, 1e-6, 1e-5));
+}
 }  // namespace
 }  // namespace mujoco

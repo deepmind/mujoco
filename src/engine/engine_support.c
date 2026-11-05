@@ -43,8 +43,8 @@
 
 //-------------------------- Constants -------------------------------------------------------------
 
- #define mjVERSION 3016001
-#define mjVERSIONSTRING "3.16.1"
+ #define mjVERSION 4000000
+#define mjVERSIONSTRING "4.0.0"
 
 // names of disable flags
 const char* mjDISABLESTRING[mjNDISABLE] = {
@@ -79,7 +79,8 @@ const char* mjENABLESTRING[mjNENABLE] = {
   "InvDiscrete",
   "Sleep",
   "DiagExact",
-  "IPC"
+  "IPC",
+  "Speculative"
 };
 
 
@@ -154,6 +155,7 @@ static inline int mj_stateElemSize(const mjModel* m, mjtState sig) {
   case mjSTATE_MOCAP_QUAT:    return 4*m->nmocap;
   case mjSTATE_USERDATA:      return m->nuserdata;
   case mjSTATE_PLUGIN:        return m->npluginstate;
+  case mjSTATE_PLASTIC:       return m->nplastic;
   default:
     mjERROR("invalid state element %u", sig);
     return 0;
@@ -177,6 +179,7 @@ static inline mjtNum* mj_stateElemPtr(const mjModel* m, mjData* d, mjtState sig)
   case mjSTATE_MOCAP_QUAT:    return d->mocap_quat;
   case mjSTATE_USERDATA:      return d->userdata;
   case mjSTATE_PLUGIN:        return d->plugin_state;
+  case mjSTATE_PLASTIC:       return d->plastic;
   default:
     mjERROR("invalid state element %u", sig);
     return NULL;
@@ -312,6 +315,13 @@ void mj_setState(const mjModel* m, mjData* d, const mjtNum* state, int sig) {
         mjtNum* ptr = mj_stateElemPtr(m, d, element);
         mju_copy(ptr, state + adr, size);
         adr += size;
+        if (element == mjSTATE_PLASTIC && d->flex_hessian_valid) {
+          for (int f=0; f < m->nflex; f++) {
+            if (m->flex_plasticadr[f] >= 0) {
+              d->flex_hessian_valid[f] = 0;
+            }
+          }
+        }
       }
     }
   }
@@ -348,6 +358,13 @@ void mj_copyState(const mjModel* m, const mjData* src, mjData* dst, int sig) {
         mjtNum* dst_ptr = mj_stateElemPtr(m, dst, element);
         const mjtNum* src_ptr = mj_stateElemConstPtr(m, src, element);
         mju_copy(dst_ptr, src_ptr, size);
+        if (element == mjSTATE_PLASTIC && dst->flex_hessian_valid) {
+          for (int f=0; f < m->nflex; f++) {
+            if (m->flex_plasticadr[f] >= 0) {
+              dst->flex_hessian_valid[f] = 0;
+            }
+          }
+        }
       }
     }
   }
@@ -372,6 +389,7 @@ void mj_setKeyframe(mjModel* m, const mjData* d, int k) {
   mju_copy(m->key_mpos + k*3*m->nmocap, d->mocap_pos, 3*m->nmocap);
   mju_copy(m->key_mquat + k*4*m->nmocap, d->mocap_quat, 4*m->nmocap);
   mju_copy(m->key_ctrl + k*m->nu, d->ctrl, m->nu);
+  mju_copy(m->key_plastic + k*m->nplastic, d->plastic, m->nplastic);
 }
 
 
@@ -587,7 +605,7 @@ mjtNum mj_geomDistance(const mjModel* m, mjData* d, int geom1, int geom2, mjtNum
   int smallest = -1;
   for (int i=0; i < num; i++) {
     mjtNum dist_i = con[i].dist;
-    if (dist_i < dist) {
+    if (dist_i < dist || (dist_i == dist && smallest < 0)) {
       dist = dist_i;
       smallest = i;
     }

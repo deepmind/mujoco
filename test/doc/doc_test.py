@@ -68,6 +68,7 @@ _EXTRA_DOCUMENTED_TYPES = {
     'mjStringVec',
     # function pointer typedefs (callbacks)
     'mjfAct',
+    'mjfBatchFunc',
     'mjfCanDecode',
     'mjfCloseResource',
     'mjfCollision',

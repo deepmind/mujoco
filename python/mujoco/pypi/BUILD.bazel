@@ -29,11 +29,6 @@
 package(default_visibility = ["//visibility:public"])
 
 alias(
-    name = "absl_py",
-    actual = "@mujoco_pip//absl_py",
-)
-
-alias(
     name = "absl_app",
     actual = "@mujoco_pip//absl_py",
 )
@@ -71,11 +66,6 @@ alias(
 alias(
     name = "pyopengl",
     actual = "@mujoco_pip//pyopengl",
-)
-
-alias(
-    name = "typing_extensions",
-    actual = "@mujoco_pip//typing_extensions",
 )
 
 alias(

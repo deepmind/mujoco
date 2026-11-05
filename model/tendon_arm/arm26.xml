@@ -39,7 +39,7 @@
     <light directional="true" diffuse=".8 .8 .8" specular=".2 .2 .2" pos="0 0 5" dir="0 0 -1"/>
 
     <site name="s0" pos="-0.15 0 0" size="0.02"/>
-    <site name="x0" pos="0 -0.15 0" size="0.02" rgba="0 .7 0 1" group="1"/>
+    <site name="x0" pos="0.106 -0.106 0" size="0.02" rgba="0 .7 0 1" group="1"/>
 
     <body pos="0 0 0">
       <geom name="upper arm" type="capsule" size="0.045" fromto="0 0 0  0.5 0 0" rgba=".5 .1 .1 1"/>
@@ -52,7 +52,7 @@
       <site name="s4" pos="0.4 -0.06 0" size="0.02"/>
       <site name="s5" pos="0.25 0.1 0" size="0.02"/>
       <site name="s6" pos="0.25 -0.1 0" size="0.02"/>
-      <site name="x1" pos="0.5 -0.15 0" size="0.02" rgba="0 .7 0 1" group="1"/>
+      <site name="x1" pos="0.606 -0.106 0" size="0.02" rgba="0 .7 0 1" group="1"/>
 
       <body pos="0.5 0 0">
         <geom name="forearm" type="capsule" size="0.035" fromto="0 0 0  0.5 0 0" rgba=".5 .1 .1 1"/>

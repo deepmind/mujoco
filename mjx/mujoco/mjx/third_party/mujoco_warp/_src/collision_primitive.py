@@ -488,7 +488,6 @@ def capsule_capsule_wrapper(
     cap2_axis,
     cap2.size[0],  # radius2
     cap2.size[1],  # half_length2
-    margin,
   )
 
   for i in range(2):

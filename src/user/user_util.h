@@ -27,8 +27,6 @@
 #include <utility>
 #include <vector>
 
-#include <mujoco/mjexport.h>
-
 const double mjEPS     = 1E-14;  // minimum value in various calculations
 const double mjMINMASS = 1E-6;   // minimum mass allowed
 
@@ -170,14 +168,14 @@ double mjuu_updateFrame(double       quat[4],
                         int          first);
 
 // eigenvalue decomposition of symmetric 3x3 matrix
-MJAPI int mjuu_eig3(
+int mjuu_eig3(
     double eigval[3], double eigvec[9], double quat[4], const double mat[9], double reltol = 4e-15);
 
 // Jacobi eigenvalue decomposition of symmetric n×n matrix
 // eigval[n]: output eigenvalues, eigvec[n*n]: output eigenvectors (columns)
 // mat[n*n]: input matrix (destroyed on output)
 // returns number of sweeps used
-MJAPI int mjuu_eigendecompose(double* mat, double* eigval, double* eigvec, int n);
+int mjuu_eigendecompose(double* mat, double* eigval, double* eigvec, int n);
 
 // transform vector by pose
 void mjuu_trnVecPose(double res[3], const double pos[3], const double quat[4], const double vec[3]);
@@ -191,12 +189,14 @@ namespace mujoco::user {
 struct PairHash {
   template <class T1, class T2>
   std::size_t operator()(const std::pair<T1, T2>& pair) const {
-    return std::hash<T1>()(pair.first) ^ std::hash<T2>()(pair.second);
+    std::size_t h1 = std::hash<T1>()(pair.first);
+    std::size_t h2 = std::hash<T2>()(pair.second);
+    return h1 ^ (h2 + 0x9e3779b9 + (h1 << 6) + (h1 >> 2));
   }
 };
 
 // utility class for handling file paths
-class MJAPI FilePath {
+class FilePath {
  public:
   FilePath() = default;
   explicit FilePath(const std::string& str) : path_(PathReduce(str)) {}
@@ -283,17 +283,17 @@ std::vector<uint8_t> FileToMemory(const char* filename);
 
 // convert vector to string separating elements by whitespace
 template <typename T>
-MJAPI std::string VectorToString(const std::vector<T>& v);
+std::string VectorToString(const std::vector<T>& v);
 
 // convert string to vector
 template <typename T>
-MJAPI std::vector<T> StringToVector(char* cs);
+std::vector<T> StringToVector(char* cs);
 template <typename T>
-MJAPI std::vector<T> StringToVector(const std::string& s);
+std::vector<T> StringToVector(const std::string& s);
 template <>
-MJAPI std::vector<std::string> StringToVector(char* cs);
+std::vector<std::string> StringToVector(char* cs);
 template <>
-MJAPI std::vector<std::string> StringToVector(const std::string& s);
+std::vector<std::string> StringToVector(const std::string& s);
 
 }  // namespace mujoco::user
 

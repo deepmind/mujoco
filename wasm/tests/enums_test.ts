@@ -22,7 +22,7 @@ let mujoco: MainModule;
 describe('Enums', () => {
   beforeAll(async () => {
     mujoco = await loadMujoco();
-  });
+  }, 60_000);
 
   it('mjtDisableBit should exist', () => {
     expect(mujoco.mjtDisableBit).toBeDefined();

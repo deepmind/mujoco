@@ -67,7 +67,7 @@
       <geom type="box" size=".045 .065 .065" material="silver"/>
       <geom class="bolt"/>
       <!-- the pinned edge straddles the clamp face: the rod is effectively clamped at its midpoint -->
-      <flexcomp name="rod" type="grid" count="24 1 1" spacing=".04 .04 .04" pos=".44 0 0" dim="1" mass=".12" radius=".015" rgba=".9 .75 .2 1">
+      <flexcomp name="rod" type="grid" count="24 1 1" spacing=".04 .04 .04" pos=".44 0 0" dim="1" mass=".12" rgba=".9 .75 .2 1">
         <elasticity young="8e+06" damping="0.002" section="box" sectionsize=".035 .0275"/>
         <edge equality="true" solref=".003 1" solimp=".99 .999 .001"/>
         <contact selfcollide="none" contype="0" conaffinity="0"/>

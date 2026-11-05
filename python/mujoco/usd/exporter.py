@@ -28,6 +28,7 @@ from PIL import ImageOps
 
 # TODO: b/288149332 - Remove once USD Python Binding works well with pytype.
 from pxr import Sdf
+from pxr import Tf
 from pxr import Usd
 from pxr import UsdGeom
 
@@ -485,7 +486,9 @@ class USDExporter:
     quat = np.zeros(4)
     mujoco.mju_euler2Quat(quat, rotation_xyz, "xyz")
     mujoco.mju_quat2Mat(rotation, quat)
-    new_camera.update(cam_pos=np.array(pos), cam_mat=rotation, frame=0)
+    new_camera.update(
+        cam_pos=np.array(pos), cam_mat=rotation.reshape((3, 3)), frame=0
+    )
 
   def save_scene(self, filetype: str = "usd"):
     """Saves the scene to a USD file."""
@@ -517,7 +520,7 @@ class USDExporter:
     elif geom.objtype == mujoco.mjtObj.mjOBJ_TENDON:
       geom_name += f"_tendon_segid{geom.segid}"
 
-    return geom_name
+    return Tf.MakeValidIdentifier(geom_name)
 
   # for debugging purposes, prints all geoms in scene
   # including those part of tendons

@@ -12,7 +12,17 @@ cc_library(
     testonly = True,
     srcs = ["boxbox_legacy.c"],
     hdrs = ["boxbox_legacy.h"],
-    conlyopts = ["-std=c11"],
+    conlyopts = [
+        "-std=c11",
+        "-Werror",
+        "-Wall",
+        "-Wpedantic",
+        "-Wstrict-prototypes",
+        "-Wshadow",
+        "-Wunused",
+        "-Wvla",
+        "-Wimplicit-fallthrough",
+    ],
     copts = [
         "-I" + MJ_ROOT,
         "-I" + MJ_ROOT + "/src",
@@ -359,6 +369,7 @@ cc_test(
         "//:mujoco",
         "//src/engine:engine_collision_continuous",
         "//src/engine:engine_derivative",
+        "//src/engine:engine_forward",
         "//src/engine:engine_memory",
         "//test:fixture",
         "@googletest//:gtest_main",
@@ -377,7 +388,6 @@ cc_test(
     deps = [
         "//:libmujoco_hdrs",
         "//plugin/actuator:register",
-        "//plugin/elasticity:register",
         "//plugin/sdf:register",
         "//plugin/sensor:register",
         "//src/engine:engine_plugin",
@@ -402,6 +412,8 @@ cc_test(
     ],
     deps = [
         "//:mujoco",
+        "//src/engine:engine_core_util",
+        "//src/engine:engine_derivative",
         "//test:fixture",
         "@googletest//:gtest_main",
     ],
@@ -681,6 +693,7 @@ cc_test(
         "//src/engine:engine_util_misc",
         "//src/engine:engine_util_solve",
         "//src/engine:engine_util_sparse",
+        "//src/engine:engine_util_spatial",
         "//test:fixture",
         "@googletest//:gtest_main",
     ],
@@ -697,6 +710,7 @@ cc_test(
     cxxopts = ["-std=c++20"],
     deps = [
         "//:libmujoco_hdrs",
+        "//src/engine:engine_inline",
         "//src/engine:engine_util_blas",
         "//src/engine:engine_util_spatial",
         "//test:fixture",
@@ -752,7 +766,6 @@ cc_test(
     ],
     deps = [
         "//:libmujoco_hdrs",
-        "//plugin/elasticity:register",
         "//test:fixture",
         "@googletest//:gtest_main",
     ],

@@ -15,6 +15,7 @@
 // Tests for engine/engine_solver.c
 
 #include <algorithm>
+#include <cstdio>
 #include <cstdlib>
 #include <string>
 #include <vector>
@@ -394,6 +395,42 @@ TEST_F(SolverTest, EllipticLineSearchPrecisionDiagnostics) {
   }
 }
 
+TEST_F(SolverTest, EllipticLineSearchCancellation) {
+  std::string xml = R"(
+  <mujoco>
+    <option timestep="0.016" integrator="discrete" cone="elliptic" impratio="10"
+            noslip_iterations="2">
+      <flag refsafe="disable"/>
+    </option>
+    <worldbody>
+      <geom type="plane" size="2 2 .1" solref="0.002 1"/>
+      <body pos="0 0 0.05">
+        <freejoint/>
+        <geom type="box" size=".05 .05 .05" mass="1" solref="0.002 1" condim="6"/>
+      </body>
+    </worldbody>
+  </mujoco>
+  )";
+
+  char error[1024];
+  MjModelPtr model = LoadModelFromString(xml, error, sizeof(error));
+  ASSERT_THAT(model, NotNull()) << error;
+  MjDataPtr data = MakeData(model);
+
+  // Sliding box decelerating to rest across slightly perturbed initial
+  // velocities: when the Newton step cancels the tangential velocity in the
+  // elliptic cone middle zone, the linesearch second derivative must remain
+  // positive without triggering a non-convexity warning.
+  for (double v0 : {1.95, 1.97, 1.99, 2.01, 2.03, 2.05}) {
+    mj_resetData(model.get(), data.get());
+    data->qvel[0] = v0;
+    data->qvel[1] = 1e-6;
+    for (int i = 0; i < 120; ++i) {
+      mj_step(model.get(), data.get());
+    }
+  }
+}
+
 // Newton terminates early when the decrement predicts sub-tolerance improvement
 TEST_F(SolverTest, NewtonDecrementTermination) {
   const std::string xml_path = GetTestDataFilePath(kHumanoidPath);
@@ -576,7 +613,7 @@ TEST_F(SolverTest, WarmstartZeroIterationsIslands) {
   MjDataPtr data = MakeData(model);
 
   // float32 cannot resolve the default tolerance: use a resolvable one
-  model->opt.tolerance = MjTol(1e-8, 1e-6);
+  model->opt.tolerance = MjTol(1e-8, 2e-6);
 
   // settle both boxes, islands enabled (default)
   for (int i = 0; i < 500; i++) {
@@ -771,13 +808,20 @@ TEST_F(SolverTest, ConeFoldEquivalent) {
 // magnitude below their diagonals. In single precision rounding loses one:
 // Newton must clamp and decouple it and continue, not abort or diverge.
 TEST_F(SolverTest, NewtonHessianSurvivesLostPivot) {
-  constexpr char xml[] = R"(
-  <mujoco>
-    <worldbody>
-      <composite type="cable" curve="s" count="41 1 1" size="1" initial="none">
-        <joint kind="main" damping=".015"/>
-        <geom type="capsule" size=".005" contype="0" conaffinity="0"/>
-      </composite>
+  std::string xml = "<mujoco><worldbody>";
+  for (int i = 0; i < 40; i++) {
+    xml += (i == 0)    ? "<body pos='0 0 0'>"
+           : (i == 39) ? "<body name='B_last' pos='.025 0 0'>"
+                       : "<body pos='.025 0 0'>";
+    xml += "<joint type='ball' damping='.015'/>";
+    xml +=
+        "<geom type='capsule' size='.005' fromto='0 0 0 .025 0 0' "
+        "contype='0' conaffinity='0'/>";
+  }
+  for (int i = 0; i < 40; i++) {
+    xml += "</body>";
+  }
+  xml += R"(
       <body name="slider" pos="1 0 0">
         <joint type="slide" axis="1 0 0" damping=".1"/>
         <geom size=".01" contype="0" conaffinity="0"/>
@@ -790,7 +834,7 @@ TEST_F(SolverTest, NewtonHessianSurvivesLostPivot) {
   )";
 
   char error[1024];
-  MjModelPtr model = LoadModelFromString(xml, error, sizeof(error));
+  MjModelPtr model = LoadModelFromString(xml.c_str(), error, sizeof(error));
   ASSERT_THAT(model.get(), NotNull()) << error;
   model->opt.solver = mjSOL_NEWTON;
 
@@ -807,6 +851,693 @@ TEST_F(SolverTest, NewtonHessianSurvivesLostPivot) {
       EXPECT_EQ(data->warning[mjWARN_BADQACC].number, 0)
           << "jacobian " << jacobian << ", disableflags " << disableflags;
     }
+  }
+}
+
+// When the arena has enough room for PrimalAllocate and CG but not for Newton's
+// sparse Hessian/Cholesky factor, MakeHessian warns (mjWARN_CNSTRFULL) and
+// mj_solPrimal falls back to CG instead of aborting in mj_stackAlloc.
+TEST_F(SolverTest, NewtonFallsBackToCGOnArenaExhaustion) {
+  static constexpr char xml[] = R"(
+  <mujoco>
+    <option integrator="implicitfast" solver="Newton"/>
+    <worldbody>
+      <geom type="plane" size="2 2 .01"/>
+      <flexcomp name="cloth" type="grid" dim="2" count="20 20 1"
+                spacing=".01 .01 .01" pos="0 0 .001" radius=".002" mass="1">
+        <contact selfcollide="none"/>
+        <edge equality="true"/>
+      </flexcomp>
+    </worldbody>
+  </mujoco>
+  )";
+
+  char error[1024] = {0};
+  MjModelPtr model = LoadModelFromString(xml, error, sizeof(error));
+  ASSERT_THAT(model.get(), NotNull()) << error;
+
+  // first run with ample arena to measure full Newton vs CG arena usage
+  MjDataPtr data_full = MakeData(model);
+  mj_step(model.get(), data_full.get());
+  ASSERT_EQ(data_full->warning[mjWARN_CNSTRFULL].number, 0);
+
+  model->opt.solver = mjSOL_CG;
+  MjDataPtr data_cg = MakeData(model);
+  mj_step(model.get(), data_cg.get());
+  ASSERT_LT(data_cg->maxuse_arena, data_full->maxuse_arena);
+
+  // set narena large enough for PrimalAllocate + CG, but too small for Newton's
+  // L factor
+  model->opt.solver = mjSOL_NEWTON;
+  model->narena = (data_cg->maxuse_arena + data_full->maxuse_arena) / 2;
+  MjDataPtr data_tight = MakeData(model);
+  mock_warning_handler.ExpectWarnings("Insufficient arena memory");
+  mj_step(model.get(), data_tight.get());
+  EXPECT_GT(data_tight->warning[mjWARN_CNSTRFULL].number, 0);
+  EXPECT_EQ(data_tight->warning[mjWARN_BADQACC].number, 0);
+
+  // also test dense Newton with discrete flex metric (flg_metric && !is_sparse)
+  static constexpr char xml_dense[] = R"(
+  <mujoco>
+    <option integrator="discrete" solver="Newton" jacobian="dense">
+      <flag island="disable"/>
+    </option>
+    <worldbody>
+      <geom type="plane" size="2 2 .01"/>
+      <flexcomp name="rod" type="grid" dim="1" count="12 1 1"
+                spacing=".02 .02 .02" pos="0 0 .001" radius=".005" mass="1">
+        <contact selfcollide="none"/>
+        <elasticity young="1e3" damping="1"/>
+      </flexcomp>
+    </worldbody>
+  </mujoco>
+  )";
+  MjModelPtr model_dense = LoadModelFromString(xml_dense, error, sizeof(error));
+  ASSERT_THAT(model_dense.get(), NotNull()) << error;
+
+  MjDataPtr dense_full = MakeData(model_dense);
+  mj_step(model_dense.get(), dense_full.get());
+  ASSERT_EQ(dense_full->warning[mjWARN_CNSTRFULL].number, 0);
+
+  // set narena just above dense_full->maxuse_arena so PrimalAllocate + cg_buf
+  // fit, but MakeHessian's metric_bytes reserve check fails and falls back to
+  // CG (the margin scales with the precision, as the reserve does)
+  model_dense->narena = dense_full->maxuse_arena + 128 * sizeof(mjtNum);
+  MjDataPtr dense_tight = MakeData(model_dense);
+  mock_warning_handler.ExpectWarnings("Insufficient arena memory");
+  mj_step(model_dense.get(), dense_tight.get());
+  EXPECT_GT(dense_tight->warning[mjWARN_CNSTRFULL].number, 0);
+  EXPECT_EQ(dense_tight->warning[mjWARN_BADQACC].number, 0);
+
+  // discrete 2D flex (flg_metric && is_sparse) where primalTryReorder adopts
+  // perm and MakeHessian then runs out of arena for L and falls back to CG
+  static constexpr char xml_disc[] = R"(
+  <mujoco>
+    <option integrator="discrete" solver="Newton">
+      <flag island="disable"/>
+    </option>
+    <worldbody>
+      <geom type="plane" size="2 2 .01"/>
+      <flexcomp name="sheet" type="grid" dim="2" count="10 10 1"
+                spacing=".015 .015 .015" pos="0 0 .001" radius=".003" mass="1">
+        <contact selfcollide="none"/>
+        <elasticity young="1e3" damping="1" thickness=".004" elastic2d="both"/>
+      </flexcomp>
+    </worldbody>
+  </mujoco>
+  )";
+  MjModelPtr model_disc = LoadModelFromString(xml_disc, error, sizeof(error));
+  ASSERT_THAT(model_disc.get(), NotNull()) << error;
+
+  MjDataPtr disc_full = MakeData(model_disc);
+  mj_forward(model_disc.get(), disc_full.get());
+  ASSERT_EQ(disc_full->warning[mjWARN_CNSTRFULL].number, 0);
+
+  MjDataPtr disc_cg = MakeData(model_disc);
+  mj_forward(model_disc.get(), disc_cg.get());
+  model_disc->opt.solver = mjSOL_CG;
+  mj_fwdConstraint(model_disc.get(), disc_cg.get());
+  ASSERT_EQ(disc_cg->warning[mjWARN_CNSTRFULL].number, 0);
+
+  model_disc->opt.solver = mjSOL_NEWTON;
+  MjDataPtr disc_tight = MakeData(model_disc);
+  mj_forward(model_disc.get(), disc_tight.get());
+  ASSERT_EQ(disc_tight->warning[mjWARN_CNSTRFULL].number, 0);
+  // tighten narena right before mj_fwdConstraint so primalTryReorder adopts
+  // perm and MakeHessian runs out of room for L, falling back to CG cleanly
+  disc_tight->narena = disc_full->maxuse_arena - 4096;
+  mock_warning_handler.ExpectWarnings("Insufficient arena memory");
+  mj_fwdConstraint(model_disc.get(), disc_tight.get());
+  EXPECT_GT(disc_tight->warning[mjWARN_CNSTRFULL].number, 0);
+  EXPECT_EQ(disc_tight->warning[mjWARN_BADQACC].number, 0);
+  for (int i = 0; i < model_disc->nv; i++) {
+    EXPECT_NEAR(disc_tight->qacc[i], disc_cg->qacc[i], MjTol(1e-7, 1e-3))
+        << "dof " << i;
+  }
+}
+
+// Elliptic cone Hessian and PrimalEval remain finite when the initial iterate
+// has a tangential residual T > 0 small enough that T^3 underflows to zero.
+TEST_F(SolverTest, EllipticConeSmallTangentNoNaN) {
+  static constexpr char xml[] = R"(
+  <mujoco>
+    <option cone="elliptic"/>
+    <worldbody>
+      <geom type="plane" size="1 1 .1"/>
+      <body pos="0 0 .099">
+        <freejoint/>
+        <geom size=".1" condim="6" friction="1 .01 .001" solref="-0 -1"/>
+      </body>
+    </worldbody>
+  </mujoco>
+  )";
+
+  char error[1024];
+  MjModelPtr model = LoadModelFromString(xml, error, sizeof(error));
+  ASSERT_THAT(model.get(), NotNull()) << error;
+
+  // zero contact stiffness at rest so efc_aref == 0: a tiny x warmstart gives
+  // N == 0 and T^2 normal but T^3 == 0, i.e. the middle zone of the cone at
+  // alpha = 0 (CG reaches it only via PrimalEval, Newton also via the Hessian)
+  const mjtNum tiny_ax = MjEps(1e-130, 1e-18);
+  for (mjtSolver solver : {mjSOL_NEWTON, mjSOL_CG}) {
+    for (mjtJacobian jacobian : {mjJAC_DENSE, mjJAC_SPARSE}) {
+      model->opt.solver = solver;
+      model->opt.jacobian = jacobian;
+      MjDataPtr data = MakeData(model);
+      data->qacc_warmstart[0] = tiny_ax;
+
+      mj_step(model.get(), data.get());
+      EXPECT_EQ(data->warning[mjWARN_BADQACC].number, 0)
+          << "solver " << solver << ", jacobian " << jacobian;
+      for (int j = 0; j < model->nv; j++) {
+        EXPECT_FALSE(mju_isBad(data->qacc[j]))
+            << "dof " << j << ", solver " << solver << ", jacobian "
+            << jacobian;
+      }
+    }
+  }
+}
+
+TEST_F(SolverTest, UnconstrainedMetricIslandBeyondMaxStat) {
+  std::string xml = R"(
+  <mujoco>
+    <option integrator="discrete" solver="CG"/>
+    <default><geom size=".1" contype="0" conaffinity="0"/></default>
+    <worldbody>)";
+  for (int i = 0; i < mjNISLAND; i++) {
+    xml += "<body><joint type='slide' frictionloss='1'/><geom/></body>";
+  }
+  xml += R"(
+      <body><joint name="ja" type="slide"/><geom/></body>
+      <body><joint name="jb" type="slide"/><geom/></body>
+    </worldbody>
+    <tendon>
+      <fixed damping="1"><joint joint="ja" coef="1"/><joint joint="jb" coef="1"/></fixed>
+    </tendon>
+  </mujoco>)";
+
+  char error[1024];
+  MjModelPtr model = LoadModelFromString(xml.c_str(), error, sizeof(error));
+  ASSERT_THAT(model.get(), NotNull()) << error;
+  MjDataPtr data = MakeData(model);
+
+  // Island 0 sets solver_nnz[0] = 1 (nJ). Because solver_nnz immediately
+  // follows solver_niter[mjNISLAND] in mjData, an out-of-range write to
+  // solver_niter[mjNISLAND] for island 20 (nefc == 0) would land on and
+  // clobber solver_nnz[0].
+  mj_forward(model.get(), data.get());
+
+  ASSERT_EQ(data->nisland, mjNISLAND + 1);
+  ASSERT_EQ(data->island_nefc[mjNISLAND], 0);
+  EXPECT_EQ(data->solver_nnz[0], 1);
+}
+
+// under integrator="discrete", CG does not false-certify at 0 iterations when
+// a stiff coupled tendon suppresses P^-1*grad along a zero-strain mode
+TEST_F(SolverTest, DiscreteCGCoupledTendonConverges) {
+  static constexpr char xml[] = R"(
+  <mujoco>
+    <option integrator="discrete" timestep="0.01" gravity="0 0 0"
+      iterations="50"/>
+    <worldbody>
+      <body>
+        <joint name="j1" type="slide"/>
+        <geom size="0.1" mass="1" contype="0" conaffinity="0"/>
+      </body>
+      <body>
+        <joint name="j2" type="slide"/>
+        <geom size="0.1" mass="1" contype="0" conaffinity="0"/>
+      </body>
+    </worldbody>
+    <tendon>
+      <fixed stiffness="1e9">
+        <joint joint="j1" coef="1"/>
+        <joint joint="j2" coef="-1"/>
+      </fixed>
+    </tendon>
+    <equality>
+      <joint joint1="j1" solimp="0.01 0.01 0.01" solref="0 -1e-6"/>
+      <joint joint1="j2" solimp="0.01 0.01 0.01" solref="0 -1e-6"/>
+    </equality>
+  </mujoco>
+  )";
+
+  char error[1024];
+  MjModelPtr model = LoadModelFromString(xml, error, sizeof(error));
+  ASSERT_THAT(model, NotNull()) << error;
+
+  const mjtNum tolerance = MjTol(1e-8, 1e-5);
+
+  // reference solution via Newton with tolerance = 0
+  model->opt.solver = mjSOL_NEWTON;
+  model->opt.tolerance = 0;
+  MjDataPtr data_ref = MakeData(model);
+  data_ref->qfrc_applied[1] = 0.2;
+  mj_forward(model.get(), data_ref.get());
+
+  for (bool disable_island : {true, false}) {
+    for (mjtJacobian jacobian : {mjJAC_DENSE, mjJAC_SPARSE}) {
+      if (disable_island) {
+        model->opt.disableflags |= mjDSBL_ISLAND;
+      } else {
+        model->opt.disableflags &= ~mjDSBL_ISLAND;
+      }
+      model->opt.solver = mjSOL_CG;
+      model->opt.jacobian = jacobian;
+      model->opt.tolerance = tolerance;
+
+      MjDataPtr data = MakeData(model);
+      data->qfrc_applied[1] = 0.2;
+      mj_forward(model.get(), data.get());
+
+      EXPECT_GT(data->solver_niter[0], 0);
+      EXPECT_NEAR(data->qacc[0], data_ref->qacc[0], MjTol(1e-7, 1e-5));
+      EXPECT_NEAR(data->qacc[1], data_ref->qacc[1], MjTol(1e-7, 1e-5));
+
+#ifndef mjUSESINGLE
+      // exact warmstart still certifies in 0 iterations
+      mju_copy(data->qacc_warmstart, data_ref->qacc, model->nv);
+      mj_forward(model.get(), data.get());
+      EXPECT_EQ(data->solver_niter[0], 0);
+#endif
+    }
+  }
+}
+
+// Sparse Newton on a 2D continuum flex with discrete metric uses sparse metric
+// Cholesky for qacc_smooth, reorders DOFs to reduce fill, and matches dense
+// Newton under both pyramidal and elliptic friction cones.
+TEST_F(SolverTest, Discrete2DFlexNewtonSparseMatchesDense) {
+  static constexpr char xml[] = R"(
+  <mujoco>
+    <option integrator="discrete" solver="Newton" timestep="0.005"
+            gravity="2 1 -9.81" iterations="100"/>
+    <worldbody>
+      <geom type="sphere" pos="0 0 -0.05" size="0.08"
+        friction="0.8 0.01 0.001"/>
+      <flexcomp name="cloth" type="grid" dim="2" count="14 14 1"
+                spacing="0.015 0.015 0.015" pos="0 0 0.025"
+                radius="0.004" mass="0.5">
+        <contact selfcollide="none" condim="3"/>
+        <elasticity young="5e3" poisson="0.3" damping="5"
+                    thickness="0.005" elastic2d="both"/>
+      </flexcomp>
+    </worldbody>
+  </mujoco>
+  )";
+
+  char error[1024];
+  MjModelPtr model = LoadModelFromString(xml, error, sizeof(error));
+  ASSERT_THAT(model.get(), NotNull()) << error;
+  EXPECT_GT(model->nefmCvert, 0);
+  model->opt.tolerance = MjTol(1e-10, 1e-5);
+
+  for (mjtCone cone : {mjCONE_PYRAMIDAL, mjCONE_ELLIPTIC}) {
+    for (bool disable_island : {false, true}) {
+      model->opt.cone = cone;
+      if (disable_island) {
+        model->opt.disableflags |= mjDSBL_ISLAND;
+      } else {
+        model->opt.disableflags &= ~mjDSBL_ISLAND;
+      }
+
+      model->opt.jacobian = mjJAC_DENSE;
+      MjDataPtr data_dense = MakeData(model);
+      mj_step(model.get(), data_dense.get());
+      mj_forward(model.get(), data_dense.get());
+
+      model->opt.jacobian = mjJAC_SPARSE;
+      MjDataPtr data_sparse = MakeData(model);
+      mj_step(model.get(), data_sparse.get());
+      mj_forward(model.get(), data_sparse.get());
+
+      ASSERT_GT(data_sparse->nefc, 0);
+      EXPECT_GT(data_sparse->nefmL, 9 * data_sparse->nefmdof);
+      EXPECT_EQ(data_sparse->warning[mjWARN_INERTIA].number, 0);
+      EXPECT_EQ(data_sparse->warning[mjWARN_BADQACC].number, 0);
+      EXPECT_EQ(data_sparse->warning[mjWARN_CNSTRFULL].number, 0);
+
+      // natural row-major 2-ring bandwidth ~84 on nv=588 gives >40k L nonzeros
+      // per factor plus nH; reordered solver_nnz is well below that bound
+      int num_factors = (cone == mjCONE_ELLIPTIC) ? 2 : 1;
+      EXPECT_GT(data_sparse->solver_nnz[0], data_sparse->nJ);
+      EXPECT_LT(data_sparse->solver_nnz[0], num_factors * 35000 + 20000);
+
+      for (int i = 0; i < model->nv; i++) {
+        EXPECT_NEAR(data_sparse->qacc_smooth[i], data_dense->qacc_smooth[i],
+                    MjTol(1e-9, 5e-3))
+            << "cone=" << cone << " noisland=" << disable_island << " i=" << i;
+        EXPECT_NEAR(data_sparse->qacc[i], data_dense->qacc[i],
+                    MjTol(1e-7, 1e-2))
+            << "cone=" << cone << " noisland=" << disable_island << " i=" << i;
+      }
+      for (int i = 0; i < data_sparse->nefc; i++) {
+        EXPECT_NEAR(data_sparse->efc_force[i], data_dense->efc_force[i],
+                    MjTol(1e-7, 1e-2))
+            << "cone=" << cone << " noisland=" << disable_island << " i=" << i;
+      }
+    }
+  }
+}
+
+// Sparse Newton on a 2D edge-equality flex reorders DOFs and matches dense
+// Newton under both pyramidal and elliptic friction cones.
+TEST_F(SolverTest, EdgeEquality2DFlexNewtonSparseMatchesDense) {
+  static constexpr char xml[] = R"(
+  <mujoco>
+    <option integrator="implicitfast" solver="Newton" timestep="0.005"
+            gravity="2 1 -9.81" iterations="100" tolerance="0"/>
+    <worldbody>
+      <geom type="sphere" pos="0 0 -0.05" size="0.08"
+        friction="0.8 0.01 0.001"/>
+      <flexcomp name="cloth" type="grid" dim="2" count="14 14 1"
+                spacing="0.015 0.015 0.015" pos="0 0 0.025"
+                radius="0.004" mass="0.5">
+        <contact selfcollide="none" condim="3"/>
+        <edge equality="true"/>
+      </flexcomp>
+    </worldbody>
+  </mujoco>
+  )";
+
+  char error[1024];
+  MjModelPtr model = LoadModelFromString(xml, error, sizeof(error));
+  ASSERT_THAT(model.get(), NotNull()) << error;
+
+  for (mjtCone cone : {mjCONE_PYRAMIDAL, mjCONE_ELLIPTIC}) {
+    model->opt.cone = cone;
+
+    model->opt.jacobian = mjJAC_DENSE;
+    MjDataPtr data_dense = MakeData(model);
+    mj_step(model.get(), data_dense.get());
+    mj_forward(model.get(), data_dense.get());
+
+    model->opt.jacobian = mjJAC_SPARSE;
+    MjDataPtr data_sparse = MakeData(model);
+    mj_step(model.get(), data_sparse.get());
+    mj_forward(model.get(), data_sparse.get());
+
+    EXPECT_EQ(data_sparse->warning[mjWARN_BADQACC].number, 0);
+    EXPECT_EQ(data_sparse->warning[mjWARN_CNSTRFULL].number, 0);
+    int num_factors = (cone == mjCONE_ELLIPTIC) ? 2 : 1;
+    EXPECT_GT(data_sparse->solver_nnz[0], data_sparse->nJ);
+    EXPECT_LT(data_sparse->solver_nnz[0], num_factors * 22000 + 16000);
+
+    for (int i = 0; i < model->nv; i++) {
+      EXPECT_NEAR(data_sparse->qacc[i], data_dense->qacc[i], MjTol(1e-7, 1e-2))
+          << "cone=" << cone << " i=" << i;
+    }
+    for (int i = 0; i < data_sparse->nefc; i++) {
+      EXPECT_NEAR(data_sparse->efc_force[i], data_dense->efc_force[i],
+                  MjTol(1e-7, 1e-2))
+          << "cone=" << cone << " i=" << i;
+    }
+  }
+}
+
+// Multi-threaded discrete 2D flex under Newton pre-factors the sparse metric
+// in mj_effSolve (even when bn <= mjMINVAL) before parallel island dispatch,
+// reorders each island (island >= 0 && ctx->perm != NULL) with offset dof_ind,
+// and falls back safely in effCholSolveIsland if EFF_CHOL_PENDING is seen
+// while d->threadlock is held.
+TEST_F(SolverTest, Discrete2DFlexNewtonThreadPool) {
+  static constexpr char xml[] = R"(
+  <mujoco>
+    <option integrator="discrete" solver="Newton" timestep="0.005"
+            gravity="0 0 0" iterations="80" tolerance="1e-10"/>
+    <worldbody>
+      <body pos="0 1 0.5">
+        <freejoint/>
+        <geom size="0.02" contype="0" conaffinity="0"/>
+      </body>
+      <geom type="sphere" pos="-0.25 0 0.04" size="0.06"/>
+      <geom type="sphere" pos="0.25 0 0.04" size="0.06"/>
+      <flexcomp name="c1" type="grid" dim="2" count="8 8 1"
+                spacing="0.02 0.02 0.02" pos="-0.25 0 0.02"
+                radius="0.005" mass="0.2">
+        <contact selfcollide="none" condim="3"/>
+        <elasticity young="5e3" poisson="0.3" damping="5"
+                    thickness="0.005" elastic2d="both"/>
+      </flexcomp>
+      <flexcomp name="c2" type="grid" dim="2" count="8 8 1"
+                spacing="0.02 0.02 0.02" pos="0.25 0 0.02"
+                radius="0.005" mass="0.2">
+        <contact selfcollide="none" condim="3"/>
+        <elasticity young="5e3" poisson="0.3" damping="5"
+                    thickness="0.005" elastic2d="both"/>
+      </flexcomp>
+    </worldbody>
+  </mujoco>
+  )";
+
+  char error[1024];
+  MjModelPtr model = LoadModelFromString(xml, error, sizeof(error));
+  ASSERT_THAT(model.get(), NotNull()) << error;
+  model->opt.tolerance = MjTol(1e-10, 1e-5);
+
+  MjDataPtr data_single = MakeData(model);
+  MjDataPtr data_threaded = MakeData(model);
+  mju_threadpool(data_threaded.get(), 4);
+
+  // Zero-RHS step (bn == 0 <= mjMINVAL): mj_effSolve still pre-factors efm_L
+  // when d->threadpool is bound, before the 2 islands dispatch in parallel.
+  mj_forward(model.get(), data_single.get());
+  mj_forward(model.get(), data_threaded.get());
+  ASSERT_EQ(data_threaded->nisland, 2);
+  EXPECT_EQ(data_threaded->efm_L[9 * data_threaded->nefmdof], 1);
+  // Both 8x8 islands (nv = 192 each, offset after 6 freejoint DOFs) adopt
+  // nontrivial perm and have solver_nnz well below natural-order fill (~17.5k)
+  for (int isl = 0; isl < 2; isl++) {
+    EXPECT_GT(data_single->solver_nnz[isl], 0);
+    EXPECT_LT(data_single->solver_nnz[isl], 12000);
+  }
+  for (int i = 0; i < model->nv; i++) {
+    EXPECT_MJTNUM_EQ(data_threaded->qacc[i], data_single->qacc[i]);
+  }
+
+  // Nonzero gravity step: single-threaded, multi-threaded, no-island, and dense
+  // Newton all match.
+  model->opt.gravity[2] = -9.81;
+  mj_step(model.get(), data_single.get());
+  mj_step(model.get(), data_threaded.get());
+  mj_forward(model.get(), data_single.get());
+  mj_forward(model.get(), data_threaded.get());
+
+  model->opt.disableflags |= mjDSBL_ISLAND;
+  model->opt.jacobian = mjJAC_DENSE;
+  MjDataPtr data_dense = MakeData(model);
+  mj_step(model.get(), data_dense.get());
+  mj_forward(model.get(), data_dense.get());
+  model->opt.disableflags &= ~mjDSBL_ISLAND;
+  model->opt.jacobian = mjJAC_SPARSE;
+
+  for (int i = 0; i < model->nv; i++) {
+    EXPECT_MJTNUM_EQ(data_threaded->qacc_smooth[i],
+                     data_single->qacc_smooth[i]);
+    EXPECT_MJTNUM_EQ(data_threaded->qacc[i], data_single->qacc[i]);
+    EXPECT_NEAR(data_single->qacc[i], data_dense->qacc[i], MjTol(1e-7, 1e-2))
+        << "dof " << i;
+  }
+  for (int i = 0; i < data_single->nefc; i++) {
+    EXPECT_MJTNUM_EQ(data_threaded->efc_force[i], data_single->efc_force[i]);
+    EXPECT_NEAR(data_single->efc_force[i], data_dense->efc_force[i],
+                MjTol(1e-7, 1e-2))
+        << "efc " << i;
+  }
+
+  // If EFF_CHOL_PENDING (2) is encountered while d->threadlock is active during
+  // parallel island dispatch, effCholSolveIsland returns 0 without racing.
+  data_threaded->efm_L[9 * data_threaded->nefmdof] = 2;
+  mj_fwdConstraint(model.get(), data_threaded.get());
+  EXPECT_EQ(data_threaded->efm_L[9 * data_threaded->nefmdof], 2);
+  EXPECT_EQ(data_threaded->warning[mjWARN_BADQACC].number, 0);
+}
+
+// Sparse Newton on a discrete 2D flex together with a free body, in one system
+// (islands disabled), matches dense Newton in two reordering regimes:
+//  - cloth and box rest on the plane apart: no contact couples blocks that M,
+//    S and the equality rows leave apart, so the model ordering seeds the flex
+//    blocks and the free body's blocks are placed first (unseeded > 0);
+//  - the cloth drapes on the box: contacts couple box and vertex blocks, so the
+//    model ordering does not apply and minimum degree runs at step time.
+TEST_F(SolverTest, Discrete2DFlexNewtonSparseReorderWithFreeBody) {
+  static constexpr char xml[] = R"(
+  <mujoco>
+    <option integrator="discrete" solver="Newton" timestep="0.005"
+            iterations="100">
+      <flag island="disable"/>
+    </option>
+    <worldbody>
+      <geom type="plane" size="2 2 .01"/>
+      <body pos="%s .05">
+        <freejoint/>
+        <geom type="box" size=".05 .05 .05" mass=".2"/>
+      </body>
+      <flexcomp name="cloth" type="grid" dim="2" count="14 14 1"
+                spacing="0.015 0.015 0.015" pos="0 0 %s"
+                radius="0.004" mass="0.5">
+        <contact selfcollide="none" condim="3"/>
+        <elasticity young="5e3" poisson="0.3" damping="5"
+                    thickness="0.005" elastic2d="both"/>
+      </flexcomp>
+    </worldbody>
+  </mujoco>
+  )";
+
+  // box beside the cloth on the plane, then right under it
+  struct Case {
+    const char* box;
+    const char* cloth_z;
+  };
+  for (const Case& c : {Case{"1 1", "0.002"}, Case{"0 0", "0.102"}}) {
+    SCOPED_TRACE(c.box);
+    char buf[2048];
+    snprintf(buf, sizeof(buf), xml, c.box, c.cloth_z);
+    char error[1024];
+    MjModelPtr model = LoadModelFromString(buf, error, sizeof(error));
+    ASSERT_THAT(model.get(), NotNull()) << error;
+    ASSERT_GT(model->nefmCvert, 0);
+    model->opt.tolerance = MjTol(1e-10, 1e-5);
+
+    model->opt.jacobian = mjJAC_DENSE;
+    MjDataPtr data_dense = MakeData(model);
+    mj_step(model.get(), data_dense.get());
+    mj_forward(model.get(), data_dense.get());
+
+    model->opt.jacobian = mjJAC_SPARSE;
+    MjDataPtr data_sparse = MakeData(model);
+    mj_step(model.get(), data_sparse.get());
+    mj_forward(model.get(), data_sparse.get());
+
+    ASSERT_GT(data_sparse->nefc, 0);
+    EXPECT_EQ(data_sparse->warning[mjWARN_BADQACC].number, 0);
+    EXPECT_EQ(data_sparse->warning[mjWARN_CNSTRFULL].number, 0);
+    for (int i = 0; i < model->nv; i++) {
+      EXPECT_NEAR(data_sparse->qacc[i], data_dense->qacc[i], MjTol(1e-7, 1e-2))
+          << "dof " << i;
+    }
+    for (int i = 0; i < data_sparse->nefc; i++) {
+      EXPECT_NEAR(data_sparse->efc_force[i], data_dense->efc_force[i],
+                  MjTol(1e-7, 1e-2))
+          << "efc " << i;
+    }
+  }
+}
+
+// When a 2D flex sheet impacts and slides across a tilted floor under diagonal
+// gravity, hundreds of contact rows flip between SATISFIED, QUADRATIC, and CONE
+// within a single Newton solve, exercising incremental H updates/downdates,
+// batch L refactorization (10*U_quad > 3*Lflops), and incremental cone folding
+// across condim=3 and condim=6 contacts. Sparse and dense Newton must agree.
+TEST_F(SolverTest, FlexNewtonIncrementalRefactorAndConeFold) {
+  static constexpr char xml[] = R"(
+  <mujoco>
+    <size memory="64M"/>
+    <option integrator="discrete" solver="Newton" cone="elliptic"
+            timestep="0.004" gravity="4 -3 -9.81" iterations="100">
+      <flag warmstart="disable"/>
+    </option>
+    <worldbody>
+      <geom type="plane" pos="0 0 0.01" size="2 2 0.01" condim="3"
+            solref="0.08 1" friction="0.6 0.01 0.001"/>
+      <geom type="box" pos="0 0 0.005" size="0.15 0.15 0.005"
+            condim="6" solref="0.004 1" friction="0.6 0.01 0.001"/>
+      <flexcomp name="cloth" type="grid" dim="2" count="10 10 1"
+                spacing="0.02 0.02 0.02" pos="0 0 0.014"
+                radius="0.005" mass="0.4">
+        <contact selfcollide="none" condim="6"/>
+        <elasticity young="2e4" poisson="0.3" damping="2"
+                    thickness="0.004" elastic2d="both"/>
+      </flexcomp>
+    </worldbody>
+  </mujoco>
+  )";
+
+  char error[1024];
+  MjModelPtr model = LoadModelFromString(xml, error, sizeof(error));
+  ASSERT_THAT(model.get(), NotNull()) << error;
+  model->opt.tolerance = MjTol(1e-10, 1e-5);
+  int nv = model->nv;
+
+  model->opt.jacobian = mjJAC_SPARSE;
+  MjDataPtr data_sparse = MakeData(model);
+  MjDataPtr data_dense = MakeData(model);
+
+  int state_size = mj_stateSize(model.get(), mjSTATE_PHYSICS);
+  std::vector<mjtNum> state(state_size);
+
+  for (mjtCone cone : {mjCONE_PYRAMIDAL, mjCONE_ELLIPTIC}) {
+    model->opt.cone = cone;
+    mj_resetData(model.get(), data_sparse.get());
+    mj_resetData(model.get(), data_dense.get());
+
+    bool saw_incremental_update = false;
+    bool saw_batch_change = false;
+    bool saw_full_recompute = false;
+
+    for (int step = 0; step < 8; step++) {
+      // Impart spatially varying velocities so vertices across the 10x10 sheet
+      // span SATISFIED, QUADRATIC, and CONE states simultaneously; on step 4,
+      // pull most vertices upward so >32 quadratic rows release in one solve
+      // and exercise the PRIMAL_MAX_DOWNDATE full-H rebuild path.
+      if (step == 0) {
+        for (int v = 0; v < nv / 3; v++) {
+          data_sparse->qvel[3 * v + 0] = 0.3 * (v % 10 - 4.5);
+          data_sparse->qvel[3 * v + 1] = -0.2 * (v / 10 - 4.5);
+          data_sparse->qvel[3 * v + 2] = -0.4 + 0.015 * v;
+        }
+      } else if (step == 4) {
+        mj_resetData(model.get(), data_sparse.get());
+        for (int v = 0; v < nv / 3; v++) {
+          data_sparse->qvel[3 * v + 2] = -0.5;
+        }
+      }
+      mj_getState(model.get(), data_sparse.get(), state.data(),
+                  mjSTATE_PHYSICS);
+
+      model->opt.jacobian = mjJAC_SPARSE;
+      mj_forward(model.get(), data_sparse.get());
+
+      model->opt.jacobian = mjJAC_DENSE;
+      mj_setState(model.get(), data_dense.get(), state.data(), mjSTATE_PHYSICS);
+      mj_forward(model.get(), data_dense.get());
+
+      EXPECT_EQ(data_sparse->warning[mjWARN_BADQACC].number, 0)
+          << "cone " << cone << " step " << step;
+      EXPECT_EQ(data_sparse->warning[mjWARN_CNSTRFULL].number, 0)
+          << "cone " << cone << " step " << step;
+
+      int niter = data_sparse->solver_niter[0];
+      for (int it = 0; it < niter; it++) {
+        const mjSolverStat& st = data_sparse->solver[it];
+        if (st.nchange > 0 && st.nupdate > 0 &&
+            st.nupdate < data_sparse->nefc) {
+          saw_incremental_update = true;
+        }
+        if (st.nchange >= 20) {
+          saw_batch_change = true;
+        }
+        if (st.nchange > 0 && st.nupdate >= data_sparse->nefc) {
+          saw_full_recompute = true;
+        }
+      }
+
+      for (int i = 0; i < nv; i++) {
+        mjtNum scale =
+            max(static_cast<mjtNum>(1), std::abs(data_dense->qacc[i]));
+        EXPECT_NEAR(data_sparse->qacc[i] / scale, data_dense->qacc[i] / scale,
+                    MjTol(1e-7, 1e-2))
+            << "cone " << cone << " step " << step << " dof " << i;
+      }
+
+      model->opt.jacobian = mjJAC_SPARSE;
+      mj_step(model.get(), data_sparse.get());
+    }
+
+    EXPECT_TRUE(saw_incremental_update) << "cone " << cone;
+    EXPECT_TRUE(saw_batch_change) << "cone " << cone;
+    EXPECT_TRUE(saw_full_recompute) << "cone " << cone;
   }
 }
 

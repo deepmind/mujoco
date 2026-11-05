@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name="mujoco-warp"
-version = "3.16.0"
+version = "3.17.0"
 # TODO(team): create a distribution list
 authors = [
     {name = "Newton Developers", email = "mujoco@deepmind.com"},
@@ -18,14 +18,13 @@ classifiers = [
     "Intended Audience :: Science/Research",
     "Natural Language :: English",
     "Programming Language :: Python :: 3",
-    "Programming Language :: Python :: 3.10",
     "Programming Language :: Python :: 3.11",
     "Programming Language :: Python :: 3.12",
     "Programming Language :: Python :: 3.13",
     "Programming Language :: Python :: 3.14",
     "Topic :: Scientific/Engineering",
 ]
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 dependencies = [
     "absl-py",
     "etils[epath]",
@@ -35,6 +34,10 @@ dependencies = [
 ]
 
 [[tool.uv.index]]
+url = "https://pypi.org/simple"
+default = true
+
+[[tool.uv.index]]
 name = "nvidia"
 url = "https://pypi.nvidia.com/"
 explicit = true
@@ -42,7 +45,6 @@ explicit = true
 [[tool.uv.index]]
 name = "mujoco"
 url = "https://py.mujoco.org/"
-explicit = true
 
 [tool.uv.sources]
 warp-lang = {index = "nvidia"}

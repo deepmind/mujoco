@@ -29,10 +29,6 @@
   </asset>
 
   <worldbody>
-    <flexcomp name="cable" type="circle" count="40 1 1" spacing=".15 1 1" dim="1"
-              radius="0.02" pos="0 0 1" rgba="1 0 0 1">
-      <edge equality="true"/>
-    </flexcomp>
     <body name="left" pos="-.7 0 1">
       <joint name="expand_left" type="slide" axis="-1 0 0" range="0 2" damping="20"/>
       <joint name="rotate" type="hinge" axis="0 0 1"/>
@@ -43,6 +39,10 @@
       <joint type="hinge" axis="0 0 1"/>
       <geom type="cylinder" size=".2 .2" density="1" material="matcyl"/>
     </body>
+    <flexcomp name="cable" type="circle" count="40 1 1" spacing=".15 1 1" dim="1"
+              radius="0.02" pos="0 0 1" rgba="1 0 0 1">
+      <edge equality="true"/>
+    </flexcomp>
   </worldbody>
 
    <actuator>

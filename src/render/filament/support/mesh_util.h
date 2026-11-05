@@ -23,6 +23,16 @@
 
 namespace mujoco {
 
+struct FlexMeshSlice {
+  int matid;
+  int elem_offset;
+  int elem_count;
+};
+
+// Calculates the per-material vertex buffer slices for a flex mesh.
+std::vector<FlexMeshSlice> CalculateFlexMeshSlices(const mjModel* model,
+                                                   int flex_id);
+
 // Creates a mjrfMesh for the given flex object.
 UniquePtr<mjrfMesh> CreateFlexMesh(mjrfContext* ctx, const mjModel* model,
                                    const mjData* data, int flex_id);

@@ -694,14 +694,10 @@ static int clipHalfPlane(int nin, mjtNum (**cur)[3], mjtNum (**spare)[3],
 }
 
 
-// box : box
-int mjc_BoxBox(const mjModel* m, mjData* d, mjPreContact* con, int g1, int g2, mjtNum margin) {
-  const mjtNum* pos1 = d->geom_xpos + 3*g1;
-  const mjtNum* pos2 = d->geom_xpos + 3*g2;
-  const mjtNum* mat1 = d->geom_xmat + 9*g1;
-  const mjtNum* mat2 = d->geom_xmat + 9*g2;
-  const mjtNum* size1 = m->geom_size + 3*g1;
-  const mjtNum* size2 = m->geom_size + 3*g2;
+// raw box : box
+int mjraw_BoxBox(mjPreContact* con, mjtNum margin,
+                 const mjtNum* pos1, const mjtNum* mat1, const mjtNum* size1,
+                 const mjtNum* pos2, const mjtNum* mat2, const mjtNum* size2) {
 
   // rot: box2 axes in box1 frame (columns); pos21: box2 center in box1 frame;
   // pos12: box1 center in box2 frame
@@ -1066,4 +1062,16 @@ int mjc_BoxBox(const mjModel* m, mjData* d, mjPreContact* con, int g1, int g2, m
     mji_zero3(con[k].tangent);
   }
   return naccept;
+}
+
+
+// box : box
+int mjc_BoxBox(const mjModel* m, mjData* d, mjPreContact* con, int g1, int g2, mjtNum margin) {
+  const mjtNum* pos1 = d->geom_xpos + 3*g1;
+  const mjtNum* pos2 = d->geom_xpos + 3*g2;
+  const mjtNum* mat1 = d->geom_xmat + 9*g1;
+  const mjtNum* mat2 = d->geom_xmat + 9*g2;
+  const mjtNum* size1 = m->geom_size + 3*g1;
+  const mjtNum* size2 = m->geom_size + 3*g2;
+  return mjraw_BoxBox(con, margin, pos1, mat1, size1, pos2, mat2, size2);
 }

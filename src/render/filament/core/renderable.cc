@@ -19,6 +19,7 @@
 #include <functional>
 #include <numbers>
 #include <span>
+#include <utility>
 
 #include <filament/Engine.h>
 #include <filament/Material.h>
@@ -54,14 +55,27 @@ using filament::math::mat4f;
 static constexpr float kArrowScale = 1.f / 6.f;
 static constexpr float kArrowHeadSize = 1.75f;
 
+// Planes are either squares or disks. A plane Renderable will store both meshes
+// as separate parts, but only one should be visible at a time.
+static constexpr std::uint8_t kHideDiskPlane = 0x02;
+static constexpr std::uint8_t kHideSquarePlane = 0x01;
+
 Renderable::Renderable(filament::Engine* engine,
                        const mjrfRenderableParams& params,
                        MaterialManager* material_mgr)
     : material_mgr_(material_mgr), params_(params) {
   mjrf_defaultMaterial(&material_);
+  curr_state_.cast_shadow = params_.cast_shadow;
+  curr_state_.receive_shadow = params_.receive_shadow;
 }
 
-Renderable::~Renderable() noexcept { ClearParts(); }
+Renderable::~Renderable() noexcept {
+  if (remove_from_scene_fn_) {
+    auto on_destroy = std::move(remove_from_scene_fn_);
+    on_destroy(this);
+  }
+  ClearParts();
+}
 
 void Renderable::ClearParts() {
   filament::Engine* engine = GetEngine();
@@ -75,7 +89,10 @@ void Renderable::ClearParts() {
   }
   parts_.clear();
   get_transform_fn_ = nullptr;
+  infinite_plane_ = false;
   curr_state_ = DrawState{};
+  curr_state_.cast_shadow = params_.cast_shadow;
+  curr_state_.receive_shadow = params_.receive_shadow;
 }
 
 void Renderable::SetMesh(const Mesh* mesh, int elem_offset, int elem_count) {
@@ -145,12 +162,14 @@ void Renderable::InitPartEntity(Part& part) {
   } else {
     builder.culling(false);
   }
-  builder.castShadows(params_.cast_shadow);
-  builder.receiveShadows(params_.receive_shadow);
+  builder.castShadows(curr_state_.cast_shadow);
+  builder.receiveShadows(curr_state_.receive_shadow);
   builder.blendOrder(0, params_.blend_order);
+  builder.priority(priority_);
   builder.screenSpaceContactShadows(true);
-  if (layer_mask_ != 0) {
-    builder.layerMask(0xff, layer_mask_);
+  if (layer_mask_ != 0 || curr_state_.hidden_parts != 0) {
+    const int part_index = &part - parts_.data();
+    builder.layerMask(0xff, GetPartLayerMask(part_index));
   }
 
   builder.build(*GetEngine(), part.entity);
@@ -188,11 +207,13 @@ void Renderable::UpdateTransform() {
       tm.setTransform(tm.getInstance(part.entity), transform);
     }
   } else if (get_transform_fn_) {
+    infinite_plane_ = false;
     for (int i = 0; i < parts_.size(); ++i) {
       const mat4f transform = get_transform_fn_(i, trs_);
       tm.setTransform(tm.getInstance(parts_[i].entity), transform);
     }
   } else {
+    infinite_plane_ = false;
     const mat4f transform = trs_.ToTransform();
     for (Part& part : parts_) {
       tm.setTransform(tm.getInstance(part.entity), transform);
@@ -203,7 +224,15 @@ void Renderable::UpdateTransform() {
 
 const mat4f& Renderable::GetTransform() const { return transform_; }
 
+void Renderable::SetPartTransform(int index, const mat4f& transform) {
+  filament::TransformManager& tm = GetEngine()->getTransformManager();
+  tm.setTransform(tm.getInstance(parts_[index].entity), transform);
+}
+
 void Renderable::AppendMesh(const Mesh* mesh) {
+  if (parts_.size() >= 8) {
+    mju_error("Renderables support at most 8 parts.");
+  }
   Part& part = parts_.emplace_back();
   part.mesh = Mesh::downcast(mesh);
   part.elem_offset = 0;
@@ -211,7 +240,8 @@ void Renderable::AppendMesh(const Mesh* mesh) {
   InitPartEntity(part);
 }
 
-void Renderable::AddToScene(filament::Scene* scene) {
+void Renderable::AddToScene(filament::Scene* scene,
+                            std::function<void(Renderable*)> on_destroy) {
   if (assigned_scene_) {
     if (assigned_scene_ != scene) {
       mju_error("Cannot add renderable to multiple scenes.");
@@ -223,6 +253,7 @@ void Renderable::AddToScene(filament::Scene* scene) {
     scene->addEntity(part.entity);
   }
   assigned_scene_ = scene;
+  remove_from_scene_fn_ = std::move(on_destroy);
 }
 
 void Renderable::RemoveFromScene(filament::Scene* scene) {
@@ -234,11 +265,14 @@ void Renderable::RemoveFromScene(filament::Scene* scene) {
     scene->remove(part.entity);
   }
   assigned_scene_ = nullptr;
+  remove_from_scene_fn_ = nullptr;
 }
 
 void Renderable::UpdateMaterial(const mjrfMaterial& material) {
   uint8_t layer_mask = kLayerMask_Object;
-  if (material.decor) {
+  if (material.haze_ratio >= 0) {
+    layer_mask = kLayerMask_Haze;
+  } else if (material.decor) {
     layer_mask = kLayerMask_Decor;
   }
   if (material.selected) {
@@ -252,6 +286,8 @@ const mjrfMaterial& Renderable::GetMaterial() const { return material_; }
 
 void Renderable::Prepare(std::span<const mjrfRenderRequest*> requests,
                          ReflectionManager* reflection_mgr) {
+  const bool scene_has_skybox =
+      assigned_scene_ && assigned_scene_->getSkybox() != nullptr;
   // Ensure the renderable has no material instances set from the previous
   // frame. This will allow us to recycle material instances if needed.
   SetMaterialInstance(0);
@@ -261,29 +297,15 @@ void Renderable::Prepare(std::span<const mjrfRenderRequest*> requests,
   draw_queue_.clear();
 
   for (const mjrfRenderRequest* request : requests) {
-    DrawState draw_state;
     mjrfMaterial material = material_;
-
     // Selected materials are handled in a separate pass, so clear the value
     // here to take advantage of shared materials.
     material.selected = false;
 
+    DrawState draw_state;
+    draw_state.cast_shadow = material.decor ? false : params_.cast_shadow;
+    draw_state.receive_shadow = material.decor ? false : params_.receive_shadow;
     draw_state.wireframe = (request->draw_mode == mjDRAW_MODE_WIREFRAME);
-    if (material.decor) {
-      draw_state.cast_shadow = false;
-      draw_state.receive_shadow = false;
-    }
-
-    if (geom_type_ == mjGEOM_PLANE) {
-      const float3 camera_pos = ReadFloat3(request->camera.pos);
-      const float3 position = transform_[3].xyz;
-      const float3 forward = transform_[2].xyz;
-      const bool is_behind_camera = dot(camera_pos - position, forward) < 0;
-      if (is_behind_camera) {
-        material.color[3] *= 0.3;
-        draw_state.receive_shadow = false;
-      }
-    }
 
     if (request->draw_mode == mjDRAW_MODE_SEGMENTATION_BY_COLOR) {
       constexpr double phi1 = 1.61803398874989484820;  // Cached Phi(1).
@@ -312,7 +334,7 @@ void Renderable::Prepare(std::span<const mjrfRenderRequest*> requests,
         value *= 0.6;
         saturation *= 0.7;
       }
-      hsv2rgb(material.color, hue, saturation, value);
+      mjv_hsv2rgb(material.color, hue, saturation, value);
       material.color[3] = 1;
 
       // Remove textures so they don't interfere with the island color.
@@ -329,6 +351,47 @@ void Renderable::Prepare(std::span<const mjrfRenderRequest*> requests,
       material.roughness_texture = nullptr;
       material.occlusion_texture = nullptr;
       material.orm_texture = nullptr;
+    }
+
+    if (geom_type_ == mjGEOM_PLANE) {
+      const float3 camera_pos = ReadFloat3(request->camera.pos);
+      const float3 plane_normal = normalize(trs_.rotation[2]);
+      const float elevation = dot(camera_pos - trs_.translation, plane_normal);
+      if (elevation < 0.0f) {
+        material.color[3] *= 0.3f;
+        draw_state.receive_shadow = false;
+      }
+
+      // By default, assume we want a square plane.
+      draw_state.hidden_parts = kHideDiskPlane;
+
+      // When rendered with a skybox, infinite planes are drawn as disks.
+      if (infinite_plane_ && scene_has_skybox && ShowsSkybox(*request)) {
+        draw_state.hidden_parts = kHideSquarePlane;
+
+        static constexpr float kBasePlaneScale = 0.5f * mjMAXPLANEGRID;
+        const float3 plane_center = camera_pos - elevation * plane_normal;
+        const float3 shift = plane_center - trs_.translation;
+        const float dx = dot(shift, trs_.rotation[0]);
+        const float dy = dot(shift, trs_.rotation[1]);
+        const float plane_scale =
+            kHorizonFarRatio * request->camera.frustum_far;
+        const float ratio = plane_scale / kBasePlaneScale;
+        const float base_scale_x = material.uv_scale[0];
+        const float base_scale_y = material.uv_scale[1];
+        // DiskBuilder uses v = 0.5 + 0.5*y whereas PlaneBuilder uses
+        // v = 0.5 - 0.5*y; flip V scale/offset so textures match.
+        material.uv_scale[0] = base_scale_x * ratio;
+        material.uv_scale[1] = -base_scale_y * ratio;
+        material.uv_offset[0] +=
+            0.5f * base_scale_x * (1.0f - ratio + dx / kBasePlaneScale);
+        material.uv_offset[1] +=
+            0.5f * base_scale_y * (1.0f + ratio - dy / kBasePlaneScale);
+        if (!material.decor) {
+          material.uv_offset[0] = std::fmod(material.uv_offset[0], 1.0f);
+          material.uv_offset[1] = std::fmod(material.uv_offset[1], 1.0f);
+        }
+      }
     }
 
     const Mesh* mesh = !parts_.empty() ? parts_[0].mesh : nullptr;
@@ -369,8 +432,9 @@ void Renderable::BindMaterialInstance(const mjrfRenderRequest& request) {
   }
 
   const DrawState& state = draw_queue_.front();
-  SetCastShadows(state.cast_shadow);
-  SetReceiveShadows(state.receive_shadow);
+  SetHiddenParts(state.hidden_parts);
+  ApplyCastShadows(state.cast_shadow);
+  ApplyReceiveShadows(state.receive_shadow);
   SetWireframe(state.wireframe);
   SetMaterialInstance(state.material_key);
   curr_state_ = state;
@@ -396,11 +460,27 @@ std::uint8_t Renderable::SetLayerMask(std::uint8_t mask) {
     layer_mask_ = mask;
 
     filament::RenderableManager& rm = GetEngine()->getRenderableManager();
-    for (Part& part : parts_) {
-      rm.setLayerMask(rm.getInstance(part.entity), 0xff, layer_mask_);
+    for (int i = 0; i < parts_.size(); ++i) {
+      rm.setLayerMask(rm.getInstance(parts_[i].entity), 0xff,
+                      GetPartLayerMask(i));
     }
   }
   return prev;
+}
+
+std::uint8_t Renderable::GetPartLayerMask(int index) const {
+  return (curr_state_.hidden_parts >> index) & 1 ? 0 : layer_mask_;
+}
+
+void Renderable::SetHiddenParts(std::uint8_t hidden_parts) {
+  if (hidden_parts != curr_state_.hidden_parts) {
+    curr_state_.hidden_parts = hidden_parts;
+    filament::RenderableManager& rm = GetEngine()->getRenderableManager();
+    for (int i = 0; i < parts_.size(); ++i) {
+      rm.setLayerMask(rm.getInstance(parts_[i].entity), 0xff,
+                      GetPartLayerMask(i));
+    }
+  }
 }
 
 std::uint16_t Renderable::SetBlendOrder(std::uint16_t blend_order) {
@@ -416,25 +496,46 @@ std::uint16_t Renderable::SetBlendOrder(std::uint16_t blend_order) {
   return prev;
 }
 
-void Renderable::SetCastShadows(bool cast_shadow) {
-  if (params_.cast_shadow != cast_shadow) {
-    params_.cast_shadow = cast_shadow;
+std::uint8_t Renderable::SetPriority(std::uint8_t priority) {
+  std::uint8_t prev = priority_;
+  if (priority != priority_) {
+    priority_ = priority;
 
     filament::RenderableManager& rm = GetEngine()->getRenderableManager();
     for (Part& part : parts_) {
-      rm.setCastShadows(rm.getInstance(part.entity), params_.cast_shadow);
+      rm.setPriority(rm.getInstance(part.entity), priority_);
+    }
+  }
+  return prev;
+}
+
+void Renderable::SetCastShadows(bool cast_shadow) {
+  params_.cast_shadow = cast_shadow;
+}
+
+void Renderable::SetReceiveShadows(bool receive_shadow) {
+  params_.receive_shadow = receive_shadow;
+}
+
+void Renderable::ApplyCastShadows(bool cast_shadow) {
+  if (curr_state_.cast_shadow != cast_shadow) {
+    curr_state_.cast_shadow = cast_shadow;
+
+    filament::RenderableManager& rm = GetEngine()->getRenderableManager();
+    for (Part& part : parts_) {
+      rm.setCastShadows(rm.getInstance(part.entity), curr_state_.cast_shadow);
     }
   }
 }
 
-void Renderable::SetReceiveShadows(bool receive_shadow) {
-  if (params_.receive_shadow != receive_shadow) {
-    params_.receive_shadow = receive_shadow;
+void Renderable::ApplyReceiveShadows(bool receive_shadow) {
+  if (curr_state_.receive_shadow != receive_shadow) {
+    curr_state_.receive_shadow = receive_shadow;
 
     filament::RenderableManager& rm = GetEngine()->getRenderableManager();
     for (Part& part : parts_) {
       rm.setReceiveShadows(rm.getInstance(part.entity),
-                           params_.receive_shadow);
+                           curr_state_.receive_shadow);
     }
   }
 }
@@ -479,6 +580,8 @@ void Renderable::SetGeomMesh(mjtGeom type, int nstack, int nslice, int nquad) {
   switch (type) {
     case mjGEOM_PLANE:
       AppendMesh(builtins->Plane());
+      AppendMesh(builtins->Disk());
+      SetHiddenParts(kHideDiskPlane);
       break;
     case mjGEOM_SPHERE:
       AppendMesh(builtins->Sphere());

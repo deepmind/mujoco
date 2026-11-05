@@ -19,6 +19,7 @@
 #include <unordered_map>
 #include <unordered_set>
 
+#include <filament/Color.h>
 #include <filament/Engine.h>
 #include <filament/MaterialInstance.h>
 #include <mujoco/mjrfilament.h>
@@ -69,6 +70,9 @@ class MaterialManager {
   // Returns the MaterialInstance associated with the given key.
   const filament::MaterialInstance* GetInstance(MaterialKey key);
 
+  // Sets the color space for how BaseColorFactor is interpreted.
+  void SetBaseColorType(filament::RgbaType base_color_type);
+
   ObjectManager* GetObjectManager() const;
   filament::Engine* GetEngine() const;
 
@@ -83,6 +87,7 @@ class MaterialManager {
   ObjectManager* object_mgr_;
   std::unordered_map<MaterialKey, filament::MaterialInstance*> instances_;
   std::unordered_set<MaterialKey> used_keys_;
+  filament::RgbaType base_color_type_ = filament::RgbaType::sRGB;
 };
 }  // namespace mujoco
 

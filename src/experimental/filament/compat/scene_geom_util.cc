@@ -102,7 +102,8 @@ static void PrepareGeomMeshes(mjrfRenderable* renderable, const mjvGeom& geom,
       mjrf_setRenderableSize(renderable, geom.size);
       break;
     case mjGEOM_FLEX:
-      mjrf_setRenderableMesh(renderable, scene_objs->GetFlexMesh(geom.objid), 0, 0);
+      mjrf_setRenderableMesh(
+          renderable, scene_objs->GetFlexMesh(geom.objid, geom.dataid), 0, 0);
       // Flexes are defined in global space.
       std::memset(position, 0, sizeof(position));
       std::memset(rotation, 0, sizeof(rotation));
@@ -174,7 +175,9 @@ static void UpdateGeomMaterial(mjrfRenderable* renderable, const mjvGeom& geom,
     material.roughness = model->mat_roughness[geom.matid];
   }
 
-  material.segmentation_id = geom.segid;
+  // Filament segmentation ids are 1-based (0 is the background), matching the
+  // classic renderer's mjRND_IDCOLOR, which colors each geom by segid + 1.
+  material.segmentation_id = geom.segid + 1;
 
   // Assume an emissive object is a selected object.
   if (geom.emission > 0 && geom.emission == model->vis.global.glow) {
@@ -278,6 +281,7 @@ UniquePtr<mjrfRenderable> CreateGeomRenderable(const mjvGeom& geom,
                                                SceneObjects* scene_objs) {
   mjrfRenderableParams params;
   mjrf_defaultRenderableParams(&params);
+  params.cast_shadow = geom.castshadow;
   auto renderable = CreateRenderable(ctx, params);
   PrepareGeomMeshes(renderable.get(), geom, model_objs, scene_objs);
   UpdateGeomMaterial(renderable.get(), geom, model_objs);

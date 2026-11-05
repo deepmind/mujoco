@@ -97,11 +97,7 @@ class mjXReader : public mjXBase {
   void OneEquality(tinyxml2::XMLElement* elem, mjsEquality* pequality);
   void OneTendon(tinyxml2::XMLElement* elem, mjsTendon* ptendon);
   void OneActuator(tinyxml2::XMLElement* elem, mjsActuator* pactuator, const mjsDefault* def);
-  void OneComposite(tinyxml2::XMLElement* elem,
-                    mjsBody*              pbody,
-                    mjsFrame*             pframe,
-                    const mjsDefault*     def);
-  void OneFlexcomp(tinyxml2::XMLElement* elem, mjsBody* pbody, const mjVFS* vfs);
+  void OneFlexcomp(tinyxml2::XMLElement* elem, mjsBody* pbody, mjsFrame* pframe, const mjVFS* vfs);
   void OnePlugin(tinyxml2::XMLElement* elem, mjsPlugin* plugin);
 
   mjXSchema         schema;                                   // schema used for validation

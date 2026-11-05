@@ -72,7 +72,7 @@ GlobalModel& GetGlobalModel() {
 
 }  // namespace
 
-void SetGlobalXmlSpec(mjSpec* spec) {
+void _mjPRIVATE__set_xml_spec(mjSpec* spec) {
   GetGlobalModel().Set(spec);
 }
 

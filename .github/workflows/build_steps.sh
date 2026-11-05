@@ -74,6 +74,21 @@ prepare_linux() {
 }
 
 
+# Install a hash-pinned requirements file into the active virtualenv. When uv
+# is available, try an offline install from UV_CACHE_DIR first so warm CI runs
+# make zero network requests to PyPI, falling back to an online install on
+# cache misses.
+_pip_install_requirements() {
+    local req_file="$1"
+    if command -v uv > /dev/null 2>&1; then
+        uv pip install --offline --require-hashes -r "${req_file}" || \
+            uv pip install --require-hashes -r "${req_file}"
+    else
+        python -m pip install --upgrade --require-hashes -r "${req_file}"
+    fi
+}
+
+
 prepare_python() {
     echo "Preparing Python..."
     repo="${PWD}"
@@ -90,17 +105,27 @@ prepare_python() {
         ln -sf ../Scripts/activate venv/bin/activate
     fi
     source venv/bin/activate
-    # Install build deps with uv when available (set up by setup-uv in CI on
-    # POSIX) - much faster than pip. Fall back to pip otherwise (e.g. Windows,
-    # local dev). The venv is still created by `python -m venv`, so pip stays
-    # available for later steps (pip wheel / python -m build).
-    if command -v uv > /dev/null 2>&1; then
-        uv pip install --require-hashes -r "${repo}/python/build_requirements.txt"
-        uv pip install --require-hashes -r "${repo}/python/build_requirements_usd.txt"
-    else
-        python -m pip install --upgrade --require-hashes -r "${repo}/python/build_requirements.txt"
-        python -m pip install --upgrade --require-hashes -r "${repo}/python/build_requirements_usd.txt"
+    # Bootstrap the hash-pinned uv binary into the venv on POSIX (restoring from
+    # UV_CACHE_DIR on cache hits so no network request is made). Windows stays on
+    # pip to keep the venv activate fixup path untouched there. The venv is still
+    # created by `python -m venv`, so pip stays available for later steps (pip
+    # wheel / python -m build).
+    local uv_req="${repo}/.github/workflows/uv_requirements.txt"
+    if [[ "${RUNNER_OS:-}" != "Windows" && -f "${uv_req}" ]]; then
+        if [[ -n "${UV_CACHE_DIR:-}" && -x "${UV_CACHE_DIR}/bin/uv" && -f "${UV_CACHE_DIR}/bin/uv_requirements.txt" ]] && \
+           cmp -s "${uv_req}" "${UV_CACHE_DIR}/bin/uv_requirements.txt"; then
+            cp -p "${UV_CACHE_DIR}/bin/uv" venv/bin/uv
+        else
+            python -m pip install --no-deps --require-hashes -r "${uv_req}"
+            if [[ -n "${UV_CACHE_DIR:-}" && -x venv/bin/uv ]]; then
+                mkdir -p "${UV_CACHE_DIR}/bin"
+                cp -p venv/bin/uv "${UV_CACHE_DIR}/bin/uv"
+                cp -p "${uv_req}" "${UV_CACHE_DIR}/bin/uv_requirements.txt"
+            fi
+        fi
     fi
+    _pip_install_requirements "${repo}/python/build_requirements.txt"
+    _pip_install_requirements "${repo}/python/build_requirements_usd.txt"
     popd > /dev/null
 }
 
@@ -128,29 +153,89 @@ setup_emsdk() {
 
 
 # Populate ext_deps_args with -DFETCHCONTENT_SOURCE_DIR_<DEP>=<path> for each
-# cached dependency in EXTERNAL_DEPS_DIR.
+# cached dependency in $2 (defaults to EXTERNAL_DEPS_DIR). When a target build
+# directory ($1) is given, stage each cached dependency into $1/_deps/<dep>-src
+# so targets and helper scripts that reference ${CMAKE_BINARY_DIR}/_deps/<dep>-src
+# directly (e.g. Studio fonts, Filament WASM host imports,
+# install_studio_platform) find the sources at their standard _deps/<dep>-src
+# paths.
 _setup_ext_deps_args() {
+    local build_dir="${1:-}"
+    local ext_deps_dir="${2:-${EXTERNAL_DEPS_DIR:-${TMPDIR:-/tmp}/external_deps}}"
     ext_deps_args=()
-    local ext_deps_dir="${EXTERNAL_DEPS_DIR:-${TMPDIR}/external_deps}"
-    if command -v cygpath >/dev/null 2>&1 && [[ -n "${ext_deps_dir}" ]]; then
-        ext_deps_dir="$(cygpath -m "${ext_deps_dir}")"
+    if [[ ! -d "${ext_deps_dir}" ]]; then
+        return 0
     fi
-    if [[ -d "${ext_deps_dir}" ]]; then
-        for dep_path in "${ext_deps_dir}"/*; do
-            if [[ -d "${dep_path}" ]]; then
-                local dep_name
-                dep_name="$(basename "${dep_path}")"
-                local dep_upper
-                dep_upper="$(echo "${dep_name}" | tr '[:lower:]' '[:upper:]')"
-                echo "Using cached ${dep_name} from ${dep_path}"
-                ext_deps_args+=("-DFETCHCONTENT_SOURCE_DIR_${dep_upper}=${dep_path}")
-                # python/mujoco/CMakeLists.txt declares "eigen" instead of "Eigen3".
-                if [[ "${dep_upper}" == "EIGEN3" ]]; then
-                    ext_deps_args+=("-DFETCHCONTENT_SOURCE_DIR_EIGEN=${dep_path}")
-                fi
+    ext_deps_dir="$(cd "${ext_deps_dir}" && pwd)"
+    local target_deps_dir=""
+    if [[ -n "${build_dir}" ]]; then
+        mkdir -p "${build_dir}/_deps"
+        target_deps_dir="$(cd "${build_dir}/_deps" && pwd)"
+    fi
+    for dep_path in "${ext_deps_dir}"/*; do
+        if [[ -d "${dep_path}" ]]; then
+            local dep_name
+            dep_name="$(basename "${dep_path}")"
+            if [[ "${dep_name}" == *-build || "${dep_name}" == *-subbuild ]]; then
+                continue
             fi
-        done
-    fi
+            dep_name="${dep_name%-src}"
+            if [[ "${dep_name}" == "mujoco" ]]; then
+                continue
+            fi
+            local dep_upper
+            dep_upper="$(echo "${dep_name}" | tr '[:lower:]' '[:upper:]')"
+            local use_path="${dep_path}"
+            if [[ -n "${target_deps_dir}" ]]; then
+                local staged_dir="${target_deps_dir}/${dep_name}-src"
+                if [[ ! -d "${staged_dir}" ]]; then
+                    cp -al "${dep_path}" "${staged_dir}" 2>/dev/null || \
+                        cp -RLp "${dep_path}" "${staged_dir}" || \
+                        cp -rp "${dep_path}" "${staged_dir}"
+                fi
+                use_path="${staged_dir}"
+            fi
+            if command -v cygpath >/dev/null 2>&1; then
+                use_path="$(cygpath -m "${use_path}")"
+            fi
+            echo "Using cached ${dep_name} from ${use_path}"
+            ext_deps_args+=("-DFETCHCONTENT_SOURCE_DIR_${dep_upper}=${use_path}")
+            # python/mujoco/CMakeLists.txt declares "eigen" instead of "Eigen3".
+            if [[ "${dep_upper}" == "EIGEN3" ]]; then
+                ext_deps_args+=("-DFETCHCONTENT_SOURCE_DIR_EIGEN=${use_path}")
+            elif [[ "${dep_upper}" == "EIGEN" ]]; then
+                ext_deps_args+=("-DFETCHCONTENT_SOURCE_DIR_EIGEN3=${use_path}")
+            fi
+        fi
+    done
+}
+
+
+# Copy any newly fetched dependencies from $1/_deps/<dep>-src into
+# EXTERNAL_DEPS_DIR so actions/cache can persist them across runs.
+_populate_ext_deps_cache() {
+    local build_dir="${1:-.}"
+    local ext_deps_dir="${EXTERNAL_DEPS_DIR:-${TMPDIR:-/tmp}/external_deps}"
+    for src in "${build_dir}/_deps"/*-src; do
+        if [[ ! -d "${src}" ]]; then
+            continue
+        fi
+        local dep_dir="${src##*/}"
+        local dst_name="${dep_dir%-src}"
+        if [[ "${dst_name}" == "mujoco" ]]; then
+            continue
+        fi
+        if [[ "${dst_name}" == "eigen" ]]; then
+            dst_name="eigen3"
+        fi
+        local dst="${ext_deps_dir}/${dst_name}"
+        if [[ ! -d "${dst}" ]]; then
+            echo "Populating external dependencies cache for ${dst_name}..."
+            mkdir -p "${ext_deps_dir}"
+            rm -rf "${src}/.git"
+            cp -RLp "${src}" "${dst}" || cp -rp "${src}" "${dst}"
+        fi
+    done
 }
 
 
@@ -165,10 +250,9 @@ configure_mujoco() {
 
     # Use cached external dependencies from actions/cache.
     local ext_deps_args=()
-    local ext_deps_dir="${EXTERNAL_DEPS_DIR:-${TMPDIR}/external_deps}"
-    _setup_ext_deps_args
+    mkdir -p build
+    _setup_ext_deps_args build
 
-    mkdir build &&
     cd build &&
     cmake .. \
         -DCMAKE_BUILD_TYPE:STRING=Release \
@@ -178,23 +262,13 @@ configure_mujoco() {
         ${CCACHE_ARGS} \
         ${CMAKE_ARGS} \
         "${ext_deps_args[@]}" &&
-
-    # Populate any missing external dependency caches.
-    for dep in ${EXTERNAL_DEPS:-eigen3}; do
-        local src="_deps/${dep}-src"
-        local dst="${ext_deps_dir}/${dep}"
-        if [[ -d "${src}" && ! -d "${dst}" ]]; then
-            echo "Populating external dependencies cache for ${dep}..."
-            mkdir -p "${ext_deps_dir}"
-            cp -r "${src}" "${dst}"
-        fi
-    done
+    _populate_ext_deps_cache .
 }
 
 
 build_mujoco_core() {
     echo "Building MuJoCo core and plugins..."
-    cmake --build . --config=Release --target mujoco actuator elasticity sensor sdf_plugin ${CMAKE_BUILD_ARGS}
+    cmake --build . --config=Release --target mujoco actuator sensor sdf_plugin ${CMAKE_BUILD_ARGS}
 }
 
 
@@ -229,7 +303,6 @@ copy_plugins_posix() {
     echo "Copying plugins..."
     mkdir -p ${TMPDIR}/mujoco_install/mujoco_plugin &&
     cp lib/libactuator.* ${TMPDIR}/mujoco_install/mujoco_plugin &&
-    cp lib/libelasticity.* ${TMPDIR}/mujoco_install/mujoco_plugin &&
     cp lib/libsensor.* ${TMPDIR}/mujoco_install/mujoco_plugin &&
     cp lib/libsdf_plugin.* ${TMPDIR}/mujoco_install/mujoco_plugin
 }
@@ -243,7 +316,6 @@ copy_plugins_window() {
         dll_dir="bin/Release"
     fi
     cp ${dll_dir}/actuator.dll ${TMPDIR}/mujoco_install/mujoco_plugin &&
-    cp ${dll_dir}/elasticity.dll ${TMPDIR}/mujoco_install/mujoco_plugin &&
     cp ${dll_dir}/sensor.dll ${TMPDIR}/mujoco_install/mujoco_plugin
 }
 
@@ -253,13 +325,18 @@ configure_samples() {
     # Samples are tiny, so they keep the default IPO/LTO: disabling it saves no
     # meaningful build time and would expose the same gcc -Werror false positives
     # that -O3-without-LTO triggers (see configure_mujoco).
-    mkdir build &&
+    local ext_deps_args=()
+    mkdir -p build
+    _setup_ext_deps_args build
+
     cd build &&
     cmake .. \
         -DCMAKE_BUILD_TYPE:STRING=Release \
         -Dmujoco_ROOT:STRING=${TMPDIR}/mujoco_install \
         ${CCACHE_ARGS} \
-        ${CMAKE_ARGS}
+        ${CMAKE_ARGS} \
+        "${ext_deps_args[@]}" &&
+    _populate_ext_deps_cache .
 }
 
 
@@ -272,13 +349,18 @@ build_samples() {
 configure_simulate() {
     echo "Configuring simulate..."
     # See configure_samples: keep the default IPO/LTO for this small build.
-    mkdir build &&
+    local ext_deps_args=()
+    mkdir -p build
+    _setup_ext_deps_args build
+
     cd build &&
     cmake .. \
         -DCMAKE_BUILD_TYPE:STRING=Release \
         -Dmujoco_ROOT:STRING=${TMPDIR}/mujoco_install \
         ${CCACHE_ARGS} \
-        ${CMAKE_ARGS}
+        ${CMAKE_ARGS} \
+        "${ext_deps_args[@]}" &&
+    _populate_ext_deps_cache .
 }
 
 
@@ -351,12 +433,17 @@ build_python_bindings() {
     fi
     export CCACHE_NOHASHDIR=1
     export CCACHE_SLOPPINESS="time_macros,include_file_mtime,include_file_ctime,pch_defines,locale"
+    local py_deps_dir="${CCACHE_BASEDIR}/python_cmake_deps"
+    rm -rf "${py_deps_dir}"
+    mkdir -p "${py_deps_dir}/_deps"
     local ext_deps_args=()
     _setup_ext_deps_args
     MUJOCO_PATH="${TMPDIR}/mujoco_install" \
     MUJOCO_PLUGIN_PATH="${TMPDIR}/mujoco_install/mujoco_plugin" \
-    MUJOCO_CMAKE_ARGS="-DCMAKE_INTERPROCEDURAL_OPTIMIZATION:BOOL=OFF ${CCACHE_ARGS} ${CMAKE_ARGS} ${ext_deps_args[*]}" \
+    MUJOCO_CMAKE_ARGS="-DCMAKE_INTERPROCEDURAL_OPTIMIZATION:BOOL=OFF -DFETCHCONTENT_BASE_DIR=${py_deps_dir}/_deps ${CCACHE_ARGS} ${CMAKE_ARGS} ${ext_deps_args[*]}" \
     pip wheel -v --no-deps --no-build-isolation mujoco-*.tar.gz
+    _populate_ext_deps_cache "${py_deps_dir}"
+    rm -rf "${py_deps_dir}"
 }
 
 
@@ -370,8 +457,15 @@ install_python_bindings() {
 
 test_python_bindings() {
     echo "Testing Python bindings..."
-    source ${TMPDIR}/venv/bin/activate &&
+    source ${TMPDIR}/venv/bin/activate
     pytest -v --pyargs mujoco
+    if _has_studio_platform build; then
+        echo "Smoke testing Studio Python modules..."
+        python -c "import mujoco._render_filament, mujoco.studio.window, mujoco.studio.ux, mujoco.studio.sim, mujoco.studio.native_viewer"
+        if [[ "${RUNNER_OS:-}" != "Windows" ]]; then
+            python -c "import mujoco.studio.web.headless_ui, mujoco.studio.web.state_payload"
+        fi
+    fi
 }
 
 
@@ -379,12 +473,16 @@ test_python_bindings() {
 _build_wasm_threads() {  # $1 = ON | OFF
     local mode=$1 dir
     [[ "${mode}" == "ON" ]] && dir=build_wasm_mt || dir=build_wasm_st
+    local ext_deps_args=()
+    _setup_ext_deps_args "${dir}"
     echo "Build MuJoCo with Emscripten (MUJOCO_WASM_THREADS=${mode})..."
     emcmake cmake -B "${dir}" \
         -DCMAKE_INTERPROCEDURAL_OPTIMIZATION:BOOL=OFF \
         -DMUJOCO_WASM_THREADS=${mode} \
         ${CCACHE_ARGS} \
-        $WASM_CMAKE_ARGS
+        $WASM_CMAKE_ARGS \
+        "${ext_deps_args[@]}"
+    _populate_ext_deps_cache "${dir}"
     cmake --build "${dir}" --parallel $(nproc)
 }
 
@@ -451,11 +549,7 @@ install_mjx() {
     source ${TMPDIR}/venv/bin/activate
     # The MJX requirements (jax, jaxlib, scipy, ...) are a big install; use uv when
     # available. Keep pip for the local --no-index wheel.
-    if command -v uv > /dev/null 2>&1; then
-        uv pip install --require-hashes -r requirements.txt
-    else
-        pip install --require-hashes -r requirements.txt
-    fi
+    _pip_install_requirements requirements.txt
     pip install --no-deps --no-index dist/mujoco_mjx-*.whl
     pip check
 }
@@ -476,28 +570,36 @@ build_mujoco_live() {
     source emsdk/emsdk_env.sh
 
     echo "Building Filament tools, targeting host platform..."
+    local ext_deps_args=()
+    _setup_ext_deps_args build_host
     cmake -S . -B build_host -G Ninja \
         -DCMAKE_BUILD_TYPE=Release \
         -DUSE_STATIC_LIBCXX=OFF \
         -DMUJOCO_BUILD_STUDIO=ON \
         -DMUJOCO_USE_FILAMENT=ON \
         -DMUJOCO_BUILD_TESTS=OFF \
+        -DMUJOCO_TEST_PYTHON_UTIL=OFF \
         -DMUJOCO_BUILD_EXAMPLES=OFF \
-        -DMUJOCO_BUILD_SIMULATE=OFF
+        -DMUJOCO_BUILD_SIMULATE=OFF \
+        "${ext_deps_args[@]}"
+    _populate_ext_deps_cache build_host
     cmake --build build_host --target matc resgen cmgen mujoco_filament_assets -j"${NJOBS}"
 
     echo "Building desktop WASM app..."
+    _setup_ext_deps_args build_wasm
     emcmake cmake -S . -B build_wasm -G Ninja \
         -DCMAKE_BUILD_TYPE=Release \
         -DMUJOCO_BUILD_STUDIO=ON \
         -DMUJOCO_USE_FILAMENT=ON \
         -DMUJOCO_BUILD_TESTS_WASM=OFF \
-        -DMUJOCO_NATIVE_BUILD_DIR=$(pwd)/build_host
+        -DMUJOCO_NATIVE_BUILD_DIR=$(pwd)/build_host \
+        "${ext_deps_args[@]}"
     cmake --build build_wasm --target mujoco_studio -j"${NJOBS}"
 
     # iOS WebKit cannot reliably reserve the desktop build's 4 GiB shared
     # memory. Keep a separate non-threaded profile below its practical limit.
     echo "Building iOS WASM app..."
+    _setup_ext_deps_args build_wasm_ios
     emcmake cmake -S . -B build_wasm_ios -G Ninja \
         -DCMAKE_BUILD_TYPE=Release \
         -DMUJOCO_BUILD_STUDIO=ON \
@@ -506,7 +608,8 @@ build_mujoco_live() {
         -DMUJOCO_WASM_THREADS=OFF \
         -DMUJOCO_STUDIO_WASM_INITIAL_MEMORY=256mb \
         -DMUJOCO_STUDIO_WASM_MAXIMUM_MEMORY=512mb \
-        -DMUJOCO_NATIVE_BUILD_DIR=$(pwd)/build_host
+        -DMUJOCO_NATIVE_BUILD_DIR=$(pwd)/build_host \
+        "${ext_deps_args[@]}"
     cmake --build build_wasm_ios --target mujoco_studio -j"${NJOBS}"
 }
 
@@ -547,10 +650,17 @@ _build_python_wheel() {
     fi
     export CCACHE_NOHASHDIR=1
     export CCACHE_SLOPPINESS="time_macros,include_file_mtime,include_file_ctime,pch_defines,locale"
+    local py_deps_dir="${CCACHE_BASEDIR}/python_cmake_deps"
+    rm -rf "${py_deps_dir}"
+    mkdir -p "${py_deps_dir}/_deps"
+    local ext_deps_args=()
+    _setup_ext_deps_args
     MUJOCO_PATH="${prefix}" \
     MUJOCO_PLUGIN_PATH="${prefix}/mujoco_plugin" \
-    MUJOCO_CMAKE_ARGS="-DCMAKE_INTERPROCEDURAL_OPTIMIZATION:BOOL=OFF ${CCACHE_ARGS} ${CMAKE_ARGS}" \
+    MUJOCO_CMAKE_ARGS="-DCMAKE_INTERPROCEDURAL_OPTIMIZATION:BOOL=OFF -DFETCHCONTENT_BASE_DIR=${py_deps_dir}/_deps ${CCACHE_ARGS} ${CMAKE_ARGS} ${ext_deps_args[*]}" \
     pip wheel -v --no-deps -w python/dist python/dist/mujoco-*.tar.gz
+    _populate_ext_deps_cache "${py_deps_dir}"
+    rm -rf "${py_deps_dir}"
 }
 
 
@@ -568,11 +678,7 @@ _install_python_wheel() {
     # viewer server) with hash verification, then --force-reinstall --no-deps
     # --no-index to replace whatever mujoco is installed with the one just built
     # without disturbing the rest of the environment.
-    if command -v uv > /dev/null 2>&1; then
-        uv pip install --require-hashes -r python/build_requirements.txt
-    else
-        pip install --require-hashes -r python/build_requirements.txt
-    fi
+    _pip_install_requirements python/build_requirements.txt
     pip install --force-reinstall --no-deps --no-index python/dist/mujoco-*.whl
 }
 
@@ -606,6 +712,8 @@ _configure_studio_host() {
         return 0
     fi
     echo "Configuring the native Studio host build..."
+    local ext_deps_args=()
+    _setup_ext_deps_args build_host
     cmake -S . -B build_host -G Ninja \
         -DCMAKE_BUILD_TYPE:STRING=Release \
         -DCMAKE_INTERPROCEDURAL_OPTIMIZATION:BOOL=OFF \
@@ -613,10 +721,13 @@ _configure_studio_host() {
         -DMUJOCO_BUILD_STUDIO=ON \
         -DMUJOCO_USE_FILAMENT=ON \
         -DMUJOCO_BUILD_TESTS=OFF \
+        -DMUJOCO_TEST_PYTHON_UTIL=OFF \
         -DMUJOCO_BUILD_EXAMPLES=OFF \
         -DMUJOCO_BUILD_SIMULATE=OFF \
         ${CCACHE_ARGS} \
-        ${CMAKE_ARGS}
+        ${CMAKE_ARGS} \
+        "${ext_deps_args[@]}"
+    _populate_ext_deps_cache build_host
 }
 
 
@@ -636,7 +747,7 @@ build_studio_platform_libs() {
     _configure_studio_host
     echo "Building the Studio platform libraries, assets and engine plugins..."
     cmake --build build_host -j"${NJOBS}" \
-        --target mujoco_studio_platform mujoco_studio_assets actuator elasticity sensor sdf_plugin
+        --target mujoco_studio_platform mujoco_studio_assets matc resgen cmgen actuator sensor sdf_plugin
 }
 
 
@@ -651,24 +762,25 @@ build_studio_cpp_viewer() {
     fi
     echo "Building the C++ Studio viewer app (mujoco_studio) in ${host_dir}..."
     cmake --build "${host_dir}" -j"${NJOBS}" \
-        --target mujoco_studio actuator elasticity sensor sdf_plugin
+        --target mujoco_studio actuator sensor sdf_plugin
 }
 
 
 # Gathers the headers, static archives, plugins and assets the Python
-# extensions compile against from the host build into build/mujoco_install/.
+# extensions compile against from the host build into ${TMPDIR:-build}/mujoco_install/.
 install_studio_platform() {
     echo "Gathering the headers + libraries the Studio Python modules compile against..."
-    local build_dir prefix deps plugin_ext plugin_dir
+    local build_dir install_dir prefix deps plugin_ext plugin_dir
     build_dir="$(_resolve_studio_host_dir)"
+    install_dir="${TMPDIR:-build}/mujoco_install"
     # Recreate the prefix every time. cmake --install and the copies below only
     # ever add files, so after a version bump the previous engine library
     # (libmujoco.so.<old version>) would stay here next to the new one, and
     # setup.py, which packages every libmujoco.so.* it finds, would ship both.
     # The copies keep timestamps, so repeated Python builds stay incremental.
-    rm -rf build/mujoco_install
-    mkdir -p build/mujoco_install
-    prefix="$(cd build/mujoco_install && pwd)"
+    rm -rf "${install_dir}"
+    mkdir -p "${install_dir}"
+    prefix="$(cd "${install_dir}" && pwd)"
     # Per-OS engine-plugin layout.
     case "$(uname -s)" in
         Darwin) plugin_ext="dylib"; plugin_dir="${build_dir}/lib" ;;
@@ -701,7 +813,7 @@ install_studio_platform() {
 
     # 2. Engine plugins (setup.py packages them from MUJOCO_PLUGIN_PATH).
     mkdir -p "${prefix}/mujoco_plugin"
-    for plugin in actuator elasticity sensor sdf_plugin; do
+    for plugin in actuator sensor sdf_plugin; do
         find "${plugin_dir}" -name "*${plugin}.${plugin_ext}" \
             -exec cp {} "${prefix}/mujoco_plugin/" \; 2>/dev/null || true
     done
@@ -709,9 +821,12 @@ install_studio_platform() {
     # 3. Static archives: mujoco_platform + every dependency archive; the Python
     #    build looks each one up by name with find_library().
     mkdir -p "${prefix}/lib"
-    find "${build_dir}" \( -name "*.a" -o -name "*.lib" \) -exec cp -up {} "${prefix}/lib/" \;
+    find "${build_dir}" -path "${prefix}" -prune -o \
+        \( -name "*.a" -o -name "*.lib" \) ! -name "mujoco.lib" \
+        -exec cp -p {} "${prefix}/lib/" \;
 
-    # 4. Source-tree headers for platform / filament-compat / render.
+    # 4. Source-tree headers for studio / platform / filament-compat / render.
+    _copy_headers studio "${prefix}/include/mujoco/studio"
     _copy_headers src/experimental "${prefix}/include/mujoco/experimental"
     _copy_headers src/render "${prefix}/include/mujoco/render"
 
@@ -753,7 +868,7 @@ install_studio_platform() {
 
 
 # The web viewer browser client (WASM) in
-# python/mujoco/experimental/studio/web/dist/. The output is
+# python/mujoco/studio/web/dist/. The output is
 # platform-independent. It needs the host Filament tools, so the platform
 # libraries come first (a no-op once built). Installs Emscripten into ./emsdk
 # when it is missing. Configures build_wasm/ once; Ninja re-runs CMake by
@@ -765,20 +880,30 @@ build_studio_wasm() {
     fi
     source emsdk/emsdk_env.sh
 
-    build_studio_platform_libs
     local host_dir
     host_dir="$(_resolve_studio_host_dir)"
+    if [[ ! -x "${host_dir}/bin/matc" || ! -x "${host_dir}/bin/resgen" || ! -x "${host_dir}/bin/cmgen" || ! -d "${host_dir}/src/render/filament/assets" ]]; then
+        if [[ "${host_dir}" == "$(pwd)/build_host" ]]; then
+            _configure_studio_host
+        fi
+        echo "Building Filament host tools and materials in ${host_dir}..."
+        cmake --build "${host_dir}" -j"${NJOBS}" --target matc resgen cmgen mujoco_filament_assets
+    fi
 
     if [[ ! -f build_wasm/CMakeCache.txt ]] ||
        ! grep -q "^MUJOCO_NATIVE_BUILD_DIR:[A-Z]*=${host_dir}\$" build_wasm/CMakeCache.txt; then
         echo "Configuring the web viewer browser client (WASM) with host tools from ${host_dir}..."
+        local ext_deps_args=()
+        _setup_ext_deps_args build_wasm "${host_dir}/_deps"
         emcmake cmake -S . -B build_wasm -G Ninja \
             -DCMAKE_BUILD_TYPE:STRING=Release \
+            -DCMAKE_INTERPROCEDURAL_OPTIMIZATION:BOOL=OFF \
             -DMUJOCO_BUILD_STUDIO=ON \
             -DMUJOCO_USE_FILAMENT=ON \
             -DMUJOCO_BUILD_TESTS_WASM=OFF \
             -DMUJOCO_NATIVE_BUILD_DIR:PATH="${host_dir}" \
-            ${CCACHE_ARGS}
+            ${CCACHE_ARGS} \
+            "${ext_deps_args[@]}"
     fi
     echo "Building the web viewer browser client (WASM)..."
     cmake --build build_wasm --target web_client -j"${NJOBS}"
@@ -796,19 +921,23 @@ build_engine() {
     # See configure_mujoco for why global IPO is off while CMakeLists.txt keeps
     # IPO on the core mujoco target on Windows MSVC.
     local ipo_off="-DCMAKE_INTERPROCEDURAL_OPTIMIZATION:BOOL=OFF"
+    local ext_deps_args=()
+    _setup_ext_deps_args build
     cmake -S . -B build -G Ninja \
         -DCMAKE_BUILD_TYPE:STRING=Release \
         ${ipo_off} \
         -DCMAKE_INSTALL_PREFIX:PATH="${prefix}" \
         -DMUJOCO_BUILD_EXAMPLES:BOOL=OFF \
         ${CCACHE_ARGS} \
-        ${CMAKE_ARGS}
+        ${CMAKE_ARGS} \
+        "${ext_deps_args[@]}"
+    _populate_ext_deps_cache build
     cmake --build build -j"${NJOBS}"
     cmake --install build --prefix "${prefix}"
 
     mkdir -p "${prefix}/mujoco_plugin"
     local plugin
-    for plugin in actuator elasticity sensor sdf_plugin; do
+    for plugin in actuator sensor sdf_plugin; do
         find build/lib build/bin -maxdepth 2 \
             \( -name "lib${plugin}.so" -o -name "lib${plugin}.dylib" -o -name "${plugin}.dll" \) \
             -exec cp {} "${prefix}/mujoco_plugin/" \; 2>/dev/null || true
@@ -833,6 +962,7 @@ build_simulate_app() {
             -DMUJOCO_BUILD_SIMULATE=ON \
             -DMUJOCO_BUILD_STUDIO=OFF \
             -DMUJOCO_BUILD_TESTS=OFF \
+            -DMUJOCO_TEST_PYTHON_UTIL=OFF \
             -DMUJOCO_BUILD_EXAMPLES=OFF \
             ${CCACHE_ARGS} \
             ${CMAKE_ARGS}
@@ -851,7 +981,7 @@ build_studio_python() {
     echo "Building the Studio platform for Python..."
     build_studio_platform_libs
     install_studio_platform
-    _install_python_wheel "$(cd build/mujoco_install && pwd)"
+    _install_python_wheel "$(cd "${TMPDIR:-build}/mujoco_install" && pwd)"
 }
 
 
@@ -862,7 +992,7 @@ build_studio_all() {
     build_studio_platform_libs
     build_studio_wasm
     install_studio_platform
-    _install_python_wheel "$(cd build/mujoco_install && pwd)"
+    _install_python_wheel "$(cd "${TMPDIR:-build}/mujoco_install" && pwd)"
 }
 
 
@@ -875,13 +1005,20 @@ build_wheel() {
     build_studio_platform_libs
     install_studio_platform
     build_studio_wasm
-    _build_python_wheel "$(cd build/mujoco_install && pwd)"
+    _build_python_wheel "$(cd "${TMPDIR:-build}/mujoco_install" && pwd)"
 }
 
 
 test_bazel() {
     echo "Building and testing MuJoCo with Bazel..."
-    bazel test --test_output=errors //...
+    local test_flags=()
+    if [[ "$(uname)" == "Darwin" ]]; then
+        # GitHub's macOS runners have no hardware OpenGL, which mujoco.cgl
+        # requires, so skip the rendering tests there (like the CMake job's
+        # MUJOCO_GL=disable). On Linux they use headless EGL.
+        test_flags+=(--test_env=MUJOCO_GL=disable)
+    fi
+    bazel test --test_output=errors "${test_flags[@]}" //...
 
     echo "Building standalone sample Bzlmod module..."
     pushd sample > /dev/null

@@ -49,12 +49,11 @@ public class MjMeshFilter : MonoBehaviour {
 
     _shapeChangeStamp = currentChangeStamp;
     Tuple<Vector3[], int[]> meshData = _geom.BuildMesh();
-    if (meshData == null)
-    {
-      throw new ArgumentException("Unsupported geom shape detected");
-    }
-
     DisposeCurrentMesh();
+    if (meshData == null) {
+      _meshFilter.sharedMesh = null;
+      return;
+    }
 
     var mesh = new Mesh();
     // Name this mesh to easily track resources in Unity analysis tools.

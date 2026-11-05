@@ -14,6 +14,8 @@
 # ==============================================================================
 """An OpenGL context created via GLFW."""
 
+import contextlib
+
 import glfw
 
 
@@ -29,6 +31,22 @@ class GLContext:
 
   def make_current(self):
     glfw.make_context_current(self._context)
+
+  @contextlib.contextmanager
+  def as_current(self):
+    """Temporarily makes this context current, restoring any prior context."""
+    if not self._context:
+      yield
+      return
+    prev_ctx = glfw.get_current_context()
+    if prev_ctx == self._context:
+      yield
+      return
+    self.make_current()
+    try:
+      yield
+    finally:
+      glfw.make_context_current(prev_ctx)
 
   def free(self):
     if self._context:

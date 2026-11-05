@@ -14,6 +14,7 @@
 
 #include "xml/xml_native_reader.h"
 
+#include <algorithm>
 #include <array>
 #include <cstddef>
 #include <cstdio>
@@ -37,7 +38,6 @@
 #include <mujoco/mujoco.h>
 #include "engine/engine_util_misc.h"
 #include "user/user_api.h"
-#include "user/user_composite.h"
 #include "user/user_flexcomp.h"
 #include "user/user_objects.h"
 #include "user/user_util.h"
@@ -432,6 +432,7 @@ void mjXReader::Option(XMLElement* section, mjSpec* s, mjOption* opt) {
     READENBL("sleep",       mjENBL_SLEEP)
     READENBL("diagexact",   mjENBL_DIAGEXACT)
     READENBL("ipc",         mjENBL_IPC)
+    READENBL("speculative", mjENBL_SPECULATIVE)
     // clang-format on
 #undef READENBL
   }
@@ -606,6 +607,12 @@ void mjXReader::OneFlex(XMLElement* elem, mjsFlex* flex) {
   XMLElement* elasticity = FirstChildElement(elem, "elasticity");
   if (elasticity) {
     ReadAttrTable(elasticity, flex, flex->element, kElasticityAttrs, kElasticityAttrsN);
+
+    // a single yield strain is also the bending yield strain of non-interpolated 2D flexes
+    if (ReadAttr(elasticity, "yield", 2, flex->stressyield, text, false, false) == 1) {
+      bool shell           = flex->dim == 2 && flex->nodebody->empty();
+      flex->stressyield[1] = shell ? flex->stressyield[0] : 0;
+    }
   }
 
   // write error info
@@ -728,6 +735,7 @@ void mjXReader::OneSkin(XMLElement* elem, mjsSkin* skin, const mjVFS* vfs) {
 // texture element parser
 void mjXReader::OneTexture(XMLElement* elem, mjsTexture* texture, const mjVFS* vfs) {
   string text;
+  int    inherited_gridsize[2] = {texture->gridsize[0], texture->gridsize[1]};
 
   // mechanical attributes
   ReadAttrTable(elem, texture, texture->element, kTextureAttrs, kTextureAttrsN);
@@ -738,9 +746,13 @@ void mjXReader::OneTexture(XMLElement* elem, mjsTexture* texture, const mjVFS* v
   NameFromFile(elem, texture->element, texture->file);
 
   // gridlayout length must equal the gridsize product (value-conditional)
-  if (ReadAttrTxt(elem, "gridlayout", text) &&
-      text.length() != texture->gridsize[0] * texture->gridsize[1]) {
-    throw mjXError(elem, "gridlayout length must match gridsize");
+  if (ReadAttrTxt(elem, "gridlayout", text)) {
+    if (text.length() != texture->gridsize[0] * texture->gridsize[1]) {
+      throw mjXError(elem, "gridlayout length must match gridsize");
+    }
+  } else if (elem->Attribute("gridsize") && (texture->gridsize[0] != inherited_gridsize[0] ||
+                                             texture->gridsize[1] != inherited_gridsize[1])) {
+    std::memcpy(texture->gridlayout, "............", sizeof(texture->gridlayout));
   }
 
   // separate files
@@ -1107,7 +1119,6 @@ void mjXReader::OneEquality(XMLElement* elem, mjsEquality* equality) {
         break;
 
       case mjEQ_FLEX:
-      case mjEQ_FLEXVERT:
         ReadAttrTxt(elem, "flex", name1, true);
         break;
 
@@ -1282,25 +1293,43 @@ void mjXReader::OneActuator(XMLElement* elem, mjsActuator* actuator, const mjsDe
 
     switch (acttype) {
       case mjACTUATOR_POSITION:
-      case mjACTUATOR_INTVELOCITY:
+      case mjACTUATOR_INTVELOCITY: {
         ReadAttr(elem, "kp", 1, &s.kp, text);
-        ReadAttr(elem, "inheritrange", 1, &s.inheritrange, text);
+        bool has_inherit = ReadAttr(elem, "inheritrange", 1, &s.inheritrange, text);
+        bool has_range =
+            elem->Attribute(acttype == mjACTUATOR_POSITION ? "ctrlrange" : "actrange") != nullptr;
+        if (has_range && !has_inherit) {
+          s.inheritrange = 0;
+        } else if (has_inherit && s.inheritrange > 0 && !has_range) {
+          double* range = acttype == mjACTUATOR_POSITION ? actuator->ctrlrange : actuator->actrange;
+          range[0]      = 0;
+          range[1]      = 0;
+        }
         if (ReadAttr(elem, "timeconst", 1, s.timeconst, text)) { s.has_timeconst = true; }
         break;
+      }
       case mjACTUATOR_ORIENTATION:
         ReadAttr(elem, "kp", 1, &s.kp, text);
         ReadInputSpec(elem, &s.ctrlspec);
         break;
-      case mjACTUATOR_PID:
+      case mjACTUATOR_PID: {
         ReadAttr(elem, "kp", 1, &s.kp, text);
         ReadAttr(elem, "ki", 1, &s.ki, text);
         ReadAttr(elem, "imax", 1, &s.imax, text);
         ReadAttr(elem, "slewmax", 1, &s.slewmax, text);
-        ReadAttr(elem, "inheritrange", 1, &s.inheritrange, text);
+        bool has_inherit = ReadAttr(elem, "inheritrange", 1, &s.inheritrange, text);
         ReadInputSpec(elem, &s.ctrlspec);
         // posrange is an alias of ctrlrange (the position-setpoint input)
-        ReadAttr(elem, "posrange", 2, actuator->ctrlrange, text);
+        bool has_posrange = ReadAttr(elem, "posrange", 2, actuator->ctrlrange, text) ||
+                            elem->Attribute("ctrlrange") != nullptr;
+        if (has_posrange && !has_inherit) {
+          s.inheritrange = 0;
+        } else if (has_inherit && s.inheritrange > 0 && !has_posrange) {
+          actuator->ctrlrange[0] = 0;
+          actuator->ctrlrange[1] = 0;
+        }
         break;
+      }
       case mjACTUATOR_CYLINDER:
         ReadAttr(elem, "timeconst", 1, s.timeconst, text);
         ReadAttr(elem, "bias", 3, s.bias, text);
@@ -1326,8 +1355,15 @@ void mjXReader::OneActuator(XMLElement* elem, mjsActuator* actuator, const mjsDe
         ReadAttr(elem, "motorconst", 2, s.motorconst, text, false, false);
         ReadAttr(elem, "resistance", 1, &s.resistance, text);
         ReadAttr(elem, "nominal", 3, s.nominal, text, false, false);
-        ReadAttr(elem, "saturation", 3, s.saturation, text, false, false);
-        ReadAttr(elem, "inductance", 2, s.inductance, text, false, false);
+        // authored saturation replaces the inherited torque limit
+        if (ReadAttr(elem, "saturation", 3, s.saturation, text, false, false)) {
+          actuator->forcelimited  = mjLIMITED_AUTO;
+          actuator->forcerange[0] = actuator->forcerange[1] = 0;
+        }
+        // L and timeconst are alternatives: an authored L alone replaces the inherited timeconst
+        if (ReadAttr(elem, "inductance", 2, s.inductance, text, false, false) == 1) {
+          s.inductance[1] = 0;
+        }
         ReadAttr(elem, "cogging", 3, s.cogging, text, false, false);
         ReadAttr(elem, "controller", 6, s.controller, text, false, false);
         ReadAttr(elem, "thermal", 6, s.thermal, text, false, false);
@@ -1352,170 +1388,8 @@ void mjXReader::OneActuator(XMLElement* elem, mjsActuator* actuator, const mjsDe
 }
 
 
-// make composite
-void mjXReader::OneComposite(XMLElement*       elem,
-                             mjsBody*          body,
-                             mjsFrame*         frame,
-                             const mjsDefault* def) {
-  string text;
-  int    n;
-
-  // create out-of-DOM element
-  auto          comp_ptr = std::make_unique<mjCComposite>();
-  mjCComposite& comp     = *comp_ptr;
-
-  // common properties
-  ReadAttrTxt(elem, "prefix", comp.prefix);
-  if (MapValue(elem, "type", &n, comp_map, mjNCOMPTYPES, true)) { comp.type = (mjtCompType)n; }
-  ReadAttr(elem, "count", 3, comp.count, text, false, false);
-  ReadAttr(elem, "offset", 3, comp.offset, text);
-  ReadAttr(elem, "quat", 4, comp.quat, text);
-  comp.frame = frame;
-
-  // plugin
-  XMLElement* eplugin = FirstChildElement(elem, "plugin");
-  if (eplugin) { OnePlugin(eplugin, &comp.plugin); }
-
-  // cable
-  string curves;
-  ReadAttrTxt(elem, "curve", curves);
-  if (ReadAttrTxt(elem, "initial", comp.initial) &&
-      FindKey(initial_map, initial_sz, comp.initial) < 0) {
-    throw mjXError(elem, "invalid keyword: '%s'", comp.initial.c_str());
-  }
-  ReadAttr(elem, "size", 3, comp.size, text, false, false);
-  auto uservert = ReadAttrVec<float>(elem, "vertex");
-  if (uservert.has_value()) { comp.uservert = std::move(uservert.value()); }
-
-  // process curve string
-  std::istringstream iss(curves);
-  int                i = 0;
-  while (iss) {
-    if (curves.empty()) { break; }
-    iss >> text;
-    if (i > 2) { throw mjXError(elem, "The curve array must have a maximum of 3 components"); }
-    comp.curve[i++] = (mjtCompShape)FindKey(shape_map, mjNCOMPSHAPES, text);
-    if (comp.curve[i - 1] == -1) {
-      throw mjXError(elem, "The curve array contains an invalid shape");
-    }
-    if (iss.eof()) { break; }
-  };
-
-  // skin
-  XMLElement* eskin = FirstChildElement(elem, "skin");
-  if (eskin) {
-    comp.skin = true;
-    if (MapValue(eskin, "texcoord", &n, bool_map, 2)) { comp.skintexcoord = (n == 1); }
-    ReadAttrTxt(eskin, "material", comp.skinmaterial);
-    ReadAttr(eskin, "rgba", 4, comp.skinrgba, text);
-    ReadAttr(eskin, "inflate", 1, &comp.skininflate, text);
-    ReadAttrInt(eskin, "subgrid", &comp.skinsubgrid);
-    ReadAttrInt(eskin, "group", &comp.skingroup, 0);
-    if (comp.skingroup < 0 || comp.skingroup >= mjNGROUP) {
-      throw mjXError(eskin, "skin group must be between 0 and 5");
-    }
-  }
-
-  // set type-specific defaults
-  comp.SetDefault();
-
-  // geom
-  XMLElement* egeom = FirstChildElement(elem, "geom");
-  if (egeom) {
-    string   material;
-    mjsGeom& dgeom = *comp.def[0].spec.geom;
-    if (MapValue(egeom, "type", &n, geomtype_map, mjNGEOMTYPES)) { dgeom.type = (mjtGeom)n; }
-    ReadAttr(egeom, "size", 3, dgeom.size, text, false, false);
-    ReadAttrInt(egeom, "contype", &dgeom.contype);
-    ReadAttrInt(egeom, "conaffinity", &dgeom.conaffinity);
-    ReadAttrInt(egeom, "condim", &dgeom.condim);
-    ReadAttrInt(egeom, "group", &dgeom.group);
-    ReadAttrInt(egeom, "priority", &dgeom.priority);
-    ReadAttr(egeom, "friction", 3, dgeom.friction, text, false, false);
-    ReadAttr(egeom, "solmix", 1, &dgeom.solmix, text);
-    ReadAttr(egeom, "solref", mjNREF, dgeom.solref, text, false, false);
-    ReadAttr(egeom, "solimp", mjNIMP, dgeom.solimp, text, false, false);
-    ReadAttr(egeom, "margin", 1, &dgeom.margin, text);
-    ReadAttr(egeom, "gap", 1, &dgeom.gap, text);
-    ReadAttr(egeom, "surfacevel", 6, dgeom.surfacevel, text, false, false);
-    ReadAttr(egeom, "adhesion", 1, &dgeom.adhesion, text);
-    if (ReadAttrTxt(egeom, "material", material)) {
-      mjs_setString(dgeom.material, material.c_str());
-    }
-    ReadAttr(egeom, "rgba", 4, dgeom.rgba, text);
-    ReadAttr(egeom, "mass", 1, &dgeom.mass, text);
-    ReadAttr(egeom, "density", 1, &dgeom.density, text);
-  }
-
-  // site
-  XMLElement* esite = FirstChildElement(elem, "site");
-  if (esite) {
-    string   material;
-    mjsSite& dsite = *comp.def[0].spec.site;
-    ReadAttr(esite, "size", 3, dsite.size, text, false, false);
-    ReadAttrInt(esite, "group", &dsite.group);
-    ReadAttrTxt(esite, "material", material);
-    ReadAttr(esite, "rgba", 4, dsite.rgba, text);
-    mjs_setString(dsite.material, material.c_str());
-  }
-
-  // joint
-  XMLElement* ejnt = FirstChildElement(elem, "joint");
-  while (ejnt) {
-    // kind
-    int kind;
-    MapValue(ejnt, "kind", &kind, jkind_map, 1, true);
-
-    // create a new element if this kind already exists
-    if (comp.add[kind]) {
-      char error[200];
-      if (!comp.AddDefaultJoint(error, 200)) { throw mjXError(elem, "%s", error); }
-    }
-    comp.add[kind] = true;
-
-    // get element
-    mjsDefault*  dspec     = &comp.defjoint[(mjtCompKind)kind].back().spec;
-    mjsJoint&    djoint    = *dspec->joint;
-    mjsEquality& dequality = *dspec->equality;
-
-    // particle joint
-    if (MapValue(ejnt, "type", &n, jointtype_map, jointtype_sz)) { djoint.type = (mjtJoint)n; }
-    ReadAttr(ejnt, "axis", 3, djoint.axis, text);
-
-    // solreffix, solimpfix
-    ReadAttr(ejnt, "solreffix", mjNREF, dequality.solref, text, false, false);
-    ReadAttr(ejnt, "solimpfix", mjNIMP, dequality.solimp, text, false, false);
-
-    // joint attributes
-    MapValue(elem, "limited", &djoint.limited, FalseTrueAuto_map, 3);
-    ReadAttrInt(ejnt, "group", &djoint.group);
-    ReadAttr(ejnt, "solreflimit", mjNREF, djoint.solref_limit, text, false, false);
-    ReadAttr(ejnt, "solimplimit", mjNIMP, djoint.solimp_limit, text, false, false);
-    ReadAttr(ejnt, "solreffriction", mjNREF, djoint.solref_friction, text, false, false);
-    ReadAttr(ejnt, "solimpfriction", mjNIMP, djoint.solimp_friction, text, false, false);
-    ReadAttr(ejnt, "stiffness", 1, djoint.stiffness, text);
-    ReadAttr(ejnt, "range", 2, djoint.range, text);
-    ReadAttr(ejnt, "margin", 1, &djoint.margin, text);
-    ReadAttr(ejnt, "armature", 1, &djoint.armature, text);
-    ReadAttr(ejnt, "damping", 1, djoint.damping, text);
-    ReadAttr(ejnt, "frictionloss", 1, &djoint.frictionloss, text);
-
-    // advance
-    ejnt = NextSiblingElement(ejnt, "joint");
-  }
-
-
-  // make composite
-  char error[200];
-  bool res = comp.Make(spec, body, error, 200);
-
-  // throw error
-  if (!res) { throw mjXError(elem, "%s", error); }
-}
-
-
 // make flexcomp
-void mjXReader::OneFlexcomp(XMLElement* elem, mjsBody* body, const mjVFS* vfs) {
+void mjXReader::OneFlexcomp(XMLElement* elem, mjsBody* body, mjsFrame* frame, const mjVFS* vfs) {
   string text, material;
   int    n;
 
@@ -1523,6 +1397,7 @@ void mjXReader::OneFlexcomp(XMLElement* elem, mjsBody* body, const mjVFS* vfs) {
   auto         fcomp_ptr = std::make_unique<mjCFlexcomp>();
   mjCFlexcomp& fcomp     = *fcomp_ptr;
   mjsFlex&     dflex     = *fcomp.def.spec.flex;
+  fcomp.frame            = frame;
 
   // common properties
   ReadAttrTxt(elem, "name", fcomp.name, true);
@@ -1544,9 +1419,14 @@ void mjXReader::OneFlexcomp(XMLElement* elem, mjsBody* body, const mjVFS* vfs) {
     throw mjXError(elem, "both 'file' and 'mesh' specified");
   }
   if (!fcomp.mesh.empty() && !elem->Attribute("type")) { fcomp.type = mjFCOMPTYPE_MESH; }
-  if (ReadAttrTxt(elem, "material", material)) { mjs_setString(dflex.material, material.c_str()); }
+  if (ReadAttrTxt(elem, "material", material)) {
+    mjs_setStringVec(dflex.material, material.c_str());
+  }
   ReadAttr(elem, "rgba", 4, dflex.rgba, text);
-  if (MapValue(elem, "flatskin", &n, bool_map, 2)) { dflex.flatskin = (n == 1); }
+  if (MapValue(elem, "flatskin", &n, bool_map, 2)) {
+    dflex.flatskin     = (n == 1);
+    fcomp.has_flatskin = true;
+  }
   if (ReadAttrInt(elem, "dim", &dflex.dim)) { fcomp.has_dim = true; }
   ReadAttr(elem, "radius", 1, &dflex.radius, text);
   ReadAttrInt(elem, "group", &dflex.group);
@@ -1575,7 +1455,7 @@ void mjXReader::OneFlexcomp(XMLElement* elem, mjsBody* body, const mjVFS* vfs) {
   // edge
   XMLElement* edge = FirstChildElement(elem, "edge");
   if (edge) {
-    MapValue(edge, "equality", &fcomp.equality, flexeq_map, 4);
+    MapValue(edge, "equality", &fcomp.equality, flexeq_map, flexeq_sz);
     ReadAttr(edge, "solref", mjNREF, fcomp.def.spec.equality->solref, text, false, false);
     ReadAttr(edge, "solimp", mjNIMP, fcomp.def.spec.equality->solimp, text, false, false);
     ReadAttr(edge, "stiffness", 1, &dflex.edgestiffness, text);
@@ -1587,8 +1467,13 @@ void mjXReader::OneFlexcomp(XMLElement* elem, mjsBody* body, const mjVFS* vfs) {
   if (elasticity) {
     ReadAttr(elasticity, "young", 1, &dflex.young, text);
     ReadAttr(elasticity, "poisson", 1, &dflex.poisson, text);
+    ReadAttr(elasticity, "shear", 1, &dflex.shear, text);
     ReadAttr(elasticity, "damping", 1, &dflex.damping, text);
     ReadAttr(elasticity, "thickness", 1, &dflex.thickness, text);
+    if (ReadAttr(elasticity, "yield", 2, dflex.stressyield, text, false, false) == 1) {
+      dflex.stressyield[1] = dflex.stressyield[0];  // reset in Make() if not a 2D shell
+      fcomp.yield_single   = true;
+    }
     MapValue(elasticity, "elastic2d", &dflex.elastic2d, elastic2d_map, 4);
     MapValue(elasticity, "section", &dflex.section, flexsection_map, flexsection_sz);
     ReadAttr(elasticity, "sectionsize", 2, dflex.sectionsize, text);
@@ -1804,7 +1689,6 @@ void mjXReader::Extension(XMLElement* section) {
 void mjXReader::Custom(XMLElement* section) {
   string      str, name;
   XMLElement* elem;
-  double      data[500];
 
   // iterate over child elements
   elem = FirstChildElement(section);
@@ -1826,20 +1710,30 @@ void mjXReader::Custom(XMLElement* section) {
       if (mjs_setName(numeric->element, elname.c_str())) {
         throw mjXError(elem, "%s", mjs_getError(spec));
       }
-      if (ReadAttrInt(elem, "size", &numeric->size)) {
-        int sz = numeric->size < 500 ? numeric->size : 500;
-        for (int i = 0; i < sz; i++) { data[i] = 0; }
-      } else {
-        numeric->size = 501;
+      static constexpr int kMaxNumericSize = 10000000;
+      bool                 has_size        = ReadAttrInt(elem, "size", &numeric->size);
+      if (has_size && numeric->size < 1) {
+        throw mjXError(elem, "custom field size must be positive");
       }
-      int len = ReadAttr(elem, "data", numeric->size, data, str, false, false);
-      if (numeric->size == 501) { numeric->size = len; }
-      if (numeric->size < 1 || numeric->size > 500) {
-        throw mjXError(elem, "custom field size must be between 1 and 500");
+      if (has_size && numeric->size > kMaxNumericSize) {
+        throw mjXError(elem, "custom field size exceeds maximum");
+      }
+      auto maybe_data = ReadAttrVec<double>(elem, "data");
+      int  len        = maybe_data.has_value() ? static_cast<int>(maybe_data->size()) : 0;
+      if (!has_size) {
+        if (len < 1) { throw mjXError(elem, "custom field size must be positive"); }
+        if (len > kMaxNumericSize) { throw mjXError(elem, "custom field size exceeds maximum"); }
+        numeric->size = len;
+      } else if (len > numeric->size) {
+        throw mjXError(elem, "attribute 'data' has too much data");
       }
 
-      // copy data
-      mjs_setDouble(numeric->data, data, numeric->size);
+      // copy data, zero-padded to numeric->size
+      std::vector<double> data(numeric->size, 0.0);
+      if (maybe_data.has_value()) {
+        std::copy(maybe_data->begin(), maybe_data->end(), data.begin());
+      }
+      mjs_setDouble(numeric->data, data.data(), numeric->size);
     }
 
     // text
@@ -2297,16 +2191,10 @@ void mjXReader::Body(XMLElement* section, mjsBody* body, mjsFrame* frame, const 
       OnePlugin(elem, &(body->plugin));
     }
 
-    // composite sub-element
-    else if (name == "composite") {
-      // parse composite
-      OneComposite(elem, body, frame, def);
-    }
-
     // flexcomp sub-element
     else if (name == "flexcomp") {
       // parse flexcomp
-      OneFlexcomp(elem, body, vfs);
+      OneFlexcomp(elem, body, frame, vfs);
     }
 
     // frame sub-element

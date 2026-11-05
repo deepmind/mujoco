@@ -79,7 +79,7 @@ MJAPI int mjv_geodesic(mjtNum* pts, int npts, const mjtNum xpos[3], const mjtNum
                        mjtNum radius, int type, const mjtNum wpnt[12]);
 
 // convert HSV to RGB
-MJAPI void hsv2rgb(float *RGB, float H, float S, float V);
+MJAPI void mjv_hsv2rgb(float *RGB, float H, float S, float V);
 
 #ifdef __cplusplus
 }

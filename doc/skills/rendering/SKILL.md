@@ -13,6 +13,21 @@ description: >-
 
 > [!TIP]
 >
+> **Official MuJoCo documentation (`doc/*.rst`):** Read
+> [`../../programming/rendering.rst`](../../programming/rendering.rst)
+> (`.. _Rendering:`, `.. _FilamentRendering:`, `.. _ClassicRendering:`) and
+> [`../../programming/visualization.rst`](../../programming/visualization.rst)
+> (`.. _Visualization:`) directly when in a MuJoCo checkout; for large
+> reference files like [`../../python.rst`](../../python.rst) (`.. _PyRender:`),
+> [`../../XMLreference.rst`](../../XMLreference.rst), and
+> [`../../APIreference/functions.rst`](../../APIreference/functions.rst), grep
+> the literal `.. _Label:` anchor. Outside a checkout, fetch
+> `https://mujoco.readthedocs.io/en/latest/<path>.html` (or `/en/stable/` for
+> released pages; `functions.rst` renders inside
+> `APIreference/APIfunctions.html`, and Sphinx anchors lowercase the label,
+> e.g. `.. _PyRender:` → `#pyrender`) and browse repo paths (`../../../`) under
+> `https://github.com/google-deepmind/mujoco/tree/main/`.
+>
 > **Related skills:**
 >
 > -   [mujoco-python](../python/SKILL.md) — Core physics simulation, stepping,
@@ -21,17 +36,29 @@ description: >-
 >     viewer apps, and plugin architecture.
 > -   [mujoco-gui](../gui/SKILL.md) — Dear ImGui UI design and custom controls.
 
-## 1. Overview: Headless vs Interactive Rendering
+## 1. Overview: Rendering Backends & Workflows
 
-MuJoCo provides two distinct graphics workflows:
+MuJoCo provides two built-in 3D rendering backends (compared side-by-side in
+[programming/rendering.rst](../../programming/rendering.rst), `.. _Rendering:`):
 
--   **Headless Offscreen Rendering (`mujoco.Renderer` / `mjrContext`)**:
-    Focused on capturing image buffers (RGB, depth, object segmentation) without
-    opening a desktop window. Ideal for batch dataset collection, reinforcement
-    learning observations, and automated visual regression testing.
--   **Interactive Viewers (`mujoco.experimental.studio` / `mujoco.viewer`)**:
-    Interactive desktop or web-streamed applications designed for real-time
-    inspection, camera manipulation, and Dear ImGui control panels.
+-   **Classic OpenGL (`mujoco.Renderer` / C `mjr`)**: Immediate-mode OpenGL 1.5
+    renderer (`mjv_updateScene` -> `mjr_render` -> `mjr_readPixels`), now in
+    maintenance mode. Bundled out of the box in `pip install mujoco`, making
+    `mujoco.Renderer` the simplest single-class helper for headless RGB, depth,
+    and segmentation capture. See
+    [programming/rendering.rst](../../programming/rendering.rst)
+    (`.. _ClassicRendering:`) and [python.rst](../../python.rst)
+    (`.. _PyClassicRender:`).
+-   **Filament PBR (`mujoco.mjrf` & `mujoco.rendering.filament` / C `mjrf`)**:
+    Retained-mode, asynchronous physically-based renderer supporting OpenGL,
+    Vulkan, Metal, and WebGL (owns its own headless or windowed GPU context and
+    arbitrary-size `mjrfRenderTarget` buffers). Recommended for PBR materials,
+    image-based/photometric lighting, and new C++/Studio applications; see §7
+    and [programming/rendering.rst](../../programming/rendering.rst)
+    (`.. _FilamentRendering:`).
+-   **Interactive Viewers (`mujoco.studio` / `mujoco.viewer`)**: Desktop or
+    web-streamed interactive viewers; use [`mujoco-studio`](../studio/SKILL.md)
+    instead.
 
 ## 2. Headless Contexts on Linux: `MUJOCO_GL`
 
@@ -229,18 +256,43 @@ opt.flags[mujoco.mjtVisFlag.mjVIS_TRANSPARENT] = True
 renderer.update_scene(data, camera='overhead', scene_option=opt)
 ```
 
-## 7. Filament & Modern Graphics Backends
+## 7. Filament Physically-Based Rendering (`mjrf`)
 
-MuJoCo supports the Filament physically-based rendering (PBR) engine
-experimentally for advanced lighting, soft shadows, and materials. In Python,
-Filament renderer bindings are available under `mujoco.rendering.filament`.
+MuJoCo's Filament backend (`mjrfilament.h` in C/C++, `from mujoco import mjrf`
+and `mujoco.rendering.filament` in Python) provides retained-mode PBR with
+OpenGL, Vulkan, Metal, and WebGL support, arbitrary `mjrfRenderTarget` sizes
+(independent of `<global offwidth offheight/>`), and asynchronous
+`mjrfReadRequest` pixel readback:
+
+-   **Python (`ModelScene` + `Renderer`)**: Create an `mjrf.Context`, bind
+    model lights and renderables once via
+    `mujoco.rendering.filament.model_scene.ModelScene`, update in place with
+    `ms.update(data)`, and render into a NumPy target buffer via
+    `mujoco.rendering.filament.renderer.Renderer` — see the complete example in
+    [python.rst](../../python.rst) (`.. _PyFilamentRender:`).
+-   **C/C++ & CMake**: Build with `-DMUJOCO_USE_FILAMENT=ON` (or
+    `-DMUJOCO_USE_FILAMENT_MJR_COMPAT=ON` for drop-in `mjr_` compatibility) and
+    consult [programming/rendering.rst](../../programming/rendering.rst)
+    (`.. _reProgramming:`, `.. _reSupport:`).
+-   **Photometric light-intensity gotcha**: If *any* `<light>` has positive
+    `intensity`, Filament switches the entire scene from classic headlight +
+    default environment lighting to photometric mode (turning off the headlight
+    and darkening zero-intensity lights). For PBR materials, textures, and
+    lighting authoring, read
+    [programming/rendering.rst](../../programming/rendering.rst)
+    (`.. _reAuthoring:`, `.. _reMaterials:`, `.. _reLighting:`) and inspect the
+    reference PBR/IBL test scenes in `../../../test/render/testdata/`
+    (`pbr.xml`, `lighting.xml`, `emissive_bloom.xml`, `reflect_pbr.xml`,
+    `ibl.ktx`) and `../../../model/mug/mug.xml`.
 
 ## 8. Common Gotchas & Best Practices
 
-1.  **GL context leaks**: Always close the renderer or use a `with` block. Failing
-    to free renderers in loops exhausts GL contexts.
+1.  **GL context leaks**: Always close `mujoco.Renderer` or use a `with` block.
+    Failing to free renderers in loops exhausts GL contexts.
 2.  **Destruction order**: In C++, `mjr_freeContext` must be called before the
-    underlying OpenGL context is destroyed.
+    underlying OpenGL context is destroyed (see
+    [programming/rendering.rst](../../programming/rendering.rst),
+    `.. _reContext:`).
 3.  **Buffer re-use**: `renderer.render()` returns an internal buffer view. Call
     `.copy()` if storing frames in a list.
 4.  **Camera lookup by name**: Pass `camera='camera_name'` or the integer ID.
@@ -250,9 +302,25 @@ Filament renderer bindings are available under `mujoco.rendering.filament`.
 
 ### Documentation
 
--   [Visualization & Rendering Reference](../../programming/visualization.rst)
--   [Python Bindings Reference](../../python.rst)
+-   [Rendering Guide (Filament `mjrf` & Classic OpenGL `mjr`)](../../programming/rendering.rst)
+    (`.. _Rendering:`, `.. _FilamentRendering:`, `.. _ClassicRendering:`)
+-   [Abstract Visualization (`mjvCamera`, `mjvOption`, `mjvScene`)](../../programming/visualization.rst)
+    (`.. _Visualization:`, `.. _viCamera:`, `.. _viOption:`)
+-   [Python Rendering Bindings](../../python.rst) (`.. _PyRender:`,
+    `.. _PyFilamentRender:`, `.. _PyClassicRender:`)
+-   [MJCF `<visual>` & `<camera>` Reference](../../XMLreference.rst)
+    (`.. _visual-global:`, `.. _body-camera:`),
+    [Modeling Cameras](../../modeling.rst) (`.. _CCamera:`), and
+    [MuJoCo Menagerie](../../models.rst) (`.. _Menagerie:`)
+-   [C Rendering API Functions](../../APIreference/functions.rst)
+    (`.. _Visualization-api:`, `.. _OpenGLrendering:`,
+    `.. _FilamentRenderingApi:`) and
+    [C++ Render/Record Samples](../../programming/samples.rst) (`.. _saRender:`,
+    `.. _saRecord:`)
 
-### Source Code Examples
+### Source Code & Model Examples
 
--   [C API Header](../../../include/mujoco/mujoco.h)
+-   [C API Headers](../../../include/mujoco/mujoco.h) and
+    [`mjrfilament.h`](../../../include/mujoco/mjrfilament.h)
+-   [C++ Offscreen & Filament Sample](../../../sample/render.cc) and
+    [Filament PBR Test Scenes](../../../test/render/testdata/pbr.xml)

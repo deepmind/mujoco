@@ -15,6 +15,7 @@
 """Interactive GUI viewer for MuJoCo."""
 
 import abc
+import argparse
 import atexit
 import contextlib
 import math
@@ -26,11 +27,16 @@ import time
 from typing import Callable, List, Optional, Tuple, Union
 import weakref
 
-import glfw
 import mujoco
 from mujoco import _simulate
 import numpy as np
 
+try:
+  import glfw
+except ImportError as _err:
+  raise ImportError(
+      "mujoco.viewer requires 'glfw' to be installed."
+  ) from _err
 if not glfw._glfw:  # pylint: disable=protected-access
   raise RuntimeError('GLFW dynamic library handle is not available')
 else:
@@ -604,17 +610,10 @@ def launch_passive(
 
 
 if __name__ == '__main__':
-  # pylint: disable=g-bad-import-order
-  from absl import app  # pylint: disable=g-import-not-at-top
-  from absl import flags  # pylint: disable=g-import-not-at-top
-
-  _MJCF_PATH = flags.DEFINE_string('mjcf', None, 'Path to MJCF file.')
-
-  def main(argv) -> None:
-    del argv
-    if _MJCF_PATH.value is not None:
-      launch_from_path(os.path.expanduser(_MJCF_PATH.value))
-    else:
-      launch()
-
-  app.run(main)
+  parser = argparse.ArgumentParser()
+  parser.add_argument('--mjcf', type=str, help='Path to MJCF file.')
+  args, _ = parser.parse_known_args()
+  if args.mjcf is not None:
+    launch_from_path(os.path.expanduser(args.mjcf))
+  else:
+    launch()

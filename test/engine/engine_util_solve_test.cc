@@ -29,6 +29,7 @@
 #include <mujoco/mujoco.h>
 #include "src/engine/engine_util_blas.h"
 #include "src/engine/engine_util_misc.h"
+#include "src/engine/engine_util_spatial.h"
 #include "src/engine/engine_util_sparse.h"
 #include "test/fixture.h"
 
@@ -84,54 +85,36 @@ TEST_F(QCQP3Test, DegenerateAMatrix) {
 
 using BoxQPTest = MujocoTest;
 
-// utility: compute QP objective = 0.5*x'*H*x + x'*g
-mjtNum objective(const mjtNum* x, const mjtNum* H, const mjtNum* g, int n) {
-  return 0.5 * mju_mulVecMatVec(x, H, x, n) + mju_dot(x, g, n);
-}
-
 // utility: test if res is the minimum of a given box-QP problem
 bool isQPminimum(const mjtNum* res, const mjtNum* H, const mjtNum* g, int n,
                  const mjtNum* lower, const mjtNum* upper) {
   const mjtNum eps = MjEps(1e-4, 5e-2);      // epsilon used for nudging
   const mjtNum threshold = MjTol(0, -2e-3);  // comparison threshold
-  bool is_minimum = true;
-  mjtNum* res_nudge = (mjtNum*)mju_malloc(sizeof(mjtNum) * n);
-
-  // get solution value
-  mjtNum value = objective(res, H, g, n);
-  mjtNum value_nudge;
-
-  // compare to nudged solution
-  mju_copy(res_nudge, res, n);
   for (int i = 0; i < n; i++) {
+    mjtNum grad_i = mju_dot(H + i * n, res, n) + g[i];
+    mjtNum Hii = H[i * n + i];
+
     // nudge down
-    res_nudge[i] = res[i] - eps;
+    mjtNum lo = res[i] - eps;
     if (lower) {
-      res_nudge[i] = mju_max(lower[i], res_nudge[i]);
+      lo = mju_max(lower[i], lo);
     }
-    value_nudge = objective(res_nudge, H, g, n);
-    if (value_nudge - value < threshold) {
-      is_minimum = false;
-      break;
+    mjtNum dlo = lo - res[i];
+    if (dlo * grad_i + 0.5 * Hii * dlo * dlo < threshold) {
+      return false;
     }
 
     // nudge up
-    res_nudge[i] = res[i] + eps;
+    mjtNum hi = res[i] + eps;
     if (upper) {
-      res_nudge[i] = mju_min(upper[i], res_nudge[i]);
+      hi = mju_min(upper[i], hi);
     }
-    value_nudge = objective(res_nudge, H, g, n);
-    if (value_nudge - value < threshold) {
-      is_minimum = false;
-      break;
+    mjtNum dhi = hi - res[i];
+    if (dhi * grad_i + 0.5 * Hii * dhi * dhi < threshold) {
+      return false;
     }
-
-    // reset
-    res_nudge[i] = res[i];
   }
-
-  mju_free(res_nudge);
-  return is_minimum;
+  return true;
 }
 
 // utility: define QP with pseudorandom values
@@ -199,6 +182,63 @@ TEST_F(BoxQPTest, UnboundedQP) {
                     /*lower=*/nullptr, /*upper=*/nullptr);
 
   EXPECT_EQ(nfree, -1);
+}
+
+TEST_F(BoxQPTest, LineSearchFailureRejectsCandidateAndStops) {
+  static const int n = 2;
+  mjtNum H[n * n] = {100, 90, 90, 100};
+  mjtNum g[n] = {-190, 0};
+  mjtNum lower[n] = {-100, 0};
+  mjtNum upper[n] = {100, 100};
+  mjtNum res[n] = {0, 0};
+  int index[n];
+  mjtNum R[n * (n + 7)];
+  char log[1024] = {0};
+
+  // Clipped step=1 increases objective (+3100 > 0); backtrack=0.5 < minstep=0.6
+  // fails line search.
+  mju_boxQPoption(res, R, index, H, g, n, lower, upper, /*maxiter=*/5,
+                  /*mingrad=*/MjTol(1e-12, 1e-5), /*backtrack=*/0.5,
+                  /*minstep=*/0.6, /*armijo=*/0.1, log, sizeof(log));
+
+  EXPECT_MJTNUM_EQ(res[0], 0);
+  EXPECT_MJTNUM_EQ(res[1], 0);
+  EXPECT_THAT(std::string(log),
+              ::testing::HasSubstr("Maximum line-search iterations exceeded"));
+}
+
+TEST_F(BoxQPTest, LineSearchEvaluatesArmijoBeforeBacktrack) {
+  static constexpr int n = 2;
+  mjtNum H[n * n] = {100.0, -90.0, -90.0, 100.0};
+  mjtNum g[n] = {-10.0, -10.0};
+  mjtNum lower[n] = {-10.0, -10.0};
+  mjtNum upper[n] = {0.58, 10.0};
+  mjtNum res[n] = {0.0, 0.0};
+  mjtNum R[n * (n + 7)] = {0.0};
+  int index[n] = {-1, -1};
+
+  // At step=1.0, clipped candidate (0.58, 1.0) has Armijo ratio 0.059 < 0.1;
+  // backtracks to 0.5.
+  int nfree = mju_boxQPoption(res, R, index, H, g, n, lower, upper,
+                              /*maxiter=*/1, /*mingrad=*/MjTol(1e-12, 1e-5),
+                              /*backtrack=*/0.5, /*minstep=*/MjTol(1e-10, 1e-6),
+                              /*armijo=*/0.1, nullptr, 0);
+  EXPECT_EQ(nfree, 2);
+  EXPECT_MJTNUM_EQ(res[0], 0.5);
+  EXPECT_MJTNUM_EQ(res[1], 0.5);
+}
+
+TEST_F(BoxQPTest, UnboundedUpperTrianglePoisoned) {
+  static constexpr int n = 2;
+  mjtNum H[n * n] = {4.0, -999.0, 2.0, 5.0};
+  mjtNum g[n] = {-4.0, -2.0};
+  mjtNum res[n] = {0.0, 0.0};
+  mjtNum R[n * (n + 7)] = {77.0, 77.0, 77.0, 77.0};
+  int index[n] = {-1, -1};
+
+  int nfree = mju_boxQP(res, R, index, H, g, n, nullptr, nullptr);
+  EXPECT_EQ(nfree, n);
+  EXPECT_MJTNUM_EQ(R[1], 77.0);
 }
 
 // small bounded QP with asymmetric Hessian (upper triangle ignored)
@@ -353,12 +393,6 @@ TEST_F(BoxQPTest, BoundedQP) {
 
 // test mju_boxQP on a set of random bounded QPs
 TEST_F(BoxQPTest, BoundedQPvariations) {
-  if constexpr (sizeof(mjtNum) == sizeof(float)) {
-    GTEST_SKIP()
-        << "BoxQP test permutations contain ill-conditioned matrices which "
-           "natively fail to find descent directions under float32 precision";
-  }
-
   int nmax = 100;
 
   // allocate maximum size on heap
@@ -407,7 +441,8 @@ TEST_F(BoxQPTest, BoundedQPvariations) {
               << "n " << n << '\n'
               << "scaleH " << scaleH << '\n'
               << "scaleg " << scaleg << '\n'
-              << "scalebounds " << scalebounds << '\n';
+              << "scalebounds " << scalebounds << '\n'
+              << log;
 
           // wrap log with string, count factorizations
           string slog(log);
@@ -723,6 +758,16 @@ TEST_F(BandMatrixTest, Solve) {
       mju_free(B);
     }
   }
+}
+
+TEST_F(BandMatrixTest, CholFactorBandReturnsMinFactorizedDiag) {
+  mjtNum B[3] = {9.0, 0.0, 4.0};
+  mjtNum minDiag =
+      mju_cholFactorBand(B, /*ntotal=*/2, /*nband=*/1, /*ndense=*/1,
+                         /*diagadd=*/0, /*diagmul=*/0);
+  EXPECT_MJTNUM_EQ(B[mju_bandDiag(0, 2, 1, 1)], 3.0);
+  EXPECT_MJTNUM_EQ(B[mju_bandDiag(1, 2, 1, 1)], 2.0);
+  EXPECT_MJTNUM_EQ(minDiag, 2.0);
 }
 
 using EngineUtilSolveTest = MujocoTest;
@@ -1147,10 +1192,105 @@ TEST_F(EngineUtilSolveTest, CholFactorNumericClampDecouples) {
   }
 }
 
+// NaN pivots must trigger rank-deficiency clamping and row decoupling rather
+// than bypassing `diag < mindiag` and poisoning the factor with NaN while
+// reporting full rank.
+TEST_F(EngineUtilSolveTest, CholFactorNaNPivotClamps) {
+  MjModelPtr model = LoadModelFromString("<mujoco/>");
+  MjDataPtr d = MakeData(model);
+  const mjtNum nan = std::numeric_limits<mjtNum>::quiet_NaN();
+
+  // rows {0, 1, 2} form a 3-row supernode; row 3 is an isolated leaf
+  constexpr int n = 4;
+  mjtNum H[n * n] = {
+      4, 1, 1, 0, 1, 4, 1, 0, 1, 1, 4, 0, 0, 0, 0, 4,
+  };
+  mjtNum sparseH[n * n];
+  int H_rownnz[n], H_rowadr[n], H_colind[n * n];
+  mju_dense2sparse(sparseH, H, n, n, H_rownnz, H_rowadr, H_colind, n * n);
+
+  int L_rownnz[n], L_rowadr[n], LT_rownnz[n], LT_rowadr[n];
+  int nnz = mju_cholFactorSymbolic(nullptr, L_rownnz, L_rowadr, nullptr,
+                                   LT_rownnz, LT_rowadr, nullptr, H_rownnz,
+                                   H_rowadr, H_colind, n, d.get());
+  int L_colind[n * n], LT_colind[n * n], LT_map[n * n];
+  mju_cholFactorSymbolic(L_colind, L_rownnz, L_rowadr, LT_colind, LT_rownnz,
+                         LT_rowadr, LT_map, H_rownnz, H_rowadr, H_colind, n,
+                         d.get());
+
+  // poison supernode pivot (1, 1) and leaf pivot (3, 3) with NaN
+  H[1 * n + 1] = nan;
+  H[3 * n + 3] = nan;
+  for (int r : {1, 3}) {
+    for (int k = H_rowadr[r]; k < H_rowadr[r] + H_rownnz[r]; k++) {
+      if (H_colind[k] == r) {
+        sparseH[k] = nan;
+      }
+    }
+  }
+
+  // dense mju_cholFactor
+  mjtNum L_dense[n * n];
+  mju_copy(L_dense, H, n * n);
+  EXPECT_EQ(mju_cholFactor(L_dense, n, mjMINVAL), n - 2);
+  for (int i = 0; i < n; i++) {
+    for (int j = 0; j <= i; j++) {
+      EXPECT_FALSE(mju_isBad(L_dense[i * n + j]))
+          << "dense (" << i << ", " << j << ")";
+    }
+  }
+  EXPECT_EQ(L_dense[1 * n + 1], mju_sqrt(mjMINVAL));
+  EXPECT_EQ(L_dense[3 * n + 3], mju_sqrt(mjMINVAL));
+
+  // sparse mju_cholFactorNumeric (hits both leaf fast path and supernode path)
+  mjtNum L_num[n * n], scratch[n];
+  EXPECT_EQ(
+      mju_cholFactorNumeric(L_num, n, mjMINVAL, L_rownnz, L_rowadr, L_colind,
+                            LT_rownnz, LT_rowadr, LT_colind, LT_map, sparseH,
+                            H_rownnz, H_rowadr, H_colind, scratch),
+      n - 2);
+  for (int i = 0; i < nnz; i++) {
+    EXPECT_FALSE(mju_isBad(L_num[i])) << "numeric entry " << i;
+  }
+  EXPECT_EQ(L_num[L_rowadr[1] + L_rownnz[1] - 1], mju_sqrt(mjMINVAL));
+  EXPECT_EQ(L_num[L_rowadr[1]], 0);
+  EXPECT_EQ(L_num[L_rowadr[3] + L_rownnz[3] - 1], mju_sqrt(mjMINVAL));
+
+  // sparse reference mju_cholFactorSparse
+  mjtNum L_ref[n * n];
+  int L_ref_rownnz[n], L_ref_colind[n * n];
+  for (int r = 0; r < n; r++) {
+    int lower_nnz = 0;
+    for (int k = 0; k < H_rownnz[r]; k++) {
+      int c = H_colind[H_rowadr[r] + k];
+      if (c <= r) {
+        L_ref[L_rowadr[r] + lower_nnz] = sparseH[H_rowadr[r] + k];
+        L_ref_colind[L_rowadr[r] + lower_nnz] = c;
+        lower_nnz++;
+      }
+    }
+    L_ref_rownnz[r] = lower_nnz;
+  }
+  EXPECT_EQ(mju_cholFactorSparse(L_ref, n, mjMINVAL, L_ref_rownnz, L_rowadr,
+                                 L_ref_colind, d.get()),
+            n - 2);
+  for (int r = 0; r < n; r++) {
+    for (int k = 0; k < L_ref_rownnz[r]; k++) {
+      EXPECT_FALSE(mju_isBad(L_ref[L_rowadr[r] + k]))
+          << "sparse (" << r << ", " << k << ")";
+    }
+  }
+
+  // banded mju_cholFactorBand returns 0 on NaN pivot
+  mjtNum B[n] = {2, nan, 2, 2};
+  EXPECT_EQ(mju_cholFactorBand(B, n, /*nband=*/1, /*ndense=*/0, 0, 0), 0);
+}
+
 // ----------------------------- dense LU --------------------------------------
 
-// mju_cholFactorSymbolicBlocked on a block pattern computes the same arrays,
-// entry for entry, as mju_cholFactorSymbolic on the expanded dof pattern
+// mju_cholFactorSymbolicBlocked on a block pattern computes the same L arrays,
+// entry for entry, as mju_cholFactorSymbolic on the expanded dof pattern, and
+// the block transpose of its LT arrays
 TEST_F(EngineUtilSolveTest, CholFactorSymbolicBlocked) {
   std::mt19937 rng(7);
   for (int bs = 1; bs <= 3; bs++) {
@@ -1190,36 +1330,51 @@ TEST_F(EngineUtilSolveTest, CholFactorSymbolicBlocked) {
 
       // counting
       vector<int> L_rownnz(n), L_rowadr(n), LT_rownnz(n), LT_rowadr(n);
-      vector<int> bL_rownnz(n), bL_rowadr(n), bLT_rownnz(n), bLT_rowadr(n);
+      vector<int> bL_rownnz(n), bL_rowadr(n), BT_adr(nb + 1);
       vector<int> scratch(3 * nb);
       int nnz = mju_cholFactorSymbolic(
           nullptr, L_rownnz.data(), L_rowadr.data(), nullptr, LT_rownnz.data(),
           LT_rowadr.data(), nullptr, drownnz.data(), drowadr.data(),
           dcolind.data(), n, nullptr);
       int bnnz = mju_cholFactorSymbolicBlocked(
-          nullptr, bL_rownnz.data(), bL_rowadr.data(), nullptr,
-          bLT_rownnz.data(), bLT_rowadr.data(), nullptr, rownnz.data(),
-          rowadr.data(), colind.data(), nb, bs, scratch.data());
+          nullptr, bL_rownnz.data(), bL_rowadr.data(), BT_adr.data(), nullptr,
+          nullptr, rownnz.data(), rowadr.data(), colind.data(), nb, bs,
+          scratch.data());
       ASSERT_EQ(bnnz, nnz) << "bs " << bs << " trial " << trial;
       EXPECT_EQ(bL_rownnz, L_rownnz);
       EXPECT_EQ(bL_rowadr, L_rowadr);
-      EXPECT_EQ(bLT_rownnz, LT_rownnz);
-      EXPECT_EQ(bLT_rowadr, LT_rowadr);
 
       // filling
       vector<int> L_colind(nnz), LT_colind(nnz), LT_map(nnz);
-      vector<int> bL_colind(nnz), bLT_colind(nnz), bLT_map(nnz);
+      vector<int> bL_colind(nnz), BT_row(BT_adr[nb]), BT_off(BT_adr[nb]);
       mju_cholFactorSymbolic(L_colind.data(), L_rownnz.data(), L_rowadr.data(),
                              LT_colind.data(), LT_rownnz.data(),
                              LT_rowadr.data(), LT_map.data(), drownnz.data(),
                              drowadr.data(), dcolind.data(), n, nullptr);
       mju_cholFactorSymbolicBlocked(
-          bL_colind.data(), L_rownnz.data(), L_rowadr.data(), bLT_colind.data(),
-          LT_rownnz.data(), LT_rowadr.data(), bLT_map.data(), rownnz.data(),
-          rowadr.data(), colind.data(), nb, bs, scratch.data());
+          bL_colind.data(), L_rownnz.data(), L_rowadr.data(), BT_adr.data(),
+          BT_row.data(), BT_off.data(), rownnz.data(), rowadr.data(),
+          colind.data(), nb, bs, scratch.data());
       EXPECT_EQ(bL_colind, L_colind) << "bs " << bs << " trial " << trial;
-      EXPECT_EQ(bLT_colind, LT_colind) << "bs " << bs << " trial " << trial;
-      EXPECT_EQ(bLT_map, LT_map) << "bs " << bs << " trial " << trial;
+
+      // the block transpose: the first dof of each block row below the
+      // diagonal block in the transpose row of the first dof of each column
+      vector<int> eBT_adr(nb + 1, 0), eBT_row, eBT_off;
+      for (int q = 0; q < nb; q++) {
+        eBT_adr[q] = eBT_row.size();
+        for (int e = LT_rowadr[bs * q];
+             e < LT_rowadr[bs * q] + LT_rownnz[bs * q]; e++) {
+          int r = LT_colind[e];
+          if (r >= bs * (q + 1) && r % bs == 0) {
+            eBT_row.push_back(r / bs);
+            eBT_off.push_back(LT_map[e] - L_rowadr[r]);
+          }
+        }
+      }
+      eBT_adr[nb] = eBT_row.size();
+      EXPECT_EQ(BT_adr, eBT_adr) << "bs " << bs << " trial " << trial;
+      EXPECT_EQ(BT_row, eBT_row) << "bs " << bs << " trial " << trial;
+      EXPECT_EQ(BT_off, eBT_off) << "bs " << bs << " trial " << trial;
     }
   }
 }

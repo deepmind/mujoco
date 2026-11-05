@@ -31,6 +31,7 @@ namespace {
 static mjtNum circle(mjtNum rho, mjtNum r) { return rho - r; }
 
 static mjtNum smoothUnion(mjtNum a, mjtNum b, mjtNum k) {
+  if (k <= mjMINVAL) return mju_min(a, b);
   mjtNum h = mju_clip(0.5 + 0.5 * (b - a) / k, 0.0, 1.0);
   return b * (1. - h) + a * h - k * h * (1. - h);
 }
@@ -255,8 +256,11 @@ void Gear::RegisterPlugin() {
         return distance(point, attributes);
       };
   plugin.sdf_aabb = +[](mjtNum aabb[6], const mjtNum* attributes) {
+    mjtNum D = attributes[1];
+    mjtNum N = attributes[2];
+    mjtNum Ro = (N > 0) ? (D / 2.0) * (1.0 + 2.0 / N) : (D / 2.0) * 1.25;
     aabb[0] = aabb[1] = aabb[2] = 0;
-    aabb[3] = aabb[4] = attributes[1] / 2. * 1.25;
+    aabb[3] = aabb[4] = mju_max(D / 2.0 * 1.25, Ro * 1.05);
     aabb[5] = attributes[3] / 2. * 1.1;
   };
   plugin.sdf_attribute =

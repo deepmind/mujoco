@@ -73,6 +73,31 @@ static UniquePtr<mjrfTexture> CreateFallbackIndirectLightTexture(
   return texture;
 }
 
+// Sets the color and intensity of the model's i-th light.
+//
+// Lights that don't specify an intensity share the fallback scene light
+// intensity. Filament ranks directional lights by intensity alone to choose the
+// one that casts shadows, so lights with the same intensity tie and the choice
+// between them is arbitrary. For non-image lights, move the brightness of the
+// diffuse color (its largest component) into the intensity: color times
+// intensity is unchanged, but the brightest light casts the shadows.
+static void SetLightColorAndIntensity(mjrfLight* light, const mjModel* model,
+                                      int i, bool use_fallback,
+                                      float fallback_intensity) {
+  float3 color = ReadFloat3(model->light_diffuse, i);
+  float intensity = model->light_intensity[i];
+  if (use_fallback) {
+    intensity = fallback_intensity;
+    const float brightness = std::max({color.r, color.g, color.b});
+    if (model->light_type[i] != mjLIGHT_IMAGE && brightness > 0.0f) {
+      color /= brightness;
+      intensity *= brightness;
+    }
+  }
+  mjrf_setLightColor(light, color.v);
+  mjrf_setLightIntensity(light, intensity);
+}
+
 ModelLights::ModelLights(mjrfScene* scene, ModelResources* model_resources)
     : scene_(scene), model_resources_(model_resources) {
   const mjModel* model = model_resources->GetModel();
@@ -135,9 +160,9 @@ void ModelLights::Prepare() {
     } else {
       mjrfLightParams params;
       mjrf_defaultLightParams(&params);
-      params.color[0] = model->light_diffuse[0];
-      params.color[1] = model->light_diffuse[1];
-      params.color[2] = model->light_diffuse[2];
+      params.color[0] = model->light_diffuse[(3 * i) + 0];
+      params.color[1] = model->light_diffuse[(3 * i) + 1];
+      params.color[2] = model->light_diffuse[(3 * i) + 2];
       params.type = (mjtLightType)model->light_type[i];
       params.cast_shadow = model->light_castshadow[i];
       params.bulb_radius = model->light_bulbradius[i];
@@ -205,9 +230,10 @@ void ModelLights::Prepare() {
     // Distribute the fallback scene light intensity among the lights.
     if (!lights_.empty()) {
       fallback_intensity_ = fallback_scene_light_intensity_ / lights_.size();
-      for (auto& light : lights_) {
-        if (light) {
-          mjrf_setLightIntensity(light.get(), fallback_intensity_);
+      for (int i = 0; i < model->nlight; ++i) {
+        if (lights_[i]) {
+          SetLightColorAndIntensity(lights_[i].get(), model, i, true,
+                                    fallback_intensity_);
         }
       }
     }
@@ -244,12 +270,9 @@ void ModelLights::Update(const mjData* data) {
     const float3 dir = ReadFloat3(data->light_xdir, i);
     mjrf_setLightPose(light, pos.v, dir.v);
 
-    const float3 color = ReadFloat3(model->light_diffuse, i);
     mjrf_setLightActive(light, model->light_active[i]);
-    mjrf_setLightColor(light, color.v);
-    mjrf_setLightIntensity(light, total_light_intensity > 0.0f
-                                      ? model->light_intensity[i]
-                                      : fallback_intensity_);
+    SetLightColorAndIntensity(light, model, i, total_light_intensity == 0.0f,
+                              fallback_intensity_);
     mjrf_setLightRange(light, model->light_range[i]);
     mjrf_setLightCutoff(light, model->light_cutoff[i]);
     mjrf_setLightSoftness(light, model->light_softness[i]);

@@ -65,7 +65,7 @@ _PYPROJECT_TEMPLATE = textwrap.dedent("""\
     [project]
     name = "mujoco"
     version = "{version}"
-    requires-python = ">=3.10"
+    requires-python = ">=3.11"
     dependencies = []
 
     [tool.setuptools]

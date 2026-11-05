@@ -64,6 +64,15 @@
   #define mjUNLIKELY(x) (x)
 #endif
 
+// Force-inline function specifier.
+#if defined(_MSC_VER) && !defined(__clang__)
+  #define mjALWAYS_INLINE __forceinline
+#elif defined(__GNUC__) || defined(__clang__)
+  #define mjALWAYS_INLINE inline __attribute__((always_inline))
+#else
+  #define mjALWAYS_INLINE inline
+#endif
+
 // Thread-local storage.
 #if !defined(mjTHREADLOCAL)
   #ifdef _MSC_VER

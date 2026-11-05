@@ -1,0 +1,63 @@
+// Copyright 2026 DeepMind Technologies Limited
+//
+// Licensed under the Apache License, Version 2.0 (the "License");
+// you may not use this file except in compliance with the License.
+// You may obtain a copy of the License at
+//
+//     http://www.apache.org/licenses/LICENSE-2.0
+//
+// Unless required by applicable law or agreed to in writing, software
+// distributed under the License is distributed on an "AS IS" BASIS,
+// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+// See the License for the specific language governing permissions and
+// limitations under the License.
+
+material {
+    name : haze,
+    shadingModel : unlit,
+    blending : fade,
+    depthWrite : false,
+    culling : front,
+    flipUV : false,
+    parameters : [
+        { type : float4, name : HazeColor },
+        { type : float, name : HazeRatio }
+    ],
+    requires : [
+        uv0
+    ]
+}
+
+vertex {
+  void materialVertex(inout MaterialVertexInputs material) {
+    // reshape the unit cylinder (bands 0, 0.5, 1) into an inverted cone: the
+    // bottom ring shrinks to the ground disk rim (radius 1 - r, height 0), the
+    // top ring stays at radius 1 and camera eye height (height 1), and the
+    // opaque middle ring is lifted onto the cone at height r / (1 + r)
+    float r = materialParams.HazeRatio;
+    float band = material.uv0.y;
+    float h = 0.0;
+    if (band > 0.75) {
+      h = 1.0;
+    } else if (band > 0.25) {
+      h = r / (1.0 + r);
+    }
+    float scale = 1.0 - r * (1.0 - h);
+    mat4 transform = getWorldFromModelMatrix();
+    vec3 local_pos = vec3(getPosition().xy * scale, h);
+    material.worldPosition = mulMat4x4Float3(transform, local_pos);
+  }
+}
+
+fragment {
+  void material(inout MaterialInputs material) {
+    prepareMaterial(material);
+    float alpha = materialParams.HazeColor.a * getUV0().x;
+    vec3 color = materialParams.HazeColor.rgb;
+#if MATERIAL_FEATURE_LEVEL > 0
+    // match the skybox, which filament scales by the IBL intensity
+    color *= frameUniforms.iblLuminance;
+#endif
+    material.baseColor = vec4(color * alpha, alpha);
+  }
+}

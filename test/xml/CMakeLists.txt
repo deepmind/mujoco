@@ -32,8 +32,9 @@ mujoco_test(
   compare_model
   PROPERTIES
   ENVIRONMENT
-  "MUJOCO_PLUGIN_DIR=$<TARGET_FILE_DIR:elasticity>"
+  "MUJOCO_PLUGIN_DIR=$<TARGET_FILE_DIR:actuator>"
 )
+add_dependencies(xml_native_writer_test actuator sensor sdf_plugin)
 
 mujoco_test(
   xml_write_read_test
@@ -42,7 +43,8 @@ mujoco_test(
   compare_model
   PROPERTIES
   ENVIRONMENT
-  "MUJOCO_PLUGIN_DIR=$<TARGET_FILE_DIR:elasticity>"
+  "MUJOCO_PLUGIN_DIR=$<TARGET_FILE_DIR:actuator>"
 )
+add_dependencies(xml_write_read_test actuator sensor sdf_plugin)
 
 add_subdirectory(mjz)

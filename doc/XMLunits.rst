@@ -336,6 +336,8 @@
      - :math:`Q`
    * - :ref:`body/joint/springref<body-joint-springref>`
      - :math:`Q`
+   * - :ref:`body/joint/springyield<body-joint-springyield>`
+     - :math:`Q`
    * - :ref:`body/joint/armature<body-joint-armature>`
      - :math:`F\,T^{2}\,Q^{-1}`
    * - :ref:`body/joint/damping<body-joint-damping>`
@@ -460,72 +462,6 @@
      - :math:`1`
    * - :ref:`body/light/specular<body-light-specular>`
      - :math:`1`
-   * - :ref:`body/composite/offset<body-composite-offset>`
-     - :math:`L`
-   * - :ref:`body/composite/vertex<body-composite-vertex>`
-     - :math:`L`
-   * - :ref:`body/composite/size<body-composite-size>`
-     - :math:`L,\ L,\ 1`
-   * - :ref:`body/composite/quat<body-composite-quat>`
-     - :math:`1`
-   * - :ref:`composite/joint/stiffness<composite-joint-stiffness>`
-     - :math:`F\,Q^{-1}`
-   * - :ref:`composite/joint/damping<composite-joint-damping>`
-     - :math:`F\,T\,Q^{-1}`
-   * - :ref:`composite/joint/armature<composite-joint-armature>`
-     - :math:`F\,T^{2}\,Q^{-1}`
-   * - :ref:`composite/joint/solreffix<composite-joint-solreffix>`
-     - :math:`T,\ 1` or :math:`T^{-2},\ T^{-1}`
-   * - :ref:`composite/joint/solimpfix<composite-joint-solimpfix>`
-     - :math:`1,\ 1,\ Q,\ 1,\ 1`
-   * - :ref:`composite/joint/axis<composite-joint-axis>`
-     - :math:`1`
-   * - :ref:`composite/joint/range<composite-joint-range>`
-     - :math:`Q`
-   * - :ref:`composite/joint/margin<composite-joint-margin>`
-     - :math:`Q`
-   * - :ref:`composite/joint/solreflimit<composite-joint-solreflimit>`
-     - :math:`T,\ 1` or :math:`T^{-2},\ T^{-1}`
-   * - :ref:`composite/joint/solimplimit<composite-joint-solimplimit>`
-     - :math:`1,\ 1,\ Q,\ 1,\ 1`
-   * - :ref:`composite/joint/frictionloss<composite-joint-frictionloss>`
-     - :math:`F`
-   * - :ref:`composite/joint/solreffriction<composite-joint-solreffriction>`
-     - :math:`T,\ 1` or :math:`T^{-2},\ T^{-1}`
-   * - :ref:`composite/joint/solimpfriction<composite-joint-solimpfriction>`
-     - :math:`1,\ 1,\ Q,\ 1,\ 1`
-   * - :ref:`composite/skin/rgba<composite-skin-rgba>`
-     - :math:`1`
-   * - :ref:`composite/skin/inflate<composite-skin-inflate>`
-     - :math:`L`
-   * - :ref:`composite/geom/size<composite-geom-size>`
-     - :math:`L`
-   * - :ref:`composite/geom/rgba<composite-geom-rgba>`
-     - :math:`1`
-   * - :ref:`composite/geom/friction<composite-geom-friction>`
-     - :math:`1,\ L,\ L`
-   * - :ref:`composite/geom/mass<composite-geom-mass>`
-     - :math:`M`
-   * - :ref:`composite/geom/density<composite-geom-density>`
-     - :math:`M\,L^{-3}`
-   * - :ref:`composite/geom/solmix<composite-geom-solmix>`
-     - :math:`1`
-   * - :ref:`composite/geom/solref<composite-geom-solref>`
-     - :math:`T,\ 1` or :math:`T^{-2},\ T^{-1}`
-   * - :ref:`composite/geom/solimp<composite-geom-solimp>`
-     - :math:`1,\ 1,\ L,\ 1,\ 1`
-   * - :ref:`composite/geom/margin<composite-geom-margin>`
-     - :math:`L`
-   * - :ref:`composite/geom/gap<composite-geom-gap>`
-     - :math:`L`
-   * - :ref:`composite/geom/surfacevel<composite-geom-surfacevel>`
-     - :math:`L\,T^{-1},\ L\,T^{-1},\ L\,T^{-1},\ A\,T^{-1},\ A\,T^{-1},\ A\,T^{-1}`
-   * - :ref:`composite/geom/adhesion<composite-geom-adhesion>`
-     - :math:`M\,L\,T^{-2}`
-   * - :ref:`composite/site/size<composite-site-size>`
-     - :math:`L`
-   * - :ref:`composite/site/rgba<composite-site-rgba>`
-     - :math:`1`
    * - :ref:`body/flexcomp/spacing<body-flexcomp-spacing>`
      - :math:`L`
    * - :ref:`body/flexcomp/radius<body-flexcomp-radius>`
@@ -570,10 +506,14 @@
      - :math:`M\,L^{-1}\,T^{-2}`
    * - :ref:`flexcomp/elasticity/poisson<flexcomp-elasticity-poisson>`
      - :math:`1`
+   * - :ref:`flexcomp/elasticity/shear<flexcomp-elasticity-shear>`
+     - :math:`M\,L^{-1}\,T^{-2}`
    * - :ref:`flexcomp/elasticity/damping<flexcomp-elasticity-damping>`
      - :math:`T`
    * - :ref:`flexcomp/elasticity/thickness<flexcomp-elasticity-thickness>`
      - :math:`L`
+   * - :ref:`flexcomp/elasticity/yield<flexcomp-elasticity-yield>`
+     - :math:`1`
    * - :ref:`flexcomp/elasticity/sectionsize<flexcomp-elasticity-sectionsize>`
      - :math:`L`
    * - :ref:`flexcomp/contact/friction<flexcomp-contact-friction>`
@@ -640,6 +580,8 @@
      - :math:`F`
    * - :ref:`tendon/spatial/springlength<tendon-spatial-springlength>`
      - :math:`Q`
+   * - :ref:`tendon/spatial/springyield<tendon-spatial-springyield>`
+     - :math:`Q`
    * - :ref:`tendon/spatial/width<tendon-spatial-width>`
      - :math:`L`
    * - :ref:`tendon/spatial/margin<tendon-spatial-margin>`
@@ -671,6 +613,8 @@
    * - :ref:`tendon/fixed/frictionloss<tendon-fixed-frictionloss>`
      - :math:`F`
    * - :ref:`tendon/fixed/springlength<tendon-fixed-springlength>`
+     - :math:`Q`
+   * - :ref:`tendon/fixed/springyield<tendon-fixed-springyield>`
      - :math:`Q`
    * - :ref:`tendon/fixed/margin<tendon-fixed-margin>`
      - :math:`Q`
@@ -715,10 +659,6 @@
    * - :ref:`equality/flex/solref<equality-flex-solref>`
      - :math:`T,\ 1` or :math:`T^{-2},\ T^{-1}`
    * - :ref:`equality/flex/solimp<equality-flex-solimp>`
-     - *varies*
-   * - :ref:`equality/flexvert/solref<equality-flexvert-solref>`
-     - :math:`T,\ 1` or :math:`T^{-2},\ T^{-1}`
-   * - :ref:`equality/flexvert/solimp<equality-flexvert-solimp>`
      - *varies*
    * - :ref:`equality/flexstrain/solref<equality-flexstrain-solref>`
      - :math:`T,\ 1` or :math:`T^{-2},\ T^{-1}`
@@ -1549,4 +1489,6 @@
    * - :ref:`keyframe/key/mquat<keyframe-key-mquat>`
      - :math:`1`
    * - :ref:`keyframe/key/ctrl<keyframe-key-ctrl>`
+     - *varies*
+   * - :ref:`keyframe/key/plastic<keyframe-key-plastic>`
      - *varies*

@@ -20,14 +20,18 @@
 #include <array>
 #include <atomic>
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
+#include <cstdio>
+#include <cstdlib>
 #include <filesystem>  // NOLINT
 #include <fstream>
 #include <memory>
 #include <sstream>
 #include <string>
 #include <string_view>
-#include <thread>  // NOLINT
+#include <system_error>  // NOLINT
+#include <thread>        // NOLINT
 #include <vector>
 
 #include <gmock/gmock.h>
@@ -42,7 +46,7 @@ namespace {
 using ::testing::HasSubstr;
 using ::testing::NotNull;
 
-constexpr int kNumTruePlugins = 8;
+constexpr int kNumTruePlugins = 7;
 constexpr int kNumFakePlugins = 30;
 constexpr int kNumTestPlugins = 4;
 
@@ -848,6 +852,131 @@ TEST_F(MujocoTest, LoadAllPluginLibrariesErrorReleasesLock) {
   EXPECT_TRUE(*done) << "plugin table lock was not released";
 }
 #endif
+
+TEST_F(EnginePluginTest, ResetDataStatelessPluginNullMemcpy) {
+  static constexpr char stateless_xml[] = R"(
+  <mujoco>
+    <extension>
+      <plugin plugin="mujoco.sdf.torus">
+        <instance name="torus">
+          <config key="radius1" value="0.35"/>
+          <config key="radius2" value="0.15"/>
+        </instance>
+      </plugin>
+    </extension>
+    <asset>
+      <mesh name="torus">
+        <plugin instance="torus"/>
+      </mesh>
+    </asset>
+    <worldbody>
+      <geom type="sdf" mesh="torus">
+        <plugin instance="torus"/>
+      </geom>
+    </worldbody>
+  </mujoco>
+  )";
+  char error[1024] = {0};
+  MjModelPtr m = LoadModelFromString(stateless_xml, error, sizeof(error));
+  ASSERT_THAT(m.get(), NotNull()) << error;
+  ASSERT_GT(m->nplugin, 0);
+  ASSERT_EQ(m->npluginstate, 0);
+
+  MjDataPtr d = MakeData(m);
+  ASSERT_THAT(d.get(), NotNull());
+
+  static bool zero_alloc_requested = false;
+  zero_alloc_requested = false;
+  auto prev_malloc = mju_user_malloc;
+  auto prev_free = mju_user_free;
+  mju_user_malloc = [](size_t size) -> void* {
+    if (size == 0) {
+      zero_alloc_requested = true;
+      return nullptr;
+    }
+    return malloc(size);
+  };
+  mju_user_free = [](void* ptr) {
+    if (ptr) free(ptr);
+  };
+
+  mj_resetData(m.get(), d.get());
+
+  mju_user_malloc = prev_malloc;
+  mju_user_free = prev_free;
+
+  EXPECT_FALSE(zero_alloc_requested)
+      << "_resetData attempted zero-byte allocation for stateless plugin";
+}
+
+TEST_F(EnginePluginTest, RegisterPluginDifferentAttributes) {
+  mjpPlugin plugin = *mjp_getPlugin("mujoco.test.actuator", nullptr);
+  const char* attributes[] = {nullptr, "multiplier"};
+  plugin.attributes = attributes;
+
+  std::string err = MjuErrorMessageFrom(mjp_registerPlugin)(&plugin);
+  EXPECT_THAT(err, HasSubstr("already registered"));
+}
+
+TEST_F(MujocoTest, FindDecoderNullContentTypeCrash) {
+  char filename[] = "model.xml";
+  mjResource resource = {};
+  resource.name = filename;
+  const mjpDecoder* decoder = mjp_findDecoder(&resource, nullptr);
+  EXPECT_THAT(decoder, testing::IsNull());
+}
+
+static std::string PathToUtf8(const std::filesystem::path& p) {
+  auto u8str = p.u8string();
+  return std::string(reinterpret_cast<const char*>(u8str.data()), u8str.size());
+}
+
+TEST_F(MujocoTest, LoadAllPluginLibrariesUtf8Path) {
+#if defined(_WIN32) || defined(__CYGWIN__)
+  std::filesystem::path filename = u8"テスト_plugin.dll";
+#elif defined(__APPLE__)
+  std::filesystem::path filename = u8"テスト_plugin.dylib";
+#else
+  std::filesystem::path filename = u8"テスト_plugin.so";
+#endif
+  std::filesystem::path utf8_dir =
+      std::filesystem::path(::testing::TempDir()) / u8"mujoco_plugin_テスト";
+  std::error_code ec;
+  std::filesystem::remove_all(utf8_dir, ec);
+  ec.clear();
+  std::filesystem::create_directories(utf8_dir, ec);
+  if (ec) {
+    GTEST_SKIP() << "Could not create directory with UTF-8 name: "
+                 << ec.message();
+  }
+
+  std::string dir_u8 = PathToUtf8(utf8_dir);
+  std::string filename_u8 = PathToUtf8(filename);
+
+  // empty directory: callback should not be invoked
+  static int empty_calls = 0;
+  empty_calls = 0;
+  mj_loadAllPluginLibraries(
+      dir_u8.c_str(), +[](const char*, int, int) { ++empty_calls; });
+  EXPECT_EQ(empty_calls, 0);
+
+  std::ofstream(utf8_dir / filename) << "not a library";
+
+#if defined(_WIN32) || defined(__CYGWIN__)
+  static char loaded_file[256] = "";
+  loaded_file[0] = '\0';
+  mj_loadAllPluginLibraries(
+      dir_u8.c_str(), +[](const char* name, int first, int count) {
+        std::snprintf(loaded_file, sizeof(loaded_file), "%s", name);
+      });
+  EXPECT_EQ(std::string(loaded_file), filename_u8);
+#else
+  auto load_all = MjuErrorMessageFrom(mj_loadAllPluginLibraries);
+  EXPECT_THAT(load_all(dir_u8.c_str(), nullptr), HasSubstr(filename_u8));
+#endif
+
+  std::filesystem::remove_all(utf8_dir);
+}
 
 }  // namespace
 }  // namespace mujoco

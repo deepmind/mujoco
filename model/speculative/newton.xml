@@ -1,0 +1,91 @@
+<!-- Copyright 2026 DeepMind Technologies Limited
+
+     Licensed under the Apache License, Version 2.0 (the "License");
+     you may not use this file except in compliance with the License.
+     You may obtain a copy of the License at
+
+         http://www.apache.org/licenses/LICENSE-2.0
+
+     Unless required by applicable law or agreed to in writing, software
+     distributed under the License is distributed on an "AS IS" BASIS,
+     WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+     See the License for the specific language governing permissions and
+     limitations under the License.
+-->
+
+<mujoco model="newtons_cradle_ccd">
+  <option timestep="0.004" gravity="0 0 -9.81">
+    <flag speculative="enable"/>
+  </option>
+  <visual>
+    <headlight ambient="0.4 0.4 0.4" diffuse="0.8 0.8 0.8" specular="0.3 0.3 0.3"/>
+    <map force="0.01"/>
+  </visual>
+  <default>
+    <joint type="hinge" axis="0 1 0" frictionloss="0.08"/>
+    <default class="wire">
+      <geom type="capsule" size="0.002" mass="0" contype="0" conaffinity="0"
+            rgba="0.65 0.65 0.7 1"/>
+    </default>
+    <!-- 3mm thick steel plates (half-thickness = 0.0015m) -->
+    <!-- Direct solref="0 -499" with stiff solimp="0.995 0.995 0.001" sets K = 0 and
+         h*damping = 1.996 so the speculative spring term does not cancel the elastic damper -->
+    <default class="plate">
+      <geom type="box" pos="0 0 -1.0" size="0.0015 0.08 0.08"
+            mass="0.5" friction="0" solref="0 -499" solimp="0.995 0.995 0.001"/>
+    </default>
+  </default>
+  <worldbody>
+    <light pos="0 -1.5 2.5" dir="0 0.6 -0.8" directional="true"/>
+    <geom name="floor" type="plane" size="2 2 0.01" rgba="0.2 0.22 0.25 1"
+          contype="0" conaffinity="0"/>
+    <!-- Support frame -->
+    <geom type="capsule" fromto="-0.35 -0.07 1.40  0.35 -0.07 1.40" size="0.008"
+          rgba="0.35 0.35 0.4 1" contype="0" conaffinity="0"/>
+    <geom type="capsule" fromto="-0.35  0.07 1.40  0.35  0.07 1.40" size="0.008"
+          rgba="0.35 0.35 0.4 1" contype="0" conaffinity="0"/>
+    <geom type="capsule" fromto="-0.35 -0.07 1.40 -0.35 -0.20 0" size="0.008"
+          rgba="0.35 0.35 0.4 1" contype="0" conaffinity="0"/>
+    <geom type="capsule" fromto=" 0.35 -0.07 1.40  0.35 -0.20 0" size="0.008"
+          rgba="0.35 0.35 0.4 1" contype="0" conaffinity="0"/>
+    <geom type="capsule" fromto="-0.35  0.07 1.40 -0.35  0.20 0" size="0.008"
+          rgba="0.35 0.35 0.4 1" contype="0" conaffinity="0"/>
+    <geom type="capsule" fromto=" 0.35  0.07 1.40  0.35  0.20 0" size="0.008"
+          rgba="0.35 0.35 0.4 1" contype="0" conaffinity="0"/>
+    <!-- Plate 1: pulled back 58 deg (~3.0 m/s = 12mm/step at bottom, 4x plate thickness) -->
+    <body name="pendulum1" pos="-0.04 0 1.40" euler="0 58 0">
+      <joint name="j1"/>
+      <geom class="wire" fromto="0 -0.07 0  0 -0.07 -0.92"/>
+      <geom class="wire" fromto="0  0.07 0  0  0.07 -0.92"/>
+      <geom name="p1" class="plate" rgba="0.9 0.25 0.25 1"/>
+    </body>
+    <!-- Plate 2 -->
+    <body name="pendulum2" pos="-0.02 0 1.40">
+      <joint name="j2"/>
+      <geom class="wire" fromto="0 -0.07 0  0 -0.07 -0.92"/>
+      <geom class="wire" fromto="0  0.07 0  0  0.07 -0.92"/>
+      <geom name="p2" class="plate" rgba="0.75 0.8 0.85 1"/>
+    </body>
+    <!-- Plate 3 -->
+    <body name="pendulum3" pos="0 0 1.40">
+      <joint name="j3"/>
+      <geom class="wire" fromto="0 -0.07 0  0 -0.07 -0.92"/>
+      <geom class="wire" fromto="0  0.07 0  0  0.07 -0.92"/>
+      <geom name="p3" class="plate" rgba="0.75 0.8 0.85 1"/>
+    </body>
+    <!-- Plate 4 -->
+    <body name="pendulum4" pos="0.02 0 1.40">
+      <joint name="j4"/>
+      <geom class="wire" fromto="0 -0.07 0  0 -0.07 -0.92"/>
+      <geom class="wire" fromto="0  0.07 0  0  0.07 -0.92"/>
+      <geom name="p4" class="plate" rgba="0.75 0.8 0.85 1"/>
+    </body>
+    <!-- Plate 5 -->
+    <body name="pendulum5" pos="0.04 0 1.40">
+      <joint name="j5"/>
+      <geom class="wire" fromto="0 -0.07 0  0 -0.07 -0.92"/>
+      <geom class="wire" fromto="0  0.07 0  0  0.07 -0.92"/>
+      <geom name="p5" class="plate" rgba="0.25 0.65 0.9 1"/>
+    </body>
+  </worldbody>
+</mujoco>

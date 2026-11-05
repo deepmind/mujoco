@@ -16,7 +16,7 @@
 <mujoco model="Radial flex sphere">
   <include file="scene.xml"/>
 
-  <option solver="CG" tolerance="1e-6" timestep=".001" integrator="discrete"/>
+  <option solver="Newton" tolerance="1e-6" timestep=".001" integrator="discrete"/>
 
   <size memory="10M"/>
 
@@ -33,7 +33,7 @@
       <flexcomp type="ellipsoid" count="8 8 8" spacing=".07 .07 .07" dim="3"
                 radius=".001" rgba="0 .7 .7 1" mass="5" name="radial" dof="radial">
         <edge equality="true" solimp="0 0.9 0.01" solref=".02 1"/>
-        <!-- <elasticity young="6e2" poisson="0.3" damping="0.05"/> -->
+        <!-- <elasticity young="634.615385" poisson="0.375" damping="0.05"/> -->
         <contact selfcollide="none"/>
       </flexcomp>
     </body>

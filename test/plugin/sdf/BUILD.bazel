@@ -1,0 +1,23 @@
+# Tests for mujoco/plugin/sdf
+
+load("@rules_cc//cc:cc_test.bzl", "cc_test")
+load("//:build_defs.bzl", "MJ_ROOT")
+
+licenses(["notice"])
+
+cc_test(
+    name = "sdf_test",
+    srcs = ["sdf_test.cc"],
+    conlyopts = ["-std=c11"],
+    copts = [
+        "-I" + MJ_ROOT,
+        "-I" + MJ_ROOT + "/src",
+    ],
+    cxxopts = ["-std=c++20"],
+    deps = [
+        "//:mujoco",
+        "//plugin/sdf:register",
+        "//test:fixture",
+        "@googletest//:gtest_main",
+    ],
+)

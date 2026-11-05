@@ -1,0 +1,10 @@
+# Description:
+#   Speculative contact models.
+
+licenses(["notice"])
+
+filegroup(
+    name = "speculative",
+    srcs = glob(["**/*.xml"]),
+    visibility = ["//:visibility"],
+)

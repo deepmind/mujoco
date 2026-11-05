@@ -259,7 +259,7 @@ class BuildCMakeExtension(build_ext.build_ext):
     if assets_src:
       dst = os.path.join(
           os.path.dirname(self.get_ext_fullpath(self.extensions[0].name)),
-          'experimental/studio/assets',
+          'studio/assets',
       )
       if os.path.exists(dst):
         shutil.rmtree(dst)
@@ -417,6 +417,7 @@ setuptools.setup(
         install_scripts=InstallScripts,
     ),
     ext_modules=[
+        CMakeExtension('mujoco._batch'),
         CMakeExtension('mujoco._callbacks'),
         CMakeExtension('mujoco._constants'),
         CMakeExtension('mujoco._enums'),
@@ -428,17 +429,11 @@ setuptools.setup(
         CMakeExtension('mujoco._simulate'),
         CMakeExtension('mujoco._specs'),
         CMakeExtension('mujoco._structs'),
-        # Studio extensions
-        CMakeExtension('mujoco.experimental.studio.native_viewer_cc'),
-        CMakeExtension('mujoco.experimental.studio.ux'),
-        CMakeExtension('mujoco.experimental.studio.sim'),
-        CMakeExtension('mujoco.experimental.studio.window'),
-        # Studio web extensions
-        CMakeExtension('mujoco.experimental.studio.web.headless_ui'),
-        CMakeExtension('mujoco.experimental.studio.web.state_payload'),
+        # Studio extension
+        CMakeExtension('mujoco.studio._studio'),
         # ImGui/ImPlot extensions
-        CMakeExtension('mujoco.experimental.dear_imgui.dear_imgui'),
-        CMakeExtension('mujoco.experimental.implot.implot'),
+        CMakeExtension('mujoco.studio.dear_imgui.dear_imgui'),
+        CMakeExtension('mujoco.studio.implot.implot'),
     ],
     scripts=['mujoco/mjpython/mjpython.py']
     if platform.system() == 'Darwin'

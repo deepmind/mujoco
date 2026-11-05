@@ -1,0 +1,35 @@
+# Description:
+#   Tests for mujoco/src/batch
+
+load("@rules_cc//cc:cc_test.bzl", "cc_test")
+load("//:build_defs.bzl", "MJ_ROOT")
+
+licenses(["notice"])
+
+cc_test(
+    name = "batch_test",
+    size = "medium",
+    srcs = ["batch_test.cc"],
+    conlyopts = ["-std=c11"],
+    copts = [
+        "-I" + MJ_ROOT,
+        "-I" + MJ_ROOT + "/src",
+    ],
+    cxxopts = ["-std=c++20"],
+    data = [
+        "//model/flex",
+        "//model/slider_crank",
+        "//test/engine/testdata:derivative/dcmotor.xml",
+        "//test/engine/testdata:flex_setconst.xml",
+        "//test/engine/testdata/core_constraint:test_mjcf",
+        "//test/engine/testdata/sleep:test_mjcf",
+        "//test/testdata:model",
+        "//test/user/testdata:test_mjcf",
+    ],
+    shard_count = 4,
+    deps = [
+        "//:mujoco",
+        "//test:fixture",
+        "@googletest//:gtest_main",
+    ],
+)

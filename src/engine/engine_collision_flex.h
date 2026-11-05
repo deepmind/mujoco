@@ -31,6 +31,15 @@ int mjc_PlaneFlex(const mjModel* m, mjData* d, mjPreContact* con, int* vert, int
 int mjc_GeomElem(const mjModel* m, mjData* d, mjPreContact* con, int g, int f, int e,
                  mjtNum margin);
 
+// range [lo, hi] of the interpolation grid cells containing vertex v of flex f,
+// per axis
+void mjc_vertCellRange(const mjModel* m, int f, int v, int lo[3], int hi[3]);
+
+// return 1 if cell ranges [lo1, hi1] and [lo2, hi2] are within distance 1 along
+// every axis
+int mjc_cellRangeShared(const int lo1[3], const int hi1[3], const int lo2[3],
+                        const int hi2[3]);
+
 // return 1 if elements e1 and e2 of flex f are driven by a common node of its
 // interpolation grid
 int mjc_ElemSharedNode(const mjModel* m, int f, int e1, int e2);

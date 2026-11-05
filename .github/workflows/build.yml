@@ -110,20 +110,24 @@ jobs:
         # Shared with the Bazel build (MODULE.bazel python.defaults).
         python-version-file: .github/workflows/python-version
 
-    # uv makes the dependency install much faster, with a cross-run cache. POSIX
-    # only: Windows stays on pip (it is not a Python-setup bottleneck, and this
-    # keeps the venv activate fixup path untouched there).
-    - name: Install uv
+    # Cache the uv binary and wheel cache on POSIX so prepare_python can install
+    # both uv and build_requirements*.txt offline on cache hits without fetching
+    # from GitHub or PyPI. Windows stays on pip (it is not a Python-setup
+    # bottleneck, and this keeps the venv activate fixup path untouched there).
+    - name: Cache Python dependencies
       if: ${{ runner.os != 'Windows' }}
-      uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
       with:
-        enable-cache: true
-        cache-dependency-glob: "python/build_requirements*.txt"
+        path: ${{ runner.temp }}/uv_cache
+        key: uv-deps-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('.github/workflows/python-version', '.github/workflows/uv_requirements.txt', 'python/build_requirements*.txt') }}
+        restore-keys: |
+          uv-deps-${{ runner.os }}-${{ runner.arch }}-
 
     - name: Prepare Python
       shell: bash
       env:
         TMPDIR: ${{ matrix.tmpdir }}
+        UV_CACHE_DIR: ${{ runner.temp }}/uv_cache
       run: bash ./.github/workflows/build_steps.sh prepare_python
 
     # ccache dramatically speeds up warm rebuilds. The key is the matrix label so
@@ -142,14 +146,11 @@ jobs:
       uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
       with:
         path: ${{ runner.temp }}/external_deps
-        key: external-deps-${{ runner.os == 'Windows' && 'windows' || 'posix' }}-${{ hashFiles('cmake/MujocoDependencies.cmake') }}
-        restore-keys: |
-          external-deps-${{ runner.os == 'Windows' && 'windows' || 'posix' }}-
+        key: external-deps-v2-${{ runner.os == 'Windows' && 'windows' || 'posix' }}-${{ contains(matrix.cmake_args, 'MUJOCO_BUILD_STUDIO:BOOL=ON') && 'studio' || 'core' }}-${{ hashFiles('cmake/**', 'python/mujoco/CMakeLists.txt') }}
 
     - name: Configure MuJoCo
       env:
         TMPDIR: ${{ matrix.tmpdir }}
-        EXTERNAL_DEPS: "eigen3"
         EXTERNAL_DEPS_DIR: ${{ runner.temp }}/external_deps
         CMAKE_ARGS: ${{ matrix.cmake_args }}
       run: bash ./.github/workflows/build_steps.sh configure_mujoco
@@ -203,10 +204,18 @@ jobs:
         TMPDIR: ${{ matrix.tmpdir }}
       run: bash ../.github/workflows/build_steps.sh copy_plugins_window
 
+    - name: Install MuJoCo Studio platform
+      if: ${{ contains(matrix.cmake_args, 'MUJOCO_BUILD_STUDIO:BOOL=ON') }}
+      shell: bash
+      env:
+        TMPDIR: ${{ matrix.tmpdir }}
+      run: bash ./.github/workflows/build_steps.sh install_studio_platform
+
     - name: Configure samples
       working-directory: sample
       env:
         TMPDIR: ${{ matrix.tmpdir }}
+        EXTERNAL_DEPS_DIR: ${{ runner.temp }}/external_deps
         CMAKE_ARGS: ${{ matrix.cmake_args }}
       run: bash ../.github/workflows/build_steps.sh configure_samples
 
@@ -220,6 +229,7 @@ jobs:
       working-directory: simulate
       env:
         TMPDIR: ${{ matrix.tmpdir }}
+        EXTERNAL_DEPS_DIR: ${{ runner.temp }}/external_deps
         CMAKE_ARGS: ${{ matrix.cmake_args }}
       run: bash ../.github/workflows/build_steps.sh configure_simulate
 
@@ -303,17 +313,41 @@ jobs:
       uses: hendrikmuhs/ccache-action@d62db5f07c26379fc4b4e0916f098a92573c3b03 # v1.2.23
       with:
         key: ${{ env.label }}
-        max-size: "100M"
+        max-size: "250M"
         save: ${{ github.ref_name == 'main' }}
 
-    # For convenience run multiple build_steps functions in a single step.
-    - name: Prepare, Build and Test WASM bindings
+    - name: Setup Emscripten
+      run: bash ./.github/workflows/build_steps.sh setup_emsdk
+
+    # Cache Emscripten's compiled sysroot libraries (e.g. multithreaded +
+    # exception-enabled libc/libc++/libgl/embind built on demand for Studio
+    # WASM). Keyed on the static Emscripten version so it occupies a single ~50MB
+    # slot without creating new cache entries per commit.
+    - name: Cache Emscripten sysroot
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+      with:
+        path: emsdk/upstream/emscripten/cache
+        key: emsdk-sysroot-4.0.10
+
+    - name: Cache external dependencies
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+      with:
+        path: ${{ runner.temp }}/external_deps
+        key: external-deps-v2-posix-wasm-${{ hashFiles('cmake/**') }}
+
+    - name: Build and Test WASM bindings
       env:
+        EXTERNAL_DEPS_DIR: ${{ runner.temp }}/external_deps
         CMAKE_ARGS: ${{ env.cmake_args }}
       run: |
         bash ./.github/workflows/build_steps.sh npm_ci
-        bash ./.github/workflows/build_steps.sh setup_emsdk
         bash ./.github/workflows/build_steps.sh build_test_wasm
+
+    - name: Build MuJoCo Studio WASM
+      env:
+        EXTERNAL_DEPS_DIR: ${{ runner.temp }}/external_deps
+        CMAKE_ARGS: ${{ env.cmake_args }}
+      run: bash ./.github/workflows/build_steps.sh build_studio_wasm
 
     - name: Notify team chat
       if: failure() && github.ref_name == 'main' && github.event_name == 'push'
@@ -352,13 +386,18 @@ jobs:
         # Shared with the Bazel build (MODULE.bazel python.defaults).
         python-version-file: .github/workflows/python-version
 
-    - name: Install uv
-      uses: astral-sh/setup-uv@fac544c07dec837d0ccb6301d7b5580bf5edae39 # v8.2.0
+    - name: Cache Python dependencies
+      uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
       with:
-        enable-cache: true
-        cache-dependency-glob: "python/build_requirements*.txt"
+        path: ${{ runner.temp }}/uv_cache
+        key: uv-deps-mjx-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('.github/workflows/python-version', '.github/workflows/uv_requirements.txt', 'python/build_requirements*.txt', 'mjx/requirements.txt') }}
+        restore-keys: |
+          uv-deps-mjx-${{ runner.os }}-${{ runner.arch }}-
+          uv-deps-${{ runner.os }}-${{ runner.arch }}-
 
     - name: Prepare Python
+      env:
+        UV_CACHE_DIR: ${{ runner.temp }}/uv_cache
       run: bash ./.github/workflows/build_steps.sh prepare_python
 
     - name: Setup ccache
@@ -372,13 +411,10 @@ jobs:
       uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
       with:
         path: ${{ runner.temp }}/external_deps
-        key: external-deps-${{ runner.os == 'Windows' && 'windows' || 'posix' }}-${{ hashFiles('cmake/MujocoDependencies.cmake') }}
-        restore-keys: |
-          external-deps-${{ runner.os == 'Windows' && 'windows' || 'posix' }}-
+        key: external-deps-v2-posix-mjx-${{ hashFiles('cmake/**', 'python/mujoco/CMakeLists.txt') }}
 
     - name: Configure MuJoCo
       env:
-        EXTERNAL_DEPS: "eigen3"
         EXTERNAL_DEPS_DIR: ${{ runner.temp }}/external_deps
       run: bash ./.github/workflows/build_steps.sh configure_mujoco
 
@@ -414,6 +450,8 @@ jobs:
 
     - name: Install MJX
       working-directory: mjx
+      env:
+        UV_CACHE_DIR: ${{ runner.temp }}/uv_cache
       run: bash ../.github/workflows/build_steps.sh install_mjx
 
     - name: Test MJX
@@ -480,7 +518,8 @@ jobs:
       if: ${{ matrix.disk_cache }}
       run: |
         mkdir -p ~/.cache/bazel-disk
-        echo "build --disk_cache=${HOME}/.cache/bazel-disk" >> ~/.bazelrc
+        # setup-bazel writes ~/.bazelrc without a trailing newline.
+        printf '\nbuild --disk_cache=%s/.cache/bazel-disk\n' "${HOME}" >> ~/.bazelrc
         # Bazel refreshes the mtime of every disk cache entry it uses, so
         # entries older than this marker after the build were not used.
         touch "${RUNNER_TEMP}/bazel-disk-cache-start"

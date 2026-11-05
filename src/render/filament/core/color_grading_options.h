@@ -37,6 +37,12 @@ enum class ToneMapperType {
   kLinear,
 };
 
+// Supported output color spaces for color grading.
+enum class OutputColorSpace {
+  kRec709_Linear_D65,
+  kRec709_sRGB_D65,
+};
+
 std::unique_ptr<filament::ToneMapper> CreateToneMapper(ToneMapperType type);
 
 // Structure used to initialize a filament::ColorGrading::Builder object.
@@ -49,6 +55,7 @@ std::unique_ptr<filament::ToneMapper> CreateToneMapper(ToneMapperType type);
 // for the Filament ColorGrading::Builder class.
 struct ColorGradingOptions {
   ToneMapperType tone_mapper = ToneMapperType::kPBRNeutral;
+  OutputColorSpace output_color_space = OutputColorSpace::kRec709_sRGB_D65;
   filament::ColorGrading::LutFormat format =
       filament::ColorGrading::LutFormat::INTEGER;
   uint8_t dimension = 32;

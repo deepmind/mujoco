@@ -14,7 +14,7 @@
 
 module(
     name = "mujoco",
-    version = "3.16.1",
+    version = "4.0.0",
     # REPO.bazel uses ignore_directories(), which was added in Bazel 8.0.
     bazel_compatibility = [">=8.0.0"],
 )
@@ -24,8 +24,8 @@ module(
 # modules can build them. C-only consumers never fetch them, though they still
 # take part in version resolution.
 bazel_dep(name = "abseil-cpp", version = "20260107.1")
-bazel_dep(name = "apple_support", version = "1.24.5")
-bazel_dep(name = "bazel_skylib", version = "1.9.0")
+bazel_dep(name = "apple_support", version = "2.5.2")
+bazel_dep(name = "bazel_skylib", version = "1.9.2")
 bazel_dep(name = "ccd", version = "2.1.0.bcr.2")
 bazel_dep(name = "eigen", version = "5.0.1.bcr.2")
 bazel_dep(name = "glfw", version = "3.4.0.bcr.3")
@@ -36,12 +36,12 @@ bazel_dep(name = "lodepng", version = "0.0.0-20250506-17d08dd")
 bazel_dep(name = "marchingcubecpp", version = "0.0.0-20230911-f03a1b3")
 bazel_dep(name = "miniz", version = "3.1.1")
 bazel_dep(name = "platforms", version = "1.1.0")
-bazel_dep(name = "pybind11_bazel", version = "3.0.1")
+bazel_dep(name = "pybind11_bazel", version = "3.0.3")
 bazel_dep(name = "qhull", version = "8.0.2.bcr.1")
 bazel_dep(name = "rules_cc", version = "0.2.22")
-bazel_dep(name = "rules_python", version = "1.9.0")
+bazel_dep(name = "rules_python", version = "2.4.5")
 
-bazel_dep(name = "rules_shell", version = "0.4.1", dev_dependency = True)
+bazel_dep(name = "rules_shell", version = "0.6.1", dev_dependency = True)
 
 bazel_dep(name = "tinyobjloader", version = "2.0.0-rc1.bcr.2")
 bazel_dep(name = "tinyxml2", version = "11.0.0")
@@ -61,16 +61,22 @@ python = use_extension(
 )
 python.defaults(python_version_file = "//:.github/workflows/python-version")
 
+rules_python_config = use_extension(
+    "@rules_python//python/extensions:config.bzl",
+    "config",
+)
+rules_python_config.explicit_init_py(default = True)
+
 # The version file must name one of these. Changing it to another listed
 # version needs no edit here; a version that isn't listed fails with "No default
 # Python toolchain configured". This matches the versions the wheels support
-# (pyproject.toml), except 3.15, which needs a newer rules_python.
+# (pyproject.toml).
 _PYTHON_VERSIONS = [
-    "3.10",
     "3.11",
     "3.12",
     "3.13",
     "3.14",
+    "3.15",
 ]
 
 [

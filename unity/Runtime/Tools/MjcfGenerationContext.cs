@@ -22,8 +22,8 @@ using UnityEngine;
 
 namespace Mujoco {
 
-// An instance of this class will be used to collect dynamic dependencies produced by a Mujoco model
-// during scene generation.
+// An instance of this class will be used to collect dynamic dependencies produced by a Mujoco
+// model during scene generation.
 public class MjcfGenerationContext {
 
   public int NUserSensor {
@@ -128,12 +128,10 @@ public class MjcfGenerationContext {
       mjcf.SetAttribute("ncol", hFieldComponent.HeightMapWidth.ToString());
     }
 
-    var baseHeight = hFieldComponent.Terrain.transform.localPosition.y +
-                     hFieldComponent.MinimumHeight;
-    var heightRange = Mathf.Clamp(
-        hFieldComponent.MaximumHeight - hFieldComponent.MinimumHeight,
-        0.00001f,
-        Mathf.Infinity);
+    var baseHeight = hFieldComponent.BaseHeight;
+    var heightRange = hFieldComponent.ExportImage
+        ? Mathf.Max(hFieldComponent.MaximumHeight, 0.00001f)
+        : hFieldComponent.HeightMapScale.y;
     mjcf.SetAttribute(
         "size",
         MjEngineTool.MakeLocaleInvariant(

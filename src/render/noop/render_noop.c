@@ -103,8 +103,8 @@ void mjr_label(mjrRect viewport, int font, const char* txt, float r, float g,
 void mjr_figure(mjrRect viewport, mjvFigure* fig, const mjrContext* con) {
   mju_error("mjr_figure not implemented.");
 }
-void mjr_finish() { mju_error("mjr_finish not implemented."); }
-int mjr_getError() {
+void mjr_finish(void) { mju_error("mjr_finish not implemented."); }
+int mjr_getError(void) {
   mju_error("mjr_getError not implemented.");
   return 0;
 }

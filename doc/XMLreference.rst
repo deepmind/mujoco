@@ -198,11 +198,11 @@ Meta elements
 
 These elements are not strictly part of the low-level MJCF format definition, but rather instruct the compiler to
 perform some operation on the model. A general property of meta-elements is that they disappear from the model upon
-saving the XML; the exception is :ref:`frame<frame>`, which is preserved. There are currently six meta-elements in
+saving the XML; the exception is :ref:`frame<frame>`, which is preserved. There are currently five meta-elements in
 MJCF:
 
 - :ref:`include<include>`, :ref:`frame<frame>`, and :ref:`replicate<replicate>` which are outside of the schema.
-- :ref:`composite<body-composite>`, :ref:`flexcomp<body-flexcomp>` and :ref:`attach<body-attach>` which are part of the
+- :ref:`flexcomp<body-flexcomp>` and :ref:`attach<body-attach>` which are part of the
   schema, but serve to procedurally generate other MJCF elements.
 
 .. _frame:
@@ -765,13 +765,14 @@ from its default.
    This flag selects the IPC contact mode of the ``discrete`` :ref:`integrator<option-integrator>`; it is an error
    with any other integrator. The mode is experimental. It keeps contact multipliers in :ref:`mjData` across steps
    that no :ref:`state specification<mjtState>` covers, so :ref:`mj_getState` and :ref:`mj_setState` do not capture
-   its full state and exact replay from a saved state is not supported. The mode solves its subproblems with
-   matrix-free conjugate gradient, so :ref:`solver<option-solver>` must be ``CG``, and it cannot be combined with
-   the ``fwdinv`` or ``sleep`` flags. It applies model-wide: every flex the mode supports has its contact solved this
-   way. Contacts between two supported flexes, and between a supported flex and a static plane, sphere, capsule, box
-   or mesh, are resolved by the mode and the collision pipeline does not generate them; contacts with moving bodies
-   and with the other geom types keep their constraint rows. The pairs the mode resolves are frictionless: they carry
-   normal forces only, and the friction parameters of the flexes and geoms involved do not apply to them.
+   its full state and exact replay from a saved state is not supported. The mode solves its subproblems with a primal
+   solver (``Newton`` by default, or ``CG``), so :ref:`solver<option-solver>` cannot be ``PGS``, and it cannot be
+   combined with the ``fwdinv`` or ``sleep`` flags. It applies model-wide: every flex the mode supports has its contact
+   solved this way. Contacts between two supported flexes, and between a supported flex and a static plane, sphere,
+   capsule, box or mesh, are resolved by the mode and the collision pipeline does not generate them; contacts with
+   moving bodies and with the other geom types keep their constraint rows. The pairs the mode resolves are
+   frictionless: they carry normal forces only, and the friction parameters of the flexes and geoms involved do not
+   apply to them.
    The usual collision filtering applies to the pairs the mode resolves: none with the ``contact`` flag disabled, the
    contype/conaffinity rule of contact :ref:`selection<coSelection>` between a flex and a geom or between two flexes,
    and each flex's ``selfcollide`` for its self-contact. A pinned flex vertex may ride a static body or a body reached
@@ -794,6 +795,13 @@ from its default.
    computed from it. The step recomputes those sensors from its own acceleration and constraint force before it
    commits, so after :ref:`mj_step` they read as under the plain ``discrete`` integrator; a user or plugin sensor
    at the acceleration stage is evaluated twice per step. Inverse dynamics is not supported.
+
+.. _option-flag-speculative:
+
+:at:`speculative`: :at-val:`[disable, enable], "disable"`
+   This flag enables speculative contacts for fast-moving convex geoms, adding contacts before impact to prevent
+   tunneling through thin obstacles within a single timestep. See :ref:`speculative contacts<coSpeculative>` for more
+   details.
 
 .. _compiler:
 
@@ -1165,7 +1173,9 @@ compilation.
    This attribute specifies the size of memory allocated for dynamic arrays in the ``mjData.arena`` memory space, in
    bytes. The default setting of ``-1`` instructs the compiler to guess how much space to allocate. Appending the digits
    with one of the letters {K, M, G, T, P, E} sets the unit to be {kilo, mega, giga, tera, peta, exa}-byte,
-   respectively. Thus "16M" means "allocate 16 megabytes of ``arena`` memory".
+   respectively. Thus "16M" means "allocate 16 megabytes of ``arena`` memory". If the Newton solver runs out of
+   ``arena`` memory while building its Hessian or Cholesky factor (for example under heavy flex contact fill-in), it
+   raises ``mjWARN_CNSTRFULL`` and falls back to CG for that step; increase ``memory`` if this warning persists.
    See the :ref:`Memory allocation <CSize>` section for details.
 
 .. _size-njmax:
@@ -1637,7 +1647,7 @@ The full list of processing steps applied by the compiler to each mesh is as fol
 
    :at-val:`box` (count[3], spacing[3], [dim])
       A procedural box mesh. If ``dim`` is 3 (default), creates a volumetric tetrahedral mesh. If ``dim`` is 2,
-      creates a triangular surface mesh.
+      creates an open-top triangular surface mesh (the ``+z`` face is omitted).
 
       **count**: 3 integers >= 2: Grid resolution along each axis.
       |br| **spacing**: 3 reals: Spacing along each axis.
@@ -1645,7 +1655,7 @@ The full list of processing steps applied by the compiler to each mesh is as fol
 
    :at-val:`cylinder` (count[3], spacing[3], [dim])
       A procedural cylinder mesh. If ``dim`` is 3 (default), creates a volumetric tetrahedral mesh. If ``dim`` is 2,
-      creates a triangular surface mesh.
+      creates an open-top triangular surface mesh (the ``+z`` face is omitted).
 
       **count**: 3 integers >= 2: Grid resolution along each axis.
       |br| **spacing**: 3 reals: Spacing along each axis.
@@ -1653,7 +1663,7 @@ The full list of processing steps applied by the compiler to each mesh is as fol
 
    :at-val:`ellipsoid` (count[3], spacing[3], [dim])
       A procedural ellipsoid mesh. If ``dim`` is 3 (default), creates a volumetric tetrahedral mesh. If ``dim`` is 2,
-      creates a triangular surface mesh.
+      creates an open-top triangular surface mesh (the ``+z`` face is omitted).
 
       **count**: 3 integers >= 2: Grid resolution along each axis.
       |br| **spacing**: 3 reals: Spacing along each axis.
@@ -1937,13 +1947,14 @@ Only ``image/png`` and ``image/ktx`` are supported.
    specifies which grid cells are used and which side of the cube they correspond to. There are many skybox textures
    available online as composite images, but they do not use the same convention, which is why we have designed a
    flexible mechanism for decoding them. The string specified here must be composed of characters from the set {'.',
-   'R', 'L', 'U', 'D', 'F', 'B'}. The number of characters must equal the product of the two grid sizes. The grid is
-   scanned in row-major order. The '.' character denotes an unused cell. The other characters are the first letters of
-   Right, Left, Up, Down, Front, Back; see below for coordinate frame description. If the symbol for a given side
-   appears more than once, the last definition is used. If a given side is omitted, it is filled with the color
-   specified by the rgb1 attribute. For example, the desert landscape below can be loaded as a skybox or a cube map
-   using gridsize = "3 4" and gridlayout = ".U..LFRB.D.." The full-resolution image file without the markings can be
-   downloaded `here <_static/desert.png>`__.
+   'R', 'L', 'U', 'D', 'F', 'B'}. The number of characters must equal the product of the two grid sizes. Setting
+   :at:`gridsize` to a value that differs from the inherited default without specifying :at:`gridlayout` resets
+   :at:`gridlayout` to all ``'.'``. The grid is scanned in row-major order. The '.' character denotes an unused cell.
+   The other characters are the first letters of Right, Left, Up, Down, Front, Back; see below for coordinate frame
+   description. If the symbol for a given side appears more than once, the last definition is used. If a given side is
+   omitted, it is filled with the color specified by the rgb1 attribute. For example, the desert landscape below can be
+   loaded as a skybox or a cube map using gridsize = "3 4" and gridlayout = ".U..LFRB.D.." The full-resolution image
+   file without the markings can be downloaded `here <_static/desert.png>`__.
 
 .. _asset-texture-fileright:
 
@@ -2438,7 +2449,8 @@ axes of inertia of the body. Thus the inertia matrix is diagonal in this frame.
    Full inertia matrix M. Since M is 3-by-3 and symmetric, it is specified using only 6 numbers in the following order:
    M(1,1), M(2,2), M(3,3), M(1,2), M(1,3), M(2,3). The compiler computes the eigenvalue decomposition of M and sets the
    frame orientation and diagonal inertia accordingly. If non-positive eigenvalues are encountered (i.e., if M is not
-   positive definite) a compile error is generated.
+   positive definite) a compile error is generated, unless :ref:`boundinertia<compiler-boundinertia>` is positive, in
+   which case the eigenvalues are bounded below by it.
 
 
 .. _body-joint:
@@ -2567,10 +2579,11 @@ rotations as unit quaternions.
 .. _body-joint-actuatorfrcrange:
 
 :at:`actuatorfrcrange`: :at-val:`real(2), "0 0"`
-   Range for clamping total actuator forces acting on this joint. See :ref:`CForceRange` for details. It is available
-   only for scalar joints (hinge and slider) and ignored for ball and free joints. |br| The compiler expects the first
-   value to be smaller than the second value. |br| Setting this attribute without specifying :at:`actuatorfrclimited`
-   is an error if :at:`compiler-autolimits` is "false".
+   Range for clamping total actuator forces acting on this joint. See :ref:`CForceRange` for details; to limit several
+   commands of one physical actuator, prefer a single multi-input actuator such as :ref:`pid<actuator-pid>` with
+   :ref:`forcerange<actuator-general-forcerange>`. It is available only for scalar joints (hinge and slider) and ignored
+   for ball and free joints. |br| The compiler expects the first value to be smaller than the second value. |br| Setting
+   this attribute without specifying :at:`actuatorfrclimited` is an error if :at:`compiler-autolimits` is "false".
 
 .. _body-joint-actuatorfrclimited:
 
@@ -2617,6 +2630,24 @@ rotations as unit quaternions.
    values specified with this attribute are stored in the vector mjModel.qpos_spring. The model configuration
    corresponding to mjModel.qpos_spring is also used to compute the spring reference lengths of all tendons, stored in
    mjModel.tendon_lengthspring. This is because :ref:`tendons <tendon>` can also have springs.
+
+.. image:: https://www.gstatic.com/mujoco/doc/images/changelog/wire.gif
+   :width: 40%
+   :align: right
+   :target: https://github.com/google-deepmind/mujoco/blob/main/model/plastic/wire.xml
+
+.. _body-joint-springyield:
+
+:at:`springyield`: :at-val:`real, "0"`
+   Elastic yield threshold for the joint spring. Available on slide, hinge, and ball joints (not supported on free
+   joints). For hinge and ball joints, the threshold is specified in degrees or radians depending on the :at:`angle`
+   attribute of :ref:`compiler <compiler>`. When positive, the joint spring reference is allocated in the mutable state
+   vector ``mjData.plastic`` at offset ``mjModel.jnt_plasticadr[j]`` (1 entry for slide/hinge, 4 quaternion entries for
+   ball, initialized from ``mjModel.qpos_spring``) and shifts permanently whenever the spring displacement exceeds
+   ``springyield`` (ideal elasto-plasticity). When ``0`` (default), plasticity is disabled
+   (``mjModel.jnt_plasticadr[j] == -1``) and the spring is purely elastic; setting ``mjModel.jnt_springyield[j] = 0`` at
+   runtime on an already-plastic joint (``jnt_plasticadr[j] >= 0``) corresponds to zero yield threshold (full plastic
+   slip).
 
 .. image:: images/XMLreference/armature.gif
    :width: 40%
@@ -2914,6 +2945,13 @@ helps clarify the role of bodies and geoms in MuJoCo.
    Instead of creating material assets and referencing them, this attribute can be used to set color and transparency
    only. This is not as flexible as the material mechanism, but is more convenient and is often sufficient. If the value
    of this attribute is different from the internal default, it takes precedence over the material.
+
+.. _body-geom-castshadow:
+
+:at:`castshadow`: :at-val:`[false, true], "true"`
+   If this attribute is "true", the geom casts shadows when illuminated by shadow-casting lights (those with
+   :ref:`castshadow<body-light-castshadow>` set to "true"). Setting this to "false" disables shadow casting for this
+   geom while still allowing it to receive shadows and be lit normally.
 
 .. _body-geom-friction:
 
@@ -3449,8 +3487,8 @@ Attributes may be applied or ignored depending on the lighting model being used.
 .. _body-light-castshadow:
 
 :at:`castshadow`: :at-val:`[false, true], "true"`
-   If this attribute is "true" the light will cast shadows. More precisely, the geoms illuminated by the light will cast
-   shadows, however this is a property of lights rather than geoms. Since each shadow-casting light causes one extra
+   If this attribute is "true" the light will cast shadows. More precisely, geoms with
+   :ref:`castshadow<body-geom-castshadow>` enabled that are illuminated by the light will cast shadows. Since each shadow-casting light causes one extra
    rendering pass through all geoms, this attribute should be used with caution. Higher quality of the shadows is
    achieved by increasing the value of the shadowsize attribute of :ref:`quality <visual-quality>`, as well as
    positioning spotlights closer to the surface on which shadows appear, and limiting the volume in which shadows are
@@ -3547,305 +3585,12 @@ Attributes may be applied or ignored depending on the lighting model being used.
    Exponent for spotlights, used by the default Phong lighting model. This setting controls the softness of the
    spotlight cutoff. Physically-based lighting models use :ref:`softness<body-light-softness>` instead.
 
-.. _body-composite:
-
-:el-prefix:`body/` |-| **composite** |*|
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-
-This is not a model element, but rather a macro which expands into multiple model elements representing a composite
-object. These elements are bodies (with their own joints and geoms) that become children of the parent body containing
-the macro. The macro expansion is done by the model compiler. If the resulting model is then saved, the macro will be
-replaced with the actual model elements. The defaults mechanism used in the rest of MJCF does not apply here, even if
-the parent body has a childclass attribute defined. Instead there are internal defaults adjusted automatically for each
-composite object type. See :ref:`CComposite` in the modeling guide for more detailed explanation. Note that several
-legacy composite types have been replaced by :ref:`replicate<replicate>` (for repeated objects) and
-:ref:`flexcomp<body-flexcomp>` (for soft objects). Therefore, the only supported composite type is now
-cable, which produces an inextensible chain of bodies connected with ball joints.
-
-.. _body-composite-prefix:
-
-:at:`prefix`: :at-val:`string, optional`
-   All automatically generated model elements have names indicating the element type and index. For example, the body at
-   coordinates (2, 0) in a 2D grid is named "B2_0" by default. If prefix="C" is specified, the same body is named
-   "CB2_0". The prefix is needed when multiple composite objects are used in the same model, to avoid name conflicts.
-
-.. _body-composite-type:
-
-:at:`type`: :at-val:`[cable], required`
-   This attribute determines the type of composite object. The only supported type is cable.
-
-   The **cable** type creates a 1D chain of bodies connected with ball joints, each having a geom with user-defined type
-   (cylinder, capsule or box). The geometry can either be defined with an array of 3D vertex coordinates :at:`vertex`
-   or with prescribed functions with the option :at:`curve`. Only linear and trigonometric functions are supported. For
-   example, an helix can be obtained with curve="cos(s) sin(s) s". The size is set with the option
-   :at:`size`, resulting in :math:`f(s)=\{\text{size}[1]\cdot\cos(2\pi\cdot\text{size}[2]),\;
-   \text{size}[1]\cdot\sin(2\pi\cdot\text{size}[2]),\; \text{size}[0]\cdot s\}`.
-
-.. _body-composite-count:
-
-:at:`count`: :at-val:`int(3), required`
-   The element count in each dimension of the grid. This can have 1, 2 or 3 numbers, specifying the element count along
-   the X, Y and Z axis of the parent body frame within. Any missing numbers default to 1. If any of these numbers is 1,
-   all subsequent numbers must also be 1, so that the leading dimensions of the grid are used. This means for example
-   that a 1D grid will always extend along the X axis. To achieve a different orientation, rotate the frame of the
-   parent body. Note that some types imply a grid of certain dimensionality, so the requirements for this attribute
-   depend on the specified type.
-
-.. _body-composite-offset:
-
-:at:`offset`: :at-val:`real(3), "0 0 0"`
-   It specifies a 3D offset from the center of the parent body to the center of the first body of the cable. The offset
-   is expressed in the local coordinate frame of the parent body.
-
-.. _body-composite-quat:
-
-:at:`quat`: :at-val:`real(4), "1 0 0 0"`
-   It specifies a quaternion that rotates the first body frame. The quaternion is expressed in the parent body frame.
-
-.. _body-composite-vertex:
-
-:at:`vertex`: :at-val:`real(3*nvert), optional`
-   Vertex 3D positions in global coordinates.
-
-.. _body-composite-initial:
-
-:at:`initial`: :at-val:`[free, ball, none], "ball"`
-   Behavior of the first point. Free: free joint. Ball: ball joint. None: no dof.
-
-.. _body-composite-curve:
-
-:at:`curve`: :at-val:`string(3), optional`
-   Functions specifying the vertex positions. Available functions are `s`, `cos(s)`, and `sin(s)`, where `s` is the arc
-   length parameter.
-
-.. _body-composite-size:
-
-:at:`size`: :at-val:`int(3), optional`
-   Scaling of the curve functions. `size[0]` is the scaling of `s`, `size[1]` is the radius of `\cos(s)` and `\sin(s)`,
-   and `size[2]` is the speed of the argument (i.e. `\cos(2*\pi*size[2]*s)`).
-
-
-.. _composite-joint:
-
-:el-prefix:`composite/` |-| **joint** |*|
-'''''''''''''''''''''''''''''''''''''''''
-
-Depending on the composite type, some joints are created automatically (e.g. the universal joints in rope) while other
-joints are optional (e.g. the stretch and twist joints in rope). This sub-element is used to specify which optional
-joints should be created, as well as to adjust the attributes of both automatic and optional joints.
-
-.. _composite-joint-kind:
-
-:at:`kind`: :at-val:`[main], required`
-   The joint kind here is orthogonal to the joint type in the rest of MJCF. The joint kind refers to the function of the
-   joint within the mechanism comprising the composite body, while the joint type (hinge or slide) is implied by the
-   joint kind and composite body type.
-
-   The **main** kind corresponds to the main joints forming each composite type. These joints are automatically included
-   in the model even if the joint sub-element is missing. The main joints are 3D sliders for particle and grid; 1D
-   sliders for box, cylinder and rope; universal joints for cloth, rope and loop. Even though the main joints are
-   included automatically, this sub-element is still useful for adjusting their attributes.
-
-.. _composite-joint-solreffix:
-
-.. _composite-joint-solimpfix:
-
-:at:`solreffix`, :at:`solimpfix`
-   These are the solref and solimp attributes used to equality-constrain the joint. Whether or not a given joint is
-   quality-constrained depends on the joint kind and composite object type as explained above. For joints that are not
-   equality-constrained, this attribute has no effect. The defaults are adjusted depending on the composite type.
-   Otherwise these attributes obey the same rules as all other solref and solimp attributes in MJCF. See :ref:`Solver
-   parameters <CSolver>`.
-
-.. _composite-joint-axis:
-
-.. _composite-joint-group:
-
-.. _composite-joint-stiffness:
-
-.. _composite-joint-damping:
-
-.. _composite-joint-armature:
-
-.. _composite-joint-limited:
-
-.. _composite-joint-range:
-
-.. _composite-joint-margin:
-
-.. _composite-joint-solreflimit:
-
-.. _composite-joint-solimplimit:
-
-.. _composite-joint-frictionloss:
-
-.. _composite-joint-solreffriction:
-
-.. _composite-joint-solimpfriction:
-
-.. _composite-joint-type:
-
-.. |body/composite/joint attrib list| replace::
-   :at:`axis`, :at:`group`, :at:`stiffness`, :at:`damping`, :at:`armature`, :at:`limited`, :at:`range`, :at:`margin`,
-   :at:`solreflimit`, :at:`solimplimit`, :at:`frictionloss`, :at:`solreffriction`, :at:`solimpfriction`, :at:`type`
-
-|body/composite/joint attrib list|
-   Same meaning as regular :ref:`joint <body-joint>` attributes.
-
-
-.. _composite-geom:
-
-:el-prefix:`composite/` |-| **geom** |?|
-''''''''''''''''''''''''''''''''''''''''
-
-This sub-element adjusts the attributes of the geoms in the composite object. The default attributes are the same as in
-the rest of MJCF (except that user-defined defaults have no effect here). Note that the geom sub-element can appear
-only once, unlike joint and tendon sub-elements which can appear multiple times. This is because different kinds of
-joints and tendons have different sets of attributes, while all geoms in the composite object are identical.
-
-.. _composite-geom-type:
-
-.. _composite-geom-contype:
-
-.. _composite-geom-conaffinity:
-
-.. _composite-geom-condim:
-
-.. _composite-geom-group:
-
-.. _composite-geom-priority:
-
-.. _composite-geom-size:
-
-.. _composite-geom-material:
-
-.. _composite-geom-rgba:
-
-.. _composite-geom-friction:
-
-.. _composite-geom-mass:
-
-.. _composite-geom-density:
-
-.. _composite-geom-solmix:
-
-.. _composite-geom-solref:
-
-.. _composite-geom-solimp:
-
-.. _composite-geom-margin:
-
-.. _composite-geom-gap:
-
-.. _composite-geom-surfacevel:
-
-.. _composite-geom-adhesion:
-
-.. |body/composite/geom attrib list| replace::
-   :at:`type`, :at:`contype`, :at:`conaffinity`, :at:`condim`, :at:`group`, :at:`priority`, :at:`size`, :at:`material`,
-   :at:`rgba`, :at:`friction`, :at:`mass`, :at:`density`, :at:`solmix`, :at:`solref`, :at:`solimp`, :at:`margin`,
-   :at:`gap`, :at:`surfacevel`, :at:`adhesion`
-
-|body/composite/geom attrib list|
-   Same meaning as regular :ref:`geom <body-geom>` attributes.
-
-
-.. _composite-site:
-
-:el-prefix:`composite/` |-| **site** |?|
-''''''''''''''''''''''''''''''''''''''''
-
-This sub-element adjusts the attributes of the sites in the composite object. Otherwise it is the same as geom above.
-
-.. _composite-site-group:
-
-.. _composite-site-size:
-
-.. _composite-site-material:
-
-.. _composite-site-mesh:
-
-.. _composite-site-rgba:
-
-:at:`group`, :at:`size`, :at:`material`, :at:`mesh`, :at:`rgba`
-   Same meaning as regular :ref:`site <body-site>` attributes.
-
-
-.. _composite-skin:
-
-:el-prefix:`composite/` |-| **skin** |?|
-''''''''''''''''''''''''''''''''''''''''
-
-If this element is included, the model compiler will generate a skinned mesh asset and attach it to the element bodies
-of the composite object. Skin can be attached to 2D grid, cloth, box, cylinder and ellipsoid. For other composite types
-it has no effect. Note that the skin created here is equivalent to a skin specified directly in the XML, as opposed to a
-skin loaded from file. So if the model is saved as XML, it will contain a large section describing the
-automatically-generated skin.
-
-.. _composite-skin-texcoord:
-
-:at:`texcoord`: :at-val:`[false, true], "false"`
-   If this is true, explicit texture coordinates will be generated, mapping the skin to the unit square in texture
-   space. This is needed when the material specifies a texture. If texcoord is false and the skin has texture, the
-   texture will appear fixed to the world instead of the skin. The reason for having this attribute in the first place
-   is because skins with texture coordinates upload these coordinates to the GPU even if no texture is applied later. So
-   this attribute should be set to false in cases where no texture will be applied via the material attribute.
-
-.. _composite-skin-material:
-
-.. _composite-skin-rgba:
-
-.. _composite-skin-group:
-
-:at:`material`, :at:`rgba`, :at:`group`:
-   Same meaning as in :ref:`geom <body-geom>`.
-
-.. _composite-skin-inflate:
-
-:at:`inflate`: :at-val:`real, "0"`
-   The default value of 0 means that the automatically-generated skin passes through the centers of the body elements
-   comprising the composite object. Positive values offset each skin vertex by the specified amount, in the direction
-   normal to the (non-inflated) skin at that vertex. This has two uses. First, in 2D objects, a small positive inflate
-   factor is needed to avoid aliasing artifacts. Second, collisions are done with geoms that create some thickness, even
-   for 2D objects. Inflating the skin with a value equal to the geom size will render the skin as a "mattress" that
-   better represents the actual collision geometry. The value of this attribute is copied into the corresponding
-   attribute of the :el:`skin` asset being created.
-
-.. _composite-skin-subgrid:
-
-:at:`subgrid`: :at-val:`int, "0"`
-   This is only applicable to cloth and 2D grid types, and has no effect for any other composite type. The default value
-   of 0 means that the skin has as many vertices as the number of element bodies. A positive value causes subdivision,
-   with the specified number of (additional) grid lines. In this case the model compiler generates a denser skin using
-   bi-cubic interpolation. This increases the quality of the rendering (especially in the absence of textures) but also
-   slows down the renderer, so use it with caution. Values above 3 are unlikely to be needed.
-
-
-.. _composite-plugin:
-
-:el-prefix:`composite/` |-| **plugin** |?|
-''''''''''''''''''''''''''''''''''''''''''
-
-Associate this composite with an :ref:`engine plugin<exPlugin>`. Either :at:`plugin` or :at:`instance` are required.
-
-.. _composite-plugin-plugin:
-
-:at:`plugin`: :at-val:`string, optional`
-   Plugin identifier, used for implicit plugin instantiation.
-
-.. _composite-plugin-instance:
-
-:at:`instance`: :at-val:`string, optional`
-   Instance name, used for explicit plugin instantiation.
-
-
-
 .. _body-flexcomp:
 
 :el-prefix:`body/` |-| **flexcomp** |*|
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-Similar to :el:`composite`, this element is not a model element, but rather a macro which expands into multiple
+This element is not a model element, but rather a macro which expands into multiple
 model elements representing a deformable entity. In particular this macro creates one
 :ref:`flex<deformable-flex>` element, a number of bodies that are children of the body in which the :el:`flexcomp` is
 defined, and optionally one :ref:`flex equality<equality-flex>` which constrains all flex edges to their initial length.
@@ -3863,12 +3608,14 @@ flexcomp point is not pinned, a new child body is created at the coordinates of 
 parent body), and then the coordinates of the flex vertex within that new body are (0,0,0). The mechanism for
 :ref:`pinning<flexcomp-pin>` flexcomp points is explained below.
 
-While :el:`composite` objects need bodies with geoms for collisions and sites for connecting tendons, flexes
-generate their own collisions and shape-preserving forces. Thus the bodies created here are much simpler: no geoms,
-sites or tendons are needed.
+Flexes generate their own collisions and shape-preserving forces, so the bodies created here need no geoms, sites or
+tendons.
 Most of the bodies created here have 3 orthogonal slider joints, corresponding to freely moving point masses. In some
-cases we generate radial slider joints, allowing only expansion and contraction. Since no geoms are generated, the
-bodies need to have explicit inertial parameters.
+cases we generate radial slider joints, allowing only expansion and contraction, and for open-chain elastic 1D rods
+with :math:`n \ge 2` edges, extra per-edge ``<name>_twist_0``, ..., ``<name>_twist_{n-2}``, ``<name>_twist`` bodies
+and hinge joints are created under the world body to represent the edge twist angles (omitting ``<name>_twist_0`` when
+the first edge is clamped via ``<pin id="0 1"/>``, and ``<name>_twist`` when the last two points of a rod with
+:math:`n \ge 3` edges are pinned). Since no geoms are generated, the bodies need to have explicit inertial parameters.
 
 Below is a simple example of a flexcomp, modeling a (somewhat flexible) double pendulum with one end pinned to the
 world:
@@ -3981,6 +3728,11 @@ saving the XML:
    Note that a higher interpolation order generally requires a smaller time step for stability, although usually not as
    large as with the "full" option and a fine mesh.
 
+   For **full**, **trilinear**, and **quadratic** parametrizations (with ``rigid="false"``), the generated vertex or
+   node child bodies already carry 3 orthogonal translational slide joints. Unless at least one active vertex or node is
+   :ref:`pinned<flexcomp-pin>` to the parent body, the parent body (and its ancestor bodies) must not have a
+   ``<freejoint/>`` or other joints.
+
 .. _body-flexcomp-type:
 
 :at:`type`: :at-val:`[grid, box, cylinder, ellipsoid, disc, circle, mesh, gmsh, direct], "grid"`
@@ -3998,14 +3750,16 @@ saving the XML:
 
    **box** generates a 3D box object, however flex bodies are only generated on the outer shell. Each flex body has a
    radial slider joint allowing it to move in and out from the center of the box. The parent body would normally be a
-   floating body. The box surface is triangulated, and each flex element is a tetrahedron connecting the center of the
-   box with one triangle face. :at:`count` and :at:`spacing` determine the count and spacing of the flex bodies, similar
-   to the **grid** type in 3D. Note that the resulting flex has the same topology as the box generated by
-   :el:`composite`.
+   floating body. The box surface is triangulated, and when :at:`dim=3` (default) each flex element is a tetrahedron
+   connecting the center of the box with one triangle face. When :at:`dim=2`, an open-top surface shell of triangle
+   elements is generated (the ``+z`` top face is omitted, as in ``model/flex/basket.xml``). :at:`count` and
+   :at:`spacing` determine the count and spacing of the flex bodies, similar to the **grid** type in 3D.
 
-   **cylinder** is the same as **box**, except the points are projected on the surface of a cylinder.
+   **cylinder** is the same as **box**, except the points are projected on the surface of a cylinder (when :at:`dim=2`,
+   the ``+z`` top face is likewise omitted).
 
-   **ellipsoid** is the same as **box**, except the points are projected on the surface of an ellipsoid.
+   **ellipsoid** is the same as **box**, except the points are projected on the surface of an ellipsoid (when
+   :at:`dim=2`, the ``+z`` top cap is likewise omitted).
 
    **disc** is the same as **box**, except the points are projected on the surface of a disc. It is only compatible
    with :at:`dim=2`.
@@ -4050,7 +3804,9 @@ saving the XML:
 
 :at:`cellcount`: :at-val:`int(3), "1 1 1"`
    Specifies the number of cells in each dimension for the background interpolation grid when using **trilinear** or
-   **quadratic** dofs.
+   **quadratic** dofs. Compilation and simulation cost scale with ``cellcount`` and the interpolation order
+   (:ref:`dof<body-flexcomp-dof>`); compiled cell stiffness and cut-cell quadrature weights are cached across
+   recompilations.
 
 .. _body-flexcomp-spacing:
 
@@ -4199,12 +3955,11 @@ element is used to adjust the properties of all edges in the flex.
 
 .. _flexcomp-edge-equality:
 
-:at:`equality`: :at-val:`[false, true, vert, strain], "false"`
+:at:`equality`: :at-val:`[false, true, strain], "false"`
    The type of equality constraint applied to this edge. If :at-val:`false`, no equality constraint is applied. If
-   :at-val:`true`, then edge constraints are enforced. If :at-val:`vert`, an averaged constraint is used, see
-   :ref:`flexvert<equality-flexvert>`. if :at-val:`strain`, then a constraint is added to enforce that the invariants of
-   the strain tensor do not change; this is only equality constraint type supported for trilinear and quadratic
-   :ref:`dofs<body-flexcomp-dof>` elements and :ref:`here<equality-flexstrain>`.
+   :at-val:`true`, then edge constraints are enforced. If :at-val:`strain`, then a constraint is added to enforce that the
+   invariants of the strain tensor do not change; this is the only equality constraint type supported for trilinear and
+   quadratic :ref:`dofs<body-flexcomp-dof>` elements, see :ref:`here<equality-flexstrain>`.
 
 .. _flexcomp-edge-solref:
 .. _flexcomp-edge-solimp:
@@ -4226,18 +3981,23 @@ element is used to adjust the properties of all edges in the flex.
 
 .. _flexcomp-elasticity-young:
 .. _flexcomp-elasticity-poisson:
+.. _flexcomp-elasticity-shear:
 .. _flexcomp-elasticity-damping:
 .. _flexcomp-elasticity-thickness:
+.. _flexcomp-elasticity-yield:
 .. _flexcomp-elasticity-elastic2d:
 .. _flexcomp-elasticity-section:
 .. _flexcomp-elasticity-sectionsize:
 
 .. |body/flexcomp/elasticity attrib list| replace::
-   :at:`young`, :at:`poisson`, :at:`damping`, :at:`thickness`, :at:`elastic2d`, :at:`section`, :at:`sectionsize`
+   :at:`young`, :at:`poisson`, :at:`shear`, :at:`damping`, :at:`thickness`, :at:`yield`, :at:`elastic2d`, :at:`section`,
+   :at:`sectionsize`
 
 |body/flexcomp/elasticity attrib list|
    Same as in :ref:`flex/elasticity<flex-elasticity>`.
-   All attributes are passed through to the automatically-generated flex.
+   All attributes are passed through to the automatically-generated flex. In particular, :at:`yield` takes one or two
+   values, for stretching and bending; a single value is also the bending yield strain only if the generated flex is a
+   non-interpolated 2D flex.
 
 .. _flexcomp-pin:
 
@@ -4249,12 +4009,20 @@ which points are pinned. Note that each attribute below can be used to specify m
 the :el:`pin` element itself can be repeated for user convenience. The effects are cumulative; pinning the same point
 multiple times is allowed.
 
+For interpolated flexcomps (**trilinear** or **quadratic** :ref:`dof<body-flexcomp-dof>`), degrees of freedom live on a
+3D grid of ``order * cellcount + 1`` nodes per axis (``order`` = 1 for **trilinear**, 2 for **quadratic**; see
+:ref:`cellcount<body-flexcomp-cellcount>`) rather than at mesh vertices. Pinning fixes these nodes: :at:`id` and
+:at:`range` use linear node indices (``z`` fastest, then ``y``, ``x``), while :at:`grid` and :at:`gridrange` use node
+coordinates regardless of flexcomp :ref:`type<body-flexcomp-type>` (for :at:`dim` 2 or 3).
+
 .. _flexcomp-pin-id:
 
 :at:`id`: :at-val:`int(n), required`
    Zero-based ids of points to pin. When the points are automatically-generated, the user needs to understand their
    layout in order to decide which points to pin. This can be done by first creating a flexcomp without any pins,
-   loading it in the simulator, and showing the body labels.
+   loading it in the simulator, and showing the body labels. For open-chain 1D elastic rods, ``<pin id="0 1"/>`` clamps
+   the first edge and its material frame to the parent body (omitting ``<name>_twist_0``), whereas ``<pin id="0"/>``
+   anchors only the first point (a spherical joint) while keeping ``<name>_twist_0`` free.
 
 .. _flexcomp-pin-range:
 
@@ -4264,13 +4032,16 @@ multiple times is allowed.
 .. _flexcomp-pin-grid:
 
 :at:`grid`: :at-val:`int(dim*n), required`
-   Grid coordinates of points to pin. This can only be used with type grid.
+   Grid coordinates of points or interpolation nodes to pin. This can only be used with :at:`dim` 2 or 3, and requires
+   type **grid** or an interpolated :ref:`dof<body-flexcomp-dof>` (**trilinear** or **quadratic**).
 
 .. _flexcomp-pin-gridrange:
 
 :at:`gridrange`: :at-val:`int(2*dim*n), required`
-   Ranges of grid coordinates of points to pin. Each range is specified by (dim) integers for the minimum of the range
-   followed by (dim) integers for the maximum of the range. This can only be used with type grid.
+   Ranges of grid coordinates of points or interpolation nodes to pin. Each range is specified by (dim) integers for
+   the minimum of the range followed by (dim) integers for the maximum of the range. This can only be used with
+   :at:`dim` 2 or 3, and requires type **grid** or an interpolated :ref:`dof<body-flexcomp-dof>` (**trilinear** or
+   **quadratic**).
 
 .. _flexcomp-plugin:
 
@@ -4752,12 +4523,15 @@ these mechanisms to be combined as desired.
 .. _flex-edge-stiffness:
 
 :at:`stiffness`: :at-val:`real(1), "0"`
-   Stiffness of all edges. Only for 1D flex. For 2D and 3D, plugins must be used.
+   Stiffness of all edges. Only for 1D flex. Integrated explicitly; not supported by the
+   :ref:`discrete<option-integrator>` integrator (use :ref:`elasticity<flex-elasticity>` or
+   :ref:`edge equality<flexcomp-edge-equality>` instead).
 
 .. _flex-edge-damping:
 
 :at:`damping`: :at-val:`real(1), "0"`
-   Damping of all edges.
+   Damping of all edges. Integrated explicitly; not supported by the :ref:`discrete<option-integrator>` integrator
+   (use :ref:`elasticity/damping<flex-elasticity-damping>` instead).
 
 
 .. _flex-elasticity:
@@ -4765,28 +4539,90 @@ these mechanisms to be combined as desired.
 :el-prefix:`flex/` |-| **elasticity** |?|
 '''''''''''''''''''''''''''''''''''''''''
 
-The elasticity model is a `Saint Venant-Kirchhoff
+**2D and 3D flexes** use a `Saint Venant-Kirchhoff
 <https://en.wikipedia.org/wiki/Hyperelastic_material#Saint_Venant%E2%80%93Kirchhoff_model>`__ model discretized with
 piecewise linear finite elements, intended to simulate the compression or elongation of hyperelastic materials subjected
 to large displacements (finite rotations) and small strains, since it uses a nonlinear strain-displacement but a linear
 stress-strain relationship. See also :ref:`deformable <CDeformable>` objects and `this model
 <https://github.com/google-deepmind/mujoco/blob/main/model/flex/floppy.xml>`__.
 
-For 1D flexes, elasticity is a twist-free, isotropic `discrete elastic rod
-<https://www.cs.columbia.edu/cg/pdfs/143-rods.pdf>`__ bending model with the cross-section given by
-:ref:`section<flex-elasticity-section>`. Every vertex shared by exactly two edges stores the energy
-:math:`k |\kappa b|^2`, where :math:`\kappa b` is the discrete curvature binormal and
-:math:`k = E I / (\ell_0 + \ell_1)`, with :math:`I` the second moment of area of the cross-section and
-:math:`\ell_{0,1}` the reference lengths of the two edges. The reference configuration ``qpos0`` must be straight: a
-compiler error is raised if any such vertex is bent by more than :math:`10^{-4}` rad, since without material frames an
-isotropic rod with a curved reference would only resist the magnitude of its curvature, not its direction. A curved
-initial pose, e.g. coiled or draped, can be set with ``qpos`` or a :ref:`keyframe<keyframe>`; the rod then starts with
-stored bending energy and is pushed toward straightening. Rods with a curved rest shape, such as coil springs, can use
-the :ref:`cable<CComposite>` composite instead. Twist is assumed to relax instantly, which is exact unless the
-orientation of both ends of the rod is constrained. Stretching is not included; use :ref:`edge<flex-edge>` constraints
-or stiffness instead. Rod bending is integrated implicitly by the :ref:`discrete<option-integrator>` integrator, using a
-positive semi-definite approximation of its Hessian, and explicitly by all other integrators. It is not supported by
-:ref:`dof<body-flexcomp-dof>` **trilinear** and **quadratic**.
+For 3D flexes, the stretching energy density is :math:`\mu \, \textrm{tr}(\varepsilon^2) + \frac{\lambda}{2}
+\textrm{tr}(\varepsilon)^2`, where :math:`\varepsilon` is the Green strain and :math:`\mu = E / (2 (1 + \nu))`,
+:math:`\lambda = E \nu / ((1 + \nu) (1 - 2 \nu))` are the Lamé parameters given by :ref:`young<flex-elasticity-young>`
+:math:`E` and :ref:`poisson<flex-elasticity-poisson>` :math:`\nu`. For 2D flexes (shells of
+:ref:`thickness<flex-elasticity-thickness>` :math:`t`), the stretching (membrane) energy per unit area is :math:`t` times
+the same density with the plane-stress parameter :math:`\lambda^* = E \nu / (1 - \nu^2)` instead of :math:`\lambda`.
+The bending energy of 2D flexes is a discrete hinge model for flat references, normalized so that bending a flat sheet
+into a cylinder of curvature :math:`\kappa` stores the Kirchhoff plate energy :math:`D \kappa^2 / 2` per unit area, with
+bending rigidity :math:`D = E t^3 / (12 (1 - \nu^2))`. Poisson's ratio enters the bending energy only through :math:`D`.
+
+**1D flexes** are `discrete elastic rods <https://www.cs.columbia.edu/cg/pdfs/143-rods.pdf>`__ with bending and torsion
+and cross-section given by :ref:`section<flex-elasticity-section>` (see :ref:`Rods <CRod>` for details):
+
+- **Bending:** Every interior vertex shared by two edges of reference lengths :math:`\ell_0, \ell_1` stores bending
+  energy :math:`k |\kappa b - \kappa b_0|^2` with stiffness :math:`k = E I / (\ell_0 + \ell_1)`, where :math:`\kappa b`
+  is the discrete curvature binormal and :math:`I` is the second moment of area of the cross-section. Vertices bent by
+  more than :math:`10^{-4}` rad in ``qpos0`` keep their reference curvature :math:`\kappa b_0` (so curved rods such as
+  rings or arcs are at rest in ``qpos0``); for an isolated curved vertex on a twistless circular rod, only the curvature
+  magnitude :math:`|\kappa b_0|` is held and its bending plane is free. Less-bent vertices are treated as straight
+  (:math:`\kappa b_0 = 0`); to start a straight rod in a bent or coiled pose with stored energy, set ``qpos`` or use a
+  :ref:`keyframe<keyframe>`.
+- **Torsion:** Each vertex of a single-hinge chain has torsional stiffness :math:`k_t = G J / (\ell_0 + \ell_1)`, while
+  pairs of adjacent curved vertices on closed circular loops (or raw ``<flex dim="1">`` chains without twist joints)
+  penalize the dihedral twist of their osculating planes across the shared edge of length :math:`\ell_1` with stiffness
+  :math:`k_d = G J / (2 \ell_1)`. Here :math:`G` is the shear modulus from :ref:`shear<flex-elasticity-shear>` or
+  :math:`G = E / (2 (1 + \nu))` when :at:`shear` is zero, and :math:`J` is the Saint-Venant torsional constant of the
+  cross-section.
+- **Per-edge twist joints and clamped vs. free ends:** For open-chain 1D elastic rods with :math:`n \ge 2` edges (both
+  **circle** and **box** :ref:`sections<flex-elasticity-section>`), :ref:`flexcomp<body-flexcomp>` creates per-edge
+  twist bodies and hinge joints ``<name>_twist_0``, ..., ``<name>_twist_{n-2}``, ``<name>_twist`` parented to the world
+  body, with per-edge polar mass moment of inertia (:math:`\frac{1}{2} m_e r^2` for **circle** and
+  :math:`\frac{1}{3} m_e (a^2 + b^2)` for **box** half-sizes :math:`a, b`) and frame-indifferent relative Rayleigh
+  torsional damping. An edge whose two points are pinned is clamped: the first edge with ``<pin id="0 1"/>``, or the
+  last edge when the last two points of a rod with :math:`n \ge 3` edges are pinned. A clamped edge has no twist joint
+  (``<name>_twist_0`` or ``<name>_twist`` is omitted), and the body holding it fixes that end's material frame and
+  receives the reaction torque of the rod. With ``<pin id="0"/>`` or no pin, ``<name>_twist_0`` remains free, and an
+  unclamped ``<name>_twist`` can be actuated to twist the far end. A raw :ref:`flex<deformable-flex>` binds the hinge
+  joints with these names: each unclamped edge needs one and, when the first edge is free, ``<name>_twist_0`` must
+  immediately precede the joint of the second edge. Contact Jacobians couple frictional contact forces via their
+  cross-sectional lever arm into each element's two vertices and edge twist DOF, including the velocity of the surface
+  point due to the rotation of the element, enabling circular cables to roll on surfaces and twist in grippers. Because
+  the per-edge twist DOFs have small polar inertia and stiff torsional coupling, the :ref:`discrete<option-integrator>`
+  integrator with the ``CG`` or ``Newton`` :ref:`solver<option-solver>` is recommended: it solves the tridiagonal
+  torsional system, including the bending stiffness of each twist angle, implicitly (``PGS`` is not supported with
+  flex). Otherwise use a smaller timestep with ``Euler`` or ``RK4``.
+- **Box sections:** For :at:`section` **box** (requires a single open chain with at least two elements and per-edge
+  twist joints, which :ref:`flexcomp<body-flexcomp>` creates; a raw flex without them fails to compile), the principal
+  bending stiffnesses :math:`k_{1,2} = E I_{1,2} / (\ell_0 + \ell_1)` are anisotropic, all interior vertices carry
+  directional reference curvature in the material frame, and bending damping uses the geometric mean
+  :math:`\sqrt{k_1 k_2}` on the weak axis so that the damping ratio :math:`\zeta_i \propto \sqrt{k_i}` is equalized
+  across both principal axes. Rendering and collisions with planes, spheres, capsules, boxes, and other 1D rods use an
+  oriented box of half-sizes :ref:`sectionsize<flex-elasticity-sectionsize>` in the DER material frame.
+  Against other geom types (meshes, cylinders, ellipsoids, height fields) and 2D or 3D flexes, the elements collide as
+  capsules whose radius is the minor half-size, which the compiler assigns to :at:`radius`; an explicit :at:`radius`
+  that differs from it is a compile error.
+- **State:** In ``mjData.plastic`` at ``flex_plasticadr[f]``, an open rod with per-edge twist joints (every box-section
+  rod has them) stores ``6 n + (n - 1)`` numbers: the time-parallel reference frames ``(t_old, u_old)`` of its
+  :math:`n` edges, followed by the reference twist of each interior vertex, unwrapped across steps so that the twist
+  energy stays continuous when the rod writhes or tumbles. This is not plasticity, but state snapshots must include
+  ``mjSTATE_PLASTIC`` to save and restore it. Without it (after :ref:`mj_resetData` or a keyframe without plastic
+  state), the reference frames restart from the reference frame of the first edge (following its body when clamped, or
+  transported from ``qpos0`` to the current tangent when free), propagated twist-free along the rod.
+- **Limitations:** Stretching is not included; use :ref:`edge<flex-edge>` equality constraints (or edge stiffness under
+  integrators other than ``discrete``) instead. Rod elasticity is integrated implicitly by
+  :ref:`discrete<option-integrator>` (using a positive semi-definite Hessian approximation) and explicitly by ``Euler``
+  and ``RK4``; ``implicit`` and ``implicitfast`` are not supported, nor are :ref:`dof<body-flexcomp-dof>` **trilinear**
+  and **quadratic**.
+
+Flex elasticity (both standard and interpolated) supports vertices or nodes attached to articulated bodies, including
+jointless welded children, under both **Newton** and **CG** with the :ref:`discrete<option-integrator>` integrator.
+A vertex or node pinned to a moving body follows that body's motion and applies its reaction force and torque to the
+body. **Newton** is fastest when every vertex and node is fixed or sits on a body with three slide joints along the
+world axes: their stiffness is then assembled as 3x3 vertex blocks. Once any flex in the model has another kind of
+attachment, the stiffness of all its flexes is pulled back through the attachment Jacobians, which costs more per step.
+MuJoCo Warp does not yet support articulated attachments with **Newton**; use **CG** there. Mocap attachments are not
+supported for non-rigid flexes with elasticity because mocap poses do not provide velocities for elastic damping,
+except for 1D flexes with zero :ref:`damping<flex-elasticity-damping>`.
 
 .. _flex-elasticity-young:
 
@@ -4801,6 +4637,14 @@ positive semi-definite approximation of its Hessian, and explicitly by all other
    This unitless quantity is in the range :math:`[0, 0.5)`.
    Small or large values imply compressibility or incompressiblity, respectively.
 
+.. _flex-elasticity-shear:
+
+:at:`shear`: :at-val:`real(1), "0"`
+   Shear modulus :math:`G` used for the torsional stiffness of 1D flexes, units of
+   :math:`\textrm{pressure}=\textrm{force}/\textrm{area}`. Must be non-negative. If zero, the isotropic value
+   :math:`G = E / (2 (1 + \nu))` is computed from :ref:`young<flex-elasticity-young>` and
+   :ref:`poisson<flex-elasticity-poisson>`; if positive, it overrides that value. Ignored for 2D and 3D flexes.
+
 .. _flex-elasticity-damping:
 
 :at:`damping`: :at-val:`real(1), "0"`
@@ -4810,9 +4654,43 @@ positive semi-definite approximation of its Hessian, and explicitly by all other
 .. _flex-elasticity-thickness:
 
 :at:`thickness`: :at-val:`real(1), "-1"`
-   Shell thickness, units of length; only for used 2D flexes. Used to scale the stretching stiffness.
+   Shell thickness, units of length; only used for 2D flexes. The stretching stiffness of 2D flexes is proportional to
+   the thickness :math:`t` and their bending stiffness to :math:`t^3`, see :ref:`elasticity<flex-elasticity>`.
    This thickness can be set equal to 2 times the :ref:`radius <deformable-flex-radius>` in order to match the geometry,
    but is exposed separately since the radius might be constrained by considerations related to collision detection.
+
+.. image:: https://www.gstatic.com/mujoco/doc/images/changelog/clay.gif
+   :width: 40%
+   :align: right
+   :target: https://github.com/google-deepmind/mujoco/blob/main/model/flex/clay.xml
+
+.. _flex-elasticity-yield:
+
+:at:`yield`: :at-val:`real(1 or 2), "0"`
+   Dimensionless plastic yield strain thresholds :math:`\varepsilon_y` for stretching and bending of 2D and 3D flexes.
+   For non-interpolated 2D flexes, a single value applies to both, e.g., ``yield="0.01"`` is equivalent to
+   ``yield="0.01 0.01"``; for other flexes, a single value is the stretching threshold. A mode (stretching or bending)
+   is plastic if its threshold is positive at compile time; its plastic state is then allocated in ``mjData.plastic``
+   and the bit of the mode is set in ``mjModel.flex_plasticmode[f]`` (1: bending, 2: stretching). A mode whose threshold
+   is zero has no plastic state and remains purely elastic, e.g., ``yield="0.01 0"`` makes only stretching plastic. As
+   for joints and tendons, setting the threshold of a plastic mode to zero at runtime in ``mjModel.flex_yield`` (which
+   has two columns) corresponds to zero yield strain (full plastic flow). If the stretching (first) threshold is
+   positive, each element's (or interpolated cell's/face's) elastic stretching strain tensor is bounded by the von Mises
+   (:math:`J_2`) yield criterion (3D isochoric in 3D, plane-stress with out-of-plane thinning in tension in 2D) via
+   radial return mapping. If the bending (second) threshold is positive, which requires a non-interpolated 2D flex (a
+   compiler error otherwise), for shells with bending enabled (:ref:`elastic2d<flex-elasticity-elastic2d>` **bend** or
+   **both**), each interior hinge's outer-fiber bending strain :math:`\frac{t}{2} |\Delta\kappa_e| \le \varepsilon_y` is
+   bounded via return mapping in dihedral angle space (assuming an initially flat rest configuration). For example,
+   ``yield="0 0.001"`` makes a shell yield in bending while its stretching remains elastic. 1D flexes do not support
+   plasticity (both values must be zero). In ``mjData.plastic`` at ``flex_plasticadr[f]``, a non-interpolated flex
+   stores its stretching plastic metric offsets first (``3 * elemnum`` entries in 2D or ``6 * elemnum`` entries in 3D
+   when stretching is plastic), followed by ``edgenum`` bending plastic entries in 2D when bending is plastic. An
+   interpolated flex with :ref:`cellcount<body-flexcomp-cellcount>` :math:`(c_x, c_y, c_z)` stores one dimensionless
+   plastic stretching strain per grid cell (``6 * cx * cy * cz`` entries in 3D) or per outer grid face in 2D shell mode
+   (``3 * 2 * (cy*cz + cx*cz + cx*cy)`` entries); the elastic strain is measured in the corotated frame of the polar
+   decomposition of the physical deformation gradient :math:`J_e = \partial x / \partial X`. Bending plasticity is not
+   supported for interpolated flexes: with :ref:`elastic2d<flex-elasticity-elastic2d>` **bend**, :at:`yield` is ignored
+   and the flex remains purely elastic.
 
 .. _flex-elasticity-elastic2d:
 
@@ -4821,27 +4699,24 @@ positive semi-definite approximation of its Hessian, and explicitly by all other
    "both": bending and stretching. Bending is not yet supported by :ref:`dof<body-flexcomp-dof>` **trilinear** and
    **quadratic**.
 
-   Non-interpolated flex elasticity supports vertices attached to articulated bodies, including jointless welded children.
-   A vertex pinned to a moving body follows that body's motion and applies its reaction force and torque to the body.
-   With the :ref:`discrete<option-integrator>` integrator, use :ref:`solver<option-solver>` **CG** for general attachments.
-   Newton supports fixed attachments and independent slide bodies with local positive X, Y and Z joints in that order
-   and fixed ancestors. Mocap attachments are not supported for non-rigid flexes with elasticity because mocap poses do
-   not provide velocities for elastic damping, except for 1D flexes with zero :ref:`damping<flex-elasticity-damping>`.
-
 .. _flex-elasticity-section:
 
 :at:`section`: :at-val:`[circle, box], "circle"`
-   Cross-section of 1D flexes, used to compute the second moment of area :math:`I` of the bending stiffness. "circle":
-   :math:`I = \pi r^4 / 4`, where :math:`r` is the flex :ref:`radius <deformable-flex-radius>`. "box": rectangle with
-   half-sizes given by :ref:`sectionsize<flex-elasticity-sectionsize>`. Since the bending model is isotropic, a box uses
-   the second moment of area of its weak axis, :math:`I = \min(w h^3, h w^3) / 12`, where :math:`w, h` are the full
-   sizes. Collisions and rendering always use the flex radius.
+   Cross-section of 1D flexes, used to compute the second moments of area :math:`I_1, I_2` and torsional constant
+   :math:`J` of the bending and torsional stiffnesses. "circle": :math:`I_1 = I_2 = \pi r^4 / 4` and
+   :math:`J = \pi r^4 / 2`, where :math:`r` is the flex :ref:`radius <deformable-flex-radius>`. "box": rectangle with
+   half-sizes given by :ref:`sectionsize<flex-elasticity-sectionsize>` and full sizes :math:`w, h`, with principal
+   second moments :math:`I_1 = h w^3 / 12`, :math:`I_2 = w h^3 / 12`, and Saint-Venant torsional constant :math:`J`
+   (requires an open chain). Both rendering and collision detection use an oriented box of half-sizes
+   :ref:`sectionsize<flex-elasticity-sectionsize>` in the DER material frame when :at:`section` is "box" and a capsule
+   of the flex radius otherwise.
 
 .. _flex-elasticity-sectionsize:
 
 :at:`sectionsize`: :at-val:`real(2), "0 0"`
    Half-sizes of the "box" cross-section of 1D flexes, units of length. Both values must be positive when
-   :ref:`section<flex-elasticity-section>` is "box"; ignored otherwise.
+   :ref:`section<flex-elasticity-section>` is "box"; ignored otherwise. With a "box" section the flex radius is set
+   to the minor half-size, so :at:`radius` must be omitted or equal to it.
 
 .. _flex-contact:
 
@@ -4863,7 +4738,7 @@ extensions specific to flexes.
 
    For interpolated flexes (**trilinear** or **quadratic** :ref:`dofs<body-flexcomp-dof>`), elements in the same or
    neighboring :ref:`cells<body-flexcomp-cellcount>` do not self-collide, so self-collision requires at least 3 cells
-   along an axis.
+   along an axis; **auto** prunes non-neighboring cell pairs by their bounding boxes before testing element pairs.
 
 .. _flex-contact-activelayers:
 
@@ -4907,10 +4782,11 @@ extensions specific to flexes.
    non-penetration, leave this option off.
 
    The force is a penalty on penetration depth whose stiffness is chosen as a natural frequency scaled by the
-   participating vertex mass, so a single value is appropriate across model scales; it is not user-specified. That
-   stiffness is integrated implicitly, its curvature being carried by the effective metric, and is therefore far
-   stiffer than an explicit force at the same timestep could be. It follows that the feature requires the ``discrete``
-   :ref:`integrator<option-integrator>`, with the ``CG`` or ``Newton`` :ref:`solver<option-solver>`, no
+   participating vertex mass (or for interpolated flexes, the effective cage node mass at the contact point scaled by
+   the node-to-vertex ratio), so a single value is appropriate across model scales and mesh resolutions; it is not
+   user-specified. That stiffness is integrated implicitly, its curvature being carried by the effective metric, and is
+   therefore far stiffer than an explicit force at the same timestep could be. It follows that the feature requires the
+   ``discrete`` :ref:`integrator<option-integrator>`, with the ``CG`` or ``Newton`` :ref:`solver<option-solver>`, no
    :ref:`noslip<option-noslip_iterations>` iterations and the :ref:`sleep<option-flag-sleep>` flag disabled. A model
    requesting passive flex collisions otherwise is rejected with an error.
 
@@ -4944,9 +4820,7 @@ vertex. Normals then are computed automatically given the resulting global verte
 Finally, the skin can be inflated by applying an offset to each vertex position along its (computed) normal.
 Skins are one-sided for rendering purposes; this is because back-face culling is needed to avoid shading and aliasing
 artifacts. When the skin is a closed 3D shape this does not matter because the back sides cannot be seen. But if the
-skin is a 2D object, we have to specify both sides and offset them slightly to avoid artifacts. Note that the
-composite objects generate skins automatically. So one can save an XML model with a composite
-object, and obtain an elaborate example of how a skin is specified in the XML.
+skin is a 2D object, we have to specify both sides and offset them slightly to avoid artifacts.
 
 Similar to meshes, skins can be specified directly in the XML via attributes documented later, or loaded from a binary
 SKN file which is in a custom format. The specification of skins is more complex than meshes because of the bone
@@ -5212,8 +5086,9 @@ of the other body, without any joint elements in the child body. Weld constraint
    relative to body1. The position part (first 3 components) gives the anchor coordinates in the local frame of body1,
    and the quaternion part (last 4 components) gives the relative orientation of body2 relative to body1. If the
    quaternion part (i.e., last 4 components of the vector) are all zeros, as in the default setting, this attribute is
-   ignored and the relative pose is the one corresponding to the model reference pose in qpos0. The unusual
-   default is because all equality constraint types share the same default for their numeric parameters.
+   ignored and the relative pose is the one corresponding to the model reference pose in qpos0, which
+   :ref:`mj_setConst` recomputes; ``mjModel.eq_data[11]`` marks such welds. The unusual default is because all
+   equality constraint types share the same default for their numeric parameters.
 
 .. _equality-weld-anchor:
 
@@ -5359,32 +5234,6 @@ as there are edges in the specified flex. See `this model
    Name of the flex whose edges are being constrained.
 
 
-.. _equality-flexvert:
-
-:el-prefix:`equality/` |-| **flexvert** |*|
-^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
-
-This element constrains the trace and the derminant of the strain tensor to that of the identity matrix as in Chen, Kry,
-and Vouga, "Locking-free Simulation of Isometric Thin Plates", 2019. The strain tensor is computed per triangle and
-averaged over all triangles adjacent to a vertex. This reduces the number of constraints from 2T to 2V, freeing V
-degrees of freedom to avoid locking. It is only supported for dimension 2, i.e., cloth-like flexes. See `this model
-<https://github.com/google-deepmind/mujoco/blob/main/model/flex/poncho.xml>`__ for an example.
-
-.. _equality-flexvert-name:
-.. _equality-flexvert-class:
-.. _equality-flexvert-active:
-.. _equality-flexvert-solref:
-.. _equality-flexvert-solimp:
-
-:at:`name`, :at:`class`, :at:`active`, :at:`solref`, :at:`solimp`
-   Same as in :ref:`connect <equality-connect>` element.
-
-.. _equality-flexvert-flex:
-
-:at:`flex`: :at-val:`string, required`
-   Name of the flex whose vertices are being constrained.
-
-
 .. _equality-flexstrain:
 
 :el-prefix:`equality/` |-| **flexstrain** |*|
@@ -5511,9 +5360,11 @@ length X, as in the clip on the right of `this example model
 .. _tendon-spatial-actuatorfrcrange:
 
 :at:`actuatorfrcrange`: :at-val:`real(2), "0 0"`
-   Range for clamping total actuator forces acting on this tendon. See :ref:`CForceRange` for details. The compiler
-   expects the lower bound to be nonpositive and the upper bound to be nonnegative. |br| Setting this attribute without
-   specifying :at:`actuatorfrclimited` is an error if :at:`compiler-autolimits` is "false".
+   Range for clamping total actuator forces acting on this tendon. See :ref:`CForceRange` for details; to limit several
+   commands of one physical actuator, prefer a single multi-input actuator such as :ref:`pid<actuator-pid>` with
+   :ref:`forcerange<actuator-general-forcerange>`. The compiler expects the lower bound to be nonpositive and the upper
+   bound to be nonnegative. |br| Setting this attribute without specifying :at:`actuatorfrclimited` is an error if
+   :at:`compiler-autolimits` is "false".
 
 .. _tendon-spatial-solreflimit:
 
@@ -5595,6 +5446,18 @@ length X, as in the clip on the right of `this example model
    The clip on the right is of
    `this model <https://github.com/google-deepmind/mujoco/blob/main/test/engine/testdata/passive/poly_stiffness.xml>`__.
 
+.. _tendon-spatial-springyield:
+
+:at:`springyield`: :at-val:`real, "0"`
+   Elastic yield threshold for the tendon spring. When positive, the tendon spring reference range is allocated in the
+   mutable state vector ``mjData.plastic`` at offset ``mjModel.tendon_plasticadr[i]`` (2 entries, initialized from
+   ``mjModel.tendon_lengthspring``) and shifts permanently whenever the displacement outside the spring deadband exceeds
+   ``springyield`` (ideal elasto-plasticity). For unilateral slack tendons with ``springlength="0 L"`` (``L > 0``),
+   tensile yielding shifts only the upper bound ``L`` while keeping the lower bound pinned at ``0``. When ``0``
+   (default), plasticity is disabled (``mjModel.tendon_plasticadr[i] == -1``) and the spring is purely elastic; setting
+   ``mjModel.tendon_springyield[i] = 0`` at runtime on an already-plastic tendon (``tendon_plasticadr[i] >= 0``)
+   corresponds to zero yield threshold (full plastic slip).
+
 .. _tendon-spatial-damping:
 
 :at:`damping`: :at-val:`real, "0 0 0"`
@@ -5672,9 +5535,27 @@ constrained to pass through the geom instead of passing around it.
 
 :at:`sidesite`: :at-val:`string, optional`
    To prevent the tendon path from snapping from one side of the geom to the other as the model configuration varies,
-   the user can define a preferred "side" of the geom. At runtime, the wrap that is closer to the specified site is
-   automatically selected. Specifying a side site is often needed in practice. If the side site is inside the geom, the
-   tendon is constrained to pass through the interior of the geom.
+   the user can define a preferred "side" of the geom. The tendon then goes around the geom the same way as the path
+   from the first endpoint :math:`p_1`, through the side site :math:`s` (projected onto the surface of the geom), to the
+   second endpoint :math:`p_2`. If the straight segment between the endpoints already passes the geom that way, the
+   tendon does not wrap. Formally, the tendon is the shortest path from :math:`p_1` to :math:`p_2` that is homotopic to
+   the polyline :math:`p_1 \to s \to p_2` in the wrapping plane with the geom removed, i.e., that has the same winding
+   angle around the geom center. In the images below, the side site is green and the polyline is the thin grey line.
+
+   .. image:: images/XMLreference/sidesite_homotopy_light.svg
+      :align: center
+      :width: 90%
+      :class: only-light
+
+   .. image:: images/XMLreference/sidesite_homotopy_dark.svg
+      :align: center
+      :width: 90%
+      :class: only-dark
+
+   The tendon snaps off the geom when an endpoint crosses the ray opposite the side site, so side sites should be placed
+   such that the endpoints do not cross this ray over the range of motion, typically near the middle of the wrapped
+   arc. Specifying a side site is often needed in practice. If the side site is inside the geom, the tendon is
+   constrained to pass through the interior of the geom.
 
 
 .. _spatial-pulley:
@@ -5742,6 +5623,8 @@ as above.
 
 .. _tendon-fixed-stiffness:
 
+.. _tendon-fixed-springyield:
+
 .. _tendon-fixed-damping:
 
 .. _tendon-fixed-armature:
@@ -5751,7 +5634,7 @@ as above.
 .. |tendon/fixed attrib list| replace::
    :at:`name`, :at:`class`, :at:`group`, :at:`limited`, :at:`range`, :at:`solreflimit`, :at:`solimplimit`,
    :at:`solreffriction`, :at:`solimpfriction`, :at:`frictionloss`, :at:`margin`, :at:`springlength`, :at:`stiffness`,
-   :at:`damping`, :at:`user`
+   :at:`springyield`, :at:`damping`, :at:`user`
 
 |tendon/fixed attrib list|
    Same as in the :ref:`spatial <tendon-spatial>` element.
@@ -7278,7 +7161,8 @@ This element has the following custom attributes in addition to the common attri
    :at-val:`Kt` is the torque constant and :at-val:`Ke` the back-EMF constant; they can differ when magnetic saturation
    is present. If both are positive, the effective constant is :math:`K = \sqrt{K_t K_e}` (geometric mean). If only one
    is positive, :math:`K` equals that value. If a datasheet specifies the speed constant :math:`K_v` in rad/(V·s), use
-   :math:`K_e = 1/K_v`. (see `tech note <_static/dcmotor.pdf>`__, Sections 1.1 and 2.1)
+   :math:`K_e = 1/K_v`. Both constants must be non-negative, and :math:`K` must be positive unless
+   :ref:`input<actuator-dcmotor-input>` is "none". (see `tech note <_static/dcmotor.pdf>`__, Sections 1.1 and 2.1)
 
 .. _actuator-dcmotor-nominal:
 
@@ -7302,9 +7186,9 @@ This element has the following custom attributes in addition to the common attri
    Thermal model, defined as :at:`thermal` = ":at-val:`resistance` :at-val:`capacitance` :at-val:`timeconst`
    :at-val:`tempcoef` :at-val:`reftemp` :at-val:`ambient`" (K/W, J/K, s, 1/K, °C, °C). The first three sub-values
    specify the thermal time constant: :at-val:`timeconst` = :at-val:`resistance` :math:`\times` :at-val:`capacitance`.
-   Specify either :at-val:`timeconst` directly, or :at-val:`resistance` and :at-val:`capacitance`; if all three are
-   given, :at-val:`timeconst` takes precedence. If all are 0 (the default), thermal modeling is disabled. Adds one
-   activation variable for winding temperature. (see `tech note <_static/dcmotor.pdf>`__, Sections 1.3 and 2.3)
+   Specify any two of them; if all three are given, :at-val:`capacitance` = :at-val:`timeconst` / :at-val:`resistance`.
+   If all are 0 (the default), thermal modeling is disabled. Adds one activation variable for winding temperature.
+   (see `tech note <_static/dcmotor.pdf>`__, Sections 1.3 and 2.3)
 
 .. _actuator-dcmotor-saturation:
 
@@ -7313,6 +7197,7 @@ This element has the following custom attributes in addition to the common attri
    :at-val:`current_rate`". :at-val:`torque` and :at-val:`current` are alternative specifications of the maximum
    continuous torque: if :at-val:`current` is given, :at-val:`torque` :math:`= K \cdot` :at-val:`current`; if both are
    given, :at-val:`torque` takes precedence. Sets :at:`forcerange` to [:math:`-\tau_{\max},\, \tau_{\max}`].
+   An authored :at:`saturation` clears any inherited :at:`forcerange` before applying these limits.
    :at-val:`current_rate` sets the maximum rate of change of current :math:`(di/dt)_{\max}` (requires
    :ref:`inductance<actuator-dcmotor-inductance>`). A value of 0 (the default) for any sub-value disables the respective
    limit. (see `tech note <_static/dcmotor.pdf>`__, Section 2)
@@ -7347,7 +7232,8 @@ This element has the following custom attributes in addition to the common attri
    The keyword "none" selects the empty signature: the actuator has no control inputs and is purely
    passive, useful for modeling :ref:`friction<actuator-dcmotor-lugre>` and :ref:`cogging<actuator-dcmotor-cogging>`
    as passive joint forces. The terminal voltage is zero, so back-EMF drives current through the (shorted) motor and
-   brakes the joint; setting :ref:`motorconst<actuator-dcmotor-motorconst>` to zero disables the electrical branch.
+   brakes the joint; setting :ref:`motorconst<actuator-dcmotor-motorconst>` to zero disables the electrical branch
+   (:ref:`resistance<actuator-dcmotor-resistance>` must still be positive).
    (see `tech note <_static/dcmotor.pdf>`__, Section 2.5)
 
 .. _actuator-dcmotor-controller:
@@ -9377,14 +9263,108 @@ Extraction
    :width: 30%
    :target: https://github.com/google-deepmind/mujoco/blob/main/model/tactile/tactile.xml
 
-The tactile sensor returns the maximum penetration depth and the sliding velocities in the tangent frame at given points
-between the geom associated with the sensor and the SDF geoms in contact with it. The sensor is associated with a geom
-and a mesh. It is activated by the contact between its associated geom and other geoms. The vertices of the mesh, when
-positioned in the geom frame, are the points at which sensor values are computed, so the dimension of the output is 3
-times the number of vertices in the mesh. The mesh must have 3 normal vectors per vertex, which are used to compute the
-tangent frame. If the penetration depth is positive (no contact), then all values are 0 for the corresponding vertex.
-Only contacts with geoms of type SDF contribute to the sensor output. The sensor can be visualized by enabling the
-visualization of contact points.
+The tactile sensor evaluates penetration depth and tangential sliding speeds across the vertices (taxels) of a
+:at:`mesh` positioned in a :at:`geom` frame. For a sensor mesh with :math:`N` vertices, the sensor outputs :math:`3N`
+values in three contiguous blocks of length :math:`N`: non-negative penetration depth :math:`d \ge 0` (``0`` when not in
+contact) and two tangential sliding speeds :math:`|v_{t_1}|, |v_{t_2}| \ge 0` (populated when the mesh defines 3 normal
+vectors per vertex, as in :ref:`builtin<asset-mesh-builtin>` ``wedge`` and ``plate`` meshes).
+
+Because the sensor is activated by contacts on any geom in the same weld body, the sensor's :at:`geom` can be a
+non-colliding surface mesh (``contype="0" conaffinity="0"``) while primitive geoms on the body handle collisions:
+
+.. code-block:: xml
+
+   <asset>
+     <mesh name="plate" builtin="plate" params="25 25" scale="0.04 0.04 0.005"/>
+   </asset>
+   <worldbody>
+     <body name="pad">
+       <geom type="box" size="0.04 0.04 0.005"/>
+       <geom name="sensor_surface" type="mesh" mesh="plate" contype="0" conaffinity="0"/>
+     </body>
+   </worldbody>
+   <sensor>
+     <tactile geom="sensor_surface" mesh="plate"/>
+   </sensor>
+
+Signed distance at each taxel is evaluated analytically for colliding primitives and via plugins for ``sdf`` geoms. Any
+``mesh`` geom that may collide with the sensor requires precomputing an SDF octree (otherwise it is ignored by the
+sensor). Enable :ref:`mjsMesh.needsdf<mjsMesh>` on colliding meshes via :ref:`mjSpec` before compiling:
+
+.. code-block:: C
+
+   mjSpec* spec = mj_parseXML("model.xml", NULL, NULL, 0);
+   mjsMesh* mesh = mjs_asMesh(mjs_findElement(spec, mjOBJ_MESH, "object"));
+   mesh->needsdf = 1;
+   mjModel* m = mj_compile(spec, NULL);
+
+**Visualization**
+
+- **3D scene**: Enabling :ref:`mjVIS_CONTACTPOINT<mjtVisFlag>` shades active mesh triangles with RGB channels
+  proportional to penetration depth (red) and tangential speeds (green, blue).
+- **2D image sensor**: In ``simulate``, any :ref:`user<sensor-user>` sensor with ``sensor_intprm = [width, height, 0]``,
+  ``dim = width * height * 3``, and a non-zero sequence byte in ``sensordata[adr + dim - 1]`` is rendered as an RGB
+  image in the *Sensor* panel.
+
+**Laplacian post-processing**
+
+Optical tactile sensors on hardware observe lateral displacement of embedded markers or a printed pattern as an
+elastomer pad deforms. MuJoCo computes only the raw independent normal depth :math:`d(x, y)` and tangential speeds at
+each taxel; it does not perform elastomer post-processing internally. Spatial coupling across a clamped elastomer
+surface can be modeled in user code by solving the 2D Poisson equation with zero Dirichlet boundary conditions:
+
+.. math::
+
+   -\nabla^2 \phi(x, y) = d(x, y) \quad \text{in } \Omega, \qquad \phi = 0 \quad \text{on } \partial\Omega.
+
+.. image:: images/XMLreference/tactile_laplacian_light.svg
+   :width: 100%
+   :align: center
+   :class: only-light
+
+.. image:: images/XMLreference/tactile_laplacian_dark.svg
+   :width: 100%
+   :align: center
+   :class: only-dark
+
+Discretizing :math:`-\nabla^2` with a 5-point stencil on an :math:`n_x \times n_y` grid gives a constant banded
+symmetric positive-definite system :math:`L \phi = d` with bandwidth ``nband = nx + 1``. Factoring :math:`L` once at
+initialization with :ref:`mju_cholFactorBand` allows solving for :math:`\phi` at runtime via :ref:`mju_cholSolveBand`
+and taking central differences :math:`(\Delta x, \Delta y) = \alpha \nabla \phi` to warp a pattern
+:math:`I(x + \Delta x, y + \Delta y)`:
+
+.. code-block:: C
+
+   // assemble and factor banded negative 2D Laplacian (-nabla^2) on an (nx x ny) grid
+   void makeLaplacian(mjtNum* L, int nx, int ny) {
+     int n = nx * ny, nband = nx + 1;
+     mju_zero(L, n * nband);
+     for (int i = 0; i < ny; i++) {
+       for (int j = 0; j < nx; j++) {
+         int k = i*nx + j;
+         L[k*nband + nx] = 4;
+         if (j > 0) L[k*nband + nx - 1] = -1;
+         if (i > 0) L[k*nband]          = -1;
+       }
+     }
+     mju_cholFactorBand(L, n, nband, 0, 0, 0);
+   }
+
+   // solve Poisson equation (-nabla^2 phi = d) and compute lateral displacement
+   void tactileDisplacement(mjtNum* dx, mjtNum* dy, mjtNum* phi,
+                            const mjtNum* L, const mjtNum* d,
+                            int nx, int ny, mjtNum alpha) {
+     mju_cholSolveBand(phi, L, d, nx * ny, nx + 1, 0);
+     for (int i = 0; i < ny; i++) {
+       for (int j = 0; j < nx; j++) {
+         int k = i*nx + j;
+         mjtNum px = (j < nx-1 ? phi[k+1]  : 0) - (j > 0 ? phi[k-1]  : 0);
+         mjtNum py = (i < ny-1 ? phi[k+nx] : 0) - (i > 0 ? phi[k-nx] : 0);
+         dx[k] = 0.5 * alpha * px;
+         dy[k] = 0.5 * alpha * py;
+       }
+     }
+   }
 
 .. _sensor-tactile-geom:
 
@@ -9652,6 +9632,11 @@ be set to their values in the default configuration.
 
 :at:`mquat`: :at-val:`real(4*mjModel.nmocap), default = mjModel.body_quat`
    Vector of mocap body quaternions, copied into mjData.mocap_quat when the simulation state is set to this keyframe.
+
+.. _keyframe-key-plastic:
+
+:at:`plastic`: :at-val:`real(mjModel.nplastic), default = initial plastic state`
+   Vector of plastic states, copied into mjData.plastic when the simulation state is set to this keyframe.
 
 
 
@@ -10333,6 +10318,8 @@ if omitted.
 
 .. _default-joint-springref:
 
+.. _default-joint-springyield:
+
 .. _default-joint-armature:
 
 .. _default-joint-damping:
@@ -10409,6 +10396,8 @@ if omitted.
 .. _default-geom-fitscale:
 
 .. _default-geom-rgba:
+
+.. _default-geom-castshadow:
 
 .. _default-geom-fluidshape:
 
@@ -10622,7 +10611,11 @@ if omitted.
 
 .. _default-tendon-stiffness:
 
+.. _default-tendon-springyield:
+
 .. _default-tendon-damping:
+
+.. _default-tendon-armature:
 
 .. _default-tendon-rgba:
 
@@ -11306,7 +11299,7 @@ plugin, or when global plugin configuration is desired. See plugin :ref:`declara
 
 Configuration of a plugin instance. When implicitly declaring a plugin under a model element, configuration is
 performed with identical semantics using :el:`element/plugin/config`. The elements which currently support plugins are
-:el:`body`, :el:`composite`, :el:`actuator` and :el:`sensor`.
+:el:`body`, :el:`flexcomp`, :el:`actuator` and :el:`sensor`.
 
 .. _plugin-config-key:
 

@@ -142,6 +142,60 @@ class MinimizeTest(absltest.TestCase):
           check_derivatives=True,
       )
 
+  def test_check_derivatives_rejects_nonfinite(self) -> None:
+    for value in (np.nan, np.inf, -np.inf):
+      with self.subTest(value=value):
+        # Nonfinite user-provided Jacobian.
+        def jacobian(x, r):
+          del x, r  # Unused.
+          return np.array([[value]])
+
+        out = io.StringIO()
+        with np.errstate(all='ignore'):
+          with self.assertRaisesRegex(ValueError, 'User-provided Jacobian'):
+            minimize.least_squares(
+                np.array([1.0]),
+                lambda x: x - 3.0,
+                jacobian=jacobian,
+                check_derivatives=True,
+                output=out,
+            )
+        self.assertNotIn('matches', out.getvalue())
+
+        # Nonfinite finite-difference Jacobian.
+        def residual(x):
+          r = x.copy()
+          r[1] = value
+          return r
+
+        out = io.StringIO()
+        with np.errstate(all='ignore'):
+          with self.assertRaisesRegex(ValueError, 'Finite-difference Jacobian'):
+            minimize.check_jacobian(
+                residual,
+                np.array([[1.0], [2.0]]),
+                np.array([[1.0], [2.0]]),
+                np.eye(2),
+                np.float64(1e-6),
+                0,
+                output=out,
+            )
+        self.assertNotIn('matches', out.getvalue())
+
+        # Nonfinite norm Hessian.
+        class NonfiniteHess(minimize.Norm):
+
+          def value(self, r):
+            return (r.T @ r).item() / 2
+
+          def grad_hess(self, r, proj):
+            return proj.T @ r, np.full((r.size, r.size), value)
+
+        with self.assertRaisesRegex(ValueError, 'norm Hessian must contain'):
+          minimize.check_norm(
+              np.array([[1.0], [2.0]]), NonfiniteHess(), np.float64(1e-6)
+          )
+
   def test_max_iter(self) -> None:
     dim = 20  # High-D Rosenbrock
 

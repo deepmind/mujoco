@@ -77,7 +77,7 @@ def _clean_type(type_: str):
       'vec8i',
       'vec10',
       'vec10f',
-      'vec11',
+      'vec12',
       'vec16',
       'vec16f',
       'vec16i',

@@ -268,7 +268,7 @@ def write_contact(
   if pairid_in[1] >= 0:
     contact_type |= ContactType.SENSOR
 
-  cid = wp.atomic_add(nacon_out, 0, 1)
+  cid = wp.atomic_add(nacon_out, 0, 1)  # kernel_analyzer: ignore[atomic]
   if cid < naconmax_in:
     contact_dist_out[cid] = dist_in
     contact_pos_out[cid] = pos_in

@@ -31,6 +31,7 @@ from mujoco.mjx._src.types import JointType
 from mujoco.mjx._src.types import Model
 from mujoco.mjx._src.types import ModelJAX
 from mujoco.mjx._src.types import ObjType
+from mujoco.mjx._src.types import TendonType
 from mujoco.mjx._src.types import TrnType
 from mujoco.mjx._src.types import WrapType
 # pylint: enable=g-importing-member
@@ -892,7 +893,7 @@ def tendon(m: Model, d: Data) -> Data:
 
   # process joint tendons
   (wrap_id_jnt,) = np.nonzero(m.wrap_type == WrapType.JOINT)
-  (tendon_id_jnt,) = np.nonzero(np.isin(m.tendon_adr, wrap_id_jnt))
+  (tendon_id_jnt,) = np.nonzero(m.tendon_type == TendonType.FIXED)
 
   ntendon_jnt = tendon_id_jnt.size
   wrap_objid_jnt = m.wrap_objid[wrap_id_jnt]

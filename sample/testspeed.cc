@@ -46,13 +46,13 @@ struct RolloutRunner {
 
 static RolloutRunner runner;
 
-// timer (microseconds)
+// timer (milliseconds)
 mjtNum gettm(void) {
   using Clock        = std::chrono::steady_clock;
-  using Microseconds = std::chrono::duration<mjtNum, std::micro>;
+  using Milliseconds = std::chrono::duration<mjtNum, std::milli>;
 
   static const Clock::time_point tm_start = Clock::now();
-  return Microseconds(Clock::now() - tm_start).count();
+  return Milliseconds(Clock::now() - tm_start).count();
 }
 
 // deallocate and print message
@@ -132,7 +132,7 @@ void simulate(int id, int nstep, mjtNum* ctrl) {
       runner.iterations[id] += niter / nisland;
     }
   }
-  runner.simtime[id] = 1e-6 * (gettm() - start);
+  runner.simtime[id] = 1e-3 * (gettm() - start);
 }
 
 // print non-default options
@@ -289,7 +289,7 @@ int main(int argc, char** argv) {
       "  --nthread=N            1         number of threads running parallel rollouts\n"
       "  --noisestd=X           0.01      scale of pseudo-random noise injected into actuators\n"
       "  --noiserate=X          0.1       rate of convergence to ctrl keyframe/midpoint\n"
-      "  --nenginethread=N      0         number of threads in engine-internal threadpool\n"
+      "  --nenginethread=N      0         number of worker threads in engine-internal threadpool\n"
       "  --solver=S             Newton    PGS, CG, Newton\n"
       "  --cone=C               Pyramidal Pyramidal, Elliptic\n"
       "  --jacobian=J           Auto      Dense, Sparse, Auto\n"
@@ -409,9 +409,9 @@ int main(int argc, char** argv) {
   // clamp noiserate to [0.0, 1.0]
   noiserate = mju_clip(noiserate, 0.0, 1.0);
 
-  // clamp nthread to [1, maxthread]
+  // clamp nthread to [1, maxthread], nenginethread to [0, maxthread]
   nthread       = mjMAX(1, mjMIN(maxthread, nthread));
-  nenginethread = mjMAX(1, mjMIN(maxthread, nenginethread));
+  nenginethread = mjMAX(0, mjMIN(maxthread, nenginethread));
 
   // get filename, determine file type
   std::string filename(model);
@@ -447,7 +447,7 @@ int main(int argc, char** argv) {
     if (testkey >= 0) { mj_resetDataKeyframe(runner.m, runner.d[id], testkey); }
 
     // make and bind threadpool
-    if (nenginethread > 1) { mju_threadpool(runner.d[id], nenginethread); }
+    if (nenginethread > 0) { mju_threadpool(runner.d[id], nenginethread); }
   }
 
   // install timer callback for profiling
@@ -470,7 +470,9 @@ int main(int argc, char** argv) {
   }
 
   // print thread pool size
-  if (nenginethread > 1) { std::printf(", using %d threads", nenginethread); }
+  if (nenginethread > 0) {
+    std::printf(", using %d worker thread%s", nenginethread, nenginethread > 1 ? "s" : "");
+  }
   std::printf("...\n");
 
   // create pseudo-random control sequence
@@ -481,7 +483,7 @@ int main(int argc, char** argv) {
   double      starttime = gettm();
   for (int id = 0; id < nthread; id++) { th[id] = std::thread(simulate, id, nstep, ctrl.data()); }
   for (int id = 0; id < nthread; id++) { th[id].join(); }
-  double tottime = 1e-6 * (gettm() - starttime);  // total time, in seconds
+  double tottime = 1e-3 * (gettm() - starttime);  // total time, in seconds
 
   // all-thread summary
   constexpr char mu_str[3] = "\u00B5";  // unicode mu character
@@ -522,12 +524,12 @@ int main(int argc, char** argv) {
   // profiler, top-level
   printf(" Internal profiler%s, %ss per step\n", nthread > 1 ? " for thread 0" : "", mu_str);
   int    number     = runner.d[0]->timer[mjTIMER_STEP].number;
-  mjtNum tstep      = number ? runner.d[0]->timer[mjTIMER_STEP].duration / number : 0.0;
+  mjtNum tstep      = number ? 1000 * runner.d[0]->timer[mjTIMER_STEP].duration / number : 0.0;
   mjtNum components = 0, total = 0;
   for (int i = 0; i <= mjTIMER_ADVANCE; i++) {
     if (runner.d[0]->timer[i].number > 0) {
       int    number  = runner.d[0]->timer[i].number;
-      mjtNum istep   = number ? runner.d[0]->timer[i].duration / number : 0.0;
+      mjtNum istep   = number ? 1000 * runner.d[0]->timer[i].duration / number : 0.0;
       mjtNum percent = number ? 100 * istep / tstep : 0.0;
       std::printf(" %17s : %6.1f  (%6.2f %%)\n", mjTIMERSTRING[i], istep, percent);
 
@@ -553,7 +555,7 @@ int main(int argc, char** argv) {
                 mjTIMER_POS_MAKE,
                 mjTIMER_POS_PROJECT}) {
     if (runner.d[0]->timer[i].number > 0) {
-      mjtNum istep = runner.d[0]->timer[i].duration / runner.d[0]->timer[i].number;
+      mjtNum istep = 1000 * runner.d[0]->timer[i].duration / runner.d[0]->timer[i].number;
       if (i == mjTIMER_POSITION) {
         std::printf("   position total  : %6.1f  (%6.2f %%)\n", istep, 100 * istep / tstep);
       } else {
@@ -568,7 +570,7 @@ int main(int argc, char** argv) {
     if (i == mjTIMER_POS_COLLISION) {
       for (int j : {mjTIMER_COL_BROAD, mjTIMER_COL_NARROW}) {
         int    number  = runner.d[0]->timer[j].number;
-        mjtNum jstep   = number ? runner.d[0]->timer[j].duration / number : 0.0;
+        mjtNum jstep   = number ? 1000 * runner.d[0]->timer[j].duration / number : 0.0;
         mjtNum percent = number ? 100 * jstep / tstep : 0.0;
         std::printf("       %-11s : %6.1f  (%6.2f %%)\n", mjTIMERSTRING[j] + 4, jstep, percent);
       }

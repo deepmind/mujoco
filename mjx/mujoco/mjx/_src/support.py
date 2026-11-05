@@ -682,6 +682,11 @@ def _is_intersect(
   )
 
 
+def _winding_angle(p: jax.Array, q: jax.Array) -> jax.Array:
+  """Signed angle swept from p to q around the origin, in (-pi, pi]."""
+  return jp.arctan2(p[0] * q[1] - p[1] * q[0], p[0] * q[0] + p[1] * q[1])
+
+
 def wrap_circle(
     d: jax.Array, sd: jax.Array, sidesite: jax.Array, rad: jax.Array
 ) -> Tuple[jax.Array, jax.Array]:
@@ -702,9 +707,16 @@ def wrap_circle(
   circle_too_small = rad < mujoco.mjMINVAL
   points_too_close = dd < mujoco.mjMINVAL
 
-  intersect_and_side = (seg[0] ** 2 + seg[1] ** 2 > sqrad) & (
-      jp.where(sidesite, 0, 1) | (jp.dot(sd, seg) >= 0)
-  )
+  # check for intersection
+  clear = (seg[0] ** 2 + seg[1] ** 2) > sqrad
+
+  # side: the path is homotopic to the polyline d0 -> sd -> d1, whose winding
+  # angle around the center determines the wrap orientation; the segment
+  # d0 -> d1 is in the same homotopy class iff its winding angle is the same
+  # (they differ by multiples of 2*pi)
+  wside = _winding_angle(d[:2], sd) + _winding_angle(sd, d[2:])
+  wline = _winding_angle(d[:2], d[2:])
+  straight = jp.where(sidesite, clear & (jp.abs(wside - wline) < jp.pi), clear)
 
   # construct the two solutions, compute goodness
   def _sol(sgn):
@@ -726,15 +738,9 @@ def wrap_circle(
 
     sol = jp.array([[d00, d01], [d10, d11]])
 
-    # goodness: close to sd, or shorter path
-    tmp0 = sol[0] + sol[1]
-    tmp0 = math.normalize(tmp0).reshape(-1)
-    good0 = jp.dot(tmp0, sd)
-
-    tmp1 = (sol[0] - sol[1]).reshape(-1)
-    good1 = -jp.dot(tmp1, tmp1)
-
-    good = jp.where(sidesite, good0, good1)
+    # goodness: shorter path
+    tmp = (sol[0] - sol[1]).reshape(-1)
+    good = -jp.dot(tmp, tmp)
 
     # penalize for intersection
     intersect = _is_intersect(d[:2], sol[0], d[2:], sol[1])
@@ -744,16 +750,22 @@ def wrap_circle(
 
   sol, good = jax.vmap(_sol)(jp.array([1, -1]))
 
-  # select the better solution
-  i = jp.argmax(good)
+  # select the solution: with side, by orientation (i=1 is counterclockwise),
+  # otherwise the better
+  i = jp.where(sidesite, wside > 0, good[0] <= good[1]).astype(int)
+  i = i.reshape(())
   sol = sol[i]
   pnt = sol.reshape(-1)
 
   # check for intersection
   intersect = _is_intersect(d[:2], pnt[:2], d[2:], pnt[2:])
 
-  # compute curve length
-  wlen = _length_circle(sol[0], sol[1], i, rad)
+  # compute curve length; side: the path winds like the polyline, so the arc
+  # angle is its winding minus that of the tangent segments
+  arc = wside - _winding_angle(d[:2], sol[0]) - _winding_angle(sol[1], d[2:])
+  wlen = jp.where(
+      sidesite, rad * jp.abs(arc), _length_circle(sol[0], sol[1], i, rad)
+  )
 
   # check cases
   invalid = (
@@ -761,7 +773,7 @@ def wrap_circle(
       | point_inside1
       | circle_too_small
       | points_too_close
-      | intersect_and_side
+      | straight
       | intersect
   )
 
@@ -958,7 +970,8 @@ def wrap(
   # compute sidesite projection
   s = xmat.T @ (side - xpos)
   sd = jp.array([jp.dot(s, axis0), jp.dot(s, axis1)])
-  sd = math.normalize(sd) * size
+  sd, sdnrm = math.normalize_with_norm(sd)
+  sd = jp.where(sdnrm < mujoco.mjMINVAL, jp.array([1.0, 0.0]), sd) * size
 
   if is_wrap_inside:
     wlen, pnt = wrap_inside(
@@ -1116,10 +1129,8 @@ def muscle_dynamics_timescale(
     # sigmoid function over 0 <= x <= 1 using quintic polynomial
     # sigmoid: f(x) = 6 * x^5 - 15 * x^4 + 10 * x^3
     # solution of f(0) = f'(0) = f''(0) = 0, f(1) = 1, f'(1) = f''(1) = 0
-    sol = x * x * x * (3 * x * (2 * x - 5) + 10)
-    sol = jp.where(x <= 0, 0, sol)
-    sol = jp.where(x >= 1, 1, sol)
-    return sol
+    x = jp.clip(x, 0, 1)
+    return x * x * x * (3 * x * (2 * x - 5) + 10)
 
   # smooth switching
   # scale by width, center around 0.5 midpoint, rescale to bounds

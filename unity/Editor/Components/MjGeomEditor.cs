@@ -17,9 +17,15 @@ using UnityEngine;
 
 namespace Mujoco {
 
+[InitializeOnLoad]
 [CustomEditor(typeof(MjGeom), true)]
 [CanEditMultipleObjects]
 public class MjGeomEditor : MjShapeComponentEditor {
+
+  static MjGeomEditor() {
+    EditorApplication.contextualPropertyMenu += OnHeightFieldContextMenu;
+  }
+
   public override void OnInspectorGUI() {
     serializedObject.Update();
     EditorGUILayout.PropertyField(serializedObject.FindProperty("Mass"));
@@ -76,6 +82,20 @@ public class MjGeomEditor : MjShapeComponentEditor {
       collider.enabled = true;
       GameObject.DestroyImmediate(geom);
     }
+  }
+
+  public static void AddUnityTerrainWithUndo(MjGeom geom) {
+    Undo.RecordObject(geom, "Add Unity Terrain");
+    geom.HField.AddTerrain(geom.transform);
+    Undo.RegisterCreatedObjectUndo(geom.HField.Terrain.gameObject, "Add Unity Terrain");
+    EditorUtility.SetDirty(geom);
+  }
+
+  private static void OnHeightFieldContextMenu(GenericMenu menu, SerializedProperty property) {
+    if (property.type != nameof(MjHeightFieldShape)) return;
+    if (!(property.serializedObject.targetObject is MjGeom geom)) return;
+
+    menu.AddItem(new GUIContent("Add Unity Terrain"), false, () => AddUnityTerrainWithUndo(geom));
   }
 }
 }

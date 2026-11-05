@@ -17,6 +17,7 @@
 #include <array>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include <gmock/gmock.h>
@@ -534,6 +535,324 @@ TEST_F(MujocoTest, MimicTargetingIncompatibleJointIsIgnored) {
   MjModelPtr model = LoadModelFromString(urdf, error.data(), error.size());
   ASSERT_THAT(model.get(), NotNull()) << error.data();
   EXPECT_EQ(model->neq, 0);
+}
+
+TEST_F(MujocoTest, MeshesWithSameBasenameDifferentDirectories) {
+  static constexpr char urdf[] = R"(
+  <robot name="robot">
+    <mujoco>
+      <compiler discardvisual="false"/>
+    </mujoco>
+    <link name="geom1">
+      <visual name="vis1">
+        <geometry>
+          <mesh filename="dir1/mesh.stl" scale="1 1 1"/>
+        </geometry>
+      </visual>
+    </link>
+    <link name="geom2">
+      <visual name="vis2">
+        <geometry>
+          <mesh filename="dir2/mesh.stl" scale="1 1 1"/>
+        </geometry>
+      </visual>
+    </link>
+    <link name="geom3">
+      <visual name="vis3">
+        <geometry>
+          <mesh filename="dir2/mesh.stl" scale="1 1 1"/>
+        </geometry>
+      </visual>
+    </link>
+  </robot>
+  )";
+
+  std::array<char, 1000> error;
+  mjSpec* spec = mj_parseXMLString(urdf, nullptr, error.data(), error.size());
+  ASSERT_THAT(spec, NotNull()) << error.data();
+
+  mjsMesh* mesh0 = mjs_asMesh(mjs_findElement(spec, mjOBJ_MESH, "mesh"));
+  mjsMesh* mesh1 = mjs_asMesh(mjs_findElement(spec, mjOBJ_MESH, "mesh1"));
+  mjsMesh* mesh2 = mjs_asMesh(mjs_findElement(spec, mjOBJ_MESH, "mesh2"));
+  ASSERT_THAT(mesh0, NotNull());
+  ASSERT_THAT(mesh1, NotNull());
+  EXPECT_THAT(mesh2, IsNull());
+  EXPECT_STREQ(mjs_getString(mesh0->file), "dir1/mesh.stl");
+  EXPECT_STREQ(mjs_getString(mesh1->file), "dir2/mesh.stl");
+
+  mjsGeom* vis1 = mjs_asGeom(mjs_findElement(spec, mjOBJ_GEOM, "vis1"));
+  mjsGeom* vis2 = mjs_asGeom(mjs_findElement(spec, mjOBJ_GEOM, "vis2"));
+  mjsGeom* vis3 = mjs_asGeom(mjs_findElement(spec, mjOBJ_GEOM, "vis3"));
+  ASSERT_THAT(vis1, NotNull());
+  ASSERT_THAT(vis2, NotNull());
+  ASSERT_THAT(vis3, NotNull());
+  EXPECT_STREQ(mjs_getString(vis1->meshname), "mesh");
+  EXPECT_STREQ(mjs_getString(vis2->meshname), "mesh1");
+  EXPECT_STREQ(mjs_getString(vis3->meshname), "mesh1");
+
+  mj_deleteSpec(spec);
+}
+
+TEST_F(MujocoTest, UnnamedGeomAfterNamedVisualAndMaterialLookup) {
+  static constexpr char urdf[] = R"(
+  <robot name="robot">
+    <mujoco>
+      <compiler discardvisual="false"/>
+    </mujoco>
+    <material name="blue">
+      <color rgba="0 0 1 1"/>
+    </material>
+    <link name="base">
+      <visual name="vis1">
+        <material name="blue"/>
+        <geometry><sphere radius="0.1"/></geometry>
+      </visual>
+      <collision>
+        <geometry><box size="0.1 0.1 0.1"/></geometry>
+      </collision>
+      <visual>
+        <geometry><sphere radius="0.2"/></geometry>
+      </visual>
+    </link>
+  </robot>
+  )";
+
+  std::array<char, 1000> error;
+  testing::internal::CaptureStderr();
+  mjSpec* spec = mj_parseXMLString(urdf, nullptr, error.data(), error.size());
+  std::string stderr_output = testing::internal::GetCapturedStderr();
+  ASSERT_THAT(spec, NotNull()) << error.data();
+  EXPECT_EQ(stderr_output, "");
+
+  mjsBody* body = mjs_findBody(spec, "base");
+  ASSERT_THAT(body, NotNull());
+
+  mjsElement* elem1 = mjs_firstChild(body, mjOBJ_GEOM, 0);
+  ASSERT_THAT(elem1, NotNull());
+  mjsGeom* geom1 = mjs_asGeom(elem1);
+  ASSERT_THAT(geom1, NotNull());
+  EXPECT_STREQ(mjs_getString(mjs_getName(elem1)), "vis1");
+  EXPECT_FLOAT_EQ(geom1->rgba[0], 0.0f);
+  EXPECT_FLOAT_EQ(geom1->rgba[1], 0.0f);
+  EXPECT_FLOAT_EQ(geom1->rgba[2], 1.0f);
+  EXPECT_FLOAT_EQ(geom1->rgba[3], 1.0f);
+
+  mjsElement* elem2 = mjs_nextChild(body, elem1, 0);
+  ASSERT_THAT(elem2, NotNull());
+  EXPECT_STREQ(mjs_getString(mjs_getName(elem2)), "");
+
+  mjsElement* elem3 = mjs_nextChild(body, elem2, 0);
+  ASSERT_THAT(elem3, NotNull());
+  EXPECT_STREQ(mjs_getString(mjs_getName(elem3)), "");
+
+  mj_deleteSpec(spec);
+}
+
+TEST_F(MujocoTest, UrdfJointLimitsEqualPartialAndContinuous) {
+  mock_warning_handler.ExpectWarnings(
+      "joint 'j_eq' has equal lower and upper limits");
+  static constexpr char urdf[] = R"(
+  <robot name="test_robot">
+    <link name="base">
+      <inertial>
+        <mass value="1"/>
+        <inertia ixx="1" iyy="1" izz="1" ixy="0" ixz="0" iyz="0"/>
+      </inertial>
+    </link>
+    <link name="link_eq">
+      <inertial>
+        <mass value="1"/>
+        <inertia ixx="1" iyy="1" izz="1" ixy="0" ixz="0" iyz="0"/>
+      </inertial>
+    </link>
+    <link name="link_partial">
+      <inertial>
+        <mass value="1"/>
+        <inertia ixx="1" iyy="1" izz="1" ixy="0" ixz="0" iyz="0"/>
+      </inertial>
+    </link>
+    <link name="link_cont">
+      <inertial>
+        <mass value="1"/>
+        <inertia ixx="1" iyy="1" izz="1" ixy="0" ixz="0" iyz="0"/>
+      </inertial>
+    </link>
+    <joint name="j_eq" type="revolute">
+      <parent link="base"/>
+      <child link="link_eq"/>
+      <axis xyz="0 0 1"/>
+      <limit lower="1.0" upper="1.0" effort="10" velocity="1"/>
+    </joint>
+    <joint name="j_partial" type="prismatic">
+      <parent link="base"/>
+      <child link="link_partial"/>
+      <axis xyz="1 0 0"/>
+      <limit lower="-0.5" effort="8" velocity="1"/>
+    </joint>
+    <joint name="j_cont" type="continuous">
+      <parent link="base"/>
+      <child link="link_cont"/>
+      <axis xyz="0 0 1"/>
+      <limit lower="-1.0" upper="1.0" effort="15" velocity="1"/>
+    </joint>
+  </robot>
+  )";
+
+  std::array<char, 1024> error;
+  mjSpec* spec = mj_parseXMLString(urdf, nullptr, error.data(), error.size());
+  ASSERT_THAT(spec, NotNull()) << error.data();
+
+  mjsJoint* j_eq_spec = mjs_asJoint(mjs_findElement(spec, mjOBJ_JOINT, "j_eq"));
+  mjsJoint* j_partial_spec =
+      mjs_asJoint(mjs_findElement(spec, mjOBJ_JOINT, "j_partial"));
+  mjsJoint* j_cont_spec =
+      mjs_asJoint(mjs_findElement(spec, mjOBJ_JOINT, "j_cont"));
+  ASSERT_THAT(j_eq_spec, NotNull());
+  ASSERT_THAT(j_partial_spec, NotNull());
+  ASSERT_THAT(j_cont_spec, NotNull());
+  EXPECT_EQ(j_eq_spec->limited, mjLIMITED_FALSE);
+  EXPECT_EQ(j_partial_spec->limited, mjLIMITED_FALSE);
+  EXPECT_EQ(j_cont_spec->limited, mjLIMITED_FALSE);
+  EXPECT_DOUBLE_EQ(j_cont_spec->range[0], 0.0);
+  EXPECT_DOUBLE_EQ(j_cont_spec->range[1], 0.0);
+
+  MjModelPtr model(mj_compile(spec, nullptr));
+  ASSERT_THAT(model.get(), NotNull()) << mjs_getError(spec);
+
+  int j_eq = mj_name2id(model.get(), mjOBJ_JOINT, "j_eq");
+  int j_partial = mj_name2id(model.get(), mjOBJ_JOINT, "j_partial");
+  int j_cont = mj_name2id(model.get(), mjOBJ_JOINT, "j_cont");
+  ASSERT_GE(j_eq, 0);
+  ASSERT_GE(j_partial, 0);
+  ASSERT_GE(j_cont, 0);
+  EXPECT_EQ(model->jnt_limited[j_eq], 0);
+  EXPECT_EQ(model->jnt_actfrclimited[j_eq], 1);
+  EXPECT_EQ(model->jnt_limited[j_partial], 0);
+  EXPECT_EQ(model->jnt_actfrclimited[j_partial], 1);
+  EXPECT_EQ(model->jnt_limited[j_cont], 0);
+  EXPECT_EQ(model->jnt_actfrclimited[j_cont], 1);
+  mj_deleteSpec(spec);
+}
+
+TEST_F(MujocoTest, UrdfJointLimitsEqualAutolimitsFalse) {
+  // with autolimits=false, an equal-bounds limit used to fail compilation;
+  // effort is omitted since it would also need actuatorfrclimited
+  mock_warning_handler.ExpectWarnings(
+      "joint 'j_eq' has equal lower and upper limits");
+  static constexpr char urdf[] = R"(
+  <robot name="test_robot">
+    <mujoco>
+      <compiler autolimits="false"/>
+    </mujoco>
+    <link name="base">
+      <inertial>
+        <mass value="1"/>
+        <inertia ixx="1" iyy="1" izz="1" ixy="0" ixz="0" iyz="0"/>
+      </inertial>
+    </link>
+    <link name="link_eq">
+      <inertial>
+        <mass value="1"/>
+        <inertia ixx="1" iyy="1" izz="1" ixy="0" ixz="0" iyz="0"/>
+      </inertial>
+    </link>
+    <joint name="j_eq" type="revolute">
+      <parent link="base"/>
+      <child link="link_eq"/>
+      <axis xyz="0 0 1"/>
+      <limit lower="1.0" upper="1.0" velocity="1"/>
+    </joint>
+  </robot>
+  )";
+
+  std::array<char, 1024> error;
+  mjSpec* spec = mj_parseXMLString(urdf, nullptr, error.data(), error.size());
+  ASSERT_THAT(spec, NotNull()) << error.data();
+  EXPECT_EQ(spec->compiler.autolimits, 0);
+
+  MjModelPtr model(mj_compile(spec, nullptr));
+  ASSERT_THAT(model.get(), NotNull()) << mjs_getError(spec);
+  int j_eq = mj_name2id(model.get(), mjOBJ_JOINT, "j_eq");
+  ASSERT_GE(j_eq, 0);
+  EXPECT_EQ(model->jnt_limited[j_eq], 0);
+  mj_deleteSpec(spec);
+}
+
+TEST_F(MujocoTest, UrdfIndexedMeshNamesAreUnique) {
+  // the second link1 mesh gets the indexed name link11, which must not clash
+  // with a mesh whose own basename is link11, in either declaration order
+  static constexpr char urdf_indexed_first[] = R"(
+  <robot name="robot">
+    <mujoco>
+      <compiler discardvisual="false"/>
+    </mujoco>
+    <link name="a">
+      <visual name="vis_a">
+        <geometry><mesh filename="visual/link1.stl"/></geometry>
+      </visual>
+      <collision name="col_a">
+        <geometry><mesh filename="collision/link1.stl"/></geometry>
+      </collision>
+    </link>
+    <link name="b">
+      <visual name="vis_b">
+        <geometry><mesh filename="visual/link11.stl"/></geometry>
+      </visual>
+    </link>
+  </robot>
+  )";
+
+  static constexpr char urdf_plain_first[] = R"(
+  <robot name="robot">
+    <mujoco>
+      <compiler discardvisual="false"/>
+    </mujoco>
+    <link name="b">
+      <visual name="vis_b">
+        <geometry><mesh filename="visual/link11.stl"/></geometry>
+      </visual>
+    </link>
+    <link name="a">
+      <visual name="vis_a">
+        <geometry><mesh filename="visual/link1.stl"/></geometry>
+      </visual>
+      <collision name="col_a">
+        <geometry><mesh filename="collision/link1.stl"/></geometry>
+      </collision>
+    </link>
+  </robot>
+  )";
+
+  for (const char* urdf : {urdf_indexed_first, urdf_plain_first}) {
+    std::array<char, 1000> error;
+    mjSpec* spec = mj_parseXMLString(urdf, nullptr, error.data(), error.size());
+    ASSERT_THAT(spec, NotNull()) << error.data();
+
+    // three distinct meshes with distinct names
+    std::vector<std::string> names;
+    for (mjsElement* el = mjs_firstElement(spec, mjOBJ_MESH); el;
+         el = mjs_nextElement(spec, el)) {
+      names.push_back(mjs_getString(mjs_getName(el)));
+    }
+    ASSERT_EQ(names.size(), 3);
+    EXPECT_NE(names[0], names[1]);
+    EXPECT_NE(names[0], names[2]);
+    EXPECT_NE(names[1], names[2]);
+
+    // each geom references the mesh with its own file
+    for (auto [geom, file] : {std::pair{"vis_a", "visual/link1.stl"},
+                              std::pair{"col_a", "collision/link1.stl"},
+                              std::pair{"vis_b", "visual/link11.stl"}}) {
+      mjsGeom* g = mjs_asGeom(mjs_findElement(spec, mjOBJ_GEOM, geom));
+      ASSERT_THAT(g, NotNull()) << geom;
+      mjsMesh* m = mjs_asMesh(
+          mjs_findElement(spec, mjOBJ_MESH, mjs_getString(g->meshname)));
+      ASSERT_THAT(m, NotNull()) << geom;
+      EXPECT_STREQ(mjs_getString(m->file), file) << geom;
+    }
+
+    mj_deleteSpec(spec);
+  }
 }
 
 }  // namespace

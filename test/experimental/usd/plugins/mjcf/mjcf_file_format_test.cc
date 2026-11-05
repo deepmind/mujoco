@@ -27,8 +27,10 @@
 #include <mujoco/experimental/usd/mjcPhysics/sceneAPI.h>
 #include <mujoco/experimental/usd/mjcPhysics/siteAPI.h>
 #include <mujoco/experimental/usd/mjcPhysics/tokens.h>
+#include "src/experimental/usd/plugins/mjcf/utils.h"
 #include "test/experimental/usd/test_utils.h"
 #include "test/fixture.h"
+#include <pxr/base/gf/matrix4d.h>
 #include <pxr/base/gf/quatf.h>
 #include <pxr/base/gf/rotation.h>
 #include <pxr/base/gf/vec2f.h>
@@ -46,6 +48,7 @@
 #include <pxr/usd/sdf/fileFormat.h>
 #include <pxr/usd/sdf/listOp.h>
 #include <pxr/usd/sdf/path.h>
+#include <pxr/usd/sdf/primSpec.h>
 #include <pxr/usd/sdf/schema.h>
 #include <pxr/usd/usd/common.h>
 #include <pxr/usd/usd/modelAPI.h>
@@ -63,6 +66,7 @@
 #include <pxr/usd/usdGeom/primvarsAPI.h>
 #include <pxr/usd/usdGeom/sphere.h>
 #include <pxr/usd/usdGeom/tokens.h>
+#include <pxr/usd/usdGeom/xformCache.h>
 #include <pxr/usd/usdPhysics/articulationRootAPI.h>
 #include <pxr/usd/usdPhysics/collisionAPI.h>
 #include <pxr/usd/usdPhysics/fixedJoint.h>
@@ -884,6 +888,19 @@ TEST_F(MjcfSdfFileFormatPluginTest, TestPhysicsScenePrimCCDTolerance) {
                        0.0078);
 }
 
+TEST_F(MjcfSdfFileFormatPluginTest, TestPhysicsScenePrimSleepTolerance) {
+  auto stage = OpenStage(R"(
+    <mujoco model="test">
+      <option sleep_tolerance="0.0091"> </option>
+    </mujoco>
+  )");
+
+  ExpectAttributeEqual(stage,
+                       kPhysicsScenePrimPath.AppendProperty(
+                           MjcPhysicsTokens->mjcOptionSleep_tolerance),
+                       0.0091);
+}
+
 TEST_F(MjcfSdfFileFormatPluginTest, TestPhysicsScenePrimOFriction) {
   auto stage = OpenStage(R"(
     <mujoco model="test">
@@ -1119,6 +1136,7 @@ TEST_F(MjcfSdfFileFormatPluginTest, TestPhysicsScenePrimEnableFlags) {
           fwdinv="enable"
           invdiscrete="enable"
           multiccd="enable"
+          sleep="enable"
         />
       </option>
     </mujoco>
@@ -1131,6 +1149,7 @@ TEST_F(MjcfSdfFileFormatPluginTest, TestPhysicsScenePrimEnableFlags) {
       MjcPhysicsTokens->mjcFlagFwdinv,
       MjcPhysicsTokens->mjcFlagInvdiscrete,
       MjcPhysicsTokens->mjcFlagMulticcd,
+      MjcPhysicsTokens->mjcFlagSleep,
   };
   // clang-format on
   for (const auto& flag : kFlags) {
@@ -1552,6 +1571,37 @@ TEST_F(MjcfSdfFileFormatPluginTest, TestMassAPIApplied) {
     <worldbody>
       <body name="body">
         <geom name="box" type="box" size=".05 .05 .05" mass="0.1"/>
+        <geom
+          name="massless_collider"
+          type="box"
+          size=".05 .05 .05"
+          mass="0"/>
+        <geom
+          name="zero_density_collider"
+          type="box"
+          size=".05 .05 .05"
+          density="0"/>
+        <geom
+          name="visual"
+          type="box"
+          size=".05 .05 .05"
+          mass="0.2"
+          contype="0"
+          conaffinity="0"/>
+        <geom
+          name="massless_visual"
+          type="box"
+          size=".05 .05 .05"
+          mass="0"
+          contype="0"
+          conaffinity="0"/>
+        <geom
+          name="zero_density_visual"
+          type="box"
+          size=".05 .05 .05"
+          density="0"
+          contype="0"
+          conaffinity="0"/>
       </body>
     </worldbody>
   </mujoco>
@@ -1560,9 +1610,32 @@ TEST_F(MjcfSdfFileFormatPluginTest, TestMassAPIApplied) {
 
   EXPECT_PRIM_VALID(stage, "/test/body");
   EXPECT_PRIM_VALID(stage, "/test/body/box");
+  EXPECT_PRIM_VALID(stage, "/test/body/massless_collider");
+  EXPECT_PRIM_VALID(stage, "/test/body/zero_density_collider");
+  EXPECT_PRIM_VALID(stage, "/test/body/visual");
+  EXPECT_PRIM_VALID(stage, "/test/body/massless_visual");
+  EXPECT_PRIM_VALID(stage, "/test/body/zero_density_visual");
   EXPECT_PRIM_API_APPLIED(stage, "/test/body/box", pxr::UsdPhysicsMassAPI);
+  EXPECT_PRIM_API_APPLIED(stage, "/test/body/massless_collider",
+                          pxr::UsdPhysicsMassAPI);
+  EXPECT_PRIM_API_APPLIED(stage, "/test/body/zero_density_collider",
+                          pxr::UsdPhysicsMassAPI);
+  EXPECT_PRIM_API_APPLIED(stage, "/test/body/visual", pxr::UsdPhysicsMassAPI);
+  EXPECT_PRIM_API_APPLIED(stage, "/test/body/massless_visual",
+                          pxr::UsdPhysicsMassAPI);
+  EXPECT_PRIM_API_APPLIED(stage, "/test/body/zero_density_visual",
+                          pxr::UsdPhysicsMassAPI);
   EXPECT_PRIM_API_NOT_APPLIED(stage, "/test/body", pxr::UsdPhysicsMassAPI);
   ExpectAttributeEqual(stage, "/test/body/box.physics:mass", 0.1f);
+  ExpectAttributeEqual(stage, "/test/body/massless_collider.physics:density",
+                       0.0f);
+  ExpectAttributeEqual(
+      stage, "/test/body/zero_density_collider.physics:density", 0.0f);
+  ExpectAttributeEqual(stage, "/test/body/visual.physics:mass", 0.2f);
+  ExpectAttributeEqual(stage, "/test/body/massless_visual.physics:density",
+                       0.0f);
+  ExpectAttributeEqual(stage, "/test/body/zero_density_visual.physics:density",
+                       0.0f);
 }
 
 TEST_F(MjcfSdfFileFormatPluginTest, TestMassAPIAppliedToBody) {
@@ -2313,6 +2386,162 @@ TEST_F(MjcfSdfFileFormatPluginTest, TestCompilerOptions) {
       stage, "/test/PhysicsScene.mjc:compiler:inertiaGroupRange:max", 6);
   ExpectAttributeEqual(stage, "/test/PhysicsScene.mjc:compiler:saveInertial",
                        true);
+}
+
+TEST_F(MjcfSdfFileFormatPluginTest, LightDirectionAndTransform) {
+  static constexpr char kXml[] = R"(
+    <mujoco model="light_test">
+      <worldbody>
+        <light name="light_x" pos="1 2 3" dir="1 0 0"/>
+        <light name="light_y" pos="4 5 6" dir="0 1 0"/>
+        <light name="light_neg_z" pos="7 8 9" dir="0 0 -1"/>
+        <light name="light_pos_z" pos="-1 -2 -3" dir="0 0 1"/>
+      </worldbody>
+    </mujoco>
+  )";
+
+  auto stage = OpenStage(kXml);
+  ASSERT_THAT(stage, testing::NotNull());
+
+  struct LightExpectation {
+    const char* prim_path;
+    pxr::GfVec3d pos;
+    pxr::GfVec3d dir;
+  };
+  const LightExpectation kExpected[] = {
+      {"/light_test/light_x", {1, 2, 3}, {1, 0, 0}},
+      {"/light_test/light_y", {4, 5, 6}, {0, 1, 0}},
+      {"/light_test/light_neg_z", {7, 8, 9}, {0, 0, -1}},
+      {"/light_test/light_pos_z", {-1, -2, -3}, {0, 0, 1}},
+  };
+
+  for (const auto& expected : kExpected) {
+    SCOPED_TRACE(expected.prim_path);
+    EXPECT_PRIM_VALID(stage, expected.prim_path);
+    auto attr = stage->GetAttributeAtPath(
+        pxr::SdfPath(expected.prim_path)
+            .AppendProperty(pxr::TfToken("xformOp:transform")));
+    ASSERT_TRUE(attr.IsValid());
+    pxr::GfMatrix4d xf;
+    ASSERT_TRUE(attr.Get(&xf));
+
+    pxr::GfVec3d trans = xf.ExtractTranslation();
+    EXPECT_NEAR(trans[0], expected.pos[0], 1e-5);
+    EXPECT_NEAR(trans[1], expected.pos[1], 1e-5);
+    EXPECT_NEAR(trans[2], expected.pos[2], 1e-5);
+
+    pxr::GfVec3d world_dir = xf.TransformDir(pxr::GfVec3d(0, 0, -1));
+    EXPECT_NEAR(world_dir[0], expected.dir[0], 1e-5);
+    EXPECT_NEAR(world_dir[1], expected.dir[1], 1e-5);
+    EXPECT_NEAR(world_dir[2], expected.dir[2], 1e-5);
+  }
+}
+
+TEST_F(MjcfSdfFileFormatPluginTest, BoxAndEllipsoidPreserveScaleXformOpOrder) {
+  static constexpr char kXml[] = R"(
+    <mujoco model="scale_test">
+      <compiler angle="degree"/>
+      <worldbody>
+        <geom name="box_geom" type="box" pos="1 2 3" euler="0 0 90"
+              size="2 3 4"/>
+        <geom name="ellipsoid_geom" type="ellipsoid" pos="4 5 6" euler="0 0 90"
+              size="0.2 0.3 0.4"/>
+        <body name="b">
+          <site name="box_site" type="box" pos="-1 0 2" euler="0 0 90"
+                size="0.5 1.5 2.5"/>
+          <site name="ellipsoid_site" type="ellipsoid" pos="0 -2 1"
+                euler="0 0 90" size="0.1 0.2 0.3"/>
+        </body>
+      </worldbody>
+    </mujoco>
+  )";
+
+  auto stage = OpenStage(kXml);
+  ASSERT_THAT(stage, testing::NotNull());
+
+  const pxr::VtTokenArray kExpectedOpOrder(
+      {pxr::TfToken("xformOp:transform"), pxr::TfToken("xformOp:scale")});
+
+  struct ScaledPrimExpectation {
+    const char* prim_path;
+    pxr::GfVec3d world_corner;
+  };
+  const ScaledPrimExpectation kExpected[] = {
+      {"/scale_test/box_geom", {-2.0, 4.0, 7.0}},
+      {"/scale_test/ellipsoid_geom", {3.7, 5.2, 6.4}},
+      {"/scale_test/b/box_site", {-2.5, 0.5, 4.5}},
+      {"/scale_test/b/ellipsoid_site", {-0.2, -1.9, 1.3}},
+  };
+
+  pxr::UsdGeomXformCache xform_cache;
+  for (const auto& expected : kExpected) {
+    SCOPED_TRACE(expected.prim_path);
+    pxr::SdfPath prim_path(expected.prim_path);
+    ExpectAttributeEqual(
+        stage, prim_path.AppendProperty(pxr::UsdGeomTokens->xformOpOrder),
+        kExpectedOpOrder);
+
+    pxr::UsdPrim prim = stage->GetPrimAtPath(prim_path);
+    ASSERT_TRUE(prim.IsValid());
+    pxr::GfMatrix4d world_xf = xform_cache.GetLocalToWorldTransform(prim);
+    pxr::GfVec3d pt = world_xf.Transform(pxr::GfVec3d(1.0, 1.0, 1.0));
+    EXPECT_NEAR(pt[0], expected.world_corner[0], 1e-5);
+    EXPECT_NEAR(pt[1], expected.world_corner[1], 1e-5);
+    EXPECT_NEAR(pt[2], expected.world_corner[2], 1e-5);
+  }
+}
+
+TEST_F(MjcfSdfFileFormatPluginTest, CreateRelationshipSpecDuplicate) {
+  auto layer = pxr::SdfLayer::CreateAnonymous();
+  auto prim_spec = pxr::SdfCreatePrimInLayer(layer, pxr::SdfPath("/World"));
+  auto rel_name = pxr::TfToken("my_relationship");
+  auto target1 = pxr::SdfPath("/World/Target1");
+  auto target2 = pxr::SdfPath("/World/Target2");
+
+  auto rel1 = CreateRelationshipSpec(layer, prim_spec, rel_name, target1);
+  ASSERT_TRUE(rel1);
+  EXPECT_THAT(rel1->GetTargetPathList().GetAppendedItems(),
+              testing::ElementsAre(target1));
+
+  auto rel2 = CreateRelationshipSpec(layer, prim_spec, rel_name, target2);
+  ASSERT_TRUE(rel2);
+  EXPECT_THAT(rel2->GetTargetPathList().GetAppendedItems(),
+              testing::ElementsAre(target1, target2));
+}
+
+TEST_F(MjcfSdfFileFormatPluginTest,
+       GeomWithCustomFrictionAndMaterialAppendsMaterialBindings) {
+  static constexpr char kXml[] = R"(
+    <mujoco model="mat_friction_test">
+      <asset>
+        <material name="mat" rgba="1 0 0 1"/>
+      </asset>
+      <worldbody>
+        <geom name="g" type="sphere" size="0.1" friction="0.8 0.01 0.001"
+              material="mat"/>
+      </worldbody>
+    </mujoco>
+  )";
+
+  auto stage = OpenStage(kXml);
+  ASSERT_THAT(stage, testing::NotNull());
+  EXPECT_PRIM_VALID(stage, "/mat_friction_test/g");
+  EXPECT_REL_TARGET_COUNT(stage, "/mat_friction_test/g.material:binding", 2);
+  EXPECT_REL_HAS_TARGET(stage, "/mat_friction_test/g.material:binding",
+                        "/mat_friction_test/Materials/mat");
+}
+
+TEST_F(MjcfSdfFileFormatPluginTest, TestActuatorGroupDisableOption) {
+  static constexpr char kXml[] = R"(
+    <mujoco model="test">
+      <option actuatorgroupdisable="0 2"/>
+    </mujoco>
+  )";
+  auto stage = OpenStage(kXml);
+  EXPECT_PRIM_VALID(stage, "/test/PhysicsScene");
+  ExpectAttributeEqual(stage,
+                       "/test/PhysicsScene.mjc:option:actuatorgroupdisable",
+                       pxr::VtIntArray({0, 2}));
 }
 
 }  // namespace usd

@@ -19,6 +19,8 @@
 #include <cstdlib>
 #include <cstring>
 #include <map>
+#include <memory>
+#include <mutex>
 #include <string>
 #include <vector>
 
@@ -77,6 +79,8 @@ class SdfDefault {
 class SdfVisualizer {
  public:
   SdfVisualizer();
+  SdfVisualizer(SdfVisualizer&&) = default;
+  SdfVisualizer& operator=(SdfVisualizer&&) = default;
 
   void Visualize(const mjModel* m, const mjData* d, const mjvOption* opt,
                  mjvScene* scn, int instance);
@@ -86,6 +90,7 @@ class SdfVisualizer {
   void Next();  // adds a new gradient descent trajectory to be visualized
 
  private:
+  std::unique_ptr<std::mutex> mutex_ = std::make_unique<std::mutex>();
   std::vector<mjtNum> points_;  // query points
   std::vector<int> npoints_;    // number of iterations from the starting point
 };

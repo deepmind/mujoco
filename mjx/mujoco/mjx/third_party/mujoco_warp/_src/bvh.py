@@ -24,9 +24,11 @@ import warp as wp
 from mujoco.mjx.third_party.mujoco_warp._src import math as mjmath
 from mujoco.mjx.third_party.mujoco_warp._src.types import MJ_MAXVAL
 from mujoco.mjx.third_party.mujoco_warp._src.types import Data
+from mujoco.mjx.third_party.mujoco_warp._src.types import DeterminismType
 from mujoco.mjx.third_party.mujoco_warp._src.types import GeomType
 from mujoco.mjx.third_party.mujoco_warp._src.types import Model
 from mujoco.mjx.third_party.mujoco_warp._src.types import RenderContext
+from mujoco.mjx.third_party.mujoco_warp._src.warp_util import cache_kernel
 from mujoco.mjx.third_party.mujoco_warp._src.warp_util import event_scope
 
 wp.set_module_options({"enable_backward": False, "default_grid_stride": False})
@@ -622,50 +624,58 @@ def build_hfield_bvh(
   return mesh, half
 
 
-@wp.kernel
-def accumulate_flex_vertex_normals(
-  # Model:
-  nflex: int,
-  flex_dim: wp.array[int],
-  flex_vertadr: wp.array[int],
-  flex_elemadr: wp.array[int],
-  flex_elemnum: wp.array[int],
-  flex_elemdataadr: wp.array[int],
-  flex_elem: wp.array[int],
-  # Data in:
-  flexvert_xpos_in: wp.array2d[wp.vec3],
-  # Out:
-  flexvert_norm_out: wp.array2d[wp.vec3],
-):
-  """Accumulate per-vertex normals by summing adjacent face normals."""
-  worldid, elemid = wp.tid()
+@cache_kernel
+def accumulate_flex_vertex_normals(deterministic: bool = False):
+  module_options = {"enable_backward": False}
+  if deterministic:
+    module_options["deterministic"] = wp.DeterministicMode.RUN_TO_RUN
 
-  for i in range(nflex):
-    locid = elemid - flex_elemadr[i]
-    if locid >= 0 and locid < flex_elemnum[i]:
-      f = i
-      break
+  @wp.kernel(module="unique", module_options=module_options)
+  def kernel(
+    # Model:
+    nflex: int,
+    flex_dim: wp.array[int],
+    flex_vertadr: wp.array[int],
+    flex_elemadr: wp.array[int],
+    flex_elemnum: wp.array[int],
+    flex_elemdataadr: wp.array[int],
+    flex_elem: wp.array[int],
+    # Data in:
+    flexvert_xpos_in: wp.array2d[wp.vec3],
+    # Out:
+    flexvert_norm_out: wp.array2d[wp.vec3],
+  ):
+    """Accumulate per-vertex normals by summing adjacent face normals."""
+    worldid, elemid = wp.tid()
 
-  if flex_dim[f] == 1 or flex_dim[f] == 3:
-    return
+    for i in range(nflex):
+      locid = elemid - flex_elemadr[i]
+      if locid >= 0 and locid < flex_elemnum[i]:
+        f = i
+        break
 
-  local_elemid = elemid - flex_elemadr[f]
-  elem_adr = flex_elemdataadr[f]
-  vert_adr = flex_vertadr[f]
-  elem_base = elem_adr + local_elemid * 3
-  i0 = vert_adr + flex_elem[elem_base + 0]
-  i1 = vert_adr + flex_elem[elem_base + 1]
-  i2 = vert_adr + flex_elem[elem_base + 2]
+    if flex_dim[f] == 1 or flex_dim[f] == 3:
+      return
 
-  v0 = flexvert_xpos_in[worldid, i0]
-  v1 = flexvert_xpos_in[worldid, i1]
-  v2 = flexvert_xpos_in[worldid, i2]
+    local_elemid = elemid - flex_elemadr[f]
+    elem_adr = flex_elemdataadr[f]
+    vert_adr = flex_vertadr[f]
+    elem_base = elem_adr + local_elemid * 3
+    i0 = vert_adr + flex_elem[elem_base + 0]
+    i1 = vert_adr + flex_elem[elem_base + 1]
+    i2 = vert_adr + flex_elem[elem_base + 2]
 
-  face_nrm = wp.cross(v1 - v0, v2 - v0)
-  face_nrm = wp.normalize(face_nrm)
-  flexvert_norm_out[worldid, i0] += face_nrm
-  flexvert_norm_out[worldid, i1] += face_nrm
-  flexvert_norm_out[worldid, i2] += face_nrm
+    v0 = flexvert_xpos_in[worldid, i0]
+    v1 = flexvert_xpos_in[worldid, i1]
+    v2 = flexvert_xpos_in[worldid, i2]
+
+    face_nrm = wp.cross(v1 - v0, v2 - v0)
+    face_nrm = wp.normalize(face_nrm)
+    wp.atomic_add(flexvert_norm_out, worldid, i0, face_nrm)
+    wp.atomic_add(flexvert_norm_out, worldid, i1, face_nrm)
+    wp.atomic_add(flexvert_norm_out, worldid, i2, face_nrm)
+
+  return kernel
 
 
 @wp.kernel
@@ -998,6 +1008,7 @@ def build_flex_bvh(
   flex_id: int,
   constructor: str = "sah",
   leaf_size: int = 2,
+  deterministic: bool = False,
 ) -> tuple[wp.Mesh, wp.array, wp.array, wp.array, int]:
   """Create a Warp mesh BVH for a single 2D or 3D flex."""
   nflexvert = mjm.nflexvert
@@ -1027,7 +1038,7 @@ def build_flex_bvh(
   flex_shell = wp.array(mjm.flex_shell, dtype=int)
 
   wp.launch(
-    kernel=accumulate_flex_vertex_normals,
+    kernel=accumulate_flex_vertex_normals(deterministic),
     dim=(nworld, mjm.nflexelem),
     inputs=[mjm.nflex, flex_dim, flex_vertadr, flex_elemadr, flex_elemnum, flex_elemdataadr, flex_elem, flexvert_xpos],
     outputs=[flexvert_norm],
@@ -1114,7 +1125,7 @@ def refit_flex_bvh(m: Model, d: Data, rc: RenderContext):
   flexvert_norm = wp.zeros(d.flexvert_xpos.shape, dtype=wp.vec3)
 
   wp.launch(
-    kernel=accumulate_flex_vertex_normals,
+    kernel=accumulate_flex_vertex_normals(bool(m.opt.deterministic & DeterminismType.ATOMICS)),
     dim=(d.nworld, m.nflexelem),
     inputs=[
       m.nflex,

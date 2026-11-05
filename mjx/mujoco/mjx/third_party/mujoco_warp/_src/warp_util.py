@@ -159,7 +159,7 @@ def cache_kernel(func):
         return hash(tuple(a))
       return hash(a)
 
-    key = tuple(_hash_arg(a) for a in args) + (hash(func.__name__),)
+    key = tuple(_hash_arg(a) for a in args) + (func.__module__, func.__name__)
     if key not in _KERNEL_CACHE:
       _KERNEL_CACHE[key] = func(*args)
     return _KERNEL_CACHE[key]

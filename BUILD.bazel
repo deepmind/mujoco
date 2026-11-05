@@ -51,13 +51,13 @@ cc_library(
 )
 
 # The MuJoCo library as a shared library, like the CMake build's libmujoco:
-# only MuJoCo's API is exported (the mj* functions and variables, and the
+# only MuJoCo's C API is exported (the mj* functions and variables, and the
 # private _mj* functions used by the Python bindings). Engine internals and the
 # bundled third-party code stay hidden.
 cc_shared_library(
     name = "mujoco_shared",
     additional_linker_inputs = select({
-        "@platforms//os:macos": [":mujoco.exported_symbols"],
+        "@platforms//os:macos": [":mujoco.unexported_symbols"],
         "//conditions:default": [":mujoco.lds"],
     }),
     # Libraries linked into this one, which other cc_shared_libraries (the
@@ -75,7 +75,7 @@ cc_shared_library(
     }),
     user_link_flags = select({
         "@platforms//os:macos": [
-            "-Wl,-exported_symbols_list,$(execpath :mujoco.exported_symbols)",
+            "-Wl,-unexported_symbols_list,$(execpath :mujoco.unexported_symbols)",
         ],
         "//conditions:default": [
             "-Wl,--version-script=$(execpath :mujoco.lds)",
@@ -83,20 +83,6 @@ cc_shared_library(
     }),
     visibility = [":visibility"],
     deps = [":mujoco"],
-)
-
-# The C API symbols mujoco_shared exports, generated from the MJAPI declarations
-# in the headers: an ELF version script and a macOS exported-symbols list.
-genrule(
-    name = "mujoco_symbols",
-    srcs = [":mujoco_api_headers"],
-    outs = [
-        "mujoco.lds",
-        "mujoco.exported_symbols",
-    ],
-    cmd = "bash $(execpath :mujoco_symbols.sh) lds $(RULEDIR)/mujoco.lds $(SRCS) && " +
-          "bash $(execpath :mujoco_symbols.sh) exported_symbols $(RULEDIR)/mujoco.exported_symbols $(SRCS)",
-    tools = [":mujoco_symbols.sh"],
 )
 
 cc_library(
@@ -160,9 +146,10 @@ cc_library(
     conlyopts = ["-std=c11"],
     cxxopts = ["-std=c++20"],
     # Avoid unresolved symbol linker errors when statically linking on Windows.
-    defines = [
-        "MJ_STATIC",
-    ] + select({
+    defines = select({
+        "@platforms//os:windows": ["MJ_STATIC"],
+        "//conditions:default": [],
+    }) + select({
         ":single_precision_config": ["mjUSESINGLE"],
         "//conditions:default": [],
     }),
@@ -224,6 +211,7 @@ cc_library(
         "//:__subpackages__",
     ],
     deps = [
+        "//src/batch",
         "//src/engine",
         "//src/xml:xml_api",
     ],
@@ -258,6 +246,7 @@ filegroup(
     name = "mujoco_headers",
     srcs = [
         "include/mujoco/mjassert.h",
+        "include/mujoco/mjbatch.h",
         "include/mujoco/mjdata.h",
         "include/mujoco/mjexport.h",
         "include/mujoco/mjmacro.h",

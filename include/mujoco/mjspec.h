@@ -362,6 +362,7 @@ typedef struct mjsJoint_ {         // joint specification
   // stiffness
   double stiffness[mjNPOLY+1];     // stiffness coefficients
   double springref;                // spring reference value: qpos_spring
+  double springyield;              // plastic yield threshold (0: elastic)
   double springdamper[2];          // timeconst, dampratio
 
   // limits
@@ -426,6 +427,7 @@ typedef struct mjsGeom_ {          // geom specification
   mjString* material;              // name of material
   float rgba[4];                   // rgba when material is omitted
   int group;                       // group
+  mjtBool castshadow;              // does geom cast shadows
 
   // other
   mjString* hfieldname;            // heightfield attached to geom
@@ -546,11 +548,13 @@ typedef struct mjsFlex_ {          // flex specification
   double edgestiffness;            // edge stiffness
   double edgedamping;              // edge damping
   float rgba[4];                   // rgba when material is omitted
-  mjString* material;              // name of material used for rendering
+  mjStringVec* material;           // name of material used for rendering
   double young;                    // Young's modulus
   double poisson;                  // Poisson's ratio
+  double shear;                    // 1D torsion shear modulus; 0: young / (2 (1 + poisson))
   double damping;                  // Rayleigh's damping
   double thickness;                // thickness (2D only)
+  double stressyield[2];           // yield strain thresholds (stretch, bend); 0: elastic
   int elastic2d;                   // 2D passive forces; 0: none, 1: bending, 2: stretching, 3: both
   int elastic3d;  // experimental 3D material (mjSpec only); 0: Saint
                   // Venant-Kirchhoff, 1: Stable Neo-Hookean
@@ -739,6 +743,7 @@ typedef struct mjsTendon_ {        // tendon specification
   // stiffness, damping, friction, armature
   double stiffness[mjNPOLY+1];     // stiffness coefficients
   double springlength[2];          // spring resting length; {-1, -1}: use qpos_spring
+  double springyield;              // plastic yield threshold (0: elastic)
   double damping[mjNPOLY+1];       // damping coefficients
   double frictionloss;             // friction loss
   mjtNum solref_friction[mjNREF];  // solver reference: tendon friction
@@ -889,6 +894,7 @@ typedef struct mjsKey_ {           // keyframe specification
   mjDoubleVec* mpos;               // mocap pos
   mjDoubleVec* mquat;              // mocap quat
   mjDoubleVec* ctrl;               // ctrl
+  mjDoubleVec* plastic;            // plastic
   mjString* info;                  // message appended to compiler errors
 } mjsKey;
 

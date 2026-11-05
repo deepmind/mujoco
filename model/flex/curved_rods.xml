@@ -1,0 +1,95 @@
+<!-- Copyright 2026 DeepMind Technologies Limited
+
+     Licensed under the Apache License, Version 2.0 (the "License");
+     you may not use this file except in compliance with the License.
+     You may obtain a copy of the License at
+
+         http://www.apache.org/licenses/LICENSE-2.0
+
+     Unless required by applicable law or agreed to in writing, software
+     distributed under the License is distributed on an "AS IS" BASIS,
+     WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+     See the License for the specific language governing permissions and
+     limitations under the License.
+-->
+
+<mujoco model="Curved rods">
+  <include file="scene.xml"/>
+
+  <!-- 1D flexes with discrete elastic rod bending and torsion keep the curved shape in which they
+       are defined: a closed ring and a planar wave dropped on the floor, and an open arc and a
+       straight rod ending in a hook, both pinned at one end. Edge equalities keep the rods
+       inextensible; see coil.xml for a 3D helical spring. -->
+
+  <option timestep="0.002" integrator="discrete"/>
+
+  <statistic center="0 0 .2" extent="1"/>
+
+  <visual>
+    <global elevation="-20"/>
+  </visual>
+
+  <default>
+    <default class="post">
+      <geom type="box" size=".02 .02 .1" rgba=".45 .45 .5 1"/>
+    </default>
+  </default>
+
+  <worldbody>
+    <camera name="overview" pos=".1 -1.6 .7" xyaxes="1 0 0 0 .298 .954"/>
+
+    <flexcomp name="ring" type="circle" count="25 1 1" spacing=".03 .03 .03" pos="-.5 0 .35"
+              euler="30 20 0" radius=".006" dim="1" mass=".05" rgba=".85 .35 .25 1">
+      <contact condim="3" selfcollide="none"/>
+      <elasticity young="1e8" damping=".002"/>
+      <edge equality="true" solref=".004 1"/>
+    </flexcomp>
+
+    <flexcomp name="wave" type="direct" pos="-.3 0 .3" euler="0 20 70" radius=".006" dim="1"
+              mass=".05" rgba=".25 .55 .8 1"
+              point="0 0 0  0.015 0.0136 0  0.03 0.0243 0  0.045 0.0296 0
+                      0.06 0.0285 0  0.075 0.0212 0  0.09 0.0093 0  0.105 -0.0047 0
+                      0.12 -0.0176 0  0.135 -0.0267 0  0.15 -0.03 0  0.165 -0.0267 0
+                      0.18 -0.0176 0  0.195 -0.0047 0  0.21 0.0093 0  0.225 0.0212 0
+                      0.24 0.0285 0  0.255 0.0296 0  0.27 0.0243 0  0.285 0.0136 0
+                      0.3 0 0  0.315 -0.0136 0  0.33 -0.0243 0  0.345 -0.0296 0
+                      0.36 -0.0285 0  0.375 -0.0212 0  0.39 -0.0093 0"
+              element="0 1  1 2  2 3  3 4  4 5  5 6  6 7  7 8  8 9  9 10  10 11  11 12
+                      12 13  13 14  14 15  15 16  16 17  17 18  18 19  19 20  20 21  21 22  22 23  23 24
+                      24 25  25 26">
+      <contact condim="3" selfcollide="none"/>
+      <elasticity young="1e8" damping=".002"/>
+      <edge equality="true" solref=".004 1"/>
+    </flexcomp>
+
+    <geom class="post" pos=".15 0 .1"/>
+    <flexcomp name="arc" type="direct" pos=".15 0 .2" radius=".006" dim="1" mass=".05"
+              rgba=".95 .8 .3 1"
+              point="0 0 0  0.0311 0 0.0041  0.06 0 0.0161  0.0849 0 0.0351
+                      0.1039 0 0.06  0.1159 0 0.0889  0.12 0 0.12  0.1159 0 0.1511
+                      0.1039 0 0.18  0.0849 0 0.2049  0.06 0 0.2239  0.0311 0 0.2359
+                      0 0 0.24  -0.0311 0 0.2359  -0.06 0 0.2239  -0.0849 0 0.2049
+                      -0.1039 0 0.18"
+              element="0 1  1 2  2 3  3 4  4 5  5 6  6 7  7 8  8 9  9 10  10 11  11 12
+                      12 13  13 14  14 15  15 16">
+      <contact condim="3" selfcollide="none"/>
+      <elasticity young="1e8" damping=".002"/>
+      <edge equality="true" solref=".004 1"/>
+      <pin id="0 1"/>
+    </flexcomp>
+
+    <geom class="post" pos=".45 0 .25" size=".02 .02 .25"/>
+    <flexcomp name="hook" type="direct" pos=".45 0 .5" radius=".006" dim="1" mass=".05"
+              rgba=".3 .7 .4 1"
+              point="0 0 0  0.05 0 0  0.1 0 0  0.15 0 0
+                      0.2 0 0  0.25 0 0  0.3 0 0  0.325 0 -0.0067
+                      0.3433 0 -0.025  0.35 0 -0.05  0.3433 0 -0.075  0.325 0 -0.0933
+                      0.3 0 -0.1"
+              element="0 1  1 2  2 3  3 4  4 5  5 6  6 7  7 8  8 9  9 10  10 11  11 12">
+      <contact condim="3" selfcollide="none"/>
+      <elasticity young="1e8" damping=".002"/>
+      <edge equality="true" solref=".004 1"/>
+      <pin id="0 1"/>
+    </flexcomp>
+  </worldbody>
+</mujoco>

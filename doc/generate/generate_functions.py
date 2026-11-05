@@ -54,6 +54,7 @@ rst_to_section = {
     '_Signeddistancefunction': ['Signed Distance Functions', ''],
     '_Plugins-api': ['Plugins', ''],
     '_Thread': ['Threads', ''],
+    '_Batchedsimulation': ['Batched simulation', ''],
     '_Standardmath': ['Standard math', ''],
     '_Vectormath': ['Vector math', ''],
     '_Sparsemath': ['Sparse math', ''],

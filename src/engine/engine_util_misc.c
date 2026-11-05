@@ -53,7 +53,7 @@ static mjtBool is_intersect(const mjtNum* p1, const mjtNum* p2,
   mjtNum b0 = (u[0]*w[1] - u[1]*w[0]) * s;
   mjtNum b1 = (u[0]*d[1] - u[1]*d[0]) * s;
 
-  return (a0 >= 0 && a1 <= 0 && b0 >= 0 && b1 <= 0);
+  return (a0 >= 0 && a1 < 0 && b0 >= 0 && b1 < 0);
 }
 
 
@@ -64,11 +64,17 @@ static mjtNum length_circle(const mjtNum* p0, const mjtNum* p1, int ind, mjtNum 
   mjtNum angle = mju_atan2(mju_abs(cross), mju_dot(p0, p1, 2));
 
   // flip if necessary
-  if ((cross > 0 && ind) || (cross < 0 && !ind)) {
+  if (angle > 1e-6 && ((cross > 0 && ind) || (cross < 0 && !ind))) {
     angle = 2*mjPI - angle;
   }
 
   return radius*angle;
+}
+
+
+// signed angle swept from p to q around the origin, in (-pi, pi]
+static mjtNum winding_angle(const mjtNum p[2], const mjtNum q[2]) {
+  return mju_atan2(p[0]*q[1] - p[1]*q[0], p[0]*q[0] + p[1]*q[1]);
 }
 
 
@@ -101,9 +107,22 @@ static mjtNum wrap_circle(mjtNum pnt[4], const mjtNum end[4], const mjtNum* side
     a = 1;
   }
 
-  // check for intersection and side
+  // check for intersection
   mjtNum tmp[2] = {a*dif[0] + end[0], a*dif[1] + end[1]};
-  if (tmp[0]*tmp[0]+tmp[1]*tmp[1] > sqrad && (!side || mju_dot(side, tmp, 2) >= 0)) {
+  int clear = tmp[0]*tmp[0] + tmp[1]*tmp[1] > sqrad;
+
+  // side: the path is homotopic to the polyline end0 -> side -> end1, whose winding angle around
+  // the center determines the wrap orientation; the segment end0 -> end1 is in the same homotopy
+  // class iff its winding angle is the same (they differ by multiples of 2*pi)
+  int ccw = 0;
+  mjtNum wside = 0;
+  if (side) {
+    wside = winding_angle(end, side) + winding_angle(side, end+2);
+    if (clear && mju_abs(wside - winding_angle(end, end+2)) < mjPI) {
+      return -1;
+    }
+    ccw = (wside > 0);
+  } else if (clear) {
     return -1;
   }
 
@@ -120,15 +139,9 @@ static mjtNum wrap_circle(mjtNum pnt[4], const mjtNum end[4], const mjtNum* side
     sol[i][1][0] = (end[2]*sqrad - sgn*radius*end[3]*sqrt1)/sqlen1;
     sol[i][1][1] = (end[3]*sqrad + sgn*radius*end[2]*sqrt1)/sqlen1;
 
-    // goodness: close to sd, or shorter path
-    if (side) {
-      mju_add(tmp, sol[i][0], sol[i][1], 2);
-      mju_normalize(tmp, 2);
-      good[i] = mju_dot(tmp, side, 2);
-    } else {
-      mju_sub(tmp, sol[i][0], sol[i][1], 2);
-      good[i] = -mju_dot(tmp, tmp, 2);
-    }
+    // goodness: shorter path
+    mju_sub(tmp, sol[i][0], sol[i][1], 2);
+    good[i] = -mju_dot(tmp, tmp, 2);
 
     // penalize for intersection
     if (is_intersect(end, sol[i][0], end+2, sol[i][1])) {
@@ -136,8 +149,8 @@ static mjtNum wrap_circle(mjtNum pnt[4], const mjtNum end[4], const mjtNum* side
     }
   }
 
-  // select the better solution
-  int i = (good[0] > good[1] ? 0 : 1);
+  // select the solution: with side, by orientation (i=1 is counterclockwise), otherwise the better
+  int i = side ? ccw : (good[0] > good[1] ? 0 : 1);
   pnt[0] = sol[i][0][0];
   pnt[1] = sol[i][0][1];
   pnt[2] = sol[i][1][0];
@@ -146,6 +159,13 @@ static mjtNum wrap_circle(mjtNum pnt[4], const mjtNum end[4], const mjtNum* side
   // check for intersection
   if (is_intersect(end, pnt, end+2, pnt+2)) {
     return -1;
+  }
+
+  // side: the path winds like the polyline, so the arc angle is its winding minus that of the
+  // tangent segments; unlike length_circle, this is accurate for wraps close to 2*pi
+  if (side) {
+    mjtNum arc = wside - winding_angle(end, pnt) - winding_angle(pnt+2, end+2);
+    return radius*mju_abs(arc);
   }
 
   // return curve length
@@ -622,11 +642,13 @@ void mju_evalBasisArray(mjtNum* basis, const mjtNum x[3], int order) {
 //   coord: [0,1]^3 parametric coordinates
 //   cellnum: cell counts (cx, cy, cz)
 //   order: interpolation order (1=trilinear, 2=triquadratic)
-//   local: output local parametric coordinates within cell [0,1]^3
+//   cell: flat cell index (ci*cy*cz + cj*cz + ck), or -1 to compute from coord
+//   local: output local parametric coordinates within cell (extrapolated within [-0.02, 1.02]^3 if
+//          cell differs from the natural cell of coord)
 //   nodeindices: output array of global node indices for the cell (size (order+1)^3, may be NULL)
 //   returns: number of nodes per cell (order+1)^3
-int mju_cellLookup(const mjtNum coord[3], const int cellnum[3], int order, mjtNum local[3],
-                   int* nodeindices) {
+int mju_cellLookup(const mjtNum coord[3], const int cellnum[3], int order, int cell,
+                   mjtNum local[3], int* nodeindices) {
   int cx = cellnum[0], cy = cellnum[1], cz = cellnum[2];
 
   // find containing cell
@@ -637,10 +659,20 @@ int mju_cellLookup(const mjtNum coord[3], const int cellnum[3], int order, mjtNu
   cj = mjMIN(cj, cy - 1); cj = mjMAX(cj, 0);
   ck = mjMIN(ck, cz - 1); ck = mjMAX(ck, 0);
 
-  // local parametric coordinates within cell
-  local[0] = mju_clip(coord[0] * cx - ci, 0, 1);
-  local[1] = mju_clip(coord[1] * cy - cj, 0, 1);
-  local[2] = mju_clip(coord[2] * cz - ck, 0, 1);
+  // if precomputed cell differs from natural cell, redirect and extrapolate within [-0.02, 1.02]
+  if (cell >= 0 && cell != ci * cy * cz + cj * cz + ck) {
+    ck = cell % cz;
+    cj = (cell / cz) % cy;
+    ci = cell / (cy * cz);
+    const mjtNum kMaxExtrap = 0.02;  // must match kSliverMargin in user_flexcomp.cc
+    local[0] = mju_clip(coord[0] * cx - ci, -kMaxExtrap, 1 + kMaxExtrap);
+    local[1] = mju_clip(coord[1] * cy - cj, -kMaxExtrap, 1 + kMaxExtrap);
+    local[2] = mju_clip(coord[2] * cz - ck, -kMaxExtrap, 1 + kMaxExtrap);
+  } else {
+    local[0] = mju_clip(coord[0] * cx - ci, 0, 1);
+    local[1] = mju_clip(coord[1] * cy - cj, 0, 1);
+    local[2] = mju_clip(coord[2] * cz - ck, 0, 1);
+  }
 
   // build node indices for this cell
   if (nodeindices) {
@@ -693,11 +725,20 @@ void mju_interpolate3D(mjtNum res[3], const mjtNum x[3], const mjtNum* coeff, in
 
 
 static void flexInterpRotation(int order, const mjtNum* xpos_c,
-                               const mjtNum local[3], mjtNum* quat) {
+                               const mjtNum dref[3], const mjtNum local[3],
+                               mjtNum* quat) {
   mjtNum mat[9] = {0};
 
   if (order > 0) {
     mju_defGradient(mat, local, xpos_c, order);
+    for (int col = 0; col < 3; col++) {
+      if (dref[col] > mjMINVAL) {
+        mjtNum inv = 1 / dref[col];
+        mat[0*3 + col] *= inv;
+        mat[1*3 + col] *= inv;
+        mat[2*3 + col] *= inv;
+      }
+    }
   } else {
     // order 0: fallback to identity matrix
     mat[0] = 1;
@@ -706,10 +747,7 @@ static void flexInterpRotation(int order, const mjtNum* xpos_c,
   }
 
   // find rotation
-  quat[0] = 1;
-  quat[1] = 0;
-  quat[2] = 0;
-  quat[3] = 0;
+  mju_unit4(quat);
   mju_mat2Rot(quat, mat);
   mju_negQuat(quat, quat);
 }
@@ -744,7 +782,13 @@ void mju_flexGatherCellState(int order, int cy, int cz, int ci, int cj, int ck,
 
   if (quat && xpos_c) {
     mjtNum p[3] = {.5, .5, .5};
-    flexInterpRotation(order, xpos_c, p, quat);
+    mjtNum dref[3] = {1, 1, 1};
+    if (xpos0_g && order > 0) {
+      int gidx0 = (ci*order)*ny_g*nz_g + (cj*order)*nz_g + (ck*order);
+      int gidx1 = ((ci+1)*order)*ny_g*nz_g + ((cj+1)*order)*nz_g + ((ck+1)*order);
+      mju_sub3(dref, xpos0_g + 3*gidx1, xpos0_g + 3*gidx0);
+    }
+    flexInterpRotation(order, xpos_c, dref, p, quat);
   }
 }
 
@@ -789,10 +833,7 @@ void mju_flexInterpRotation2D(int order, const mjtNum* xpos_f, int npe,
   }
 
   // extract rotation via polar decomposition
-  quat[0] = 1;
-  quat[1] = 0;
-  quat[2] = 0;
-  quat[3] = 0;
+  mju_unit4(quat);
   mju_mat2Rot(quat, mat);
   mju_negQuat(quat, quat);
 }
@@ -852,6 +893,7 @@ void mju_flexGatherFaceState(int order, int cx, int cy, int cz,
 
   // gather nodes
   int local = 0;
+  int gidx0 = 0, gidx1 = 0;
   for (int l0 = 0; l0 <= order; l0++) {
     for (int l1 = 0; l1 <= order; l1++) {
       int g[3];
@@ -859,6 +901,8 @@ void mju_flexGatherFaceState(int order, int cx, int cy, int cz,
       g[na0] = q0 * order + l0;
       g[na1] = q1 * order + l1;
       int gidx = g[0] * ny_g * nz_g + g[1] * nz_g + g[2];
+      if (local == 0) gidx0 = gidx;
+      gidx1 = gidx;
 
       if (xpos_f && xpos_g) mju_copy3(xpos_f + 3*local, xpos_g + 3*gidx);
       if (vel_f && vel_g) mju_copy3(vel_f + 3*local, vel_g + 3*gidx);
@@ -870,8 +914,44 @@ void mju_flexGatherFaceState(int order, int cx, int cy, int cz,
   }
 
   if (quat && xpos_f) {
-    mjtNum p[2] = {.5, .5};
-    mju_flexInterpRotation2D(order, xpos_f, npe, na0, na1, normal_axis, p, quat);
+    if (xpos0_g && order > 0) {
+      mjtNum d0 = xpos0_g[3*gidx1 + na0] - xpos0_g[3*gidx0 + na0];
+      mjtNum d1 = xpos0_g[3*gidx1 + na1] - xpos0_g[3*gidx0 + na1];
+      mjtNum t1[3] = {0, 0, 0};
+      mjtNum t2[3] = {0, 0, 0};
+      int idx = 0;
+      for (int l0 = 0; l0 <= order; l0++) {
+        for (int l1 = 0; l1 <= order; l1++) {
+          mjtNum grad0 = dphi(0.5, l0, order) * phi(0.5, l1, order);
+          mjtNum grad1 = phi(0.5, l0, order) * dphi(0.5, l1, order);
+          for (int d = 0; d < 3; d++) {
+            t1[d] += xpos_f[3*idx + d] * grad0;
+            t2[d] += xpos_f[3*idx + d] * grad1;
+          }
+          idx++;
+        }
+      }
+      if (d0 > mjMINVAL) mju_scl3(t1, t1, 1 / d0);
+      if (d1 > mjMINVAL) mju_scl3(t2, t2, 1 / d1);
+      mjtNum normal[3];
+      mju_cross(normal, t1, t2);
+      mjtNum mat[9] = {0};
+      mjtNum* vecs[3];
+      vecs[na0] = t1;
+      vecs[na1] = t2;
+      vecs[normal_axis] = normal;
+      for (int col = 0; col < 3; col++) {
+        mat[0*3 + col] = vecs[col][0];
+        mat[1*3 + col] = vecs[col][1];
+        mat[2*3 + col] = vecs[col][2];
+      }
+      mju_unit4(quat);
+      mju_mat2Rot(quat, mat);
+      mju_negQuat(quat, quat);
+    } else {
+      mjtNum p[2] = {.5, .5};
+      mju_flexInterpRotation2D(order, xpos_f, npe, na0, na1, normal_axis, p, quat);
+    }
   }
 }
 
@@ -901,6 +981,10 @@ void mju_flexFaceNormal2D(mjtNum normal[3], mjtNum t1[3], mjtNum t2[3],
 
 // helper: get nodexpos value for node (i,j,k) in an nx*ny*nz grid
 static inline const mjtNum* nodeAt(const mjtNum* nodexpos, int ny, int nz, int i, int j, int k) {
+  return nodexpos + 3*(i*ny*nz + j*nz + k);
+}
+
+static inline mjtNum* nodeAtMut(mjtNum* nodexpos, int ny, int nz, int i, int j, int k) {
   return nodexpos + 3*(i*ny*nz + j*nz + k);
 }
 
@@ -981,6 +1065,65 @@ void mju_shellTrackInterior(mjtNum* nodexpos, int nx, int ny, int nz) {
 }
 
 
+// distribute interior node forces to boundary nodes via transpose of Transfinite Interpolation
+void mju_shellScatterInterior(mjtNum* nodefrc, int nx, int ny, int nz) {
+  if (nx < 3 || ny < 3 || nz < 3) {
+    return;
+  }
+
+  for (int i = 1; i < nx-1; i++) {
+    for (int j = 1; j < ny-1; j++) {
+      for (int k = 1; k < nz-1; k++) {
+        mjtNum* f_ptr = nodeAtMut(nodefrc, ny, nz, i, j, k);
+        mjtNum f[3] = {f_ptr[0], f_ptr[1], f_ptr[2]};
+        mju_zero3(f_ptr);
+        if (!f[0] && !f[1] && !f[2]) {
+          continue;
+        }
+
+        mjtNum s = (mjtNum)i / (nx-1);
+        mjtNum t = (mjtNum)j / (ny-1);
+        mjtNum u = (mjtNum)k / (nz-1);
+
+        // face contributions
+        mju_addToScl3(nodeAtMut(nodefrc, ny, nz, 0, j, k), f, 1-s);
+        mju_addToScl3(nodeAtMut(nodefrc, ny, nz, nx-1, j, k), f, s);
+        mju_addToScl3(nodeAtMut(nodefrc, ny, nz, i, 0, k), f, 1-t);
+        mju_addToScl3(nodeAtMut(nodefrc, ny, nz, i, ny-1, k), f, t);
+        mju_addToScl3(nodeAtMut(nodefrc, ny, nz, i, j, 0), f, 1-u);
+        mju_addToScl3(nodeAtMut(nodefrc, ny, nz, i, j, nz-1), f, u);
+
+        // edge corrections
+        mju_addToScl3(nodeAtMut(nodefrc, ny, nz, i, 0, 0), f, -(1-t)*(1-u));
+        mju_addToScl3(nodeAtMut(nodefrc, ny, nz, i, 0, nz-1), f, -(1-t)*u);
+        mju_addToScl3(nodeAtMut(nodefrc, ny, nz, i, ny-1, 0), f, -t*(1-u));
+        mju_addToScl3(nodeAtMut(nodefrc, ny, nz, i, ny-1, nz-1), f, -t*u);
+
+        mju_addToScl3(nodeAtMut(nodefrc, ny, nz, 0, j, 0), f, -(1-s)*(1-u));
+        mju_addToScl3(nodeAtMut(nodefrc, ny, nz, 0, j, nz-1), f, -(1-s)*u);
+        mju_addToScl3(nodeAtMut(nodefrc, ny, nz, nx-1, j, 0), f, -s*(1-u));
+        mju_addToScl3(nodeAtMut(nodefrc, ny, nz, nx-1, j, nz-1), f, -s*u);
+
+        mju_addToScl3(nodeAtMut(nodefrc, ny, nz, 0, 0, k), f, -(1-s)*(1-t));
+        mju_addToScl3(nodeAtMut(nodefrc, ny, nz, 0, ny-1, k), f, -(1-s)*t);
+        mju_addToScl3(nodeAtMut(nodefrc, ny, nz, nx-1, 0, k), f, -s*(1-t));
+        mju_addToScl3(nodeAtMut(nodefrc, ny, nz, nx-1, ny-1, k), f, -s*t);
+
+        // corner corrections
+        mju_addToScl3(nodeAtMut(nodefrc, ny, nz, 0, 0, 0), f, (1-s)*(1-t)*(1-u));
+        mju_addToScl3(nodeAtMut(nodefrc, ny, nz, 0, 0, nz-1), f, (1-s)*(1-t)*u);
+        mju_addToScl3(nodeAtMut(nodefrc, ny, nz, 0, ny-1, 0), f, (1-s)*t*(1-u));
+        mju_addToScl3(nodeAtMut(nodefrc, ny, nz, 0, ny-1, nz-1), f, (1-s)*t*u);
+        mju_addToScl3(nodeAtMut(nodefrc, ny, nz, nx-1, 0, 0), f, s*(1-t)*(1-u));
+        mju_addToScl3(nodeAtMut(nodefrc, ny, nz, nx-1, 0, nz-1), f, s*(1-t)*u);
+        mju_addToScl3(nodeAtMut(nodefrc, ny, nz, nx-1, ny-1, 0), f, s*t*(1-u));
+        mju_addToScl3(nodeAtMut(nodefrc, ny, nz, nx-1, ny-1, nz-1), f, s*t*u);
+      }
+    }
+  }
+}
+
+
 // helper to accumulate weights in a sparse list
 static void addWeight(int* nb, int* body, mjtNum* bweight, int b, mjtNum w) {
   for (int i = 0; i < *nb; i++) {
@@ -1006,41 +1149,45 @@ void mju_shellTFIWeights(int nx, int ny, int nz, int i, int j, int k,
   mjtNum t = (mjtNum)j / (ny-1);
   mjtNum u = (mjtNum)k / (nz-1);
 
+  #define NODE_ID(idx) (nodebodyid ? nodebodyid[nstart + (idx)] : nstart + (idx))
+
   // face contributions
-  addWeight(nb, body, bweight, nodebodyid[nstart + 0*ny*nz + j*nz + k], w * (1-s));
-  addWeight(nb, body, bweight, nodebodyid[nstart + (nx-1)*ny*nz + j*nz + k], w * s);
+  addWeight(nb, body, bweight, NODE_ID(0*ny*nz + j*nz + k), w * (1-s));
+  addWeight(nb, body, bweight, NODE_ID((nx-1)*ny*nz + j*nz + k), w * s);
 
-  addWeight(nb, body, bweight, nodebodyid[nstart + i*ny*nz + 0*nz + k], w * (1-t));
-  addWeight(nb, body, bweight, nodebodyid[nstart + i*ny*nz + (ny-1)*nz + k], w * t);
+  addWeight(nb, body, bweight, NODE_ID(i*ny*nz + 0*nz + k), w * (1-t));
+  addWeight(nb, body, bweight, NODE_ID(i*ny*nz + (ny-1)*nz + k), w * t);
 
-  addWeight(nb, body, bweight, nodebodyid[nstart + i*ny*nz + j*nz + 0], w * (1-u));
-  addWeight(nb, body, bweight, nodebodyid[nstart + i*ny*nz + j*nz + (nz-1)], w * u);
+  addWeight(nb, body, bweight, NODE_ID(i*ny*nz + j*nz + 0), w * (1-u));
+  addWeight(nb, body, bweight, NODE_ID(i*ny*nz + j*nz + (nz-1)), w * u);
 
   // edge corrections
-  addWeight(nb, body, bweight, nodebodyid[nstart + i*ny*nz + 0*nz + 0], -w * (1-t)*(1-u));
-  addWeight(nb, body, bweight, nodebodyid[nstart + i*ny*nz + 0*nz + (nz-1)], -w * (1-t)*u);
-  addWeight(nb, body, bweight, nodebodyid[nstart + i*ny*nz + (ny-1)*nz + 0], -w * t*(1-u));
-  addWeight(nb, body, bweight, nodebodyid[nstart + i*ny*nz + (ny-1)*nz + (nz-1)], -w * t*u);
+  addWeight(nb, body, bweight, NODE_ID(i*ny*nz + 0*nz + 0), -w * (1-t)*(1-u));
+  addWeight(nb, body, bweight, NODE_ID(i*ny*nz + 0*nz + (nz-1)), -w * (1-t)*u);
+  addWeight(nb, body, bweight, NODE_ID(i*ny*nz + (ny-1)*nz + 0), -w * t*(1-u));
+  addWeight(nb, body, bweight, NODE_ID(i*ny*nz + (ny-1)*nz + (nz-1)), -w * t*u);
 
-  addWeight(nb, body, bweight, nodebodyid[nstart + 0*ny*nz + j*nz + 0], -w * (1-s)*(1-u));
-  addWeight(nb, body, bweight, nodebodyid[nstart + 0*ny*nz + j*nz + (nz-1)], -w * (1-s)*u);
-  addWeight(nb, body, bweight, nodebodyid[nstart + (nx-1)*ny*nz + j*nz + 0], -w * s*(1-u));
-  addWeight(nb, body, bweight, nodebodyid[nstart + (nx-1)*ny*nz + j*nz + (nz-1)], -w * s*u);
+  addWeight(nb, body, bweight, NODE_ID(0*ny*nz + j*nz + 0), -w * (1-s)*(1-u));
+  addWeight(nb, body, bweight, NODE_ID(0*ny*nz + j*nz + (nz-1)), -w * (1-s)*u);
+  addWeight(nb, body, bweight, NODE_ID((nx-1)*ny*nz + j*nz + 0), -w * s*(1-u));
+  addWeight(nb, body, bweight, NODE_ID((nx-1)*ny*nz + j*nz + (nz-1)), -w * s*u);
 
-  addWeight(nb, body, bweight, nodebodyid[nstart + 0*ny*nz + 0*nz + k], -w * (1-s)*(1-t));
-  addWeight(nb, body, bweight, nodebodyid[nstart + 0*ny*nz + (ny-1)*nz + k], -w * (1-s)*t);
-  addWeight(nb, body, bweight, nodebodyid[nstart + (nx-1)*ny*nz + 0*nz + k], -w * s*(1-t));
-  addWeight(nb, body, bweight, nodebodyid[nstart + (nx-1)*ny*nz + (ny-1)*nz + k], -w * s*t);
+  addWeight(nb, body, bweight, NODE_ID(0*ny*nz + 0*nz + k), -w * (1-s)*(1-t));
+  addWeight(nb, body, bweight, NODE_ID(0*ny*nz + (ny-1)*nz + k), -w * (1-s)*t);
+  addWeight(nb, body, bweight, NODE_ID((nx-1)*ny*nz + 0*nz + k), -w * s*(1-t));
+  addWeight(nb, body, bweight, NODE_ID((nx-1)*ny*nz + (ny-1)*nz + k), -w * s*t);
 
   // corner corrections
-  addWeight(nb, body, bweight, nodebodyid[nstart + 0*ny*nz + 0*nz + 0], w * (1-s)*(1-t)*(1-u));
-  addWeight(nb, body, bweight, nodebodyid[nstart + 0*ny*nz + 0*nz + (nz-1)], w * (1-s)*(1-t)*u);
-  addWeight(nb, body, bweight, nodebodyid[nstart + 0*ny*nz + (ny-1)*nz + 0], w * (1-s)*t*(1-u));
-  addWeight(nb, body, bweight, nodebodyid[nstart + 0*ny*nz + (ny-1)*nz + (nz-1)], w * (1-s)*t*u);
-  addWeight(nb, body, bweight, nodebodyid[nstart + (nx-1)*ny*nz + 0*nz + 0], w * s*(1-t)*(1-u));
-  addWeight(nb, body, bweight, nodebodyid[nstart + (nx-1)*ny*nz + 0*nz + (nz-1)], w * s*(1-t)*u);
-  addWeight(nb, body, bweight, nodebodyid[nstart + (nx-1)*ny*nz + (ny-1)*nz + 0], w * s*t*(1-u));
-  addWeight(nb, body, bweight, nodebodyid[nstart + (nx-1)*ny*nz + (ny-1)*nz + (nz-1)], w * s*t*u);
+  addWeight(nb, body, bweight, NODE_ID(0*ny*nz + 0*nz + 0), w * (1-s)*(1-t)*(1-u));
+  addWeight(nb, body, bweight, NODE_ID(0*ny*nz + 0*nz + (nz-1)), w * (1-s)*(1-t)*u);
+  addWeight(nb, body, bweight, NODE_ID(0*ny*nz + (ny-1)*nz + 0), w * (1-s)*t*(1-u));
+  addWeight(nb, body, bweight, NODE_ID(0*ny*nz + (ny-1)*nz + (nz-1)), w * (1-s)*t*u);
+  addWeight(nb, body, bweight, NODE_ID((nx-1)*ny*nz + 0*nz + 0), w * s*(1-t)*(1-u));
+  addWeight(nb, body, bweight, NODE_ID((nx-1)*ny*nz + 0*nz + (nz-1)), w * s*(1-t)*u);
+  addWeight(nb, body, bweight, NODE_ID((nx-1)*ny*nz + (ny-1)*nz + 0), w * s*t*(1-u));
+  addWeight(nb, body, bweight, NODE_ID((nx-1)*ny*nz + (ny-1)*nz + (nz-1)), w * s*t*u);
+
+  #undef NODE_ID
 }
 
 
@@ -1403,23 +1550,38 @@ static int historyFindIndex(const mjtNum* times, int n, int cursor, mjtNum t) {
 // buffer layout: [user(1), cursor(1), times(n), values(n*dim)]
 void mju_historyInit(mjtNum* buf, int n, int dim, const mjtNum* times, const mjtNum* values,
                      mjtNum user) {
+  mjtNum* buf_times = buf + 2;
+  mjtNum* buf_values = buf + 2 + n;
+  int cursor = (times == buf_times) ? (int)buf[1] : n - 1;
+  if (cursor < 0 || cursor >= n) {
+    cursor = n - 1;
+  }
+
   // check strict monotonicity of times
-  for (int i = 0; i < n-1; i++) {
-    if (times[i+1] - times[i] < mjMINVAL) {
+  for (int i=0; i < n-1; i++) {
+    int idx0 = (times == buf_times) ? historyPhysicalIndex(cursor, n, i) : i;
+    int idx1 = (times == buf_times) ? historyPhysicalIndex(cursor, n, i+1) : i+1;
+    if (times[idx1] - times[idx0] < mjMINVAL) {
       mjERROR("times must be strictly increasing, got times[%d]=%g >= times[%d]=%g",
-              i, times[i], i+1, times[i+1]);
+              i, times[idx0], i+1, times[idx1]);
     }
   }
 
   // buf layout: [user(1), cursor(1), times(n), values(n*dim)]
-  buf[0] = user;           // user value
-  buf[1] = (mjtNum)(n-1);  // cursor points to newest (logical index n-1 = physical index n-1)
+  buf[0] = user;            // user value
+  buf[1] = (mjtNum)cursor;  // cursor points to newest (logical index n-1)
 
-  mjtNum* buf_times = buf + 2;
-  mjtNum* buf_values = buf + 2 + n;
-
-  if (times != buf_times) mju_copy(buf_times, times, n);
-  if (values) mju_copy(buf_values, values, n*dim);
+  if (times != buf_times) {
+    mju_copy(buf_times, times, n);
+    if (values) {
+      mju_copy(buf_values, values, n*dim);
+    }
+  } else if (values) {
+    for (int i=0; i < n; i++) {
+      int phys = historyPhysicalIndex(cursor, n, i);
+      mju_copy(buf_values + phys*dim, values + i*dim, dim);
+    }
+  }
 }
 
 
@@ -1568,6 +1730,12 @@ const mjtNum* mju_historyRead(const mjtNum* buf, int n, int dim, mjtNum* res, mj
 // the pyramid frame is: V0_i = N + mu_i*T_i
 //                       V1_i = N - mu_i*T_i
 void mju_encodePyramid(mjtNum* pyramid, const mjtNum* force, const mjtNum* mu, int dim) {
+  // special handling of frictionless contacts
+  if (dim == 1) {
+    pyramid[0] = force[0];
+    return;
+  }
+
   mjtNum a = force[0]/(dim-1), b;
 
   // arbitrary redundancy resolution:
@@ -1955,6 +2123,10 @@ int mju_str2Type(const char* str) {
     return mjOBJ_PLUGIN;
   }
 
+  else if (!strcmp(str, "frame")) {
+    return mjOBJ_FRAME;
+  }
+
   else {
     return mjOBJ_UNKNOWN;
   }
@@ -1987,7 +2159,10 @@ const char* mju_warningText(int warning, size_t info) {
 
   switch ((mjtWarning) warning) {
   case mjWARN_INERTIA:
-    mjSNPRINTF(str, "Inertia matrix is too close to singular at DOF %zu. Check model.", info);
+    mjSNPRINTF(str,
+               "Inertia matrix is too close to singular, or the effective-metric solve failed to "
+               "converge, at DOF %zu. Check model.",
+               info);
     break;
 
   case mjWARN_CONTACTFULL:

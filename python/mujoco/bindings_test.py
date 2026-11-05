@@ -83,20 +83,21 @@ TEST_XML_SENSOR = r"""
 
 TEST_XML_PLUGIN = r"""
 <mujoco>
-  <option gravity="0 0 0"/>
   <extension>
-    <plugin plugin="mujoco.elasticity.cable"/>
+    <plugin plugin="mujoco.pid"/>
   </extension>
   <worldbody>
-    <composite type="cable" curve="s" count="41 1 1" size="1" offset="0 0 1" initial="none">
-      <plugin plugin="mujoco.elasticity.cable">
-        <config key="twist" value="1e6"/>
-        <config key="bend" value="1e9"/>
-      </plugin>
-      <joint kind="main" damping="2"/>
-      <geom type="capsule" size=".005" density="1"/>
-    </composite>
+    <body pos="0 0 1">
+      <joint name="j" type="slide" axis="0 0 1"/>
+      <geom size=".1"/>
+    </body>
   </worldbody>
+  <actuator>
+    <plugin plugin="mujoco.pid" joint="j" actdim="1">
+      <config key="kp" value="10"/>
+      <config key="slewmax" value="1"/>
+    </plugin>
+  </actuator>
 </mujoco>
 """
 
@@ -339,6 +340,32 @@ class MuJoCoBindingsTest(parameterized.TestCase):
     self.model.geom('mybox').quat = [12, 9, 6, 3]
     np.testing.assert_array_equal(self.model.geom_quat[box_id], [12, 9, 6, 3])
 
+  def test_named_indexing_data_xquats(self):
+    body_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_BODY, 'mybox')
+    geom_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_GEOM, 'mybox')
+    site_id = mujoco.mj_name2id(self.model, mujoco.mjtObj.mjOBJ_SITE, 'mysite')
+    self.data.qvel[:] = 0.5
+    mujoco.mj_step(self.model, self.data)
+
+    np.testing.assert_array_equal(
+        self.data.body('mybox').xiquat, self.data.xiquat[body_id]
+    )
+    np.testing.assert_array_equal(
+        self.data.geom('mybox').xquat, self.data.geom_xquat[geom_id]
+    )
+    np.testing.assert_array_equal(
+        self.data.site('mysite').xquat, self.data.site_xquat[site_id]
+    )
+
+    mat = np.zeros(9, dtype=self.data.xmat.dtype)
+    atol = 1e-6 if self.data.xmat.dtype == np.float32 else 1e-14
+    mujoco.mju_quat2Mat(mat, self.data.xiquat[body_id])
+    np.testing.assert_allclose(mat, self.data.ximat[body_id], atol=atol)
+    mujoco.mju_quat2Mat(mat, self.data.geom_xquat[geom_id])
+    np.testing.assert_allclose(mat, self.data.geom_xmat[geom_id], atol=atol)
+    mujoco.mju_quat2Mat(mat, self.data.site_xquat[site_id])
+    np.testing.assert_allclose(mat, self.data.site_xmat[site_id], atol=atol)
+
   def test_named_indexing_ragged_qpos(self):
     balljoint_id = mujoco.mj_name2id(
         self.model, mujoco.mjtObj.mjOBJ_JOINT, 'myball'
@@ -497,6 +524,40 @@ class MuJoCoBindingsTest(parameterized.TestCase):
     self.assertIn("name: 'mybox'", view_repr)
     self.assertIn('xpos:', view_repr)
     self.assertEndsWith(view_repr, '>')
+
+  def test_named_indexing_plastic(self):
+    model = mujoco.MjModel.from_xml_string("""
+    <mujoco>
+      <worldbody>
+        <body>
+          <joint name="slide" type="slide" stiffness="10" springref="0.2" springyield="0.1"/>
+          <geom size=".1"/>
+        </body>
+        <body>
+          <joint name="elastic" type="hinge"/>
+          <geom size=".1"/>
+        </body>
+      </worldbody>
+      <tendon>
+        <fixed name="t_plastic" stiffness="20" springlength="0.1 0.3" springyield="0.05">
+          <joint joint="slide" coef="1"/>
+        </fixed>
+      </tendon>
+      <keyframe>
+        <key name="k0" plastic="0.25 0.15 0.35"/>
+      </keyframe>
+    </mujoco>
+    """)
+    data = mujoco.MjData(model)
+    self.assertEqual(model.jnt('slide').plasticadr[0], 0)
+    np.testing.assert_allclose(model.jnt('slide').springyield, [0.1])
+    self.assertEqual(model.jnt('elastic').plasticadr[0], -1)
+    self.assertEqual(data.jnt('elastic').plastic.shape, (0,))
+    np.testing.assert_allclose(data.jnt('slide').plastic, [0.2])
+    self.assertEqual(model.tendon('t_plastic').plasticadr[0], 1)
+    np.testing.assert_allclose(model.tendon('t_plastic').springyield, [0.05])
+    np.testing.assert_allclose(data.tendon('t_plastic').plastic, [0.1, 0.3])
+    np.testing.assert_allclose(model.key('k0').plastic, [0.25, 0.15, 0.35])
 
   def test_named_indexing_body_repr_in_data(self):
     view_repr = repr(self.data.body('mybox'))
@@ -861,6 +922,17 @@ class MuJoCoBindingsTest(parameterized.TestCase):
       contact.friction = expected_friction[-1]
     self.assertLen(expected_friction, expected_ncon)
     np.testing.assert_array_equal(self.data.contact.friction, expected_friction)
+
+    expected_surfacevel = []
+    for contact in self.data.contact:
+      expected_surfacevel.append(
+          np.array(np.random.uniform(size=3), dtype=DTYPE)
+      )
+      contact.surfacevel = expected_surfacevel[-1]
+    self.assertLen(expected_surfacevel, expected_ncon)
+    np.testing.assert_array_equal(
+        self.data.contact.surfacevel, expected_surfacevel
+    )
 
     expected_H = []  # pylint: disable=invalid-name
     for contact in self.data.contact:
@@ -1406,7 +1478,7 @@ Euler integrator, semi-implicit in velocity.
     self.assertEqual(mujoco.mjtEnableBit.mjENBL_OVERRIDE, 1 << 0)
     self.assertEqual(mujoco.mjtEnableBit.mjENBL_ENERGY, 1 << 1)
     self.assertEqual(mujoco.mjtEnableBit.mjENBL_FWDINV, 1 << 2)
-    self.assertEqual(mujoco.mjtEnableBit.mjNENABLE, 7)
+    self.assertEqual(mujoco.mjtEnableBit.mjNENABLE, 8)
     self.assertEqual(mujoco.mjtGeom.mjGEOM_PLANE, 0)
     self.assertEqual(mujoco.mjtGeom.mjGEOM_HFIELD, 1)
     self.assertEqual(mujoco.mjtGeom.mjGEOM_SPHERE, 2)
@@ -2682,6 +2754,266 @@ Euler integrator, semi-implicit in velocity.
     point = np.array([0.5, 0.5, 0.5], dtype=DTYPE)
     result = mujoco.mj_insideSite(model, data, 0, point)
     self.assertEqual(result, 1)
+
+  def test_nested_error_interception(self):
+    def cb_raise(m, d):
+      del m, d
+      mujoco.mju_zero(np.ones(3, dtype=DTYPE))
+      raise ValueError('nested callback failure')
+
+    with temporary_callback(mujoco.set_mjcb_control, cb_raise):
+      with self.assertRaisesRegex(ValueError, 'nested callback failure'):
+        mujoco.mj_step(self.model, self.data)
+
+    # Subsequent calls continue to intercept errors cleanly.
+    mujoco.mj_step(self.model, self.data)
+
+  def test_mj_default_solrefimp(self):
+    solref = np.zeros(mujoco.mjNREF, dtype=DTYPE)
+    solimp = np.zeros(mujoco.mjNIMP, dtype=DTYPE)
+    mujoco.mj_defaultSolRefImp(solref, solimp)
+    np.testing.assert_allclose(solref, [0.02, 1.0], rtol=1e-6)
+    np.testing.assert_allclose(solimp, [0.9, 0.95, 0.001, 0.5, 2.0], rtol=1e-6)
+
+    solref2 = np.zeros(mujoco.mjNREF, dtype=DTYPE)
+    mujoco.mj_defaultSolRefImp(solref2, None)
+    np.testing.assert_allclose(solref2, [0.02, 1.0], rtol=1e-6)
+    mujoco.mj_defaultSolRefImp(None, None)
+
+    with self.assertRaises(TypeError):
+      mujoco.mj_defaultSolRefImp(0.0, 0.0)
+    with self.assertRaises(TypeError):
+      mujoco.mj_defaultSolRefImp(np.zeros(1, dtype=DTYPE), solimp)
+    with self.assertRaises(TypeError):
+      mujoco.mj_defaultSolRefImp(solref, np.zeros(3, dtype=DTYPE))
+
+  def test_mju_ray_skin(self):
+    face_2d = np.array([[0, 1, 2]], dtype=np.int32)
+    vert_2d = np.array(
+        [[0.0, 0.0, 0.0], [1.0, 0.0, 0.0], [0.0, 1.0, 0.0]], dtype=np.float32
+    )
+    pnt = np.array([0.2, 0.2, 2.0], dtype=DTYPE)
+    vec = np.array([0.0, 0.0, -1.0], dtype=DTYPE)
+    vertid = np.array([-1], dtype=np.int32)
+
+    dist = mujoco.mju_raySkin(1, 3, face_2d, vert_2d, pnt, vec, vertid)
+    self.assertAlmostEqual(dist, 2.0, places=5)
+    self.assertEqual(vertid[0], 0)
+
+    dist_flat = mujoco.mju_raySkin(
+        1, 3, face_2d.ravel(), vert_2d.ravel(), pnt, vec, None
+    )
+    self.assertAlmostEqual(dist_flat, 2.0, places=5)
+
+    with self.assertRaises(TypeError):
+      mujoco.mju_raySkin(1, 3, 0, 0.0, pnt, vec, None)
+    with self.assertRaises(TypeError):
+      mujoco.mju_raySkin(2, 3, face_2d, vert_2d, pnt, vec, None)
+    with self.assertRaises(TypeError):
+      mujoco.mju_raySkin(1, 4, face_2d, vert_2d, pnt, vec, None)
+    with self.assertRaises(ValueError):
+      mujoco.mju_raySkin(
+          1, 3, np.array([[0, 1, 3]], dtype=np.int32), vert_2d, pnt, vec, None
+      )
+    with self.assertRaises(ValueError):
+      mujoco.mju_raySkin(
+          -1, 3, np.zeros(0, dtype=np.int32), vert_2d, pnt, vec, None
+      )
+
+  def test_set_mju_user_malloc_and_free_reset(self):
+    import ctypes as local_ctypes  # pylint: disable=g-import-not-at-top
+
+    buffers = {}
+    counts = {'malloc': 0, 'free': 0}
+
+    @local_ctypes.CFUNCTYPE(local_ctypes.c_void_p, local_ctypes.c_size_t)
+    def custom_malloc(size):
+      counts['malloc'] += 1
+      buf = (local_ctypes.c_char * (size + 64))()
+      addr = (local_ctypes.addressof(buf) + 63) & ~63
+      buffers[addr] = buf
+      return addr
+
+    @local_ctypes.CFUNCTYPE(None, local_ctypes.c_void_p)
+    def custom_free(ptr):
+      counts['free'] += 1
+      if ptr:
+        buffers.pop(ptr, None)
+
+    try:
+      mujoco.set_mju_user_malloc(custom_malloc)
+      mujoco.set_mju_user_free(custom_free)
+      self.assertIs(mujoco.get_mju_user_malloc(), custom_malloc)
+      self.assertIs(mujoco.get_mju_user_free(), custom_free)
+
+      scn = mujoco.MjvScene(self.model, maxgeom=10)
+      self.assertGreater(counts['malloc'], 0)
+      del scn
+      gc.collect()
+      self.assertEqual(counts['free'], counts['malloc'])
+      self.assertEmpty(buffers)
+    finally:
+      mujoco.set_mju_user_malloc(None)
+      mujoco.set_mju_user_free(None)
+
+    self.assertIsNone(mujoco.get_mju_user_malloc())
+    self.assertIsNone(mujoco.get_mju_user_free())
+
+    malloc_before = counts['malloc']
+    free_before = counts['free']
+    scn2 = mujoco.MjvScene(self.model, maxgeom=10)
+    del scn2
+    gc.collect()
+    self.assertEqual(counts['malloc'], malloc_before)
+    self.assertEqual(counts['free'], free_before)
+
+  def test_tendon_j_colind_ragged_view(self):
+    model = mujoco.MjModel.from_xml_string("""
+    <mujoco>
+      <worldbody>
+        <body>
+          <joint name="j0" type="slide" axis="1 0 0"/>
+          <joint name="j1" type="slide" axis="0 1 0"/>
+          <joint name="j2" type="slide" axis="0 0 1"/>
+          <joint name="j3" type="hinge" axis="0 0 1"/>
+          <geom size="0.1"/>
+        </body>
+        <site name="s0" pos="0 0 0"/>
+        <site name="s1" pos="1 0 0"/>
+      </worldbody>
+      <tendon>
+        <fixed name="t0">
+          <joint joint="j0" coef="1"/>
+        </fixed>
+        <fixed name="t1">
+          <joint joint="j1" coef="1"/>
+          <joint joint="j2" coef="2"/>
+        </fixed>
+        <spatial name="t_spatial">
+          <site site="s0"/>
+          <site site="s1"/>
+        </spatial>
+      </tendon>
+    </mujoco>
+    """)
+    self.assertEqual(model.nv, 4)
+    self.assertEqual(model.nJten, 3)
+    np.testing.assert_array_equal(model.tendon('t0').J_colind, [0])
+    np.testing.assert_array_equal(model.tendon('t1').J_colind, [1, 2])
+    self.assertEqual(model.tendon('t_spatial').J_colind.shape, (0,))
+
+  def test_indexer_bool_views_mutate_in_place(self):
+    model = mujoco.MjModel.from_xml_string("""
+    <mujoco>
+      <asset>
+        <material name="m0" texuniform="false"/>
+      </asset>
+      <worldbody>
+        <light name="l0" active="true" castshadow="true"/>
+        <body name="b0">
+          <joint name="j0" type="hinge" limited="false" range="-1 1"/>
+          <geom name="g0" size="0.1" castshadow="true"/>
+        </body>
+      </worldbody>
+      <tendon>
+        <fixed name="t0" limited="false" range="-1 1">
+          <joint joint="j0" coef="1"/>
+        </fixed>
+      </tendon>
+      <equality>
+        <joint name="eq0" joint1="j0" active="true"/>
+      </equality>
+      <actuator>
+        <general name="a0" joint="j0" ctrllimited="false" ctrlrange="-1 1"
+                 forcelimited="false" forcerange="-1 1"
+                 actlimited="false" actrange="-1 1" dyntype="integrator"/>
+      </actuator>
+    </mujoco>
+    """)
+    self.assertEqual(model.joint('j0').limited.dtype, bool)
+    model.joint('j0').limited[:] = True
+    self.assertTrue(model.jnt_limited[0])
+
+    model.actuator('a0').ctrllimited[:] = True
+    model.actuator('a0').forcelimited[:] = True
+    model.actuator('a0').actlimited[:] = True
+    self.assertTrue(model.actuator_ctrllimited[0])
+    self.assertTrue(model.actuator_forcelimited[0])
+    self.assertTrue(model.actuator_actlimited[0])
+
+    model.geom('g0').castshadow[:] = False
+    self.assertFalse(model.geom_castshadow[0])
+
+    model.equality('eq0').active0[:] = False
+    self.assertFalse(model.eq_active0[0])
+
+    model.light('l0').active[:] = False
+    model.light('l0').castshadow[:] = False
+    self.assertFalse(model.light_active[0])
+    self.assertFalse(model.light_castshadow[0])
+
+    model.material('m0').texuniform[:] = True
+    self.assertTrue(model.mat_texuniform[0])
+
+    model.tendon('t0')._limited[:] = True
+    self.assertTrue(model.tendon_limited[0])
+
+  def test_bind_sequence_assignment(self):
+    spec = mujoco.MjSpec.from_string("""
+    <mujoco>
+      <worldbody>
+        <body name="b0" pos="1 2 3">
+          <joint name="j0" type="hinge" damping="0.1"/>
+          <geom size="0.1"/>
+        </body>
+        <body name="b1" pos="4 5 6">
+          <joint name="j1" type="hinge" damping="0.2"/>
+          <geom size="0.1"/>
+        </body>
+      </worldbody>
+    </mujoco>
+    """)
+    joints = [spec.joint('j0'), spec.joint('j1')]
+    model = spec.compile()
+    data = mujoco.MjData(model)
+
+    bm = model.bind(joints)
+    bd = data.bind(joints)
+
+    # Length mismatch raises ValueError with zero partial writes.
+    with self.assertRaises(ValueError):
+      bm.damping = [0.5]
+    np.testing.assert_allclose(bm.damping, [0.1, 0.2])
+
+    with self.assertRaises(ValueError):
+      bm.damping = [0.5, 0.6, 0.7]
+    np.testing.assert_allclose(bm.damping, [0.1, 0.2])
+
+    with self.assertRaises(ValueError):
+      bm.damping = 0.5
+    np.testing.assert_allclose(bm.damping, [0.1, 0.2])
+
+    # Valid assignment updates elements.
+    bm.damping = [0.5, 1.5]
+    np.testing.assert_allclose(bm.damping, [0.5, 1.5])
+    # Re-assigning bound values works cleanly.
+    bm.damping = bm.damping
+    np.testing.assert_allclose(bm.damping, [0.5, 1.5])
+
+    # MjData bind length mismatch and assignment.
+    with self.assertRaises(ValueError):
+      bd.qpos = [1.0]
+    np.testing.assert_allclose(bd.qpos, [0.0, 0.0])
+
+    with self.assertRaises(ValueError):
+      bd.qpos = 1.0
+    np.testing.assert_allclose(bd.qpos, [0.0, 0.0])
+
+    bd.qpos = [1.0, 2.0]
+    np.testing.assert_allclose(bd.qpos, [1.0, 2.0])
+    bd.qpos = bd.qpos
+    np.testing.assert_allclose(bd.qpos, [1.0, 2.0])
+
 
 
 if __name__ == '__main__':

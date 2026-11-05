@@ -235,10 +235,12 @@ public class MjcfImporter {
 
   protected virtual void ParseGeom(GameObject parentObject, XmlElement child) {
     var gameObject = CreateGameObjectWithUniqueName<MjGeom>(parentObject, child);
-    // Add the visuals.
-    gameObject.AddComponent<MjMeshFilter>();
-    var renderer = gameObject.AddComponent<MeshRenderer>();
-    renderer.sharedMaterial = DefaultMujocoMaterial;
+    if (gameObject.GetComponent<MjGeom>().ShapeType != MjShapeComponent.ShapeTypes.HField) {
+      // Add the visuals.
+      gameObject.AddComponent<MjMeshFilter>();
+      var renderer = gameObject.AddComponent<MeshRenderer>();
+      renderer.sharedMaterial = DefaultMujocoMaterial;
+    }
   }
 
   private GameObject CreateGameObjectInParent(string name, GameObject parentObject) {

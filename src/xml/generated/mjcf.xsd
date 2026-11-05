@@ -431,43 +431,6 @@
     </xs:restriction>
   </xs:simpleType>
 
-  <xs:simpleType name="kw_comp">
-    <xs:restriction base="xs:string">
-      <xs:enumeration value="particle"/>
-      <xs:enumeration value="grid"/>
-      <xs:enumeration value="rope"/>
-      <xs:enumeration value="loop"/>
-      <xs:enumeration value="cable"/>
-      <xs:enumeration value="cloth"/>
-    </xs:restriction>
-  </xs:simpleType>
-
-  <xs:simpleType name="kw_jkind">
-    <xs:annotation>
-      <xs:documentation>vestigial: composite pruning left a single kind</xs:documentation>
-    </xs:annotation>
-    <xs:restriction base="xs:string">
-      <xs:enumeration value="main"/>
-    </xs:restriction>
-  </xs:simpleType>
-
-  <xs:simpleType name="kw_initial">
-    <xs:restriction base="xs:string">
-      <xs:enumeration value="none"/>
-      <xs:enumeration value="free"/>
-      <xs:enumeration value="ball"/>
-    </xs:restriction>
-  </xs:simpleType>
-
-  <xs:simpleType name="kw_shape">
-    <xs:restriction base="xs:string">
-      <xs:enumeration value="s"/>
-      <xs:enumeration value="cos(s)"/>
-      <xs:enumeration value="sin(s)"/>
-      <xs:enumeration value="0"/>
-    </xs:restriction>
-  </xs:simpleType>
-
   <xs:simpleType name="kw_meshinertia">
     <xs:restriction base="xs:string">
       <xs:enumeration value="convex"/>
@@ -551,7 +514,6 @@
     <xs:restriction base="xs:string">
       <xs:enumeration value="false"/>
       <xs:enumeration value="true"/>
-      <xs:enumeration value="vert"/>
       <xs:enumeration value="strain"/>
     </xs:restriction>
   </xs:simpleType>
@@ -684,16 +646,6 @@
 
   <xs:simpleType name="floatlist">
     <xs:list itemType="xs:float"/>
-  </xs:simpleType>
-
-  <xs:simpleType name="int1to3">
-    <xs:restriction>
-      <xs:simpleType>
-        <xs:list itemType="xs:int"/>
-      </xs:simpleType>
-      <xs:minLength value="1"/>
-      <xs:maxLength value="3"/>
-    </xs:restriction>
   </xs:simpleType>
 
   <xs:simpleType name="int2">
@@ -1028,7 +980,7 @@
 
   <xs:complexType name="worldbody">
     <xs:annotation>
-      <xs:documentation>children, with cardinality the XSD cannot enforce (? at most one, ! exactly one, * any number, R recursive): body (*), frame (*), replicate (*), geom (*), attach (*), site (*), camera (*), light (*), plugin (*), composite (*), flexcomp (*)</xs:documentation>
+      <xs:documentation>children, with cardinality the XSD cannot enforce (? at most one, ! exactly one, * any number, R recursive): body (*), frame (*), replicate (*), geom (*), attach (*), site (*), camera (*), light (*), plugin (*), flexcomp (*)</xs:documentation>
     </xs:annotation>
     <xs:choice minOccurs="0" maxOccurs="unbounded">
       <xs:element name="body" type="body"/>
@@ -1040,7 +992,6 @@
       <xs:element name="camera" type="camera"/>
       <xs:element name="light" type="light"/>
       <xs:element name="plugin" type="plugin"/>
-      <xs:element name="composite" type="composite"/>
       <xs:element name="flexcomp" type="flexcomp"/>
       <xs:element name="include" type="include"/>
     </xs:choice>
@@ -1081,7 +1032,7 @@
 
   <xs:complexType name="equality">
     <xs:annotation>
-      <xs:documentation>children, with cardinality the XSD cannot enforce (? at most one, ! exactly one, * any number, R recursive): connect (*), weld (*), equality_joint (*), equality_tendon (*), equality_flex (*), flexvert (*), flexstrain (*)</xs:documentation>
+      <xs:documentation>children, with cardinality the XSD cannot enforce (? at most one, ! exactly one, * any number, R recursive): connect (*), weld (*), equality_joint (*), equality_tendon (*), equality_flex (*), flexstrain (*)</xs:documentation>
     </xs:annotation>
     <xs:choice minOccurs="0" maxOccurs="unbounded">
       <xs:element name="connect" type="connect"/>
@@ -1089,7 +1040,6 @@
       <xs:element name="joint" type="equality_joint"/>
       <xs:element name="tendon" type="equality_tendon"/>
       <xs:element name="flex" type="equality_flex"/>
-      <xs:element name="flexvert" type="flexvert"/>
       <xs:element name="flexstrain" type="flexstrain"/>
       <xs:element name="include" type="include"/>
     </xs:choice>
@@ -1238,6 +1188,7 @@
     <xs:attribute name="sleep" type="kw_enable" default="disable"/>
     <xs:attribute name="diagexact" type="kw_enable" default="disable"/>
     <xs:attribute name="ipc" type="kw_enable" default="disable"/>
+    <xs:attribute name="speculative" type="kw_enable" default="disable"/>
   </xs:complexType>
 
   <xs:complexType name="global">
@@ -1450,6 +1401,7 @@
     <xs:attribute name="margin" type="xs:double"/>
     <xs:attribute name="ref" type="xs:double"/>
     <xs:attribute name="springref" type="xs:double"/>
+    <xs:attribute name="springyield" type="xs:double"/>
     <xs:attribute name="armature" type="xs:double"/>
     <xs:attribute name="damping" type="double1to3">
       <xs:annotation>
@@ -1518,6 +1470,7 @@
       </xs:annotation>
     </xs:attribute>
     <xs:attribute name="rgba" type="float4" default="0.5 0.5 0.5 1"/>
+    <xs:attribute name="castshadow" type="kw_bool" default="true"/>
     <xs:attribute name="fluidshape" type="kw_fluidshape"/>
     <xs:attribute name="fluidcoef" type="double1to5" default="0.5 0.25 1.5 1 1"/>
     <xs:attribute name="user" type="doublelist"/>
@@ -1623,18 +1576,22 @@
   <xs:complexType name="default_tendon">
     <xs:attribute name="group" type="xs:int"/>
     <xs:attribute name="limited" type="kw_FalseTrueAuto" default="auto"/>
+    <xs:attribute name="actuatorfrclimited" type="kw_FalseTrueAuto" default="auto"/>
     <xs:attribute name="range" type="double2"/>
+    <xs:attribute name="actuatorfrcrange" type="double2"/>
     <xs:attribute name="solreflimit" type="double1to2"/>
     <xs:attribute name="solimplimit" type="double1to5"/>
     <xs:attribute name="solreffriction" type="double1to2"/>
     <xs:attribute name="solimpfriction" type="double1to5"/>
     <xs:attribute name="frictionloss" type="xs:double"/>
     <xs:attribute name="springlength" type="double1to2"/>
+    <xs:attribute name="springyield" type="xs:double"/>
     <xs:attribute name="width" type="xs:double"/>
     <xs:attribute name="material" type="xs:string"/>
     <xs:attribute name="margin" type="xs:double"/>
     <xs:attribute name="stiffness" type="double1to3"/>
     <xs:attribute name="damping" type="double1to3"/>
+    <xs:attribute name="armature" type="xs:double"/>
     <xs:attribute name="rgba" type="float4"/>
     <xs:attribute name="user" type="doublelist"/>
   </xs:complexType>
@@ -2141,7 +2098,7 @@
 
   <xs:complexType name="body">
     <xs:annotation>
-      <xs:documentation>children, with cardinality the XSD cannot enforce (? at most one, ! exactly one, * any number, R recursive): body (R), frame (R), replicate (*), inertial (?), joint (*), freejoint (*), geom (*), attach (*), site (*), camera (*), light (*), plugin (*), composite (*), flexcomp (*)</xs:documentation>
+      <xs:documentation>children, with cardinality the XSD cannot enforce (? at most one, ! exactly one, * any number, R recursive): body (R), frame (R), replicate (*), inertial (?), joint (*), freejoint (*), geom (*), attach (*), site (*), camera (*), light (*), plugin (*), flexcomp (*)</xs:documentation>
     </xs:annotation>
     <xs:choice minOccurs="0" maxOccurs="unbounded">
       <xs:element name="body" type="body"/>
@@ -2156,7 +2113,6 @@
       <xs:element name="camera" type="camera"/>
       <xs:element name="light" type="light"/>
       <xs:element name="plugin" type="plugin"/>
-      <xs:element name="composite" type="composite"/>
       <xs:element name="flexcomp" type="flexcomp"/>
       <xs:element name="include" type="include"/>
     </xs:choice>
@@ -2178,7 +2134,7 @@
 
   <xs:complexType name="frame">
     <xs:annotation>
-      <xs:documentation>children, with cardinality the XSD cannot enforce (? at most one, ! exactly one, * any number, R recursive): body (R), frame (R), replicate (*), inertial (?), joint (*), freejoint (*), geom (*), attach (*), site (*), camera (*), light (*), plugin (*), composite (*), flexcomp (*)</xs:documentation>
+      <xs:documentation>children, with cardinality the XSD cannot enforce (? at most one, ! exactly one, * any number, R recursive): body (R), frame (R), replicate (*), inertial (?), joint (*), freejoint (*), geom (*), attach (*), site (*), camera (*), light (*), plugin (*), flexcomp (*)</xs:documentation>
     </xs:annotation>
     <xs:choice minOccurs="0" maxOccurs="unbounded">
       <xs:element name="body" type="body"/>
@@ -2193,7 +2149,6 @@
       <xs:element name="camera" type="camera"/>
       <xs:element name="light" type="light"/>
       <xs:element name="plugin" type="plugin"/>
-      <xs:element name="composite" type="composite"/>
       <xs:element name="flexcomp" type="flexcomp"/>
       <xs:element name="include" type="include"/>
     </xs:choice>
@@ -2212,7 +2167,7 @@
 
   <xs:complexType name="replicate">
     <xs:annotation>
-      <xs:documentation>children, with cardinality the XSD cannot enforce (? at most one, ! exactly one, * any number, R recursive): body (*), frame (*), replicate (R), inertial (?), joint (*), geom (*), attach (*), site (*), camera (*), light (*), plugin (*), composite (*)</xs:documentation>
+      <xs:documentation>children, with cardinality the XSD cannot enforce (? at most one, ! exactly one, * any number, R recursive): body (*), frame (*), replicate (R), inertial (?), joint (*), geom (*), attach (*), site (*), camera (*), light (*), plugin (*)</xs:documentation>
     </xs:annotation>
     <xs:choice minOccurs="0" maxOccurs="unbounded">
       <xs:element name="body" type="body"/>
@@ -2226,7 +2181,6 @@
       <xs:element name="camera" type="camera"/>
       <xs:element name="light" type="light"/>
       <xs:element name="plugin" type="plugin"/>
-      <xs:element name="composite" type="composite"/>
       <xs:element name="include" type="include"/>
     </xs:choice>
     <xs:attribute name="count" type="xs:int" use="required"/>
@@ -2300,6 +2254,7 @@
       </xs:annotation>
     </xs:attribute>
     <xs:attribute name="rgba" type="float4" default="0.5 0.5 0.5 1"/>
+    <xs:attribute name="castshadow" type="kw_bool" default="true"/>
     <xs:attribute name="fluidshape" type="kw_fluidshape"/>
     <xs:attribute name="fluidcoef" type="double1to5" default="0.5 0.25 1.5 1 1"/>
     <xs:attribute name="user" type="doublelist"/>
@@ -2414,29 +2369,6 @@
     </xs:choice>
     <xs:attribute name="plugin" type="xs:string"/>
     <xs:attribute name="instance" type="xs:string"/>
-  </xs:complexType>
-
-  <xs:complexType name="composite">
-    <xs:annotation>
-      <xs:documentation>children, with cardinality the XSD cannot enforce (? at most one, ! exactly one, * any number, R recursive): composite_joint (*), composite_skin (?), composite_geom (?), composite_site (?), plugin (*)</xs:documentation>
-    </xs:annotation>
-    <xs:choice minOccurs="0" maxOccurs="unbounded">
-      <xs:element name="joint" type="composite_joint"/>
-      <xs:element name="skin" type="composite_skin"/>
-      <xs:element name="geom" type="composite_geom"/>
-      <xs:element name="site" type="composite_site"/>
-      <xs:element name="plugin" type="plugin"/>
-      <xs:element name="include" type="include"/>
-    </xs:choice>
-    <xs:attribute name="prefix" type="xs:string"/>
-    <xs:attribute name="type" type="kw_comp" use="required"/>
-    <xs:attribute name="count" type="int1to3"/>
-    <xs:attribute name="offset" type="double3"/>
-    <xs:attribute name="vertex" type="doublelist"/>
-    <xs:attribute name="initial" type="kw_initial" default="ball"/>
-    <xs:attribute name="curve" type="xs:string"/>
-    <xs:attribute name="size" type="double1to3"/>
-    <xs:attribute name="quat" type="double4"/>
   </xs:complexType>
 
   <xs:complexType name="flexcomp">
@@ -2577,6 +2509,7 @@
         <xs:documentation>one value: copied to both</xs:documentation>
       </xs:annotation>
     </xs:attribute>
+    <xs:attribute name="springyield" type="xs:double"/>
     <xs:attribute name="width" type="xs:double" default="0.003"/>
     <xs:attribute name="material" type="xs:string"/>
     <xs:attribute name="margin" type="xs:double"/>
@@ -2620,6 +2553,7 @@
         <xs:documentation>one value: copied to both</xs:documentation>
       </xs:annotation>
     </xs:attribute>
+    <xs:attribute name="springyield" type="xs:double"/>
     <xs:attribute name="margin" type="xs:double"/>
     <xs:attribute name="stiffness" type="double1to3">
       <xs:annotation>
@@ -2696,15 +2630,6 @@
   </xs:complexType>
 
   <xs:complexType name="equality_flex">
-    <xs:attribute name="name" type="xs:string"/>
-    <xs:attribute name="class" type="xs:string"/>
-    <xs:attribute name="active" type="kw_bool" default="true"/>
-    <xs:attribute name="solref" type="double1to2" default="0.02 1"/>
-    <xs:attribute name="solimp" type="double1to5" default="0.9 0.95 0.001 0.5 2"/>
-    <xs:attribute name="flex" type="xs:string" use="required"/>
-  </xs:complexType>
-
-  <xs:complexType name="flexvert">
     <xs:attribute name="name" type="xs:string"/>
     <xs:attribute name="class" type="xs:string"/>
     <xs:attribute name="active" type="kw_bool" default="true"/>
@@ -3972,6 +3897,7 @@
     <xs:attribute name="mpos" type="doublelist"/>
     <xs:attribute name="mquat" type="doublelist"/>
     <xs:attribute name="ctrl" type="doublelist"/>
+    <xs:attribute name="plastic" type="doublelist"/>
   </xs:complexType>
 
   <xs:complexType name="default_layer">
@@ -4064,6 +3990,7 @@
     <xs:attribute name="margin" type="xs:double"/>
     <xs:attribute name="ref" type="xs:double"/>
     <xs:attribute name="springref" type="xs:double"/>
+    <xs:attribute name="springyield" type="xs:double"/>
     <xs:attribute name="armature" type="xs:double"/>
     <xs:attribute name="damping" type="double1to3">
       <xs:annotation>
@@ -4085,65 +4012,6 @@
     <xs:attribute name="value" type="xs:string"/>
   </xs:complexType>
 
-  <xs:complexType name="composite_joint">
-    <xs:attribute name="kind" type="kw_jkind" use="required"/>
-    <xs:attribute name="group" type="xs:int"/>
-    <xs:attribute name="stiffness" type="xs:double"/>
-    <xs:attribute name="damping" type="xs:double"/>
-    <xs:attribute name="armature" type="xs:double"/>
-    <xs:attribute name="solreffix" type="double1to2"/>
-    <xs:attribute name="solimpfix" type="double1to5"/>
-    <xs:attribute name="type" type="kw_jointtype"/>
-    <xs:attribute name="axis" type="double3"/>
-    <xs:attribute name="limited" type="kw_FalseTrueAuto" default="auto"/>
-    <xs:attribute name="range" type="double2"/>
-    <xs:attribute name="margin" type="xs:double"/>
-    <xs:attribute name="solreflimit" type="double1to2"/>
-    <xs:attribute name="solimplimit" type="double1to5"/>
-    <xs:attribute name="frictionloss" type="xs:double"/>
-    <xs:attribute name="solreffriction" type="double1to2"/>
-    <xs:attribute name="solimpfriction" type="double1to5"/>
-  </xs:complexType>
-
-  <xs:complexType name="composite_skin">
-    <xs:attribute name="texcoord" type="kw_bool"/>
-    <xs:attribute name="material" type="xs:string"/>
-    <xs:attribute name="group" type="xs:int"/>
-    <xs:attribute name="rgba" type="float4"/>
-    <xs:attribute name="inflate" type="xs:double"/>
-    <xs:attribute name="subgrid" type="xs:int"/>
-  </xs:complexType>
-
-  <xs:complexType name="composite_geom">
-    <xs:attribute name="type" type="kw_geomtype"/>
-    <xs:attribute name="contype" type="xs:int"/>
-    <xs:attribute name="conaffinity" type="xs:int"/>
-    <xs:attribute name="condim" type="xs:int"/>
-    <xs:attribute name="group" type="xs:int"/>
-    <xs:attribute name="priority" type="xs:int"/>
-    <xs:attribute name="size" type="double1to3"/>
-    <xs:attribute name="material" type="xs:string"/>
-    <xs:attribute name="rgba" type="float4"/>
-    <xs:attribute name="friction" type="double1to3"/>
-    <xs:attribute name="mass" type="xs:double"/>
-    <xs:attribute name="density" type="xs:double"/>
-    <xs:attribute name="solmix" type="xs:double"/>
-    <xs:attribute name="solref" type="double1to2"/>
-    <xs:attribute name="solimp" type="double1to5"/>
-    <xs:attribute name="margin" type="xs:double"/>
-    <xs:attribute name="gap" type="xs:double"/>
-    <xs:attribute name="surfacevel" type="double1to6"/>
-    <xs:attribute name="adhesion" type="xs:double"/>
-  </xs:complexType>
-
-  <xs:complexType name="composite_site">
-    <xs:attribute name="group" type="xs:int"/>
-    <xs:attribute name="size" type="double1to3"/>
-    <xs:attribute name="material" type="xs:string"/>
-    <xs:attribute name="rgba" type="float4"/>
-    <xs:attribute name="mesh" type="xs:string"/>
-  </xs:complexType>
-
   <xs:complexType name="flexcomp_edge">
     <xs:attribute name="equality" type="kw_flexeq"/>
     <xs:attribute name="solref" type="double1to2"/>
@@ -4155,8 +4023,14 @@
   <xs:complexType name="elasticity">
     <xs:attribute name="young" type="xs:double"/>
     <xs:attribute name="poisson" type="xs:double"/>
+    <xs:attribute name="shear" type="xs:double"/>
     <xs:attribute name="damping" type="xs:double"/>
     <xs:attribute name="thickness" type="xs:double" default="-1"/>
+    <xs:attribute name="yield" type="double1to2">
+      <xs:annotation>
+        <xs:documentation>stretch, bend; 1 value: both</xs:documentation>
+      </xs:annotation>
+    </xs:attribute>
     <xs:attribute name="elastic2d" type="kw_elastic2d"/>
     <xs:attribute name="section" type="kw_flexsection"/>
     <xs:attribute name="sectionsize" type="double2"/>

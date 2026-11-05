@@ -1,0 +1,15 @@
+# Description:
+#   Apple Core OpenGL context management.
+
+load("@rules_python//python:py_library.bzl", "py_library")
+
+licenses(["notice"])
+
+py_library(
+    name = "cgl",
+    srcs = [
+        "__init__.py",
+        "cgl.py",
+    ],
+    visibility = ["//python/mujoco:visibility"],
+)

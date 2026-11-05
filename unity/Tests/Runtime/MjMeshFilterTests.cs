@@ -61,5 +61,14 @@ public class MjMeshFilterTests {
     var secondMesh = _meshFilter.mesh;
     Assert.That(firstMesh, Is.Not.EqualTo(secondMesh));
   }
+
+  [UnityTest]
+  public IEnumerator SwitchingToHFieldDisposesMeshWithoutThrowing() {
+    yield return null;
+    Assert.That(_meshFilter.sharedMesh, Is.Not.Null);
+    _geom.ShapeType = MjShapeComponent.ShapeTypes.HField;
+    yield return null;
+    Assert.That(_meshFilter.sharedMesh == null, Is.True);
+  }
 }
 }

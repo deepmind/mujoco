@@ -6,17 +6,32 @@ description: >-
   (put_model, put_data), static contact sizing (max_contact_points,
   max_geom_pairs, nconmax, njmax), float32 precision, XLA compilation caching.
   Use for RL environment batches, GPU rollouts, differentiable physics.
-  Do NOT use for CPU simulation, noslip/PGS solvers (mujoco-python), rendering (mujoco-rendering), or GUI (mujoco-gui).
+  Do NOT use for CPU simulation, noslip/PGS solvers (mujoco-python), cross-engine parity debugging (mujoco-parity), rendering (mujoco-rendering), or GUI (mujoco-gui).
 ---
 
 # MuJoCo Accelerated: MJX & MJWarp GPU Backends
 
 > [!TIP]
 >
+> **Official MuJoCo documentation (`doc/*.rst`):** Read
+> [`../../mjx.rst`](../../mjx.rst) (`.. _Mjx:`, `.. _MjxWarp:`, `.. _MjxJAX:`),
+> [`../../mjx_api.rst`](../../mjx_api.rst),
+> [`../../mjwarp/index.rst`](../../mjwarp/index.rst) (`.. _MJW:`), and
+> [`../../mjwarp/api.rst`](../../mjwarp/api.rst) directly when in a MuJoCo
+> checkout (reserve `.. _Label:` grep for large files like `python.rst`).
+> Outside a checkout, fetch
+> `https://mujoco.readthedocs.io/en/latest/<path>.html` (or `/en/stable/` for
+> released pages; Sphinx anchors lowercase the label, e.g. `.. _PyBatch:` →
+> `#pybatch`) and browse repo paths (`../../../`) under
+> `https://github.com/google-deepmind/mujoco/tree/main/`.
+>
 > **Related skills:**
 >
 > -   [mujoco-python](../python/SKILL.md) — CPU physics simulation, kinematics,
 >     and full solver suite.
+> -   [mujoco-parity](../parity/SKILL.md) — Cross-engine physics parity checks
+>     between CPU MuJoCo and MJWarp/MJX (`forward` isolation, contact matching,
+>     and `float32` baseline rollouts).
 > -   [mujoco-studio](../studio/SKILL.md) — Interactive simulation and Studio
 >     viewer plugins.
 
@@ -25,18 +40,28 @@ description: >-
 > MJX and MJWarp are **Python-only** accelerated backends. Standard CPU
 > simulation runs in full `float64` via `import mujoco`.
 
-## 1. Backend Comparison: C++ vs MJX vs MJWarp
+## 1. Backend Comparison: C++ vs MJX-JAX vs MJX-Warp vs MJWarp
 
-| Feature | C++ Engine (Default) | MJX (JAX) | MJWarp (CUDA) |
-| :--- | :--- | :--- | :--- |
-| **Import** | `import mujoco` | `from mujoco import mjx` | `import mujoco_warp as mjw` |
-| **Hardware** | CPU | CPU / GPU / TPU | NVIDIA GPU |
-| **Precision** | float64 | float32 | float32 |
-| **Differentiable** | ❌ No | ✅ Yes (JAX gradients) | ❌ No |
-| **Batch Stepping** | ❌ Serial / multi-threaded | ✅ `jax.vmap` | ✅ Native CUDA batches |
-| **Solvers** | Newton, CG, PGS, **noslip** | Newton, CG | Newton, CG |
-| **Constraint Islands**| ✅ Yes | ❌ No | ✅ Yes |
-| **Plugins** | All engine plugins | ❌ No | SDF plugins only |
+| Feature | C++ Engine (Default) | MJX-JAX (`impl='jax'`) | MJX-Warp (`impl='warp'`) | MJWarp (CUDA) |
+| :--- | :--- | :--- | :--- | :--- |
+| **Import** | `import mujoco` (`mujoco.batch`, `mujoco.rollout`) | `from mujoco import mjx` | `from mujoco import mjx` | `import mujoco_warp as mjw` |
+| **Hardware** | CPU | CPU / GPU / TPU | NVIDIA GPU | NVIDIA GPU |
+| **Precision** | float64 | float32 | float32 | float32 |
+| **Differentiable** | ❌ No | ✅ Yes (JAX gradients) | ❌ No | ❌ No |
+| **Batch Stepping** | ✅ `mujoco.batch.Batch` & `mujoco.rollout` (CPU threads) | ✅ `jax.vmap` | ✅ `jax.vmap` (CUDA kernels) | ✅ Native CUDA batches |
+| **Solvers** | Newton, CG, PGS, **noslip** | Newton, CG | Newton, CG | Newton, CG |
+| **Constraint Islands**| ✅ Yes | ❌ No | ✅ Yes | ✅ Yes |
+| **Plugins** | All engine plugins | ❌ No | SDF plugins only | SDF plugins only |
+
+See [mjx.rst](../../mjx.rst) (`.. _MjxWarp:`, `.. _MjxJAX:`,
+`.. _MjxFeatureParity:`) and [mjwarp/index.rst](../../mjwarp/index.rst)
+(`.. _mjwDiff:`) for full feature parity and solver/collision details. For
+multi-threaded CPU batch simulation supporting `float64`, `noslip`/`PGS`, and
+all engine plugins without JAX or CUDA, use stateful `mujoco.batch.Batch` (for
+interactive RL stepping, subset resets, and per-sim domain randomization — see
+[python.rst](../../python.rst), `.. _PyBatch:`) or stateless `mujoco.rollout`
+(`.. _PyRollout:`, and [programming/simulation.rst](../../programming/simulation.rst),
+`.. _siBatch:`).
 
 ## 2. MJX Workflow (JAX)
 
@@ -62,6 +87,14 @@ mjx_data = mjx.step(mjx_model, mjx_data)
 mjx.get_data_into(data, model, mjx_data)
 print(data.body('torso').xpos)
 ```
+
+On NVIDIA GPUs when JAX autodiff is not required, pass `impl='warp'` to
+`mjx.put_model(model, impl='warp')` and
+`mjx.make_data(model, impl='warp', naconmax=..., njmax=...)` (`pip install
+mujoco-mjx[warp]`) to run MJWarp's CUDA contact/constraint kernels inside JAX
+(`jax.jit` / `jax.vmap`); use `Data.where(...)` for conditional per-world resets
+and read [mjx.rst](../../mjx.rst) (`.. _MjxWarp:`, `.. _MjxWarpGraphModes:`,
+`.. _MjxPerformanceWarp:`) for CUDA graph modes and batch rendering.
 
 ## 3. High-Throughput Rollouts: jax.vmap and jax.lax.scan
 
@@ -181,33 +214,33 @@ qpos = mjw_data.qpos.numpy()  # (4096, nq)
 mjw.get_data_into(data, model, mjw_data, world_id=0)
 ```
 
-## 7. Supported Geometries & Feature Gaps
+## 7. Feature Parity, Tuning & Gotchas
 
-### Collision Geom Support Matrix
+Instead of relying on static feature snapshots, check the authoritative parity
+and performance sections in the RST manual when choosing colliders, solvers, or
+tuning throughput:
 
-| Geometry Pair | MJX (JAX) | MJWarp (CUDA) |
-| :--- | :--- | :--- |
-| Sphere - Sphere | ✅ Supported | ✅ Supported |
-| Sphere - Plane | ✅ Supported | ✅ Supported |
-| Capsule - Capsule | ✅ Supported | ✅ Supported |
-| Capsule - Plane | ✅ Supported | ✅ Supported |
-| Box - Plane | ✅ Supported | ✅ Supported |
-| Mesh - Primitive | ✅ Convex meshes | ✅ Convex meshes |
-| Mesh - Mesh | ⚠️ Performance sensitive | ✅ Warp accelerated |
+-   **Supported geometries, solvers & differences from CPU MuJoCo**:
+    [mjx.rst](../../mjx.rst) (`.. _MjxFeatureParity:`, `.. _MjxSharpBits:`) and
+    [mjwarp/index.rst](../../mjwarp/index.rst) (`.. _mjwDiff:`,
+    `.. _mjwPairwise:`, `.. _mjwBoxBox:`). Notably, `noslip` and `PGS` solvers
+    are CPU-only, and MJX-JAX solves constraints monolithically without
+    constraint islands.
+-   **Performance tuning, CUDA graphs & domain randomization**:
+    [mjx.rst](../../mjx.rst) (`.. _MjxPerformance:`, `.. _MjxPerformanceJAX:`,
+    `.. _MjxPerformanceWarp:`), [mjwarp/index.rst](../../mjwarp/index.rst)
+    (`.. _mjwPerf:`, `.. _mjwGC:`, `.. _mjwOverflow:`, `.. _mjwBatch:`), and
+    [modeling.rst](../../modeling.rst) (`.. _CTuning:`, `.. _CTuningGlobal:`,
+    `.. _CTuningModel:`) for general timestep, solver/iteration, friction-cone,
+    and primitive-vs-mesh collision trade-offs.
 
-### Solvers Not Available on GPU
-
--   **noslip solver**: Available only in C++ engine. If exact frictional stick
-    conditions without sliding drift are required, use CPU.
--   **PGS solver**: Not available on GPU backends.
--   **Constraint Islands**: Not used by MJX (solved monolithically); supported
-    by MJWarp.
-
-## 8. Common Gotchas & Numerical Stability
+### High-Frequency Gotchas
 
 1.  **Float32 precision**: GPU backends run in single precision (`float32`).
     Stiff systems may experience numerical drift or NaN errors. Counteract this
     by increasing `model.opt.iterations` or decreasing `model.opt.timestep`.
+    For comparing `float32` GPU physics against CPU MuJoCo, refer to
+    [`mujoco-parity`](../parity/SKILL.md).
 2.  **Immutability in MJX**: `mjx.Data` is a JAX pytree. In-place assignments
     fail; use `.replace()`:
     ```python
@@ -220,13 +253,39 @@ mjw.get_data_into(data, model, mjw_data, world_id=0)
     jax.config.update('jax_compilation_cache_dir', '/tmp/jax_cache')
     ```
 
-## 9. Key References
+## 8. Key References
 
 ### Documentation
 
--   [MJX Guide](../../mjx.rst)
--   [Python Bindings Reference](../../python.rst)
+-   [MJX Guide (`MJX-JAX` & `MJX-Warp`)](../../mjx.rst) (`.. _Mjx:`,
+    `.. _MjxWarp:`, `.. _MjxJAX:`, `.. _MjxFeatureParity:`,
+    `.. _MjxPerformance:`, `.. _MjxSharpBits:`) and
+    [MJX API Reference](../../mjx_api.rst)
+-   [MuJoCo Warp (MJWarp) Guide](../../mjwarp/index.rst) (`.. _MJW:`,
+    `.. _MJW_Usage:`, `.. _mjwPerf:`, `.. _mjwOverflow:`, `.. _mjwBatch:`,
+    `.. _mjwDiff:`) and [MJWarp API Reference](../../mjwarp/api.rst)
+-   [Python Bindings (`mujoco.batch` & `mujoco.rollout`)](../../python.rst)
+    (`.. _PyNamed:`, `.. _PyBatch:`, `.. _PyRollout:`),
+    [Model Tuning Guide](../../modeling.rst) (`.. _CTuning:`), and
+    [MuJoCo Menagerie](../../models.rst) (`.. _Menagerie:`)
 
-### Source Code Examples
+### Notebooks, Models & RL Ecosystem
 
--   [MJX Support Tests](../../../mjx/mujoco/mjx/_src/support_test.py)
+-   **Tutorials & tests**: `mjx/tutorial.ipynb` (`.. _MjxNotebook:` in
+    [mjx.rst](../../mjx.rst)),
+    [MJX Support Tests](../../../mjx/mujoco/mjx/_src/support_test.py),
+    [Humanoid Models](../../../model/humanoid/humanoid.xml), and
+    [Benchmark Test Models](../../../test/benchmark/testdata/100_humanoids_chol.xml)
+-   **RL & simulation ecosystem** (see
+    [mjwarp/index.rst](../../mjwarp/index.rst), `.. _mjwFAQ:`):
+    -   [MuJoCo Playground (`google-deepmind/mujoco_playground`)](https://github.com/google-deepmind/mujoco_playground)
+        — JAX/MJX (`MJX-JAX` & `MJX-Warp`) RL environments for locomotion,
+        manipulation, dexterous hands, and vision.
+    -   [`mjlab` (`mujocolab/mjlab`)](https://github.com/mujocolab/mjlab) —
+        Isaac Lab-style manager API for training policies directly with
+        `mujoco_warp` and PyTorch.
+    -   [MuJoCo Warp (`google-deepmind/mujoco_warp`)](https://github.com/google-deepmind/mujoco_warp)
+        — Standalone `mujoco_warp` repository (`notebooks/tutorial.ipynb`,
+        benchmarks, and Warp kernels).
+    -   [MuJoCo MPC (`google-deepmind/mujoco_mpc`)](https://github.com/google-deepmind/mujoco_mpc)
+        — Real-time model-predictive control and MJX planning baselines.

@@ -105,7 +105,15 @@ def _wrap_period(m: Model) -> jax.Array:
   is_servo_type = (
       (m.actuator_gaintype == GainType.FIXED)
       & (m.actuator_biastype == BiasType.AFFINE)
-      & np.isin(m.actuator_dyntype, (DynType.NONE, DynType.INTEGRATOR))
+      & np.isin(
+          m.actuator_dyntype,
+          (
+              DynType.NONE,
+              DynType.INTEGRATOR,
+              DynType.FILTER,
+              DynType.FILTEREXACT,
+          ),
+      )
   )
   is_site_ref = (m.actuator_trntype == TrnType.SITE) & (
       m.actuator_trnid[:, 1] >= 0
@@ -166,13 +174,14 @@ def fwd_actuation(m: Model, d: Data) -> Data:
     ctrl = jp.clip(ctrl, ctrlrange[:, 0], ctrlrange[:, 1])
 
   # act_dot for stateful actuators
-  def get_act_dot(dyn_typ, dyn_prm, ctrl, act):
+  def get_act_dot(dyn_typ, dyn_prm, ctrl, act, period):
     if dyn_typ == DynType.NONE:
       act_dot = jp.array(0.0)
     elif dyn_typ == DynType.INTEGRATOR:
       act_dot = ctrl
     elif dyn_typ in (DynType.FILTER, DynType.FILTEREXACT):
-      act_dot = (ctrl - act) / jp.clip(dyn_prm[0], mujoco.mjMINVAL)
+      u = _wrap_setpoint(ctrl, act, period)
+      act_dot = (u - act) / jp.clip(dyn_prm[0], mujoco.mjMINVAL)
     elif dyn_typ == DynType.MUSCLE:
       act_dot = support.muscle_dynamics(ctrl, act, dyn_prm)
     else:
@@ -184,12 +193,13 @@ def fwd_actuation(m: Model, d: Data) -> Data:
     act_dot = scan.flat(
         m,
         get_act_dot,
-        'uuua',
+        'uuuau',
         'a',
         m.actuator_dyntype,
         m.actuator_dynprm,
         ctrl,
         d.act,
+        _wrap_period(m),
         group_by='u',
     )
 
@@ -332,6 +342,48 @@ def _integrate_pos(
   return jp.concatenate(qs) if qs else jp.empty((0,))
 
 
+@named_scope
+def _rk_correct_vel(
+    jnt_typs: Sequence[str], qvel: jax.Array, dqvel: jax.Array, dt: jax.Array
+) -> jax.Array:
+  """Runge-Kutta-Munthe-Kaas (RKMK) correction of an RK stage velocity.
+
+  Orientations are written as q = q0 * exp(rot) and RK integrates the rotation
+  vector rot, so the order of the tableau is kept; the rate of rot is not the
+  angular velocity but dexp^{-1}_{-rot} of it. Maps the rotational dofs of ball
+  and free joints in qvel to rotation vector rates, given the stage position
+  increment velocity dqvel (rot = dt * dqvel); other dofs are unchanged.
+
+  Args:
+    jnt_typs: joint types
+    qvel: stage velocity
+    dqvel: stage position increment velocity
+    dt: timestep
+
+  Returns:
+    corrected stage velocity
+  """
+  vs, vi = [], 0
+
+  for jnt_typ in jnt_typs:
+    if jnt_typ == JointType.FREE:
+      ang = math.deriv_expmap(
+          dt * dqvel[vi + 3 : vi + 6], qvel[vi + 3 : vi + 6]
+      )
+      vs.append(jp.concatenate([qvel[vi : vi + 3], ang]))
+      vi += 6
+    elif jnt_typ == JointType.BALL:
+      vs.append(math.deriv_expmap(dt * dqvel[vi : vi + 3], qvel[vi : vi + 3]))
+      vi += 3
+    elif jnt_typ in (JointType.HINGE, JointType.SLIDE):
+      vs.append(qvel[vi : vi + 1])
+      vi += 1
+    else:
+      raise RuntimeError(f'unrecognized joint type: {jnt_typ}')
+
+  return jp.concatenate(vs) if vs else jp.empty((0,))
+
+
 def _next_activation(m: Model, d: Data, act_dot: jax.Array) -> jax.Array:
   """Returns the next act given the current act_dot, after clamping."""
   act = d.act
@@ -352,7 +404,7 @@ def _next_activation(m: Model, d: Data, act_dot: jax.Array) -> jax.Array:
     else:
       act = act + act_dot * m.opt.timestep
     act = jp.clip(act, actrange[0], actrange[1])
-    if dyntype == DynType.INTEGRATOR:
+    if dyntype in (DynType.INTEGRATOR, DynType.FILTER, DynType.FILTEREXACT):
       act = _wrap_setpoint(act, length, period)
     return act
 
@@ -429,12 +481,15 @@ def rungekutta4(m: Model, d: Data) -> Data:
   T = d.time + C * m.opt.timestep
   # pylint: enable=invalid-name
 
-  kqvel = d.qvel  # intermediate RK solution
+  kqvel = d.qvel  # intermediate RK solution, with the RKMK correction
   # RK solutions sum
   qvel, qacc, act_dot = jax.tree_util.tree_map(
       lambda k: B[0] * k, (kqvel, d.qacc, d.act_dot)
   )
   integrate_fn = lambda *args: _integrate_pos(*args, dt=m.opt.timestep)
+  correct_fn = lambda *args: _rk_correct_vel(*args, dt=m.opt.timestep)
+  # the RKMK correction is the identity without ball or free joints
+  has_rot_jnt = any(t in (JointType.FREE, JointType.BALL) for t in m.jnt_type)
 
   def f(carry, x):
     qvel, qacc, act_dot, kqvel, d = carry
@@ -449,6 +504,10 @@ def rungekutta4(m: Model, d: Data) -> Data:
     d = d.replace(qpos=kqpos, qvel=kqvel, act=kact, time=t)
     d = forward(m, d)
 
+    # RKMK: map the stage angular velocities to rotation vector rates
+    if has_rot_jnt:
+      kqvel = scan.flat(m, correct_fn, 'jvv', 'v', m.jnt_type, kqvel, dqvel)
+
     qvel += b * kqvel
     qacc += b * d.qacc
     act_dot += b * d.act_dot
@@ -459,9 +518,16 @@ def rungekutta4(m: Model, d: Data) -> Data:
   out, _ = jax.lax.scan(f, (qvel, qacc, act_dot, kqvel, d), abt, unroll=3)
   qvel, qacc, act_dot, _, d1 = out
 
-  d = d1.replace(qpos=d0.qpos, qvel=d0.qvel, act=d0.act, time=d0.time)
-  d = _advance(m, d, act_dot, qacc, qvel)
-  return d
+  d = d1.replace(
+      qpos=d0.qpos,
+      qvel=d0.qvel,
+      act=d0.act,
+      time=d0.time,
+      actuator_length=d0.actuator_length,
+  )
+  return _advance(m, d, act_dot, qacc, qvel).replace(
+      qacc=qacc, qacc_warmstart=d1.qacc
+  )
 
 
 @named_scope

@@ -16,6 +16,7 @@
 #define MUJOCO_SRC_RENDER_FILAMENT_SUPPORT_MODEL_RENDERABLES_H_
 
 #include <array>
+#include <optional>
 #include <unordered_map>
 #include <utility>
 #include <vector>
@@ -25,6 +26,7 @@
 #include <mujoco/mjrfilament.h>
 #include <mujoco/mjvisualize.h>
 #include <mujoco/mujoco.h>
+#include "render/filament/support/mesh_util.h"
 #include "render/filament/support/mjrf_ptr.h"
 #include "render/filament/support/model_resources.h"
 
@@ -60,8 +62,8 @@ class ModelRenderables {
   // Sets the visualization options on the renderables. The following options
   // are supported:
   // - shows/hides renderables based on the group visibility
-  // - shows/hides renderables based on mjVIS_SKIN, mjVIS_FLEXSKIN,
-  //   mjVIS_TENDON, and mjVIS_ACTUATOR flags
+  // - shows/hides renderables based on mjVIS_STATIC, mjVIS_SKIN,
+  //   mjVIS_FLEXSKIN, mjVIS_TENDON, and mjVIS_ACTUATOR flags
   // - switches meshes to convex hull mode if mjVIS_CONVEXHULL is enabled
   void SetOptions(const mjvOption& opt);
 
@@ -86,7 +88,8 @@ class ModelRenderables {
   void SetVisibility(mjtObj obj_type, int idx, bool visible);
 
   mjrfMaterial GetMaterial(mjtObj obj_type, int obj_index,
-                           const mjData* data = nullptr);
+                           const mjData* data = nullptr,
+                           std::optional<int> matid_override = std::nullopt);
 
   mjrfScene* scene_;
   ModelResources* model_resources_;
@@ -102,6 +105,9 @@ class ModelRenderables {
   std::vector<UniquePtr<mjrfRenderable>> sites_;
   std::vector<UniquePtr<mjrfRenderable>> skins_;
   std::vector<std::vector<UniquePtr<mjrfRenderable>>> flexes_;
+  std::vector<std::vector<FlexMeshSlice>> flex_slices_;
+  // 1D flexes whose edge renderables currently hold box meshes (box-section rods)
+  std::vector<bool> flex_box_mesh_;
   std::vector<std::vector<UniquePtr<mjrfRenderable>>> tendons_;
   std::unordered_map<int, std::array<UniquePtr<mjrfRenderable>, 2>>
       slider_cranks_;

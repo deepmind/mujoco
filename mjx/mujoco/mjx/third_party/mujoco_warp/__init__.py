@@ -77,8 +77,8 @@ from mujoco.mjx.third_party.mujoco_warp._src.sensor import sensor_acc as sensor_
 from mujoco.mjx.third_party.mujoco_warp._src.sensor import sensor_pos as sensor_pos
 from mujoco.mjx.third_party.mujoco_warp._src.sensor import sensor_vel as sensor_vel
 from mujoco.mjx.third_party.mujoco_warp._src.set_const import set_const as set_const
-from mujoco.mjx.third_party.mujoco_warp._src.set_const import set_const_0 as set_const_0
-from mujoco.mjx.third_party.mujoco_warp._src.set_const import set_const_fixed as set_const_fixed
+from mujoco.mjx.third_party.mujoco_warp._src.set_const import set_const_0 as set_const_0  # TODO(team): remove in future version
+from mujoco.mjx.third_party.mujoco_warp._src.set_const import set_const_fixed as set_const_fixed  # TODO(team): remove in future version
 from mujoco.mjx.third_party.mujoco_warp._src.set_const import set_length_range as set_length_range
 from mujoco.mjx.third_party.mujoco_warp._src.smooth import camlight as camlight
 from mujoco.mjx.third_party.mujoco_warp._src.smooth import com_pos as com_pos
@@ -109,6 +109,7 @@ from mujoco.mjx.third_party.mujoco_warp._src.types import Constraint as Constrai
 from mujoco.mjx.third_party.mujoco_warp._src.types import Contact as Contact
 from mujoco.mjx.third_party.mujoco_warp._src.types import CtrlChart as CtrlChart
 from mujoco.mjx.third_party.mujoco_warp._src.types import CtrlInput as CtrlInput
+from mujoco.mjx.third_party.mujoco_warp._src.types import DeterminismType as DeterminismType
 from mujoco.mjx.third_party.mujoco_warp._src.types import DisableBit as DisableBit
 from mujoco.mjx.third_party.mujoco_warp._src.types import DynType as DynType
 from mujoco.mjx.third_party.mujoco_warp._src.types import EnableBit as EnableBit
@@ -119,7 +120,9 @@ from mujoco.mjx.third_party.mujoco_warp._src.types import JointType as JointType
 from mujoco.mjx.third_party.mujoco_warp._src.types import ObjType as ObjType
 from mujoco.mjx.third_party.mujoco_warp._src.types import Option as Option
 from mujoco.mjx.third_party.mujoco_warp._src.types import OverflowType as OverflowType
+from mujoco.mjx.third_party.mujoco_warp._src.types import RayDataField as RayDataField
 from mujoco.mjx.third_party.mujoco_warp._src.types import RenderContext as RenderContext
+from mujoco.mjx.third_party.mujoco_warp._src.types import SetConstGroup as SetConstGroup
 from mujoco.mjx.third_party.mujoco_warp._src.types import SolverType as SolverType
 from mujoco.mjx.third_party.mujoco_warp._src.types import State as State
 from mujoco.mjx.third_party.mujoco_warp._src.types import TrnType as TrnType

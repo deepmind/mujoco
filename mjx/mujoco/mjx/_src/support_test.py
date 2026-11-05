@@ -760,11 +760,16 @@ class SupportTest(parameterized.TestCase):
     prm = jp.array([0.01, 0.04, 0.0])
 
     # exact equality if tau_smooth = 0
+    grad_millard = jax.jit(jax.grad(_muscle_dynamics_millard, argnums=(0, 1)))
+    grad_muscle = jax.jit(jax.grad(support.muscle_dynamics, argnums=(0, 1)))
     for ctrl in [-0.1, 0.0, 0.4, 0.5, 1.0, 1.0]:
       for act in [-0.1, 0.0, 0.4, 0.5, 1.0, 1.1]:
         actdot_old = _muscle_dynamics_millard(ctrl, act, prm)
         actdot_new = support.muscle_dynamics(ctrl, act, prm)
         np.testing.assert_allclose(actdot_old, actdot_new, rtol=1e-5, atol=1e-5)
+        grad_old = grad_millard(jp.float32(ctrl), jp.float32(act), prm)
+        grad_new = grad_muscle(jp.float32(ctrl), jp.float32(act), prm)
+        np.testing.assert_allclose(grad_old, grad_new, rtol=1e-5, atol=1e-5)
 
     # positive tau_smooth
     tau_smooth = 0.2

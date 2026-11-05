@@ -145,6 +145,7 @@ void mjs_defaultGeom(mjsGeom* geom) {
   // color
   geom->rgba[0] = geom->rgba[1] = geom->rgba[2] = 0.5f;
   geom->rgba[3]                                 = 1.0f;
+  geom->castshadow                              = 1;
 
   // fluid forces
   geom->fluid_coefs[0] = 0.5;   // blunt drag

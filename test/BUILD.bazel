@@ -4,6 +4,7 @@ load("@rules_cc//cc:cc_library.bzl", "cc_library")
 load("@rules_cc//cc:cc_test.bzl", "cc_test")
 load("@rules_shell//shell:sh_test.bzl", "sh_test")
 load("//:build_defs.bzl", "MJ_ROOT", "mujoco_test_tags")
+load("//plugin:mujoco_plugin.bzl", "mujoco_plugin")
 
 licenses(["notice"])
 
@@ -210,4 +211,42 @@ sh_test(
         "//:mujoco_api_headers",
         "//python/mujoco/introspect:functions.py",
     ],
+)
+
+# A plugin built with the mujoco_plugin macro, and a test that loads it into
+# the shared engine library.
+cc_library(
+    name = "mujoco_plugin_test_plugin_lib",
+    testonly = True,
+    srcs = ["mujoco_plugin_test_plugin.cc"],
+    conlyopts = ["-std=c11"],
+    copts = [
+        "-I" + MJ_ROOT,
+        "-I" + MJ_ROOT + "/src",
+    ],
+    cxxopts = ["-std=c++20"],
+    deps = ["//:mujoco"],
+    alwayslink = True,
+)
+
+mujoco_plugin(
+    name = "mujoco_plugin_test_plugin",
+    testonly = True,
+    deps = [":mujoco_plugin_test_plugin_lib"],
+)
+
+cc_test(
+    name = "mujoco_plugin_test",
+    srcs = ["mujoco_plugin_test.cc"],
+    conlyopts = ["-std=c11"],
+    copts = [
+        "-I" + MJ_ROOT,
+        "-I" + MJ_ROOT + "/src",
+    ],
+    cxxopts = ["-std=c++20"],
+    data = [":mujoco_plugin_test_plugin"],
+    dynamic_deps = ["//:mujoco_shared"],
+    env = {"MUJOCO_PLUGIN_TEST_LIBRARY": "$(rootpath :mujoco_plugin_test_plugin)"},
+    tags = mujoco_test_tags,
+    deps = ["//:mujoco"],
 )

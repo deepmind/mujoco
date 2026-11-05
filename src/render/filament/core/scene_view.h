@@ -24,6 +24,7 @@
 #include <filament/Engine.h>
 #include <filament/Scene.h>
 #include <filament/View.h>
+#include <math/vec4.h>
 #include <mujoco/mjrfilament.h>
 #include <mujoco/mujoco.h>
 #include "render/filament/core/color_grading_options.h"
@@ -85,6 +86,15 @@ class SceneView : public mjrfScene {
   // Sets the number of multi-sample anti-aliasing samples; <= 1 disables MSAA.
   void SetMsaa(int samples);
 
+  // Sets the horizon haze ratio and RGBA color for the scene.
+  void SetHaze(float ratio, const float rgba[4]);
+  float GetHazeRatio() const;
+  filament::math::float4 GetHazeColor() const;
+  float GetFocusDistance() const { return focus_distance_; }
+  void SetFocusDistance(float focus_distance) {
+    focus_distance_ = focus_distance;
+  }
+
   static SceneView* downcast(mjrfScene* scene) {
     return static_cast<SceneView*>(scene);
   }
@@ -109,6 +119,11 @@ class SceneView : public mjrfScene {
   std::unique_ptr<Light> headlight_;
   std::unordered_set<Renderable*> renderables_;
   filament::Skybox* skybox_ = nullptr;
+  std::unique_ptr<Renderable> haze_;
+  float focus_distance_ = 0.0f;
+  int numstacks_ = 16;
+  int numslices_ = 28;
+  int numquads_ = 4;
 
   // Custom view and camera for reflective surfaces.
   filament::View* reflect_view_ = nullptr;

@@ -27,6 +27,7 @@ except ImportError:
 
 _HEADER_FILES = [
     'include/mujoco/mjassert.h',
+    'include/mujoco/mjbatch.h',
     'include/mujoco/mjdata.h',
     'include/mujoco/mjexport.h',
     'include/mujoco/mjmacro.h',

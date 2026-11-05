@@ -86,7 +86,6 @@ cc_test(
     deps = [
         "//:mujoco",
         "//plugin/actuator:register",
-        "//plugin/elasticity:register",
         "//plugin/sdf:register",
         "//plugin/sensor:register",
         "//src/xml:xml_numeric_format",
@@ -114,7 +113,6 @@ cc_test(
     deps = [
         "//:mujoco",
         "//plugin/actuator:register",
-        "//plugin/elasticity:register",
         "//plugin/sdf:register",
         "//plugin/sensor:register",
         "//src/xml:xml_numeric_format",

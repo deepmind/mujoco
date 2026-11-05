@@ -155,6 +155,8 @@ Mesh::~Mesh() {
 }
 
 void Mesh::Upload(const mjrfMeshData& data) {
+  shared_state_ = std::make_shared<SharedState>();
+
   // If the user has provided a release callback, then we need to ensure we
   // call is when filament is done with the mesh data.
   if (data.release) {

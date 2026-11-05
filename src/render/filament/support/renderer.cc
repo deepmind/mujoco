@@ -209,6 +209,8 @@ Renderer::RenderTargetHandle Renderer::UpdateRenderRequest(
   request.post_processing = view.post_processing;
   request.reflections = view.reflections;
   request.shadows = view.shadows;
+  request.skybox = view.skybox;
+  request.haze = view.haze;
   if (view.headlight.has_value()) {
     request.headlight = true;
     request.headlight_color[0] = view.headlight->color[0];

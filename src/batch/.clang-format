@@ -1,0 +1,28 @@
+---
+BasedOnStyle:  Google
+Language:  Cpp
+ColumnLimit:  100
+IncludeBlocks: Preserve
+AlignArrayOfStructures: Left
+AlignConsecutiveAssignments:
+  Enabled:       true
+  AlignCompound: true
+  PadOperators:  true
+AlignConsecutiveDeclarations:
+  Enabled:  true
+AlignConsecutiveShortCaseStatements:
+  Enabled:  true
+AlignEscapedNewlines: Left
+AlignTrailingComments:
+  Kind:  Always
+  OverEmptyLines:  0
+AllowAllArgumentsOnNextLine: false
+AllowShortBlocksOnASingleLine: Always
+AllowShortFunctionsOnASingleLine: Inline
+BreakBinaryOperations: RespectPrecedence
+BinPackArguments: false
+BinPackParameters: OnePerLine
+IndentPPDirectives: BeforeHash
+MaxEmptyLinesToKeep: 2
+SortIncludes: false
+...

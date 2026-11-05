@@ -1,0 +1,58 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="994" height="612" viewBox="0 0 994 612">
+<text x="8" y="157.0" font-size="22" font-family="Helvetica, Arial, sans-serif" fill="#222222">old</text>
+<rect x="70" y="0" width="300" height="300" rx="10" fill="#f4f4f4"/>
+<circle cx="220.0" cy="150.0" r="45.5" fill="#9aa8c7" stroke="#6f7fa3" stroke-width="1.5"/>
+<polyline points="83.6,209.1 356.4,209.1" fill="none" stroke="#c62828" stroke-width="5" stroke-linecap="round" stroke-linejoin="round" opacity="1"/>
+<polyline points="83.6,209.1 283.6,150.0 356.4,209.1" fill="none" stroke="#555555" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" opacity="1"/>
+<circle cx="283.6" cy="150.0" r="6.5" fill="#2e7d32"/>
+<circle cx="83.6" cy="209.1" r="5.5" fill="#222222"/>
+<circle cx="356.4" cy="209.1" r="5.5" fill="#222222"/>
+<text x="83.6" y="237.1" font-size="20" font-family="Helvetica, Arial, sans-serif" font-style="italic" fill="#222222" text-anchor="middle">p<tspan baseline-shift="sub" font-size="13" font-style="normal">1</tspan></text>
+<text x="356.4" y="237.1" font-size="20" font-family="Helvetica, Arial, sans-serif" font-style="italic" fill="#222222" text-anchor="middle">p<tspan baseline-shift="sub" font-size="13" font-style="normal">2</tspan></text>
+<text x="301.6" y="140.0" font-size="20" font-family="Helvetica, Arial, sans-serif" font-style="italic" fill="#222222" text-anchor="middle">s</text>
+<text x="84.0" y="28.0" font-size="19" font-family="Helvetica, Arial, sans-serif" fill="#222222" text-anchor="start">clear segment</text>
+<rect x="382" y="0" width="300" height="300" rx="10" fill="#f4f4f4"/>
+<circle cx="532.0" cy="150.0" r="45.5" fill="#9aa8c7" stroke="#6f7fa3" stroke-width="1.5"/>
+<polyline points="395.6,209.1 502.0,115.8 503.8,114.3 505.7,112.9 507.6,111.6 509.6,110.4 511.7,109.3 513.8,108.4 515.9,107.5 518.1,106.7 520.4,106.1 522.6,105.5 524.9,105.1 527.2,104.8 529.6,104.6 531.9,104.5 534.2,104.6 536.5,104.8 538.9,105.1 541.2,105.5 543.4,106.0 545.7,106.6 547.9,107.4 550.0,108.3 552.1,109.2 554.2,110.3 556.2,111.5 558.1,112.8 560.0,114.2 561.8,115.7 563.5,117.3 668.4,218.2" fill="none" stroke="#c62828" stroke-width="5" stroke-linecap="round" stroke-linejoin="round" opacity="1"/>
+<polyline points="395.6,209.1 595.6,150.0 668.4,218.2" fill="none" stroke="#555555" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" opacity="1"/>
+<circle cx="595.6" cy="150.0" r="6.5" fill="#2e7d32"/>
+<circle cx="395.6" cy="209.1" r="5.5" fill="#222222"/>
+<circle cx="668.4" cy="218.2" r="5.5" fill="#222222"/>
+<text x="396.0" y="28.0" font-size="19" font-family="Helvetica, Arial, sans-serif" fill="#222222" text-anchor="start"><tspan font-style="italic">p</tspan><tspan baseline-shift="sub" font-size="13">2</tspan> moves down</text>
+<rect x="694" y="0" width="300" height="300" rx="10" fill="#f4f4f4"/>
+<circle cx="844.0" cy="150.0" r="45.5" fill="#9aa8c7" stroke="#6f7fa3" stroke-width="1.5"/>
+<polyline points="885.8,185.1 856.9,193.6 854.6,194.2 852.3,194.7 849.9,195.1 847.6,195.3 845.2,195.4 842.8,195.4 840.4,195.3 838.1,195.1 835.7,194.7 833.4,194.2 831.1,193.6 802.2,185.1" fill="none" stroke="#c62828" stroke-width="5" stroke-linecap="round" stroke-linejoin="round" opacity="1"/>
+<polyline points="885.8,185.1 860.5,88.5 802.2,185.1" fill="none" stroke="#555555" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" opacity="1"/>
+<circle cx="860.5" cy="88.5" r="6.5" fill="#2e7d32"/>
+<circle cx="885.8" cy="185.1" r="5.5" fill="#222222"/>
+<circle cx="802.2" cy="185.1" r="5.5" fill="#222222"/>
+<text x="708.0" y="28.0" font-size="19" font-family="Helvetica, Arial, sans-serif" fill="#222222" text-anchor="start">sidesite above</text>
+<text x="8" y="469.0" font-size="22" font-family="Helvetica, Arial, sans-serif" fill="#222222">new</text>
+<rect x="70" y="312" width="300" height="300" rx="10" fill="#f4f4f4"/>
+<circle cx="220.0" cy="462.0" r="45.5" fill="#9aa8c7" stroke="#6f7fa3" stroke-width="1.5"/>
+<polyline points="83.6,521.1 356.4,521.1" fill="none" stroke="#c62828" stroke-width="5" stroke-linecap="round" stroke-linejoin="round" opacity="1"/>
+<polyline points="83.6,521.1 283.6,462.0 356.4,521.1" fill="none" stroke="#555555" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" opacity="1"/>
+<circle cx="283.6" cy="462.0" r="6.5" fill="#2e7d32"/>
+<circle cx="83.6" cy="521.1" r="5.5" fill="#222222"/>
+<circle cx="356.4" cy="521.1" r="5.5" fill="#222222"/>
+<text x="83.6" y="549.1" font-size="20" font-family="Helvetica, Arial, sans-serif" font-style="italic" fill="#222222" text-anchor="middle">p<tspan baseline-shift="sub" font-size="13" font-style="normal">1</tspan></text>
+<text x="356.4" y="549.1" font-size="20" font-family="Helvetica, Arial, sans-serif" font-style="italic" fill="#222222" text-anchor="middle">p<tspan baseline-shift="sub" font-size="13" font-style="normal">2</tspan></text>
+<text x="301.6" y="452.0" font-size="20" font-family="Helvetica, Arial, sans-serif" font-style="italic" fill="#222222" text-anchor="middle">s</text>
+<text x="84.0" y="340.0" font-size="19" font-family="Helvetica, Arial, sans-serif" fill="#222222" text-anchor="start">clear segment</text>
+<rect x="382" y="312" width="300" height="300" rx="10" fill="#f4f4f4"/>
+<circle cx="532.0" cy="462.0" r="45.5" fill="#9aa8c7" stroke="#6f7fa3" stroke-width="1.5"/>
+<polyline points="395.6,521.1 668.4,530.2" fill="none" stroke="#c62828" stroke-width="5" stroke-linecap="round" stroke-linejoin="round" opacity="1"/>
+<polyline points="395.6,521.1 595.6,462.0 668.4,530.2" fill="none" stroke="#555555" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" opacity="1"/>
+<circle cx="595.6" cy="462.0" r="6.5" fill="#2e7d32"/>
+<circle cx="395.6" cy="521.1" r="5.5" fill="#222222"/>
+<circle cx="668.4" cy="530.2" r="5.5" fill="#222222"/>
+<text x="396.0" y="340.0" font-size="19" font-family="Helvetica, Arial, sans-serif" fill="#222222" text-anchor="start"><tspan font-style="italic">p</tspan><tspan baseline-shift="sub" font-size="13">2</tspan> moves down</text>
+<rect x="694" y="312" width="300" height="300" rx="10" fill="#f4f4f4"/>
+<circle cx="844.0" cy="462.0" r="45.5" fill="#9aa8c7" stroke="#6f7fa3" stroke-width="1.5"/>
+<polyline points="885.8,497.1 889.2,467.1 889.4,464.8 889.5,462.5 889.4,460.3 889.3,458.0 889.0,455.7 888.6,453.5 888.2,451.2 887.6,449.0 886.9,446.9 886.0,444.7 885.1,442.6 884.1,440.6 883.0,438.6 881.7,436.7 880.4,434.8 879.0,433.0 877.5,431.3 875.9,429.6 874.3,428.1 872.5,426.6 870.7,425.2 868.8,423.9 866.9,422.7 864.9,421.6 862.8,420.6 860.7,419.7 858.6,418.9 856.4,418.3 854.2,417.7 852.0,417.2 849.7,416.9 847.4,416.7 845.1,416.6 842.9,416.6 840.6,416.7 838.3,416.9 836.0,417.2 833.8,417.7 831.6,418.3 829.4,418.9 827.3,419.7 825.2,420.6 823.1,421.6 821.1,422.7 819.2,423.9 817.3,425.2 815.5,426.6 813.7,428.1 812.1,429.6 810.5,431.3 809.0,433.0 807.6,434.8 806.3,436.7 805.0,438.6 803.9,440.6 802.9,442.6 802.0,444.7 801.1,446.9 800.4,449.0 799.8,451.2 799.4,453.5 799.0,455.7 798.7,458.0 798.6,460.3 798.5,462.5 798.6,464.8 798.8,467.1 802.2,497.1" fill="none" stroke="#c62828" stroke-width="5" stroke-linecap="round" stroke-linejoin="round" opacity="1"/>
+<polyline points="885.8,497.1 860.5,400.5 802.2,497.1" fill="none" stroke="#555555" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" opacity="1"/>
+<circle cx="860.5" cy="400.5" r="6.5" fill="#2e7d32"/>
+<circle cx="885.8" cy="497.1" r="5.5" fill="#222222"/>
+<circle cx="802.2" cy="497.1" r="5.5" fill="#222222"/>
+<text x="708.0" y="340.0" font-size="19" font-family="Helvetica, Arial, sans-serif" fill="#222222" text-anchor="start">sidesite above</text>
+</svg>

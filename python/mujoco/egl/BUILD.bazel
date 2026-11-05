@@ -1,0 +1,18 @@
+# Description:
+#   EGL rendering context
+
+load("@rules_python//python:py_library.bzl", "py_library")
+
+licenses(["notice"])
+
+exports_files(["__init__.py"])
+
+py_library(
+    name = "egl",
+    srcs = [
+        "__init__.py",
+        "egl_ext.py",
+    ],
+    visibility = ["//python/mujoco:visibility"],
+    deps = ["//python/mujoco/pypi:pyopengl"],
+)

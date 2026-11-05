@@ -269,6 +269,9 @@ static mjtNum geomDistance(const mjModel* m, const mjData* d, const mjpPlugin* p
     b[2] = a[2] / size[2];
     mjtNum k0 = mju_norm3(a);
     mjtNum k1 = mju_norm3(b);
+    if (k1 < mjMINVAL) {
+      return -mju_min(size[0], mju_min(size[1], size[2]));
+    }
     return k0 * (k0 - 1.0) / k1;
 
   case mjGEOM_CYLINDER:
@@ -314,7 +317,7 @@ static void geomGradient(mjtNum gradient[3], const mjModel* m, const mjData* d,
 
   case mjGEOM_SPHERE:
     mju_copy3(gradient, x);
-    c = mju_norm3(x);
+    c = mju_max(mju_norm3(x), 1. / mjMAXVAL);
     gradient[0] *= 1. / c;
     gradient[1] *= 1. / c;
     gradient[2] *= 1. / c;
@@ -334,9 +337,18 @@ static void geomGradient(mjtNum gradient[3], const mjModel* m, const mjData* d,
       b[1] = mju_max(a[1], 0);
       b[2] = mju_max(a[2], 0);
       c = mju_norm3(b);
-      gradient[0] = a[0] > 0 ? b[0] / c * x[0] / mju_abs(x[0]) : 0;
-      gradient[1] = a[1] > 0 ? b[1] / c * x[1] / mju_abs(x[1]) : 0;
-      gradient[2] = a[2] > 0 ? b[2] / c * x[2] / mju_abs(x[2]) : 0;
+      if (c == 0) {
+        for (int j=0; j < 3; j++) {
+          if (a[j] == 0) {
+            gradient[j] = x[j] < 0 ? -1 : 1;
+          }
+        }
+        mju_normalize3(gradient);
+      } else {
+        gradient[0] = a[0] > 0 ? b[0] / c * x[0] / mju_abs(x[0]) : 0;
+        gradient[1] = a[1] > 0 ? b[1] / c * x[1] / mju_abs(x[1]) : 0;
+        gradient[2] = a[2] > 0 ? b[2] / c * x[2] / mju_abs(x[2]) : 0;
+      }
     }
     break;
 
@@ -344,7 +356,7 @@ static void geomGradient(mjtNum gradient[3], const mjModel* m, const mjData* d,
     a[0] = x[0];
     a[1] = x[1];
     a[2] = x[2] - mju_clip(x[2], -size[1], size[1]);
-    c = mju_norm3(a);
+    c = mju_max(mju_norm3(a), 1. / mjMAXVAL);
     gradient[0] = a[0] / c;
     gradient[1] = a[1] / c;
     gradient[2] = a[2] / c;
@@ -359,6 +371,10 @@ static void geomGradient(mjtNum gradient[3], const mjModel* m, const mjData* d,
     b[2] = a[2] / size[2];
     mjtNum k0 = mju_norm3(a);
     mjtNum k1 = mju_norm3(b);
+    if (k0 < mjMINVAL || k1 < mjMINVAL) {
+      mju_zero3(gradient);
+      break;
+    }
     mjtNum invK0 = 1. / k0;
     mjtNum invK1 = 1. / k1;
     mjtNum gk0[3] = {b[0]*invK0, b[1]*invK0, b[2]*invK0};
@@ -370,7 +386,11 @@ static void geomGradient(mjtNum gradient[3], const mjModel* m, const mjData* d,
     gradient[0] = gk0[0]*df_dk0 - gk1[0]*df_dk1;
     gradient[1] = gk0[1]*df_dk0 - gk1[1]*df_dk1;
     gradient[2] = gk0[2]*df_dk0 - gk1[2]*df_dk1;
-    mju_normalize3(gradient);
+    if (mju_norm3(gradient) < mjMINVAL) {
+      mju_zero3(gradient);
+    } else {
+      mju_normalize3(gradient);
+    }
     break;
 
   case mjGEOM_CYLINDER:
@@ -566,7 +586,7 @@ static int addPreContact(mjtNum* points, mjPreContact* con, const mjtNum x[3],
 
   // validate normal - skip if gradient is degenerate (zero or near-zero)
   mjtNum norm_len = mju_normalize3(norm);
-  if (norm_len < mjMINVAL) {
+  if (!(norm_len >= mjMINVAL)) {
     return cnt;  // degenerate gradient, skip this contact
   }
 
@@ -969,9 +989,9 @@ int mjc_HFieldSDF(const mjModel* m, mjData* d, mjPreContact* con, int g1, int g2
 // collision between a mesh and a signed distance field
 int mjc_MeshSDF(const mjModel* m, mjData* d, mjPreContact* con, int g1, int g2, mjtNum margin) {
   const mjtNum* pos1 = d->geom_xpos + 3*g1;
-  const mjtNum* mat1 = d->geom_xmat + 9*g1;
+  const mjtNum* quat1 = d->geom_xquat + 4*g1;
   const mjtNum* pos2 = d->geom_xpos + 3*g2;
-  const mjtNum* mat2 = d->geom_xmat + 9*g2;
+  const mjtNum* sdf_quat = d->geom_xquat + 4*g2;
 
   mjtNum offset[3], rotation[9];
   mjtNum points[3*mjMAXCONPAIR], dist2[mjMAXCONPAIR], candidate[3*mjMAXCONPAIR];
@@ -991,9 +1011,6 @@ int mjc_MeshSDF(const mjModel* m, mjData* d, mjPreContact* con, int g1, int g2, 
   sdf.geomtype = &geomtype;
 
   // compute transformation from g1 to g2
-  mjtNum sdf_quat[4], quat1[4];
-  mju_mat2Quat(quat1, mat1);
-  mju_mat2Quat(sdf_quat, mat2);
   mapPose(pos1, quat1, pos2, sdf_quat, offset, rotation);
 
   // set up context for inline BVH processing
@@ -1048,9 +1065,9 @@ int mjc_MeshSDF(const mjModel* m, mjData* d, mjPreContact* con, int g1, int g2, 
 // collision between two SDFs
 int mjc_SDF(const mjModel* m, mjData* d, mjPreContact* con, int g1, int g2, mjtNum margin) {
   const mjtNum* pos1  = d->geom_xpos + 3*g1;
-  const mjtNum* mat1  = d->geom_xmat + 9*g1;
+  const mjtNum* quat1 = d->geom_xquat + 4*g1;
   const mjtNum* pos2  = d->geom_xpos + 3*g2;
-  const mjtNum* mat2  = d->geom_xmat + 9*g2;
+  const mjtNum* quat2 = d->geom_xquat + 4*g2;
   const mjtNum* size1 = m->geom_aabb + 6*g1;
   const mjtNum* size2 = m->geom_aabb + 6*g2;
 
@@ -1066,11 +1083,8 @@ int mjc_SDF(const mjModel* m, mjData* d, mjPreContact* con, int g1, int g2, mjtN
   }
 
   // compute transformations from/to g1 to/from g2
-  mjtNum quat1[4], quat2[4];
   mjtNum offset21[3], rotation21[9], rotation12[9];
   mjtNum offset12[3], offset2[3], rotation2[9];
-  mju_mat2Quat(quat1, mat1);
-  mju_mat2Quat(quat2, mat2);
   mapPose(pos1, quat1, pos1, quat1, offset2, rotation2);
   mapPose(pos2, quat2, pos1, quat1, offset21, rotation21);
   mapPose(pos1, quat1, pos2, quat2, offset12, rotation12);
@@ -1280,10 +1294,8 @@ int mjc_FlexSDF(const mjModel* m, const mjData* d, mjPreContact* con, int* elem,
   sdf.geomtype = &geomtype;
 
   // get SDF pose (once for entire flex)
-  mjtNum sdf_quat[4];
   const mjtNum* sdf_pos = d->geom_xpos + 3*g;
-  const mjtNum* sdf_mat = d->geom_xmat + 9*g;
-  mju_mat2Quat(sdf_quat, sdf_mat);
+  const mjtNum* sdf_quat = d->geom_xquat + 4*g;
 
   // compute world-to-SDF transform (once for entire flex)
   mjtNum rotation[9], offset[3];

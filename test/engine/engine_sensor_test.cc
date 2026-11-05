@@ -473,6 +473,114 @@ TEST_F(SensorTest, PotentialEnergyFreeJointSpring) {
   EXPECT_NEAR(data->sensordata[0], 0.5 * 2 * 14, MjTol(1e-12, 1e-5));
 }
 
+// potential energy includes edge springs of 2D and 3D flexes
+TEST_F(SensorTest, FlexEdgeSpringPotentialEnergy2D3D) {
+  static constexpr char xml[] = R"(
+  <mujoco>
+    <option gravity="0 0 0">
+      <flag energy="enable"/>
+    </option>
+    <worldbody>
+      <body name="a0">
+        <geom size="0.05"/>
+      </body>
+      <body name="a1" pos="1 0 0">
+        <joint type="slide" axis="1 0 0"/>
+        <geom size="0.05"/>
+      </body>
+      <body name="a2" pos="0 1 0">
+        <geom size="0.05"/>
+      </body>
+      <body name="t0" pos="3 0 0">
+        <geom size="0.05"/>
+      </body>
+      <body name="t1" pos="4 0 0">
+        <joint type="slide" axis="1 0 0"/>
+        <geom size="0.05"/>
+      </body>
+      <body name="t2" pos="3 1 0">
+        <geom size="0.05"/>
+      </body>
+      <body name="t3" pos="3 0 1">
+        <geom size="0.05"/>
+      </body>
+    </worldbody>
+    <deformable>
+      <flex name="tri" dim="2" body="a0 a1 a2" element="0 1 2">
+        <edge damping="0.1"/>
+      </flex>
+      <flex name="tet" dim="3" body="t0 t1 t2 t3" element="0 1 2 3">
+        <edge damping="0.1"/>
+      </flex>
+    </deformable>
+    <sensor>
+      <e_potential/>
+    </sensor>
+  </mujoco>
+  )";
+  char error[1024];
+  MjModelPtr m = LoadModelFromString(xml, error, sizeof(error));
+  ASSERT_THAT(m.get(), NotNull()) << error;
+  ASSERT_EQ(m->nflex, 2);
+  m->flex_edgestiffness[0] = 100;
+  m->flex_edgestiffness[1] = 50;
+  MjDataPtr d = MakeData(m);
+
+  d->qpos[0] = 0.2;
+  d->qpos[1] = -0.3;
+  mj_forward(m.get(), d.get());
+
+  // edge springs generate passive forces on both flexes
+  EXPECT_LT(d->qfrc_spring[0], -10.0);
+  EXPECT_GT(d->qfrc_spring[1], 10.0);
+
+  mjtNum expected = 0;
+  for (int f = 0; f < m->nflex; f++) {
+    int adr = m->flex_edgeadr[f];
+    for (int e = adr; e < adr + m->flex_edgenum[f]; e++) {
+      if (!m->flexedge_rigid[e]) {
+        mjtNum disp = m->flexedge_length0[e] - d->flexedge_length[e];
+        expected += 0.5 * m->flex_edgestiffness[f] * disp * disp;
+      }
+    }
+  }
+  EXPECT_GT(expected, 1.0);
+  EXPECT_NEAR(d->energy[0], expected, MjTol(1e-12, 1e-5));
+  EXPECT_NEAR(d->sensordata[0], expected, MjTol(1e-12, 1e-5));
+}
+
+// interpolated flexes are skipped in edge spring potential energy even if
+// flex_edgestiffness > 0 is set at runtime
+TEST_F(SensorTest, FlexEdgeSpringPotentialEnergyInterpolatedSkipped) {
+  static constexpr char xml[] = R"(
+  <mujoco>
+    <option gravity="0 0 0">
+      <flag energy="enable"/>
+    </option>
+    <worldbody>
+      <flexcomp name="test" type="grid" count="2 2 2" spacing="1 1 1" dim="3" dof="trilinear">
+        <contact selfcollide="none"/>
+      </flexcomp>
+    </worldbody>
+    <sensor>
+      <e_potential/>
+    </sensor>
+  </mujoco>
+  )";
+  char error[1024];
+  MjModelPtr m = LoadModelFromString(xml, error, sizeof(error));
+  ASSERT_THAT(m.get(), NotNull()) << error;
+  ASSERT_EQ(m->nflex, 1);
+  ASSERT_NE(m->flex_interp[0], 0);
+  m->flex_edgestiffness[0] = 100;
+  MjDataPtr d = MakeData(m);
+
+  mj_forward(m.get(), d.get());
+
+  EXPECT_EQ(d->energy[0], 0);
+  EXPECT_EQ(d->sensordata[0], 0);
+}
+
 TEST_F(SensorTest, KineticEnergy) {
   constexpr char xml[] = R"(
   <mujoco>
@@ -2046,6 +2154,62 @@ TEST_F(SensorTest, AccelerometerAfterStep1) {
   EXPECT_NEAR(data->sensordata[2], 9.81, 1e-2);
 }
 
+// accelerometer and framelinacc on static and mocap bodies read gravity
+TEST_F(SensorTest, AccelerometerStaticAndMocap) {
+  constexpr char xml[] = R"(
+  <mujoco>
+    <option>
+      <flag sleep="enable"/>
+    </option>
+    <worldbody>
+      <site name="world"/>
+      <body name="static" pos="1 2 3">
+        <geom size="0.1"/>
+        <site name="static" euler="90 0 0"/>
+        <camera name="static" euler="90 0 0"/>
+      </body>
+      <body name="mocap" mocap="true" pos="-1 0 2">
+        <geom size="0.1"/>
+        <site name="mocap"/>
+      </body>
+      <body pos="0 0 5" sleep="init">
+        <freejoint/>
+        <geom size="0.1"/>
+      </body>
+    </worldbody>
+    <sensor>
+      <accelerometer site="world"/>
+      <accelerometer site="static"/>
+      <accelerometer site="mocap"/>
+      <framelinacc objtype="body" objname="static"/>
+      <frameangacc objtype="body" objname="mocap"/>
+    </sensor>
+  </mujoco>
+  )";
+  MjModelPtr model = LoadModelFromString(xml);
+  ASSERT_THAT(model, NotNull());
+  MjDataPtr data = MakeData(model);
+  mj_forward(model.get(), data.get());
+  EXPECT_LT(data->nbody_awake, model->nbody);
+
+  std::vector<mjtNum> expected = {
+      0, 0,    9.81,  // accelerometer: world
+      0, 9.81, 0,     // accelerometer: static site rotated +90 deg about x
+      0, 0,    9.81,  // accelerometer: mocap
+      0, 0,    9.81,  // framelinacc: static
+      0, 0,    0,     // frameangacc: mocap
+  };
+  EXPECT_THAT(AsVector(data->sensordata, 15),
+              Pointwise(MjNear(1e-12, 1e-5), expected));
+
+  mjtNum acc[6];
+  int cam_id = mj_name2id(model.get(), mjOBJ_CAMERA, "static");
+  mj_objectAcceleration(model.get(), data.get(), mjOBJ_CAMERA, cam_id, acc, 1);
+  EXPECT_THAT(
+      AsVector(acc, 6),
+      Pointwise(MjNear(1e-12, 1e-5), std::vector<mjtNum>{0, 0, 0, 0, 9.81, 0}));
+}
+
 // Test tactile sensor reads non-zero values when contacts occur
 TEST_F(SensorTest, TactileSkipTangents) {
   constexpr char xml[] = R"(
@@ -2456,6 +2620,140 @@ TEST_F(SensorTest, FlexContactSensors) {
   vector floor_touch = GetSensor(m.get(), d.get(), "floor_touch");
   EXPECT_GT(floor_touch[0], 0.0)
       << "Floor touch sensor did not detect any force";
+}
+
+// sleeping sensor with delay keeps draining its history buffer
+TEST_F(SensorTest, SleepingDelayedSensorDrainsHistory) {
+  constexpr char xml[] = R"(
+  <mujoco>
+    <option timestep="0.01" gravity="0 0 0">
+      <flag sleep="enable"/>
+    </option>
+    <worldbody>
+      <body>
+        <joint name="slide" type="slide"/>
+        <geom size="0.1"/>
+      </body>
+    </worldbody>
+    <sensor>
+      <jointpos joint="slide" delay="0.12" nsample="25"/>
+    </sensor>
+  </mujoco>
+  )";
+  char error[1024];
+  MjModelPtr model = LoadModelFromString(xml, error, sizeof(error));
+  ASSERT_THAT(model.get(), NotNull()) << error;
+  MjDataPtr data = MakeData(model);
+
+  // hold position at 10
+  for (int step = 0; step < 10; ++step) {
+    data->qpos[0] = 10.0;
+    mj_step(model.get(), data.get());
+  }
+
+  // move to 0 at rest, step until the tree falls asleep
+  data->qpos[0] = 0.0;
+  data->qvel[0] = 0.0;
+  for (int step = 0; step < 15; ++step) {
+    mj_step(model.get(), data.get());
+  }
+  ASSERT_EQ(data->tree_awake[0], 0);
+
+  // advance while asleep: delayed reading must drain to 0, not stay at 10
+  for (int step = 0; step < 15; ++step) {
+    mj_step(model.get(), data.get());
+  }
+  EXPECT_NEAR(data->sensordata[0], 0.0, MjTol(1e-10, 1e-5));
+}
+
+// sleeping sensor with interval keeps sampling
+TEST_F(SensorTest, SleepingIntervalSensorSamples) {
+  constexpr char xml[] = R"(
+  <mujoco>
+    <option timestep="0.01" gravity="0 0 0">
+      <flag sleep="enable"/>
+    </option>
+    <worldbody>
+      <body>
+        <joint name="slide" type="slide"/>
+        <geom size="0.1"/>
+      </body>
+    </worldbody>
+    <sensor>
+      <jointpos joint="slide" interval="0.3 0" nsample="5"/>
+    </sensor>
+  </mujoco>
+  )";
+  char error[1024];
+  MjModelPtr model = LoadModelFromString(xml, error, sizeof(error));
+  ASSERT_THAT(model.get(), NotNull()) << error;
+  MjDataPtr data = MakeData(model);
+
+  // hold position at 10, sampled at t=0
+  for (int step = 0; step < 10; ++step) {
+    data->qpos[0] = 10.0;
+    mj_step(model.get(), data.get());
+  }
+
+  // move to 0 at rest, step until the tree falls asleep
+  data->qpos[0] = 0.0;
+  data->qvel[0] = 0.0;
+  for (int step = 0; step < 15; ++step) {
+    mj_step(model.get(), data.get());
+  }
+  ASSERT_EQ(data->tree_awake[0], 0);
+
+  // advance past the t=0.3 sample while asleep: reading must update to 0
+  for (int step = 0; step < 15; ++step) {
+    mj_step(model.get(), data.get());
+  }
+  EXPECT_EQ(data->tree_awake[0], 0);
+  EXPECT_NEAR(data->sensordata[0], 0.0, MjTol(1e-10, 1e-5));
+}
+
+// potential energy includes joint and tendon springs of sleeping trees
+TEST_F(SensorTest, EnergyPosIncludesSleepingSprings) {
+  static constexpr char xml[] = R"(
+  <mujoco>
+    <option gravity="0 0 -10">
+      <flag sleep="enable" energy="enable"/>
+    </option>
+    <worldbody>
+      <body name="b1">
+        <joint name="j1" type="slide" axis="0 0 1" stiffness="5" springref="1"/>
+        <geom size="0.1" mass="1"/>
+      </body>
+      <body name="b2" pos="2 0 0">
+        <joint name="j2" type="slide" axis="1 0 0"/>
+        <geom size="0.1" mass="1"/>
+      </body>
+    </worldbody>
+    <tendon>
+      <fixed stiffness="5" springlength="1">
+        <joint joint="j1" coef="1"/>
+      </fixed>
+    </tendon>
+  </mujoco>
+  )";
+  char error[1024];
+  MjModelPtr m = LoadModelFromString(xml, error, sizeof(error));
+  ASSERT_THAT(m.get(), NotNull()) << error;
+  MjDataPtr d = MakeData(m);
+
+  // at qpos=0 b1 is in equilibrium: gravity (-10) balanced by joint spring (+5)
+  // and tendon spring (+5), storing 0.5*5*1^2 + 0.5*5*1^2 = 5
+  d->qvel[1] = 1.0;  // keep b2 awake
+  mj_forward(m.get(), d.get());
+  ASSERT_EQ(d->body_awake[1], mjS_AWAKE);
+  EXPECT_NEAR(d->energy[0], 5.0, MjTol(1e-7, 1e-4));
+
+  // step until b1 falls asleep, energy must be unchanged
+  for (int i = 0; i < 20; i++) {
+    mj_step(m.get(), d.get());
+  }
+  ASSERT_EQ(d->body_awake[1], mjS_ASLEEP);
+  ASSERT_EQ(d->body_awake[2], mjS_AWAKE);
+  EXPECT_NEAR(d->energy[0], 5.0, MjTol(1e-7, 1e-4));
 }
 
 }  // namespace

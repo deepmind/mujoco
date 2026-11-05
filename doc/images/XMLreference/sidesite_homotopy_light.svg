@@ -1,0 +1,29 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="924" height="300" viewBox="0 0 924 300">
+<rect x="0" y="0" width="300" height="300" rx="10" fill="#f4f4f4"/>
+<circle cx="150.0" cy="150.0" r="45.5" fill="#9aa8c7" stroke="#6f7fa3" stroke-width="1.5"/>
+<polyline points="31.8,90.9 268.2,90.9" fill="none" stroke="#c62828" stroke-width="5" stroke-linecap="round" stroke-linejoin="round" opacity="1"/>
+<polyline points="31.8,90.9 150.0,45.5 268.2,90.9" fill="none" stroke="#555555" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" opacity="1"/>
+<circle cx="150.0" cy="45.5" r="6.5" fill="#2e7d32"/>
+<circle cx="31.8" cy="90.9" r="5.5" fill="#222222"/>
+<circle cx="268.2" cy="90.9" r="5.5" fill="#222222"/>
+<text x="31.8" y="116.9" font-size="20" font-family="Helvetica, Arial, sans-serif" font-style="italic" fill="#222222" text-anchor="middle">p<tspan baseline-shift="sub" font-size="13" font-style="normal">1</tspan></text>
+<text x="268.2" y="116.9" font-size="20" font-family="Helvetica, Arial, sans-serif" font-style="italic" fill="#222222" text-anchor="middle">p<tspan baseline-shift="sub" font-size="13" font-style="normal">2</tspan></text>
+<text x="170.0" y="52.5" font-size="20" font-family="Helvetica, Arial, sans-serif" font-style="italic" fill="#222222" text-anchor="middle">s</text>
+<text x="14.0" y="28.0" font-size="19" font-family="Helvetica, Arial, sans-serif" fill="#222222" text-anchor="start">sidesite above: no wrap</text>
+<rect x="312" y="0" width="300" height="300" rx="10" fill="#f4f4f4"/>
+<circle cx="462.0" cy="150.0" r="45.5" fill="#9aa8c7" stroke="#6f7fa3" stroke-width="1.5"/>
+<polyline points="343.8,90.9 428.9,181.2 430.6,182.8 432.3,184.4 434.1,185.9 435.9,187.2 437.8,188.5 439.8,189.7 441.9,190.8 444.0,191.7 446.1,192.6 448.3,193.3 450.6,194.0 452.8,194.5 455.1,194.9 457.4,195.2 459.7,195.4 462.0,195.5 464.3,195.4 466.6,195.2 468.9,194.9 471.2,194.5 473.4,194.0 475.7,193.3 477.9,192.6 480.0,191.7 482.1,190.8 484.2,189.7 486.2,188.5 488.1,187.2 489.9,185.9 491.7,184.4 493.4,182.8 495.1,181.2 580.2,90.9" fill="none" stroke="#c62828" stroke-width="5" stroke-linecap="round" stroke-linejoin="round" opacity="1"/>
+<polyline points="343.8,90.9 462.0,236.4 580.2,90.9" fill="none" stroke="#555555" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" opacity="1"/>
+<circle cx="462.0" cy="236.4" r="6.5" fill="#2e7d32"/>
+<circle cx="343.8" cy="90.9" r="5.5" fill="#222222"/>
+<circle cx="580.2" cy="90.9" r="5.5" fill="#222222"/>
+<text x="326.0" y="28.0" font-size="19" font-family="Helvetica, Arial, sans-serif" fill="#222222" text-anchor="start">sidesite below: wrap under</text>
+<rect x="624" y="0" width="300" height="300" rx="10" fill="#f4f4f4"/>
+<circle cx="774.0" cy="150.0" r="45.5" fill="#9aa8c7" stroke="#6f7fa3" stroke-width="1.5"/>
+<polyline points="815.8,185.1 819.2,155.1 819.4,152.8 819.5,150.5 819.4,148.3 819.3,146.0 819.0,143.7 818.6,141.5 818.2,139.2 817.6,137.0 816.9,134.9 816.0,132.7 815.1,130.6 814.1,128.6 813.0,126.6 811.7,124.7 810.4,122.8 809.0,121.0 807.5,119.3 805.9,117.6 804.3,116.1 802.5,114.6 800.7,113.2 798.8,111.9 796.9,110.7 794.9,109.6 792.8,108.6 790.7,107.7 788.6,106.9 786.4,106.3 784.2,105.7 782.0,105.2 779.7,104.9 777.4,104.7 775.1,104.6 772.9,104.6 770.6,104.7 768.3,104.9 766.0,105.2 763.8,105.7 761.6,106.3 759.4,106.9 757.3,107.7 755.2,108.6 753.1,109.6 751.1,110.7 749.2,111.9 747.3,113.2 745.5,114.6 743.7,116.1 742.1,117.6 740.5,119.3 739.0,121.0 737.6,122.8 736.3,124.7 735.0,126.6 733.9,128.6 732.9,130.6 732.0,132.7 731.1,134.9 730.4,137.0 729.8,139.2 729.4,141.5 729.0,143.7 728.7,146.0 728.6,148.3 728.5,150.5 728.6,152.8 728.8,155.1 732.2,185.1" fill="none" stroke="#c62828" stroke-width="5" stroke-linecap="round" stroke-linejoin="round" opacity="1"/>
+<polyline points="815.8,185.1 790.5,88.5 732.2,185.1" fill="none" stroke="#555555" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" opacity="1"/>
+<circle cx="790.5" cy="88.5" r="6.5" fill="#2e7d32"/>
+<circle cx="815.8" cy="185.1" r="5.5" fill="#222222"/>
+<circle cx="732.2" cy="185.1" r="5.5" fill="#222222"/>
+<text x="638.0" y="28.0" font-size="19" font-family="Helvetica, Arial, sans-serif" fill="#222222" text-anchor="start">sidesite above: wrap over</text>
+</svg>

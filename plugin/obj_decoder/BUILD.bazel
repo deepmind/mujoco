@@ -7,8 +7,15 @@ cc_library(
     name = "obj_decoder",
     srcs = ["obj_decoder.cc"],
     conlyopts = ["-std=c11"],
-    copts = ["-I" + MJ_ROOT + "/src"],
-    cxxopts = ["-std=c++20"],
+    copts = [
+        "-I" + MJ_ROOT + "/src",
+        "-fvisibility=hidden",
+    ],
+    cxxopts = [
+        "-fvisibility-inlines-hidden",
+        "-std=c++20",
+    ],
+    linkstatic = True,
     local_defines = [
         "MUJOCO_DLL_EXPORTS",
         "TINYOBJLOADER_IMPLEMENTATION",

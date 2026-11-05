@@ -18,6 +18,7 @@
 #include <array>
 #include <cstddef>
 #include <cstdint>
+#include <cstdlib>
 #include <span>
 #include <string>
 #include <string_view>
@@ -270,6 +271,119 @@ TEST_F(ModelTextureTest, MissingByReferenceTextureWarns) {
   ModelResources missing_resources(missing.get(), renderer.GetContext());
   EXPECT_THAT(missing_resources.GetTexture(0), IsNull());
   EXPECT_EQ(RenderModel(renderer, missing_resources), expected);
+}
+
+// End-to-end MJCF test verifying mjrf_configureSceneFromModel wires
+// vis.map.haze and vis.rgba.haze so an infinite ground plane blends smoothly
+// into a gradient skybox under post-processing without a brightness jump at the
+// horizon.
+TEST_F(ModelTextureTest, ConfigureSceneHazeBlendsIntoGradientSkybox) {
+  static constexpr char kXml[] = R"(
+  <mujoco>
+    <visual>
+      <map haze="0.5" zfar="100"/>
+      <rgba haze="0.15 0.25 0.35 1"/>
+    </visual>
+    <asset>
+      <texture type="skybox" builtin="gradient" rgb1=".3 .5 .7" rgb2="0 0 0"
+          width="32" height="512"/>
+      <texture name="grid" type="2d" builtin="checker" width="64" height="64"
+          rgb1=".8 .8 .8" rgb2=".6 .6 .6"/>
+      <material name="grid" texture="grid" texrepeat="1 1" texuniform="true"/>
+    </asset>
+    <worldbody>
+      <light pos="0 0 10" dir="0 0 -1" directional="true"/>
+      <geom type="plane" size="0 0 0.05" material="grid"/>
+    </worldbody>
+  </mujoco>
+  )";
+  std::array<char, 1024> error;
+  MjModelPtr model = LoadModelFromString(kXml, error.data(), error.size());
+  ASSERT_THAT(model, NotNull()) << error.data();
+  mjData* data = mj_makeData(model.get());
+  mj_forward(model.get(), data);
+
+  Renderer renderer(MakeOffscreenConfig());
+  ModelResources resources(model.get(), renderer.GetContext());
+  mjrfScene* scene = renderer.GetScene("scene");
+  mjrf_configureSceneFromModel(scene, model.get());
+  ModelRenderables renderables(scene, &resources);
+  ModelLights lights(scene, &resources);
+  renderables.Update(data);
+  lights.Update(data);
+  mj_deleteData(data);
+
+  constexpr int kWidth = 64;
+  constexpr int kHeight = 256;
+  mjrfRenderTargetConfig config;
+  mjrf_defaultRenderTargetConfig(&config);
+  config.width = kWidth;
+  config.height = kHeight;
+  config.color_format = mjPIXEL_FORMAT_RGB8;
+  config.depth_format = mjPIXEL_FORMAT_DEPTH32F;
+  Renderer::RenderTargetHandle target =
+      renderer.CreateRenderTarget("haze_target", config);
+
+  Renderer::View views[1];
+  Renderer::View& view = views[0];
+  view.render_target = target;
+  view.scene = renderer.GetSceneHandle("scene");
+  view.post_processing = true;
+  view.shadows = false;
+  view.reflections = false;
+  view.camera.orthographic = false;
+  view.camera.pos[0] = 15.3f;
+  view.camera.pos[1] = -27.8f;
+  view.camera.pos[2] = 20.0f;
+  view.camera.forward[1] = 1.0f;
+  view.camera.up[2] = 1.0f;
+  view.camera.frustum_width = 0.1f;
+  view.camera.frustum_bottom = -0.1f;
+  view.camera.frustum_top = 0.1f;
+  view.camera.frustum_near = 0.1f;
+  view.camera.frustum_far = 100.0f;
+
+  view.haze = false;
+  renderer.Render(views);
+  std::span<const std::byte> raw_no_haze = renderer.GetPixels(target);
+  std::vector<uint8_t> no_haze(
+      reinterpret_cast<const uint8_t*>(raw_no_haze.data()),
+      reinterpret_cast<const uint8_t*>(raw_no_haze.data()) +
+          raw_no_haze.size());
+
+  view.haze = true;
+  renderer.Render(views);
+  std::span<const std::byte> raw_with_haze = renderer.GetPixels(target);
+  std::vector<uint8_t> with_haze(
+      reinterpret_cast<const uint8_t*>(raw_with_haze.data()),
+      reinterpret_cast<const uint8_t*>(raw_with_haze.data()) +
+          raw_with_haze.size());
+
+  EXPECT_NE(with_haze, no_haze);
+
+  // Without haze, the bright checker plane meets the dark skybox at row ~164
+  // with a sharp single-row luminance jump; with haze matching the skybox
+  // horizon color, the horizon discontinuity disappears and the lower cone
+  // spreads the transition smoothly across ~37 rows.
+  auto max_step_in_band = [&](const std::vector<uint8_t>& img) {
+    int max_diff = 0;
+    for (int y = 145; y < 195; ++y) {
+      for (int c = 0; c < 3; ++c) {
+        int a = img[(y * kWidth + kWidth / 2) * 3 + c];
+        int b = img[((y + 1) * kWidth + kWidth / 2) * 3 + c];
+        max_diff = std::max(max_diff, std::abs(a - b));
+      }
+    }
+    return max_diff;
+  };
+  EXPECT_GT(max_step_in_band(no_haze), 80);
+  EXPECT_LT(max_step_in_band(with_haze), 35);
+
+  for (int c = 0; c < 3; ++c) {
+    int sky_above_rim = with_haze[(160 * kWidth + kWidth / 2) * 3 + c];
+    int haze_at_rim = with_haze[(164 * kWidth + kWidth / 2) * 3 + c];
+    EXPECT_NEAR(haze_at_rim, sky_above_rim, 10);
+  }
 }
 
 }  // namespace

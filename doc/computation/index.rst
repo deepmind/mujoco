@@ -5,6 +5,7 @@ Computation
     :hidden:
 
     fluid
+    speculative
 
 
 Introduction
@@ -728,10 +729,10 @@ Discrete-time (``discrete``)
 
       - Models with flex elasticity or passive flex contact under the ``PGS`` :ref:`solver<option-solver>` or with
         :ref:`noslip<option-noslip_iterations>` post-processing.
+      - Flex :ref:`edge stiffness<flex-edge-stiffness>` or :ref:`damping<flex-edge-damping>` (use
+        :ref:`elasticity<flex-elasticity>` or :ref:`edge equality<flexcomp-edge-equality>` instead).
       - :ref:`Sleep<option-flag-sleep>` without :ref:`islands<option-flag-island>` (island grouping is required
         to keep metric-coupled trees awake or asleep together).
-      - Interpolated flexes (e.g. flexcomp ``dof="trilinear"``) whose nodes are attached to arbitrary moving bodies
-        under the ``Newton`` solver (these models require the ``CG`` solver).
 
       The following approximations and fallbacks apply under ``discrete``:
 
@@ -749,6 +750,8 @@ Discrete-time (``discrete``)
    a factor of 4 (so the computational effort is identical). In the presence of large velocity-dependent forces, if the
    chosen single-step method integrates those forces implicitly, single-step methods can be significantly more stable
    than RK4.
+
+.. _geChoosingTimestepIntegrator:
 
 .. admonition:: Choosing timestep and integrator
    :class: tip
@@ -1477,12 +1480,15 @@ representations of the constraint Jacobian and related matrices.
 
 **Newton** : Newton's method
    This algorithm implements the exact Newton method, with analytical second-order derivatives and Cholesky
-   factorization of the Hessian. The line-search is the same as in the CG method. When constraint states change between
-   iterations (e.g., a constraint transitions from quadratic to linear), the Hessian factorization is updated
-   incrementally via rank-1 Cholesky updates, avoiding full refactorization. Early termination is triggered when any of
-   three quantities falls below :ref:`tolerance<option-tolerance>`: the cost improvement of the last iteration, the
-   gradient norm, and the Newton decrement :math:`\tfrac{1}{2} g^T H^{-1} g` -- the predicted cost improvement of the
-   next iteration. It is the default solver.
+   factorization of the Hessian. In sparse mode, the Hessian :math:`H = \widehat{M} + J^T D J` is factorized as
+   :math:`L^T L` by eliminating rows in reverse order (:math:`\nv - 1` down to :math:`0`, leaves to root); this gives
+   zero fill-in on the kinematic tree :math:`\widehat{M}`, though off-tree constraints can introduce fill-in depending
+   on :ref:`body ordering <CBodyOrdering>`. The line-search is the same as in the CG method. When constraint states
+   change between iterations (e.g., a constraint transitions from quadratic to linear), the Hessian factorization is
+   updated incrementally via rank-1 Cholesky updates, avoiding full refactorization. Early termination is triggered when
+   any of three quantities falls below :ref:`tolerance<option-tolerance>`: the cost improvement of the last iteration,
+   the gradient norm, and the Newton decrement :math:`\tfrac{1}{2} g^T H^{-1} g` -- the predicted cost improvement of
+   the next iteration. It is the default solver.
 
 **PGS** : Projected Gauss-Seidel method
    This is the most common algorithm used in physics simulators, and used to be the default in MuJoCo, until we
@@ -1650,11 +1656,11 @@ Recall that :math:`r` is the position residual, while :math:`J v` is the joint v
 the indexing notation refers to one component of the projected velocity vector. For friction loss and friction
 dimensions of elliptic cones, :math:`r \equiv 0` and therefore :math:`k=0`, so the reference acceleration reduces to
 pure damping: :math:`\ari = -b_i (J v)_i`. More detail is given in the :ref:`Friction<CSolverFriction>` section of the
-Modeling chapter. For the tangential rows of contacts whose geoms specify a
-:ref:`surface velocity<body-geom-surfacevel>`, the projected velocity :math:`(J v)_i` is biased by the relative
-velocity of the surface material, so that the reference acceleration drives the contact toward moving *with* the
-surface; this is how conveyor belts and turntables are implemented, and it is also the quantity reported in the
-contact rows of ``mjData.efc_vel``.
+Modeling chapter. For the tangential and torsional rows of contacts with nonzero
+:ref:`surface velocity<body-geom-surfacevel>` (stored per contact in ``mjContact.surfacevel``), the projected velocity
+:math:`(J v)_i` is biased by the relative velocity of the surface material, so that the reference acceleration drives
+the contact toward moving *with* the surface; this is how conveyor belts and turntables are implemented, and it is also
+the quantity reported in the contact rows of ``mjData.efc_vel``.
 
 .. _soAdhesion:
 
@@ -1740,7 +1746,8 @@ Collision detection
 
 Collision detection operates on geoms, which are geometric entities rigidly attached to the underlying bodies. The
 output of collision detection is the list of active contacts, defined as having contact distance smaller than their
-margin parameter. They are stored in the global array ``mjData.contact`` which is then used to construct the constraint
+margin parameter or, when :ref:`speculative contacts <coSpeculative>` are enabled, predicted to occur within the next
+timestep. They are stored in the global array ``mjData.contact`` which is then used to construct the constraint
 Jacobian and compute the constraint force. Below we explain how geom pairs are selected for collision checking, how
 collision checking is done, and how the parameters of the resulting contact are determined.
 
@@ -1779,8 +1786,9 @@ Filtering
       check. This is usually the case but there are exceptions (for example plane-plane collisions are not supported),
       and furthermore the user may override the default table of collision functions with NULL pointers, effectively
       disabling collisions between certain geom types.
-   2. A bounding sphere test is applied, taking into account the contact margin. If one of the geoms in the pair is a
-      plane, this becomes a plane-sphere test.
+   2. A bounding sphere test is applied, taking into account the contact margin (and the geoms' motion over the timestep
+      when :ref:`speculative<option-flag-speculative>` is enabled). If one of the geoms in the pair is a plane, this
+      becomes a plane-sphere test.
    3. The two geoms cannot belong to the same body. Furthermore, they cannot belong to a parent and a child body, unless
       the parent is the world body. The motivation is to avoid permanent contacts within bodies and joints. Note that if
       several bodies are welded together in the sense that there are no joints between them, they are treated as a
@@ -1867,6 +1875,25 @@ single-shot pipeline
   is done at compilation time, there is very little performance overhead. Supported geoms are capsules, cylinders,
   boxes, and meshes.
 
+.. _coSpeculative:
+
+Speculative contacts
+^^^^^^^^^^^^^^^^^^^^
+Fast-moving or thin objects can pass completely through each other within a single timestep without overlapping at the
+discrete evaluation points, an artifact known as *tunneling*. Enabling the :ref:`speculative<option-flag-speculative>`
+flag prevents tunneling by sweeping geoms along their pre-step linear and angular velocities over the timestep to detect
+upcoming collisions and adding speculative contacts before penetration occurs. Broadphase AABBs and the bounding-sphere
+filter are expanded to account for each fast geom's motion over the step, and narrowphase uses conservative advancement
+with GJK to find the normalized time of impact (TOI) :math:`t \in [0, 1]` along with a raycast between the :math:`t = 0`
+witness points to reject contacts occluded by intervening geometry. Speculative contacts are populated in
+``mjData.contact`` prior to surface contact with an effective ``dist`` obtained by inverting the reference acceleration
+equation :eq:`eq:aref` so that the constraint solver arrests :math:`(1 - t)` of the relative normal velocity and lands
+the geom on the contact surface at the end of the step (which means contact and touch sensors can trigger a step early).
+See the :doc:`Speculative contacts <speculative>` chapter for further details. This feature requires the
+:ref:`nativeccd<option-flag-nativeccd>` pipeline and supports planes, spheres, capsules, ellipsoids, cylinders, boxes,
+and convex meshes (as well as :ref:`multiccd<option-flag-multiccd>` for multi-point surface contacts); height fields,
+SDFs, and flexes are not supported.
+
 .. _coDistance:
 
 .. image:: ../images/computation/ccd_light.gif
@@ -1898,11 +1925,12 @@ height fields) are :ref:`Signed Distance Functions<exSDF>` (see documentation th
 `analytic SDFs <https://github.com/google-deepmind/mujoco/blob/main/plugin/sdf/README.md#gear>`__) can be efficient, but
 have other requirements and limitations.
 
-Open source mesh-decomposition tools like the `CoACD library <https://github.com/SarahWeiii/CoACD>`__ can be used
-outside MuJoCo to automate this process. Finally, all built-in collision functions can be replaced with custom
-callbacks. This can be used to incorporate a general-purpose "triangle soup" collision detector for example. However we
-do not recommend such an approach. Pre-processing the geometry and representing it as a union of convex geoms takes some
-work, but it pays off at runtime and yields both faster and more stable simulation.
+Open-source tools like `CoACD <https://github.com/SarahWeiii/CoACD>`__ (for general approximate mesh decomposition) and
+`mjfit <https://github.com/younghyopark/mjfit>`__ (for exact convex assemblies such as pegs and holes, threads, and
+gears) can be used outside MuJoCo to automate this process. Finally, all built-in collision functions can be replaced
+with custom callbacks. This can be used to incorporate a general-purpose "triangle soup" collision detector for example.
+However we do not recommend such an approach. Pre-processing the geometry and representing it as a union of convex geoms
+takes some work, but it pays off at runtime and yields both faster and more stable simulation.
 
 .. _coPairwise:
 

@@ -27,6 +27,7 @@ import numpy as np
 # TODO: b/288149332 - Remove once USD Python Binding works well with pytype.
 from pxr import Gf
 from pxr import Sdf
+from pxr import Tf
 from pxr import Usd
 from pxr import UsdGeom
 from pxr import UsdShade
@@ -59,11 +60,11 @@ class USDObject(abc.ABC):
     self.stage = stage
     self.model = model
     self.geom = geom
-    self.obj_name = obj_name
+    self.obj_name = Tf.MakeValidIdentifier(obj_name)
     self.rgba = rgba
     self.geom_textures = geom_textures
 
-    self.xform_path = f"/World/Mesh_Xform_{obj_name}"
+    self.xform_path = f"/World/Mesh_Xform_{self.obj_name}"
     self.usd_xform = UsdGeom.Xform.Define(stage, self.xform_path)
 
     # defining ops required by update function
@@ -230,7 +231,7 @@ class USDMesh(USDObject):
 
     self.dataid = dataid
 
-    mesh_path = f"{self.xform_path}/Mesh_{obj_name}"
+    mesh_path = f"{self.xform_path}/Mesh_{self.obj_name}"
     self.usd_mesh = UsdGeom.Mesh.Define(stage, mesh_path)
     self.usd_prim = stage.GetPrimAtPath(mesh_path)
 
@@ -330,7 +331,7 @@ class USDPrimitiveMesh(USDObject):
     self.mesh_config = mesh_config
     self.prim_mesh = self.generate_primitive_mesh()
 
-    mesh_path = f"{self.xform_path}/Mesh_{obj_name}"
+    mesh_path = f"{self.xform_path}/Mesh_{self.obj_name}"
     self.usd_mesh = UsdGeom.Mesh.Define(stage, mesh_path)
     self.usd_prim = stage.GetPrimAtPath(mesh_path)
 
@@ -432,8 +433,9 @@ class USDTendon(USDObject):
     self.usd_refs = collections.defaultdict(dict)
 
     for name, _ in self.tendon_parts.items():
-      part_xform_path = f"{self.xform_path}/Mesh_Xform_{name}"
-      mesh_path = f"{part_xform_path}/Mesh_{obj_name}"
+      part_xform_name = Tf.MakeValidIdentifier(f"Mesh_Xform_{name}")
+      part_xform_path = f"{self.xform_path}/{part_xform_name}"
+      mesh_path = f"{part_xform_path}/Mesh_{self.obj_name}"
       usd_xform = UsdGeom.Xform.Define(stage, part_xform_path)
       self.usd_refs[name]["usd_xform"] = usd_xform
       self.usd_refs[name]["usd_mesh"] = UsdGeom.Mesh.Define(stage, mesh_path)

@@ -16,6 +16,7 @@
 
 from absl.testing import absltest
 from absl.testing import parameterized
+import jax
 import jax.numpy as jp
 from mujoco.mjx._src import math
 import numpy as np
@@ -196,6 +197,62 @@ class ClosestSegmentSegmentPointsTest(parameterized.TestCase):
     expected_dist = (expected[0] - expected[1]).dot(expected[0] - expected[1])
     test_dist = (ans[0] - ans[1]).dot(ans[0] - ans[1])
     self.assertAlmostEqual(expected_dist, test_dist, 4)
+
+
+def _rotvec_rate(expmap: np.ndarray, vel: np.ndarray) -> np.ndarray:
+  """Float64 reference for math.deriv_expmap, from its definition.
+
+  Computes d/dt log(exp(expmap) * exp(t * vel)) at t = 0 by forward-mode
+  autodiff through the quaternion exponential and logarithm, independently of
+  the Bortz formula. The logarithm returns angles in (-pi, pi], so for
+  |expmap| > pi this is the rate of the equivalent reduced rotation vector.
+
+  Args:
+    expmap: (3,) nonzero rotation vector
+    vel: (3,) rotational velocity in the rotated frame
+
+  Returns:
+    (3,) time-derivative of the rotation vector
+  """
+  with jax.enable_x64(True):
+    angle = np.linalg.norm(expmap)
+    q0 = math.axis_angle_to_quat(jp.array(expmap / angle), angle)
+    vel = jp.array(vel, dtype=jp.float64)
+
+    def rotvec(t):
+      q = math.quat_integrate(q0, vel, t)
+      axis, theta = math.quat_to_axis_angle(q)
+      return axis * theta
+
+    _, rate = jax.jvp(rotvec, (0.0,), (1.0,))
+    return np.asarray(rate, dtype=np.float64)
+
+
+class DerivExpmapTest(parameterized.TestCase):
+
+  def test_zero_rotation(self):
+    """dexp^{-1} at a zero rotation vector is the identity."""
+    v = jp.array([1.0, -2.0, 3.0])
+    np.testing.assert_allclose(math.deriv_expmap(jp.zeros(3), v), v)
+
+  @parameterized.product(
+      # below and above the polynomial cutoff (1.75), near pi, and above pi
+      angle=(1e-3, 0.5, 1.74, 1.76, 3.0, 4.0, 7.0),
+      x64=(False, True),
+  )
+  def test_reference(self, angle, x64):
+    axis = np.array([1.0, 2.0, -2.0]) / 3.0
+    vel = np.array([0.3, -1.2, 0.7])
+    expected = _rotvec_rate(angle * axis, vel)
+
+    with jax.enable_x64(x64):
+      dtype = jp.float64 if x64 else jp.float32
+      expmap = jp.array(angle * axis, dtype=dtype)
+      res = math.deriv_expmap(expmap, jp.array(vel, dtype=dtype))
+      self.assertEqual(res.dtype, dtype)
+
+    tol = 1e-12 if x64 else 1e-6
+    np.testing.assert_allclose(res, expected, atol=tol, rtol=tol)
 
 
 if __name__ == "__main__":

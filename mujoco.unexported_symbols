@@ -1,0 +1,17 @@
+# Hide symbols from bundled third-party libraries and C++ internals; which mj*
+# and _mj* symbols are exported is controlled by MJAPI and -fvisibility=hidden
+# (verified by test/mujoco_shared_exports_test.sh).
+#
+# Mach-O prefixes C symbols with '_', so mj* becomes _mj* and _mj* becomes
+# __mj*. Since ld64's -unexported_symbols_list has no negation operator, these
+# globs unexport every symbol except _mj* and __mj*:
+# Anything not starting with _ (e.g. $ld$... symbols from libclang_rt.osx.a):
+[$0-9A-Za-z]*
+# Anything starting with _ except _m* and __*:
+_[$0-9A-Za-ln-z]*
+# Anything starting with _m except _mj*:
+_m[$0-9A-Z_a-ik-z]*
+# Anything starting with __ except __m*:
+__[$0-9A-Z_a-ln-z]*
+# Anything starting with __m except __mj*:
+__m[$0-9A-Z_a-ik-z]*

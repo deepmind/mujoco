@@ -170,6 +170,16 @@ struct mjCBoundingVolumeHierarchy_ {
   double                         iquat_[4] = {1, 0, 0, 0};
 };
 
+// angle-weighted vertex and edge pseudonormals of a triangle mesh, which give the sign of the
+// distance to a closest point on a shared vertex or edge (Baerentzen and Aanaes, 2005)
+struct MeshPseudonormals {
+  MeshPseudonormals(const double* vert, int nvert, const int* face, int nface);
+
+  std::vector<double> vertex;  // vertex pseudonormals                 (nvert x 3)
+  std::vector<double> edge;    // edge pseudonormals                   (nedge x 3)
+  std::vector<int>    side;    // edge index of each side of each face (nface x 3)
+};
+
 class mjCBoundingVolumeHierarchy : public mjCBoundingVolumeHierarchy_ {
  public:
   // make bounding volume hierarchy
@@ -207,7 +217,10 @@ class mjCBoundingVolumeHierarchy : public mjCBoundingVolumeHierarchy_ {
   }
 
   // query signed distance from point to mesh surface
-  double QuerySignedDistance(const double* point, const double* vert, const int* face) const;
+  double QuerySignedDistance(const double*            point,
+                             const double*            vert,
+                             const int*               face,
+                             const MeshPseudonormals& normals) const;
 
  private:
   // internal class used during BVH construction, for partial sorting of bounding volumes
@@ -603,7 +616,6 @@ class mjCBody : public mjCBody_, private mjsBody {
   friend class mjCGeom;
   friend class mjCSite;
   friend class mjCCamera;
-  friend class mjCComposite;
   friend class mjCFrame;
   friend class mjCLight;
   friend class mjCFlex;
@@ -710,7 +722,7 @@ class mjCBody : public mjCBody_, private mjsBody {
 
   void Compile(void);          // compiler
   void ApplyGauge();           // scale the compiled copy by the gauge
-  void InertiaFromGeom(void);  // get inertial info from geoms
+  bool InertiaFromGeom(void);  // get inertial info from geoms
 
   // true if compilation infers the inertial of this body from its geoms
   bool InfersInertial() const;
@@ -834,8 +846,9 @@ class mjCJoint_ : public mjCBase {
   mjCBody* body;  // joint's body
 
   // variable used for temporarily storing the state of the joint
-  std::map<std::string, std::array<mjtNum, 7>> qpos_;  // qpos at the previous step
-  std::map<std::string, std::array<mjtNum, 6>> qvel_;  // qvel at the previous step
+  std::map<std::string, std::array<mjtNum, 7>> qpos_;     // qpos at the previous step
+  std::map<std::string, std::array<mjtNum, 6>> qvel_;     // qvel at the previous step
+  std::map<std::string, std::array<mjtNum, 7>> plastic_;  // plastic at the previous step
 
   // variable-size data
   std::vector<double> userdata_;
@@ -878,6 +891,7 @@ class mjCJoint : public mjCJoint_, private mjsJoint {
 
   mjtNum* qpos(const std::string& state_name);
   mjtNum* qvel(const std::string& state_name);
+  mjtNum* plastic(const std::string& state_name);
   void    ForgetKeyframes(const std::vector<std::string>& names, bool keep = false);
   void    ResetId();
 
@@ -893,8 +907,9 @@ class mjCJoint : public mjCJoint_, private mjsJoint {
   void AnchorToSpec(bool anchor, bool direction);
 
   // variables that should not be copied during copy assignment
-  int qposadr_;  // address of dof in data->qpos
-  int dofadr_;   // address of dof in data->qvel
+  int qposadr_;     // address of dof in data->qpos
+  int dofadr_;      // address of dof in data->qvel
+  int plasticadr_;  // address in data->plastic
 };
 
 
@@ -1185,7 +1200,9 @@ class mjCFlex_ : public mjCBase {
   int                              nnode;         // number of nodes
   int                              nedge;         // number of edges
   int                              nelem;         // number of elements
-  int                              matid;         // material id
+  int                              plasticadr_;   // plastic state address
+  int                              plasticnum_;   // number of plastic state variables
+  std::vector<int>                 elemmatid_;    // element material ids
   bool                             rigid;         // all vertices attached to the same body
   bool                             centered;      // all vertices coordinates (0,0,0)
   bool                             interpolated;  // vertices are interpolated from nodes
@@ -1201,8 +1218,11 @@ class mjCFlex_ : public mjCBase {
   std::vector<int>                 edgeidx_;      // element edge ids
   std::vector<double>              stiffness;     // elasticity stiffness matrix
   std::vector<double>              bending;       // bending stiffness matrix
-  bool              has_strain_eq = false;        // true if strain constraints reference this flex
-  std::vector<bool> cell_empty;                   // true if cell contains no mesh geometry
+  bool                has_strain_eq = false;      // true if strain constraints reference this flex
+  std::vector<bool>   cell_empty;                 // true if cell contains no mesh geometry
+  std::vector<bool>   cell_full;                  // true if cell is 100% inside mesh
+  std::vector<double> cell_vol;                   // material volume fraction per cell
+  std::vector<std::vector<double>> cell_alphas;   // subcell quadrature occupancy for cut cells
 
   // variable-size data
   std::vector<std::string> vertbody_;      // vertex body names
@@ -1212,9 +1232,9 @@ class mjCFlex_ : public mjCBase {
   std::vector<int>         elem_;          // element vertex ids
   std::vector<float>       texcoord_;      // vertex texture coordinates
   std::vector<int>         elemtexcoord_;  // face texture coordinates (OBJ only)
-  std::string              material_;      // name of material used for rendering
+  std::vector<std::string> material_;      // names of materials used for rendering
 
-  std::string              spec_material_;
+  std::vector<std::string> spec_material_;
   std::vector<std::string> spec_vertbody_;
   std::vector<std::string> spec_nodebody_;
   std::vector<double>      spec_vert_;
@@ -1224,7 +1244,8 @@ class mjCFlex_ : public mjCBase {
   std::vector<int>         spec_elemtexcoord_;
 
   // caching
-  std::vector<double> cached_stiffness_;  // cached stiffness matrix
+  std::vector<double>                        cached_stiffness_;  // cached stiffness matrix
+  std::map<std::string, std::vector<double>> plastic_;
 };
 
 class mjCFlex : public mjCFlex_, private mjsFlex {
@@ -1248,7 +1269,7 @@ class mjCFlex : public mjCFlex_, private mjsFlex {
   void NameSpace(const mjCModel* m);
 
   // used by mjXWriter and mjCModel
-  const std::string&              get_material() const { return material_; }
+  const std::vector<std::string>& get_material() const { return material_; }
   const std::vector<std::string>& get_vertbody() const { return vertbody_; }
   const std::vector<double>&      get_vert() const { return vert_; }
   const std::vector<double>&      get_elemaabb() const { return elemaabb_; }
@@ -1264,6 +1285,11 @@ class mjCFlex : public mjCFlex_, private mjsFlex {
     material_.clear();
   }
 
+  std::vector<double>& plastic(const std::string& state_name) { return plastic_[state_name]; }
+  int                  PlasticNum() const;
+  int                  PlasticMode() const;
+  int                  PlasticStretchNum() const;
+
   // gauge of the lowest frame or body which contains the bodies of the vertices and nodes
   mjCGauge BodyGauge() const;
 
@@ -1271,31 +1297,42 @@ class mjCFlex : public mjCFlex_, private mjsFlex {
 
 
  private:
-  bool IsSimple() const;           // fixed or independent XYZ-slide attachments
-  void Compile(const mjVFS* vfs);  // compiler
-  void CreateBVH(void);            // create flex BVH
-  void CreateShell(void);          // create shells
-  void ComputeCellEmpty(const double* vpos,
-                        const int*    elems,  // identify cells
-                        int           ne,
-                        int           fdim,        // with no mesh content
-                        const double  minmax[6]);  // bounding box of the node grid
+  bool   IsSimple() const;           // fixed or independent XYZ-slide attachments
+  void   Compile(const mjVFS* vfs);  // compiler
+  void   CreateBVH(void);            // create flex BVH
+  void   CreateShell(void);          // create shells
+  void   ComputeCellEmpty(const double* vpos,
+                          const int*    elems,  // identify cells
+                          int           ne,
+                          int           fdim,        // with no mesh content
+                          const double  minmax[6]);  // bounding box of the node grid
+  bool   NodeInEmptyCells(int gi, int gj,
+                          int gk) const;  // node only in empty cells
+  double NodeMassWeight(int gi, int gj,
+                        int gk) const;  // FCM volume-weighted nodal mass
 
   // scale the compiled copy: positions by the gauges of their bodies, the rest by that of the flex
   void ApplyGauge();
+  void ForgetKeyframes(const std::vector<std::string>& names, bool keep = false);
+  void ResetId();
 
-  std::vector<double> vert0_;  // vertex positions in [0, 1]^d in the bounding box
-  std::vector<double> node0_;  // node Cartesian positions
+  std::vector<double> vert0_;     // vertex positions in [0, 1]^d in the bounding box
+  std::vector<int>    vertcell_;  // finite cell index for vertex; -1: none
+  std::vector<double> node0_;     // node Cartesian positions
 
   // compute unrotated node positions for stiffness computation
   // optionally outputs the grid rotation matrix R0 (stored as rows)
   std::vector<double> ComputeUnrotatedNodePositions(const std::vector<double>& nodexpos,
                                                     double* R0_out = nullptr) const;
 
-  // stiffness caching
-  std::string ComputeStiffnessCacheKey() const;
-  bool        LoadCachedStiffness();
-  void        CacheStiffness();
+  // stiffness and FCM geometry caching
+  std::string ComputeStiffnessCacheKey(const std::vector<double>& nodexpos_local) const;
+  bool        LoadCachedStiffness(const std::vector<double>& nodexpos_local);
+  void        CacheStiffness(const std::vector<double>& nodexpos_local);
+  std::string ComputeFcmCacheKey(
+      const double* vpos, const int* elems, int ne, int fdim, const double minmax[6]) const;
+  bool LoadCachedFcmGeometry(const std::string& key);
+  void CacheFcmGeometry(const std::string& key);
 };
 
 
@@ -1610,6 +1647,10 @@ class mjCSkin_ : public mjCBase {
 
   // compilation scaled the vertices and the bind poses with the bones
   bool scaled_ = false;
+
+  // namespace of the attachments, applied to the bone names loaded from file
+  std::string bone_prefix_;
+  std::string bone_suffix_;
 };
 
 class mjCSkin : public mjCSkin_, private mjsSkin {
@@ -1636,7 +1677,8 @@ class mjCSkin : public mjCSkin_, private mjsSkin {
   const std::vector<float>&              get_bindquat() const { return bindquat_; }
   const std::vector<std::vector<int>>&   get_vertid() const { return vertid_; }
   const std::vector<std::vector<float>>& get_vertweight() const { return vertweight_; }
-  void                                   del_material() {
+  bool HasBoneNameSpace() const { return !bone_prefix_.empty() || !bone_suffix_.empty(); }
+  void del_material() {
     spec_material_.clear();
     material_.clear();
   }
@@ -1976,7 +2018,11 @@ class mjCEquality : public mjCEquality_, private mjsEquality {
 
 class mjCTendon_ : public mjCBase {
  protected:
-  int matid;  // material id for rendering
+  int matid;        // material id for rendering
+  int plasticadr_;  // address in data->plastic
+
+  // variable used for temporarily storing the state of the tendon
+  std::map<std::string, std::array<mjtNum, 2>> plastic_;  // plastic at the previous step
 
   // variable-size data
   std::string         material_;
@@ -2034,8 +2080,15 @@ class mjCTendon : public mjCTendon_, private mjsTendon {
   mjCGauge PathGauge() const;
   int      Linear() const;
 
+  mjtNum* plastic(const std::string& state_name);
+  void    ForgetKeyframes(const std::vector<std::string>& names, bool keep = false);
+
+  // tendon type: fixed if the path is non-empty and has only joints, otherwise spatial
+  mjtTendon Type() const;
+
  private:
   void Compile(void);  // compiler
+  void ResetId();
 
   // scale the compiled copy by the gauge, or back
   void ApplyGauge(bool inverse = false);
@@ -2197,7 +2250,8 @@ class mjCActuator : public mjCActuator_, private mjsActuator {
   void CopyPlugin();
 
   // scale the compiled copy by the gauge, or back
-  void ApplyGauge(bool inverse = false);
+  void   ApplyGauge(bool inverse = false);
+  double CoordinateFactor(const mjCGauge& g) const;
 
   void ForgetKeyframes(const std::vector<std::string>& names, bool keep = false);
   void ResetId();
@@ -2374,6 +2428,7 @@ typedef struct mjKeyInfo_ {
   bool   ctrl;
   bool   mpos;
   bool   mquat;
+  bool   plastic;
 } mjKeyInfo;
 
 class mjCKey_ : public mjCBase {
@@ -2394,12 +2449,14 @@ class mjCKey_ : public mjCBase {
   std::vector<double> mpos_;
   std::vector<double> mquat_;
   std::vector<double> ctrl_;
+  std::vector<double> plastic_;
   std::vector<double> spec_qpos_;
   std::vector<double> spec_qvel_;
   std::vector<double> spec_act_;
   std::vector<double> spec_mpos_;
   std::vector<double> spec_mquat_;
   std::vector<double> spec_ctrl_;
+  std::vector<double> spec_plastic_;
 };
 
 class mjCKey : public mjCKey_, private mjsKey {

@@ -104,6 +104,8 @@ class Renderer {
     bool post_processing = true;
     bool reflections = true;
     bool shadows = true;
+    bool skybox = true;
+    bool haze = true;
     struct Headlight {
       float color[3] = {0.0f, 0.0f, 0.0f};
       float intensity = 0.0f;

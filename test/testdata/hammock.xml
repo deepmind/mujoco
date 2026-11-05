@@ -19,7 +19,7 @@
      Equality constraints: 178
      Tendons: 178
 
-     Simple hammock, implemented as a 2D grid composite, pinned at the corners.
+     Simple hammock, implemented as a 2D grid flexcomp, pinned at the corners.
 -->
 
   <option timestep="0.001" solver="CG" iterations="30" tolerance="1e-6">

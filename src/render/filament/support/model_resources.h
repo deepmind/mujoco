@@ -21,6 +21,7 @@
 #include <string>
 #include <unordered_map>
 #include <unordered_set>
+#include <vector>
 
 #include <mujoco/mjmodel.h>
 #include <mujoco/mjrfilament.h>
@@ -111,10 +112,10 @@ class ModelResources {
 
   const mjModel* model_ = nullptr;
   mjrfContext* ctx_ = nullptr;
-  std::unordered_map<int, UniquePtr<mjrfMesh>> meshes_;
-  std::unordered_map<int, UniquePtr<mjrfMesh>> convex_hulls_;
-  std::unordered_map<int, UniquePtr<mjrfMesh>> height_fields_;
-  std::unordered_map<int, TextureEntry> textures_;
+  std::vector<UniquePtr<mjrfMesh>> meshes_;
+  std::vector<UniquePtr<mjrfMesh>> convex_hulls_;
+  std::vector<UniquePtr<mjrfMesh>> height_fields_;
+  std::vector<TextureEntry> textures_;
   // The ids of the by-reference textures uploaded with each key.
   std::unordered_map<TextureKey, std::unordered_set<int>, TextureKeyHash>
       ids_by_key_;

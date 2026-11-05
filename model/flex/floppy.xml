@@ -18,7 +18,7 @@
 
   <compiler autolimits="true"/>
 
-  <option solver="CG" tolerance="1e-6" timestep=".001"/>
+  <option solver="Newton" tolerance="1e-6" timestep=".001"/>
 
   <size memory="100M"/>
 
@@ -27,16 +27,16 @@
   </visual>
 
   <worldbody>
-    <flexcomp type="grid" count="24 4 4" spacing=".1 .1 .1" pos=".1 0 1.5"
-              radius=".0" rgba="0 .7 .7 1" name="softbody" dim="3" mass="25">
-      <contact condim="3" solref="0.01 1" solimp=".95 .99 .0001" selfcollide="none"/>
-      <elasticity young="5e4" damping="0.002" poisson="0.2"/>
-    </flexcomp>
-
     <body>
       <joint name="hinge" pos="0 0 .5" axis="0 1 0" damping="50"/>
       <geom type="cylinder" size=".4" fromto="0 -.5 .5 0 .5 .5" density="300"/>
     </body>
+
+    <flexcomp type="grid" count="24 4 4" spacing=".1 .1 .1" pos=".1 0 1.5"
+              radius=".0" rgba="0 .7 .7 1" name="softbody" dim="3" mass="25">
+      <contact condim="3" solref="0.01 1" solimp=".95 .99 .0001" selfcollide="none"/>
+      <elasticity young="53571.4286" damping="0.002" poisson="0.285714286"/>
+    </flexcomp>
   </worldbody>
 
   <actuator>

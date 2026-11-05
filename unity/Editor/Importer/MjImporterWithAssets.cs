@@ -90,9 +90,11 @@ public class MjImporterWithAssets : MjcfImporter {
 
   protected override void ParseGeom(GameObject parentObject, XmlElement child) {
     var gameObject = CreateGameObjectWithUniqueName<MjGeom>(parentObject, child);
-    gameObject.AddComponent<MjMeshFilter>();
-    var renderer = gameObject.AddComponent<MeshRenderer>();
-    ResolveOrCreateMaterial(renderer, child);
+    if (gameObject.GetComponent<MjGeom>().ShapeType != MjShapeComponent.ShapeTypes.HField) {
+      gameObject.AddComponent<MjMeshFilter>();
+      var renderer = gameObject.AddComponent<MeshRenderer>();
+      ResolveOrCreateMaterial(renderer, child);
+    }
   }
 
   private void ConfigureMeshPath(string path, string projectName, XmlDocument mjcf) {

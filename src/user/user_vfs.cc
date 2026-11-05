@@ -15,9 +15,6 @@
 #include "user/user_vfs.h"
 
 #include <sys/stat.h>
-#if defined(_WIN32) && !defined(__MINGW32__)
-  #define stat _stat
-#endif
 
 #include <algorithm>
 #include <cctype>
@@ -37,6 +34,7 @@
 
 #include <mujoco/mjplugin.h>
 #include <mujoco/mujoco.h>
+#include "engine/engine_util_errmem.h"
 #include "engine/engine_util_misc.h"
 #include "user/user_util.h"
 
@@ -51,7 +49,7 @@ struct ResourceFileData {
 
 int OpenFile(const char* filename, mjResource* resource) {
   struct stat file_stat;
-  if (stat(filename, &file_stat) == 0) {
+  if (mju_stat(filename, &file_stat) == 0) {
     ResourceFileData* data = new ResourceFileData();
     resource->data         = data;
 
@@ -115,7 +113,7 @@ VFS::VFS(mjVFS* vfs) {
     return FileModified(res, time);
   };
   default_provider_.write = [](mjResource* res, const void* buffer, mjtSize nbytes) -> mjtSize {
-    FILE* fp = fopen(res->name, "wb");
+    FILE* fp = mju_fopen(res->name, "wb");
     if (!fp) { return -1; }
     mjtSize written = static_cast<mjtSize>(fwrite(buffer, 1, nbytes, fp));
     fclose(fp);
@@ -202,16 +200,13 @@ mjResource* VFS::Open(const char* dir, const char* name, char* error, size_t ner
 
 VFS::Status VFS::Mount(const FilePath& path, const mjpResourceProvider* provider) {
   if (!provider) { return kInvalidProvider; }
-  {
-    std::lock_guard<std::recursive_mutex> lock(mutex_);
-    if (mounts_.contains(path.Str())) { return kRepeatedName; }
-  }
-
-  ResourcePtr res = CreateResource(path.c_str(), provider);
-  provider->mount(res.get());
-
   std::lock_guard<std::recursive_mutex> lock(mutex_);
+  if (mounts_.contains(path.Str())) { return kRepeatedName; }
+
+  ResourcePtr res     = CreateResource(path.c_str(), provider);
+  mjResource* res_ptr = res.get();
   mounts_.emplace(path.Str(), std::move(res));
+  if (provider->mount) { provider->mount(res_ptr); }
   return kSuccess;
 }
 
@@ -479,7 +474,7 @@ class BufferProvider : public mjpResourceProvider {
     };
     provider->modified = [](const mjResource* res, const char* timestamp) {
       const BufferProvider* self = (const BufferProvider*)res->provider;
-      if (mju_isValidBase64(timestamp) > sizeof(std::uint64_t)) { return 1; }
+      if (mju_isValidBase64(timestamp) != sizeof(std::uint64_t)) { return 1; }
       std::uint64_t test = 0;
       mju_decodeBase64((std::uint8_t*)&test, timestamp);
       if (self->hash_ != test) { return 1; }
@@ -503,7 +498,7 @@ class BufferProvider : public mjpResourceProvider {
 
     hash_ = contents_.empty() ? 0 : 0xcbf29ce484222325;
     for (const std::uint8_t& byte : contents_) {
-      hash_ |= byte;
+      hash_ ^= byte;
       hash_ *= prime;
     }
   }
@@ -520,7 +515,7 @@ class BufferProvider : public mjpResourceProvider {
     contents_.reserve(n);
     for (size_t i = 0; i < n; i++) {
       contents_.push_back(src_bytes[i]);
-      hash_ |= src_bytes[i];
+      hash_ ^= src_bytes[i];
       hash_ *= prime;
     }
   }

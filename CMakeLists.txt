@@ -29,7 +29,7 @@ set(MSVC_INCREMENTAL_DEFAULT ON)
 
 project(
   mujoco
-  VERSION 3.16.1
+  VERSION 4.0.0
   DESCRIPTION "MuJoCo Physics Simulator"
   HOMEPAGE_URL "https://mujoco.org"
 )
@@ -113,6 +113,7 @@ include(MujocoDependencies)
 
 set(MUJOCO_HEADERS
     include/mujoco/mjassert.h
+    include/mujoco/mjbatch.h
     include/mujoco/mjdata.h
     include/mujoco/mjexport.h
     include/mujoco/mjmacro.h
@@ -153,7 +154,6 @@ target_include_directories(
 )
 
 if(NOT EMSCRIPTEN)
-  add_subdirectory(plugin/elasticity)
   add_subdirectory(plugin/actuator)
   add_subdirectory(plugin/sensor)
   add_subdirectory(plugin/sdf)
@@ -166,6 +166,7 @@ add_subdirectory(src/engine)
 add_subdirectory(src/user)
 add_subdirectory(src/xml)
 add_subdirectory(src/xml/mjz)
+add_subdirectory(src/batch)
 
 add_subdirectory(src/render/noop)
 
@@ -216,6 +217,25 @@ target_link_libraries(
 
 if(NOT EMSCRIPTEN)
   target_link_libraries(mujoco PRIVATE Threads::Threads)
+  if(APPLE)
+    target_link_options(
+      mujoco PRIVATE "-Wl,-unexported_symbols_list,${CMAKE_CURRENT_SOURCE_DIR}/mujoco.unexported_symbols"
+    )
+    set_property(
+      TARGET mujoco
+      APPEND
+      PROPERTY LINK_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/mujoco.unexported_symbols"
+    )
+  elseif(UNIX)
+    target_link_options(
+      mujoco PRIVATE "-Wl,--version-script,${CMAKE_CURRENT_SOURCE_DIR}/mujoco.lds"
+    )
+    set_property(
+      TARGET mujoco
+      APPEND
+      PROPERTY LINK_DEPENDS "${CMAKE_CURRENT_SOURCE_DIR}/mujoco.lds"
+    )
+  endif()
 endif()
 
 set_target_properties(
@@ -281,7 +301,7 @@ if(MUJOCO_BUILD_SIMULATE)
 endif()
 
 if(MUJOCO_BUILD_STUDIO)
-  add_subdirectory(src/experimental/studio)
+  add_subdirectory(studio)
 endif()
 
 if(MUJOCO_BUILD_EXAMPLES)

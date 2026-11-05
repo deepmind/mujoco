@@ -22,7 +22,7 @@
   <!-- The metric solve for qacc_smooth is iterative and its blocks do not see the vertex-to-vertex
        coupling that contact introduces, so a contact-rich scene like this one needs a larger
        iteration budget than the default to converge it. -->
-  <option timestep="0.002" solver="CG" tolerance="1e-6" iterations="400" integrator="discrete"/>
+  <option timestep="0.002" solver="Newton" tolerance="1e-6" iterations="400" integrator="discrete"/>
 
   <size memory="50M"/>
 
@@ -32,19 +32,19 @@
     <flexcomp type="grid" count="13 13 1" spacing=".055 .055 .055" pos="0 0 .68"
               radius=".004" mass=".25" name="cloth1" dim="2" rgba=".85 .35 .25 1">
       <contact selfcollide="auto" passive="true" solref="0.01 1" solimp=".95 .99 .0001"/>
-      <elasticity young="2e4" poisson=".2" thickness="1e-3" elastic2d="both" damping="1e-2"/>
+      <elasticity young="4347.90996" poisson="0.4" thickness="1.34164079e-3" elastic2d="both" damping="1e-2"/>
     </flexcomp>
 
     <flexcomp type="grid" count="13 13 1" spacing=".055 .055 .055" pos=".06 -.04 .78"
               radius=".004" mass=".25" name="cloth2" dim="2" rgba=".25 .55 .8 1">
       <contact selfcollide="auto" passive="true" solref="0.01 1" solimp=".95 .99 .0001"/>
-      <elasticity young="2e4" poisson=".2" thickness="1e-3" elastic2d="both" damping="1e-2"/>
+      <elasticity young="4347.90996" poisson="0.4" thickness="1.34164079e-3" elastic2d="both" damping="1e-2"/>
     </flexcomp>
 
     <flexcomp type="grid" count="13 13 1" spacing=".055 .055 .055" pos="-.05 .05 .88"
               radius=".004" mass=".25" name="cloth3" dim="2" rgba=".95 .8 .3 1">
       <contact selfcollide="auto" passive="true" solref="0.01 1" solimp=".95 .99 .0001"/>
-      <elasticity young="2e4" poisson=".2" thickness="1e-3" elastic2d="both" damping="1e-2"/>
+      <elasticity young="4347.90996" poisson="0.4" thickness="1.34164079e-3" elastic2d="both" damping="1e-2"/>
     </flexcomp>
   </worldbody>
 </mujoco>

@@ -34,23 +34,35 @@ if _MUJOCO_GL not in ('disable', 'disabled', 'off', 'false', '0'):
     raise RuntimeError(
         f'invalid value for environment variable MUJOCO_GL: {_MUJOCO_GL}')
 
-  if _SYSTEM == 'Linux' and _MUJOCO_GL == 'osmesa':
-    from mujoco.osmesa import GLContext as _GLContext
-    GLContext = _GLContext
-  elif _SYSTEM == 'Linux' and _MUJOCO_GL == 'egl':
-    from mujoco.egl import GLContext as _GLContext
-    GLContext = _GLContext
-  elif _SYSTEM == 'Darwin':
-    if _MUJOCO_GL == 'glfw':
-      from mujoco.glfw import GLContext as _GLContext
-    elif _MUJOCO_GL == 'cgl':
-      from mujoco.cgl import GLContext as _GLContext
-    else:
-      try:
-        from mujoco.cgl import GLContext as _GLContext
-      except (AttributeError, OSError):
+  try:
+    if _SYSTEM == 'Linux' and _MUJOCO_GL == 'osmesa':
+      from mujoco.osmesa import GLContext as _GLContext
+    elif _SYSTEM == 'Linux' and _MUJOCO_GL == 'egl':
+      from mujoco.egl import GLContext as _GLContext
+    elif _SYSTEM == 'Darwin':
+      if _MUJOCO_GL == 'glfw':
         from mujoco.glfw import GLContext as _GLContext
+      elif _MUJOCO_GL == 'cgl':
+        from mujoco.cgl import GLContext as _GLContext
+      else:
+        try:
+          from mujoco.cgl import GLContext as _GLContext
+        except (AttributeError, OSError):
+          from mujoco.glfw import GLContext as _GLContext
+    else:
+      from mujoco.glfw import GLContext as _GLContext
     GLContext = _GLContext
-  else:
-    from mujoco.glfw import GLContext as _GLContext
-    GLContext = _GLContext
+  except ImportError as _err:
+    _import_error = _err
+
+    class _MissingGLContext:
+      """Placeholder when OpenGL backend dependencies are not installed."""
+
+      def __init__(self, *args, **kwargs):
+        raise ImportError(
+            f'Failed to import OpenGL backend (MUJOCO_GL={_MUJOCO_GL!r}): '
+            f"{_import_error}. Ensure that 'glfw' and 'pyopengl' are "
+            'installed.'
+        ) from _import_error
+
+    GLContext = _MissingGLContext

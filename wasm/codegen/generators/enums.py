@@ -14,7 +14,7 @@
 
 """Generates Embind bindings for MuJoCo enums."""
 
-from mujoco.codegen import code_builder
+from codegen import code_builder
 from introspect import ast_nodes
 
 

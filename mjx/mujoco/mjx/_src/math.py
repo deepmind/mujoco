@@ -237,6 +237,77 @@ def quat_integrate(q: jax.Array, v: jax.Array, dt: jax.Array) -> jax.Array:
   return normalize(q_res)
 
 
+# minimax polynomial coefficients (in x^2, lowest order first) of the Bortz
+# coefficient below |x| = 1.75, see mju_derivExpmap
+_BORTZ_COEF_F64 = (
+    0.083333333333333384,
+    0.0013888888888859755,
+    3.3068783094433201e-05,
+    8.2671949071520734e-07,
+    2.0876900642039142e-08,
+    5.2828494303844588e-10,
+    1.3455485951057888e-11,
+    3.1615515500778219e-13,
+    1.230313397310169e-14,
+)
+_BORTZ_COEF_F32 = (
+    0.0833333358,
+    0.00138884981,
+    3.32480922e-05,
+    4.57548566e-07,
+    4.23758962e-07,
+    -2.48791736e-07,
+    8.78585737e-08,
+    -1.64186869e-08,
+    1.26339661e-09,
+)
+
+
+def deriv_expmap(expmap: jax.Array, vel: jax.Array) -> jax.Array:
+  """Time-derivative of expmap in quat = quat0 * exp(expmap).
+
+  Given the rotational velocity vel in the rotated frame, computes
+  vel + 1/2 expmap x vel + c expmap x (expmap x vel), with the Bortz
+  coefficient c = (1 - (x/2) cot(x/2)) / x^2, x = |expmap|.
+
+  expmap is first replaced with the equivalent rotation vector of angle in
+  (-pi, pi], since c is singular at multiples of 2*pi. Below x = 1.75, where
+  the closed form loses accuracy to cancellation, c is a minimax polynomial in
+  x^2; with the closed form above, the error is below 6 ulp on [-pi, pi].
+
+  Port of mju_derivExpmap (MuJoCo engine_util_spatial.c), using the
+  coefficients for the dtype of expmap.
+
+  Args:
+    expmap: (3,) rotation vector
+    vel: (3,) rotational velocity in the rotated frame
+
+  Returns:
+    (3,) time-derivative of expmap
+  """
+  # reduce the angle to (-pi, pi]; double where keeps gradients finite at 0
+  xx = jp.dot(expmap, expmap)
+  reduce = xx > jp.pi * jp.pi
+  x = jp.sqrt(jp.where(reduce, xx, 1.0))
+  scale = (x - 2 * jp.pi * jp.floor(x / (2 * jp.pi) + 0.5)) / x
+  r = jp.where(reduce, expmap * scale, expmap)
+  xx = jp.dot(r, r)
+
+  # Bortz coefficient: minimax polynomial (Horner form), or closed form
+  coef = _BORTZ_COEF_F64 if r.dtype == jp.float64 else _BORTZ_COEF_F32
+  poly = jp.zeros_like(xx)
+  for k in reversed(coef):
+    poly = k + xx * poly
+  small = xx < 1.75 * 1.75
+  xx_closed = jp.where(small, 4.0, xx)
+  x_closed = jp.sqrt(xx_closed)
+  closed = (1 - 0.5 * x_closed / jp.tan(0.5 * x_closed)) / xx_closed
+  c = jp.where(small, poly, closed)
+
+  rxv = jp.cross(r, vel)
+  return vel + 0.5 * rxv + c * jp.cross(r, rxv)
+
+
 def inert_mul(i: jax.Array, v: jax.Array) -> jax.Array:
   """Multiply inertia by motion, producing force.
 

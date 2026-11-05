@@ -1,11 +1,11 @@
 <mujoco model="flex">
-  <option timestep="0.01" integrator="discrete">
+  <option timestep="0.01" integrator="discrete" tolerance="1e-12">
     <flag island="enable" multiccd="enable"/>
   </option>
 
   <asset>
-    <texture type="skybox" builtin="gradient" rgb1=".3 .5 .7" rgb2="0 0 0" width="512" height="512"/>
-    <texture name="grid" type="2d" builtin="checker" width="512" height="512" rgb1=".1 .2 .3" rgb2=".2 .3 .4"/>
+    <texture type="skybox" builtin="gradient" rgb1=".3 .5 .7" rgb2="0 0 0" width="32" height="32"/>
+    <texture name="grid" type="2d" builtin="checker" width="32" height="32" rgb1=".1 .2 .3" rgb2=".2 .3 .4"/>
     <material name="grid" texture="grid" texrepeat="1 1" texuniform="true" reflectance=".2"/>
   </asset>
 
@@ -21,37 +21,80 @@
     <geom name="floor" size="5 5 .05" type="plane" material="grid" condim="3"/>
     <light specular="0 0 0" pos="0 0 2" dir="0 0 -1"/>
 
-    <body pos="0 0 1">
-      <freejoint/>
-      <geom type="capsule" size="0.05 0.03" rgba=".6 .6 .6 1"/>
-    </body>
+    <!-- Stack 1 (x ~ -0.04): radial ellipsoid -> 2D cloth -> rod -> capsule -> 3D tetrahedra -->
 
-    <body name="sphere" pos="0 0 0.8">
-      <inertial pos="0 0 0" mass="1" diaginertia="0.01 0.01 0.01"/>
+    <!-- 3D radial-DOF ellipsoid in moving body with edge equality -->
+    <body name="sphere" pos="-0.04 0 0.023">
+      <inertial pos="0 0 0" mass="0.2" diaginertia="0.001 0.001 0.001"/>
       <freejoint/>
-
-      <flexcomp name="f1" type="ellipsoid" rgba=".8 .2 .2 1" radius="0.001" count="4 4 4"
-                spacing=".025 .025 .025" dim="3" mass="1" dof="radial">
-        <edge equality="true" solref="0.15 0.2" stiffness="0" damping="0"/>
+      <flexcomp name="f1" type="ellipsoid" rgba=".8 .2 .2 1" radius="0.003" count="2 2 2"
+                spacing=".06 .06 .06" dim="3" mass="0.5" dof="radial">
+        <edge equality="true" solref="0.08 0.5"/>
+        <contact selfcollide="none"/>
       </flexcomp>
     </body>
 
-    <flexcomp name="f2" type="grid" rgba="1 1 0 1" radius="0.003" dim="2" pos="0 0 .1"
-              zaxis="0 0 1" count="6 6 1" mass="1" spacing="0.02 0.03 0.04" material="grid">
-      <edge equality="true" solref="0.15 0.2" stiffness="0" damping="0"/>
-      <pin id="0"/>
+    <!-- 2D full-DOF continuum cloth with stretch, bending, SAP midphase, and passive contact -->
+    <flexcomp name="f2" type="grid" rgba="1 1 0 1" radius="0.003" dim="2" pos="-0.03 0 0.052"
+              zaxis="0 0 1" count="3 2 1" mass="0.3" spacing="0.03 0.03 0.03" material="grid">
+      <elasticity young="1e3" poisson="0.2" damping="0.01" thickness="0.005" elastic2d="both"/>
+      <contact passive="true" selfcollide="auto"/>
     </flexcomp>
 
-    <flexcomp name="f3" type="grid" rgba=".6 .5 .1 1" radius="0.003" dim="3" pos="0 0 .3"
-              zaxis="1 1 1" count="3 3 3" mass="1" spacing="0.02 0.03 0.04">
-      <edge equality="true" solref="0.15 0.2" stiffness="0" damping="0"/>
+    <!-- 1D elastic rod with box cross-section and edge equality, bridging both stacks -->
+    <flexcomp name="rod" type="grid" dim="1" count="4 1 1" spacing=".035 .035 .035"
+              pos="0 0 0.061" mass="0.2" rgba=".9 .4 .1 1">
+      <elasticity young="2e3" damping="0.01" section="box" sectionsize="0.005 0.003"/>
+      <edge equality="true"/>
+      <contact selfcollide="none"/>
     </flexcomp>
 
-    <flexcomp type="grid" count="8 8 8" spacing=".007 .007 .007" pos="0 0 1.5" dim="3"
-              radius=".0001" rgba="0 .7 .7 1" mass=".25" name="softbody" dof="trilinear">
-      <elasticity young="1e4" poisson="0.1" damping="0.01"/>
+    <!-- Free rigid capsule colliding with flex elements -->
+    <body name="capsule" pos="-0.03 0 0.121">
+      <freejoint/>
+      <geom type="capsule" size="0.014 0.025" euler="90 0 0" rgba=".6 .6 .6 1"/>
+    </body>
+
+    <!-- 3D full-DOF tetrahedral continuum with BVH self-collision -->
+    <flexcomp name="f3" type="grid" rgba=".6 .5 .1 1" radius="0.003" dim="3" pos="-0.03 0 0.086"
+              count="2 2 2" mass="0.4" spacing="0.03 0.03 0.03">
+      <elasticity young="1e3" poisson="0.2" damping="0.01"/>
+      <contact selfcollide="auto"/>
+    </flexcomp>
+
+    <!-- Stack 2 (x ~ +0.045): trilinear volume -> trilinear shell -> trilinear strain -> 2D sheet -->
+
+    <!-- 2D planar-DOF flex in vertical X-Z plane with edge equality -->
+    <body name="sheet2d_frame" pos="0.045 0 0.150" euler="90 0 0">
+      <inertial pos="0 0 0" mass="0.05" diaginertia="1e-4 1e-4 1e-4"/>
+      <joint type="slide" axis="0 0 1"/>
+      <flexcomp name="sheet2d" type="grid" dim="2" count="3 2 1" spacing="0.03 0.03 0.03"
+                radius="0.003" mass="0.2" dof="2d" rgba=".3 .8 .3 1">
+        <edge equality="true" solref="0.08 0.5"/>
+        <contact selfcollide="none"/>
+      </flexcomp>
+    </body>
+
+    <!-- 3D trilinear volume interpolation with elasticity -->
+    <flexcomp name="softbody" type="grid" count="2 2 2" cellcount="1 1 1" spacing=".04 .04 .04"
+              pos="0.045 0 0.025" dim="3" radius=".003" rgba="0 .7 .7 1" mass=".3" dof="trilinear">
+      <elasticity young="3e3" poisson="0.1" damping="0.01"/>
+      <contact selfcollide="none"/>
+    </flexcomp>
+
+    <!-- 2D trilinear shell interpolation with shell stretch and Crouzeix-Raviart bending -->
+    <flexcomp name="shell" type="box" count="2 2 2" cellcount="1 1 1" spacing=".035 .035 .035"
+              pos="0.055 0 0.075" euler="8 10 0" dim="2" radius=".003" rgba=".7 .2 .7 1"
+              mass=".25" dof="trilinear">
+      <elasticity young="2e3" poisson="0.2" thickness="0.005" elastic2d="both"/>
+      <contact selfcollide="none"/>
+    </flexcomp>
+
+    <!-- 3D trilinear interpolation with corotational strain equality constraints -->
+    <flexcomp name="strain" type="box" count="2 2 2" cellcount="1 1 1" spacing=".035 .035 .035"
+              pos="0.045 0 0.123" dim="3" radius=".003" rgba=".2 .5 .8 1" mass=".25" dof="trilinear">
+      <edge equality="strain"/>
       <contact selfcollide="none"/>
     </flexcomp>
   </worldbody>
-
 </mujoco>

@@ -16,24 +16,27 @@
 
 #include <algorithm>
 #include <cstdint>
+#include <limits>
 #include <memory>
 #include <span>
 #include <string_view>
 #include <utility>
 #include <vector>
 
+#include <filament/Color.h>
 #include <filament/ColorGrading.h>
+#include <filament/ColorSpace.h>
 #include <filament/LightManager.h>
 #include <filament/Material.h>
 #include <filament/Options.h>
 #include <filament/RenderTarget.h>
-#include <filament/RenderableManager.h>
 #include <filament/Renderer.h>
 #include <filament/Skybox.h>
 #include <filament/TransformManager.h>
 #include <filament/View.h>
 #include <filament/Viewport.h>
 #include <math/TVecHelpers.h>
+#include <math/mat3.h>
 #include <math/mat4.h>
 #include <math/mathfwd.h>
 #include <math/scalar.h>
@@ -42,6 +45,7 @@
 #include <utils/EntityManager.h>
 #include <mujoco/mjrfilament.h>
 #include <mujoco/mujoco.h>
+#include "render/filament/core/builtins.h"
 #include "render/filament/core/color_grading_options.h"
 #include "render/filament/core/light.h"
 #include "render/filament/core/material_manager.h"
@@ -57,12 +61,32 @@ namespace mujoco {
 
 using filament::math::float3;
 using filament::math::float4;
+using filament::math::mat3f;
 using filament::math::mat4;
+using filament::math::mat4f;
+
+static constexpr filament::color::ColorSpace REC709_LINEAR_D65 =
+    filament::color::Rec709 - filament::color::Linear -
+    filament::color::D65;
+static constexpr filament::color::ColorSpace REC709_SRGB_D65 =
+    filament::color::Rec709 - filament::color::sRGB -
+    filament::color::D65;
 
 static filament::ColorGrading::Builder ToBuilder(
     const ColorGradingOptions& opts) {
+  filament::color::ColorSpace output_color_space = REC709_SRGB_D65;
+  switch (opts.output_color_space) {
+    case OutputColorSpace::kRec709_Linear_D65:
+      output_color_space = REC709_LINEAR_D65;
+      break;
+    case OutputColorSpace::kRec709_sRGB_D65:
+      output_color_space = REC709_SRGB_D65;
+      break;
+  }
+
   return filament::ColorGrading::Builder()
       .format(opts.format)
+      .outputColorSpace(output_color_space)
       .dimensions(opts.dimension)
       .luminanceScaling(opts.luminance_scaling)
       .gamutMapping(opts.gamut_mapping)
@@ -79,9 +103,9 @@ static filament::ColorGrading::Builder ToBuilder(
       .curves(opts.shadow_gamma, opts.mid_point, opts.highlight_scale);
 }
 
-static void SetupCamera(const mjrCamera& cam,
-                        const filament::Viewport& viewport,
+static void SetupCamera(const mjrfRenderRequest& request,
                         filament::Camera* camera) {
+  const mjrCamera& cam = request.camera;
   const filament::Camera::Projection type =
       cam.orthographic ? filament::Camera::Projection::ORTHO
                        : filament::Camera::Projection::PERSPECTIVE;
@@ -89,7 +113,8 @@ static void SetupCamera(const mjrCamera& cam,
   const float3 cam_fwd(cam.forward[0], cam.forward[1], cam.forward[2]);
   const float3 cam_up(cam.up[0], cam.up[1], cam.up[2]);
   const float3 cam_at = cam_pos + cam_fwd;
-  const float aspect_ratio = (float)viewport.width / (float)viewport.height;
+  const float aspect_ratio =
+      (float)request.viewport.width / (float)request.viewport.height;
   const float halfwidth =
       cam.frustum_width
           ? cam.frustum_width
@@ -98,6 +123,12 @@ static void SetupCamera(const mjrCamera& cam,
   camera->setProjection(type, cam.frustum_center - halfwidth,
                         cam.frustum_center + halfwidth, cam.frustum_bottom,
                         cam.frustum_top, cam.frustum_near, cam.frustum_far);
+  if (request.draw_mode == mjDRAW_MODE_DEPTH) {
+    // Filament's setProjection puts the perspective far plane at infinity; use
+    // the finite-far culling frustum so depth maps span [near, far].
+    const mat4 proj = camera->getCullingProjectionMatrix();
+    camera->setCustomProjection(proj, proj, cam.frustum_near, cam.frustum_far);
+  }
 }
 
 // Sets up the `reflection_camera` as a reflection of `src_camera` across the
@@ -137,6 +168,7 @@ SceneView::SceneView(ObjectManager* object_mgr, MaterialManager* material_mgr,
   depth_segment_view_->setScene(scene_);
   depth_segment_view_->setCamera(camera_);
   depth_segment_view_->setVisibleLayers(0xff, kLayerMask_Object);
+  depth_segment_view_->setShadowingEnabled(false);
   depth_segment_view_->setPostProcessingEnabled(false);
 
   reflect_view_ = engine->createView();
@@ -156,8 +188,8 @@ SceneView::SceneView(ObjectManager* object_mgr, MaterialManager* material_mgr,
   headlight_params.cast_shadow = 0;
   headlight_params.intensity = 0.0f;
   headlight_ = std::make_unique<Light>(engine, headlight_params);
-  headlight_->AddToScene(scene_);
   headlight_->Disable();
+  AddToScene(headlight_.get());
 
   // Rotate the fog to align with mujoco's +Z up space.
   auto fog = main_view_->getFogEntity();
@@ -165,6 +197,17 @@ SceneView::SceneView(ObjectManager* object_mgr, MaterialManager* material_mgr,
   tm.create(fog);
   tm.setTransform(tm.getInstance(fog),
                   mat4::rotation(filament::math::f::PI / 2, float3{-1, 0, 0}));
+
+  mjrfRenderableParams haze_params;
+  mjrf_defaultRenderableParams(&haze_params);
+  haze_params.cast_shadow = false;
+  haze_params.receive_shadow = false;
+  haze_ = std::make_unique<Renderable>(engine, haze_params, material_mgr_);
+  haze_->SetPriority(0);
+  SetHaze(0.3f, nullptr);
+  haze_->SetMesh(
+      object_mgr_->GetBuiltins(numstacks_, numslices_, numquads_)->Haze());
+  AddToScene(haze_.get());
 }
 
 SceneView::~SceneView() {
@@ -178,15 +221,13 @@ SceneView::~SceneView() {
   for (auto& light : lights_) {
     light->RemoveFromScene(scene_);
   }
-  if (headlight_) {
-    headlight_->RemoveFromScene(scene_);
-    headlight_.reset();
-  }
   for (auto& renderable : renderables_) {
     renderable->RemoveFromScene(scene_);
   }
   lights_.clear();
   renderables_.clear();
+  headlight_.reset();
+  haze_.reset();
   engine->destroyCameraComponent(reflect_camera_->getEntity());
   engine->destroy(reflect_view_);
   engine->destroyCameraComponent(camera_->getEntity());
@@ -200,7 +241,7 @@ SceneView::~SceneView() {
 
 void SceneView::AddToScene(Light* light) {
   if (lights_.insert(light).second) {
-    light->AddToScene(scene_);
+    light->AddToScene(scene_, [this](Light* light) { RemoveFromScene(light); });
   }
 }
 
@@ -212,7 +253,8 @@ void SceneView::RemoveFromScene(Light* light) {
 
 void SceneView::AddToScene(Renderable* renderable) {
   if (renderables_.insert(renderable).second) {
-    renderable->AddToScene(scene_);
+    renderable->AddToScene(
+        scene_, [this](Renderable* renderable) { RemoveFromScene(renderable); });
   }
 }
 
@@ -274,10 +316,11 @@ void SceneView::Render(filament::Renderer* renderer,
       request.draw_mode == mjDRAW_MODE_SEGMENTATION_BY_ID ||
       request.draw_mode == mjDRAW_MODE_SEGMENTATION_BY_COLOR) {
     view = depth_segment_view_;
+  } else {
+    view->setShadowingEnabled(request.shadows);
+    view->setPostProcessingEnabled(request.post_processing);
   }
   view->setViewport(viewport);
-  view->setShadowingEnabled(request.shadows);
-  view->setPostProcessingEnabled(request.post_processing);
 
   filament::MultiSampleAntiAliasingOptions options =
       view->getMultiSampleAntiAliasingOptions();
@@ -288,7 +331,8 @@ void SceneView::Render(filament::Renderer* renderer,
     view->setMultiSampleAntiAliasingOptions({.enabled = false});
   }
 
-  SetupCamera(request.camera, viewport, camera_);
+  SetupCamera(request, camera_);
+  camera_->setFocusDistance(focus_distance_);
 
   // Aim the headlight along this request's camera. Filament re-gathers the
   // scene's lights for each render() call, so requests batched into one frame
@@ -305,14 +349,55 @@ void SceneView::Render(filament::Renderer* renderer,
     headlight_->Disable();
   }
 
+  // with a skybox, center the horizon disks of infinite planes beneath the
+  // camera and place the haze on the nearest plane below it
+  const bool show_skybox = skybox_ != nullptr && ShowsSkybox(request);
+  const float3 cam_pos = ReadFloat3(request.camera.pos);
+  const float horizon = kHorizonFarRatio * request.camera.frustum_far;
+  float haze_elevation = std::numeric_limits<float>::infinity();
+  float3 haze_center;
+  mat3f haze_rotation;
+
   std::vector<Renderable*> selected_renderables;
-  for (auto& iter : renderables_) {
-    iter->BindMaterialInstance(request);
-    if (iter->GetMaterial().selected &&
+  for (Renderable* renderable : renderables_) {
+    renderable->BindMaterialInstance(request);
+    if (renderable->GetMaterial().selected &&
         request.draw_mode == mjDRAW_MODE_DEFAULT) {
-      selected_renderables.push_back(iter);
+      selected_renderables.push_back(renderable);
+    }
+    if (show_skybox && renderable->IsInfinitePlane()) {
+      const mat4f& transform = renderable->GetTransform();
+      const float3 normal = normalize(transform[2].xyz);
+      const float elevation = dot(cam_pos - transform[3].xyz, normal);
+      const float3 center = cam_pos - elevation * normal;
+      const mat3f rotation(normalize(transform[0].xyz),
+                           normalize(transform[1].xyz), normal);
+      // part 1 of an infinite plane is its horizon disk
+      renderable->SetPartTransform(
+          1, mat4f(rotation, center) *
+                 mat4f::scaling(float3{horizon, horizon, 1.0f}));
+      if (elevation > 0.0f && elevation < haze_elevation) {
+        haze_elevation = elevation;
+        haze_center = center;
+        haze_rotation = rotation;
+      }
     }
   }
+
+  const bool show_haze =
+      show_skybox && request.haze &&
+      haze_elevation < std::numeric_limits<float>::infinity();
+  if (show_haze) {
+    haze_->SetTransform(haze_center, haze_rotation);
+    haze_->SetSize(float3{horizon, horizon, haze_elevation});
+  }
+
+  main_view_->setVisibleLayers(
+      kLayerMask_Skybox | kLayerMask_Haze,
+      (show_skybox ? kLayerMask_Skybox : 0) |
+          (show_haze ? kLayerMask_Haze : 0));
+  reflect_view_->setVisibleLayers(
+      0xff, kLayerMask_Object | (show_skybox ? kLayerMask_Skybox : 0));
 
   const int num_reflective = reflection_mgr_->GetNumRenderables();
   for (int i = 0; i < num_reflective; ++i) {
@@ -391,7 +476,7 @@ void SceneView::Render(filament::Renderer* renderer,
 
 void SceneView::SetColorGradingOptions(const ColorGradingOptions& opts) {
   auto tone_mapper = CreateToneMapper(opts.tone_mapper);
-  auto color_grading = ToBuilder(color_grading_options_)
+  auto color_grading = ToBuilder(opts)
                            .toneMapper(tone_mapper.get())
                            .build(*GetEngine());
   main_view_->setColorGrading(color_grading);
@@ -424,6 +509,27 @@ static ToneMapperType ToneMapperTypeFromString(std::string_view name) {
   return ToneMapperType::kPBRNeutral;
 }
 
+static OutputColorSpace OutputColorSpaceFromString(
+    std::string_view name) {
+  if (name == "linear") {
+    return OutputColorSpace::kRec709_Linear_D65;
+  } else if (name == "srgb") {
+    return OutputColorSpace::kRec709_sRGB_D65;
+  }
+  mju_warning("Unknown output color space: %s", name.data());
+  return OutputColorSpace::kRec709_sRGB_D65;
+}
+
+static filament::RgbaType ColorTypeFromString(std::string_view name) {
+  if (name == "linear") {
+    return filament::RgbaType::LINEAR;
+  } else if (name == "srgb") {
+    return filament::RgbaType::sRGB;
+  }
+  mju_warning("Unknown color type: %s", name.data());
+  return filament::RgbaType::sRGB;
+}
+
 static filament::QualityLevel QualityLevelFromString(std::string_view name) {
   if (name == "low") {
     return filament::QualityLevel::LOW;
@@ -450,7 +556,6 @@ static filament::ShadowType ShadowTypeFromString(std::string_view name) {
   return filament::ShadowType::PCF;
 }
 
-
 void SceneView::SetMsaa(int samples) {
   samples = std::clamp(samples, 1, 255);
   auto msaa = main_view_->getMultiSampleAntiAliasingOptions();
@@ -459,8 +564,31 @@ void SceneView::SetMsaa(int samples) {
   main_view_->setMultiSampleAntiAliasingOptions(msaa);
 }
 
+void SceneView::SetHaze(float ratio, const float rgba[4]) {
+  mjrfMaterial material = haze_->GetMaterial();
+  material.haze_ratio = std::clamp(ratio, 0.0f, 1.0f);
+  if (rgba) {
+    std::copy(rgba, rgba + 4, material.color);
+  }
+  haze_->UpdateMaterial(material);
+}
+
+float SceneView::GetHazeRatio() const {
+  return haze_->GetMaterial().haze_ratio;
+}
+
+float4 SceneView::GetHazeColor() const {
+  return ReadFloat4(haze_->GetMaterial().color);
+}
+
 void SceneView::Configure(const mjModel* model) {
   SetMsaa(model->vis.quality.offsamples);
+  numstacks_ = model->vis.quality.numstacks;
+  numslices_ = std::max(3, model->vis.quality.numslices);
+  numquads_ = model->vis.quality.numquads;
+  haze_->SetMesh(
+      object_mgr_->GetBuiltins(numstacks_, numslices_, numquads_)->Haze());
+  SetHaze(model->vis.map.haze, model->vis.rgba.haze);
 
   auto cg = color_grading_options_;
   cg.exposure = ReadElement(model, "filament.cg.exposure", cg.exposure);
@@ -489,6 +617,9 @@ void SceneView::Configure(const mjModel* model) {
       ReadElement(model, "filament.cg.tonal_ranges", cg.tonal_ranges);
   cg.tone_mapper = ToneMapperTypeFromString(ReadElement<std::string_view>(
       model, "filament.cg.tone_mapping", "pbr_neutral"));
+  cg.output_color_space =
+      OutputColorSpaceFromString(ReadElement<std::string_view>(
+          model, "filament.cg.output_color_space", "srgb"));
   SetColorGradingOptions(cg);
 
   auto ao = main_view_->getAmbientOcclusionOptions();
@@ -550,5 +681,9 @@ void SceneView::Configure(const mjModel* model) {
   vignette.midPoint =
       ReadElement(model, "filament.vignette.midpoint", vignette.midPoint);
   main_view_->setVignetteOptions(vignette);
+
+  material_mgr_->SetBaseColorType(
+      ColorTypeFromString(ReadElement<std::string_view>(
+          model, "filament.material.base_color_type", "srgb")));
 }
 }  // namespace mujoco

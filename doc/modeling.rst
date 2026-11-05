@@ -557,15 +557,15 @@ general guidelines and observations:
 -  The Newton algorithm is the best choice for most models. It has quadratic convergence near the global minimum and
    gets there in surprisingly few iterations -- usually around 5, and rarely more than 20. It should be used with
    aggressive tolerance values, say 1e-10, because it is capable of achieving high accuracy without added delay (due to
-   quadratic convergence at the end). The only situation where we have seen it slow down are large models with elliptic
-   cones and many slipping contacts. In that regime the Hessian factorization needs a lot of updates. It may also slow
-   down in some large models with unfortunate ordering of model elements that results in high fill-in (computing the
-   optimal elimination order is NP-hard, so we are relying on a heuristic). Note that the number of non-zeros in the
-   factorized Hessian can be monitored in the profiler.
--  The CG algorithm works well in the situation described above where Newton slows down. In general CG shows linear
-   convergence with a good rate, but it cannot compete with Newton in terms of number of iterations, especially when
-   high accuracy is desired. However its iterations are much faster, and are not affected by fill-in or increased
-   complexity due to elliptic cones. If Newton proves to be too slow, try CG next.
+   quadratic convergence at the end). Sparse Newton folds elliptic friction cones into the Hessian, batches Cholesky
+   updates, and automatically reorders :el:`flex` DOFs, so slowdowns mainly occur in very large scenes where sparse
+   Cholesky fill-in still dominates (for instance, un-reordered rigid hub bodies; see
+   :ref:`Body ordering and fill-in <CBodyOrdering>` below) or under heavy active-set churn across many slipping
+   contacts. Note that the number of non-zeros in the factorized Hessian can be monitored in the profiler.
+-  The CG algorithm can be faster in those very large or high-fill-in regimes. In general CG shows linear convergence
+   with a good rate, though it requires many more iterations than Newton, especially when high accuracy is desired.
+   However each iteration is cheap and unaffected by Cholesky fill-in or elliptic-cone Hessian updates, making CG a
+   useful alternative when Hessian factorization dominates step time.
 -  The PGS solver is best when the number of degrees of freedom is larger than the number of constraints. PGS solves a
    constrained optimization problem and has sub-linear convergence in our experience, however it usually makes rapid
    progress on the first few iterations. So it is a good choice when inaccurate solutions can be tolerated. For systems
@@ -585,6 +585,33 @@ general guidelines and observations:
    PGS solver, the PGS setup cost will be paid whenever NoSlip is enabled, even if the main solver is CG or Newton. The
    setup operation for the main PGS and NoSlip PGS is the same, thus the setup cost is paid only once when both are
    enabled.
+
+.. _CBodyOrdering:
+
+Body ordering and fill-in
+^^^^^^^^^^^^^^^^^^^^^^^^^
+
+.. tip::
+   Declare moving bodies with many contacts *before* the objects they interact with in :el:`worldbody`, so they receive
+   lower DOF indices and avoid dense Cholesky fill-in.
+
+In sparse mode, the Newton solver factorizes the Hessian :math:`H = \widehat{M} + J^T D J` using reverse-order Cholesky,
+eliminating degrees of freedom from last to first (:math:`\nv - 1` down to :math:`0`, i.e., from leaves to root). For
+the tree-structured matrix :math:`\widehat{M}` alone, this elimination order is `optimal and produces zero fill-in
+<https://link.springer.com/book/10.1007/978-1-4899-7560-7>`_. Contacts, tendons, and equality constraints add off-tree
+couplings in :math:`J^T D J`: when DOF :math:`r` is eliminated, it creates fill-in between **all lower-indexed DOFs**
+(:math:`c < r`) currently coupled to :math:`r`, forming a dense clique among them.
+
+Consequently, the declaration order of bodies in :el:`worldbody` can strongly affect solver speed without changing the
+physics. A moving "hub" body that simultaneously contacts many other bodies -- such as an actuated tray, sieve,
+container, or platform -- should be declared *before* the objects resting on or inside it. If a moving tray is declared
+first (low DOFs) and :math:`N` free bodies are declared after it (high DOFs), the free bodies are eliminated first and
+only fill into the tray's DOFs, giving an arrowhead sparsity pattern with zero fill-in and :math:`O(N)` factorization
+cost. If the tray is declared *last*, it is eliminated first and couples all :math:`N` bodies into a single dense block
+with :math:`O(N^3)` cost. Static geoms attached directly to :el:`worldbody` or to welded bodies have no DOFs and are
+unaffected by ordering. When a model contains :el:`flex` elements, sparse ``Newton`` automatically computes a
+minimum-degree DOF permutation whenever it lowers factorization cost enough to amortize the reordering overhead, so
+manual XML ordering of flex bodies or vertices is unnecessary.
 
 .. _CActuators:
 
@@ -678,17 +705,18 @@ Force clamping at actuator output with :ref:`forcerange<actuator-general-forcera
   usually also require control range clamping to avoid hitting joint limits.
 
 Force clamping at joint input with :ref:`joint/actuatorfrcrange<body-joint-actuatorfrcrange>`:
-  This joint attribute clamps input forces from all actuators acting on the joint, after passing through the
-  :ref:`transmission<geTransmission>`. Clamping actuator forces at the joint is equivalent to clamping them at the
-  actuator if the transmission is trivial (there is a one-to-one relationship between the actuator and the joint).
-  However, in situations where multiple actuators act on one joint or one actuator acts on multiple joints---yet the
-  actual torque is applied by a single physical actuator at the joint---it is desirable to clamp the forces at the joint
-  itself. Below are three examples where it is desirable to clamp actuator forces at the joint, rather than the
-  actuator:
+  This joint attribute clamps the total force from all actuators acting on the joint, after passing through the
+  :ref:`transmission<geTransmission>`. It dates from when every actuator had a single input, so that modeling one
+  physical actuator with several commands (e.g., a position servo plus a velocity servo, or a motor plus velocity
+  feedback) required stacking actuators on the joint and clamping their sum. Prefer a single multi-input actuator
+  instead: a :ref:`pid<actuator-pid>` or :ref:`dcmotor<actuator-dcmotor>` with the required subset of ``pos``, ``vel``
+  and ``ff`` :ref:`inputs<actuator-pid-input>`, its output bounded by :ref:`forcerange<actuator-general-forcerange>`.
+  This keeps the limit on the actuator that produces the force, and the :ref:`actuatorfrc<sensor-actuatorfrc>` sensor
+  reports the force actually applied.
 
-  - In `this example model
-    <https://github.com/google-deepmind/mujoco/blob/main/test/engine/testdata/actuation/joint_force_clamp.xml>`__ ,
-    two actuators, a :ref:`motor<actuator-motor>` and a :ref:`damper<actuator-damper>`, act on a single joint.
+  Joint clamping remains useful when the transmission combines actuator forces across joints, yet each joint is
+  driven by a single torque-limited motor:
+
   - In `this example model <https://github.com/google-deepmind/mujoco/blob/main/model/car/car.xml>`__ (similar to a "Dubin's
     Car"), two actuators act on two wheels via a :ref:`fixed tendon<tendon-fixed>` transmission in order to apply
     symmetric (roll forward/back) and antisymmetric (turn right/left) torques.
@@ -702,9 +730,11 @@ Force clamping at joint input with :ref:`joint/actuatorfrcrange<body-joint-actua
   The standard :ref:`actuatorfrc<sensor-actuatorfrc>` sensor will continue to report the pre-clamped actuator force.
 
 Force clamping at tendon input with :ref:`tendon/actuatorfrcrange<tendon-spatial-actuatorfrcrange>`:
-  This tendon attribute clamps input forces from all actuators acting on the tendon.
+  This tendon attribute clamps input forces from all actuators acting on the tendon. The same considerations as for
+  joints apply: prefer a single multi-input actuator over clamping the sum of several.
 
-The clamping options above are non-exclusive and can be combined as required.
+The clamping options above are non-exclusive and can be combined as required. A saturated :at:`forcerange` or tendon
+:at:`actuatorfrcrange` contributes no implicit damping, since the clamped force does not depend on velocity.
 
 .. _CLengthRange:
 
@@ -1215,10 +1245,10 @@ history buffer, with no causality issues.
    extrapolation: using a value from before it was actually recorded. This scenario will not lead to a runtime error,
    so it is up to the user to avoid it.
 
-Setting ``delay < timestep * nsample`` is not problematic and can be useful for system identification and stochastic
-delays. In these use cases, one should choose a maximum possible ``delay_max`` and set ``nsample = ceil(delay_max /
-timestep)``. Then at run-time or sysID-time, the :ref:`mjModel` fields ``actuator_delay`` or ``sensor_delay`` can be
-safely modified, so long as ``delay_max`` is not exceeded.
+Setting ``delay < timestep * nsample`` is not problematic and can be useful for :ref:`system identification <PySysid>`
+and stochastic delays. In these use cases, one should choose a maximum possible ``delay_max`` and set
+``nsample = ceil(delay_max / timestep)``. Then at run-time or sysID-time, the :ref:`mjModel` fields ``actuator_delay``
+or ``sensor_delay`` can be safely modified, so long as ``delay_max`` is not exceeded.
 
 .. image:: images/modeling/delay_buffer_light.svg
    :width: 50%
@@ -1271,100 +1301,18 @@ Intrinsics
    :ref:`sensor size<body-camera-sensorsize>` and camera :ref:`resolution<body-camera-resolution>` must also be
    specified. In this case, the rendering frustum can be visualized.
 
-.. _CComposite:
-
-Composite objects
-~~~~~~~~~~~~~~~~~
-
-Composite objects are collections of existing elements originally designed to simulate particle systems, ropes, cloth,
-and soft bodies. Over time, most of these types have been replaced by :ref:`replicate<replicate>` (for repeated objects)
-and :ref:`flexcomp<body-flexcomp>` (for soft objects). Therefore, the only supported composite type is now ``cable``,
-which produces an inextensible chain of bodies connected with ball joints.
-
-Composite objects are made up of regular MuJoCo bodies, which we call "element bodies" in this context. The collection
-of element bodies is generated by the model compiler automatically. The user configures the automatic generator on a
-high level, using the XML element :ref:`composite <body-composite>` and its attributes and sub-elements, as
-described in the XML reference chapter. If the compiled model is then saved, :el:`composite` is no longer present and is
-replaced with the collection of regular model elements that were automatically generated. So think of it as a macro that
-gets expanded by the model compiler. The element bodies are created as children of the body within which :el:`composite`
-appears; thus a composite object appears in the same place in the XML where a regular child body may have been defined.
-Each automatically-generated element body has a single geom attached to it. We have designed the composite object
-generator to have intuitive high-level controls as much as possible, but at the same time it exposes a large number of
-options that interact with each other and can profoundly affect the resulting physics. So at some point users should
-read the :ref:`reference documentation <body-composite>` carefully.
-
-In addition to setting up the physics, the composite object generator creates suitable rendering. Objects can be
-rendered as :ref:`skins <asset-skin>`. The skin is generated automatically, and can be textured as well as subdivided
-using bi-cubic interpolation. The actual physics and in particular the collision detection are based on the element
-bodies and their geoms, while the skin is purely a visualization object. Yet in some situations we prefer to look at the
-skin representation, as in `this model
-<https://github.com/google-deepmind/mujoco/blob/main/model/plugin/elasticity/belt.xml>`__, whose skin is a continuous
-flexible surface and not a collection of discontinuous thin boxes. However when fine-tuning the model and trying to
-understand the physics behind it, it is useful to be able to render the geoms. To switch the rendering style, disable
-the rendering of skins and enable group 3 for geoms and tendons.
-
-**Cable**.
-
-As a quick start, MuJoCo comes with an example of composite cables. In all examples we have a static scene which is
-included in the model, followed by a single composite object. The XML snippets below are just the definition of the
-composite object; see the XML model files in the distribution for the complete examples.
-
-|coil|
-
-.. code-block:: xml
-
-   <extension>
-      <plugin plugin="mujoco.elasticity.cable"/>
-   </extension>
-
-   <worldbody>
-      <composite prefix="actuated" type="cable" curve="cos(s) sin(s) s" count="41 1 1"
-                 size="0.25 .1 4" offset="0.25 0 .05" initial="none">
-         <plugin plugin="mujoco.elasticity.cable">
-            <!--Units are in Pa (SI)-->
-            <config key="twist" value="5e8"/>
-            <config key="bend" value="15e8"/>
-            <config key="vmax" value="0"/>
-         </plugin>
-         <joint kind="main" damping="0.15" armature="0.01"/>
-         <geom type="capsule" size=".005" rgba=".8 .2 .1 1"/>
-      </composite>
-   </worldbody>
-
-The cable simulates an inextensible elastic 1D object having twist and bending stiffness. It is discretized using a
-sequence of capsules or boxes. Its stiffness and inertia properties are computed directly from the given parameters and
-the shape of the cross section, which allows for anisotropic behaviors, which can be found in e.g. belts or computer
-cables. It is a single kinematic tree, so it is exactly inextensible without the use of additional constraints, enabling
-the use of large time steps. The elastic model is geometrically exact and based on computing the Bishop or twist-free
-frame of the centerline, i.e., the line passing through the center of the cross section. The orientations of the geoms
-are expressed with respect to this frame and then decomposed into twist and bending components, hence different
-stiffnesses can be set independently. Moreover, it is possible to specify if the stress-free configuration is flat or
-curve, such as in the case of coil springs. The cable requires using a first-party :ref:`engine plugin<exPlugin>`, which
-may be integrated directly into the engine in the future.
-
-**Deprecated types**.
-
-All composite types other than ``cable`` have been deprecated or removed. Use :ref:`replicate<replicate>` for repeated
-objects (e.g., particle systems) and :ref:`flex<CDeformable>` deformable objects for soft bodies (ropes, cloth,
-volumetric solids).
-
 .. _CDeformable:
 
 Deformable objects
 ~~~~~~~~~~~~~~~~~~
 
-The :ref:`composite objects <CComposite>` described earlier were intended to emulate soft bodies in what is effectively
-a rigid-body simulator. This was possible because MuJoCo constraints are soft, but nevertheless it was limited in
-functionality and modeling power. In MuJoCo 3.0 we have introduced true deformable objects involving new model elements.
+In MuJoCo 3.0 we have introduced true deformable objects involving new model elements.
 The :ref:`skin<deformable-skin>` described earlier was actually one such element, but it is merely used for
 visualization. We now have a related element :ref:`flex<deformable-flex>` which generates contact forces, constraint
 forces and passive forces as needed to model a wide range of deformable entities. Both skins and flexes are now defined
 within a new grouping element in the XML called :ref:`deformable<deformable>`. A flex is a low-level element that
 specifies everything needed at runtime, but is difficult to design at modeling time. To aid with modeling, we have
-further introduced the element :ref:`flexcomp<body-flexcomp>` which automates the creation of the low-level flex,
-similar to how :ref:`composite<body-composite>` automates the creation of (collections of) MuJoCo objects needed to
-emulate a soft body. Flexes may eventually supersede composites, but for now both are useful for somewhat different
-purposes.
+further introduced the element :ref:`flexcomp<body-flexcomp>` which automates the creation of the low-level flex.
 
 A flex is a collection of MuJoCo bodies that are connected with massless stretchable elements. These elements can be
 capsules (1D flex), triangles (2D flex), or tetrahedra (3D flex). In all cases we allow a radius, which makes the
@@ -1398,6 +1346,34 @@ coupling of deformation modes (e.g. shear and volumetric) is averaged in a singl
 instead to specify shear and volumetric stiffnesses separately using the `Poisson's ratio
 <https://en.wikipedia.org/wiki/Poisson%27s_ratio>`__ of the material. For more details, see the `Saint Venant-Kirchhoff
 <https://en.wikipedia.org/wiki/Hyperelastic_material#Saint_Venant%E2%80%93Kirchhoff_model>`__ hyperelastic model.
+
+.. _CRod:
+
+**Rods**.
+
+For 1D flexes, :ref:`elasticity<flex-elasticity>` implements the `discrete elastic rod
+<https://www.cs.columbia.edu/cg/pdfs/143-rods.pdf>`__ (DER) model of bending and torsion. For open chains with at least
+two elements (both **circle** and **box** :ref:`sections<flex-elasticity-section>`), :ref:`flexcomp<body-flexcomp>`
+creates per-edge twist bodies and hinge joints (``<name>_twist_0``, ..., ``<name>_twist``, omitting ``<name>_twist_0``
+when the first edge is clamped to a body via ``<pin id="0 1"/>``, and ``<name>_twist`` when the last two points of a rod
+with at least three elements are pinned). Each edge carries a material frame rotated by an angle :math:`\theta_e` about
+its tangent relative to a per-edge reference frame ``(t_old, u_old)`` that is parallel-transported in time and stored
+in ``mjData.plastic`` (``mjSTATE_PLASTIC``), together with the reference twist of each interior vertex, unwrapped
+across steps. A clamped end fixes that end's material frame to the pinning body, which receives the reaction torque of
+the rod, while an unclamped ``<name>_twist`` controls or actuates the terminal material angle. Time-parallel transport
+keeps both torsion and curved reference bending continuous and drift-free as the rod coils, writhes, or tumbles in 3D
+(as in `cable.xml <https://github.com/google-deepmind/mujoco/blob/main/model/flex/cable.xml>`__, `belt.xml
+<https://github.com/google-deepmind/mujoco/blob/main/model/flex/belt.xml>`__, and `curved_rods.xml
+<https://github.com/google-deepmind/mujoco/blob/main/model/flex/curved_rods.xml>`__), while frictional contact forces
+couple into the per-edge twist DOFs through their cross-sectional lever arm so circular cables roll on surfaces and
+twist in grippers and rectangular (**box**) ribbons couple anisotropic bending, torsion, and oriented-box contact.
+
+For closed circular loops (such as the ring in `curved_rods.xml
+<https://github.com/google-deepmind/mujoco/blob/main/model/flex/curved_rods.xml>`__) or raw ``<flex dim="1">`` elements
+without twist joints whose reference configuration ``qpos0`` has adjacent curved vertices (bent by more than
+:math:`10^{-4}` rad), adjacent curved vertices are paired across their shared edge: each vertex's bending stiffness is
+split evenly among its pairs and the dihedral twist between their osculating planes around the shared edge is penalized
+relative to its reference value in ``qpos0``, preserving 3D rest curvature and torsion.
 
 **Parametrization types**.
 
@@ -1521,6 +1497,11 @@ unmodified. This extension is also needed to specify mesh directories. Also note
 :ref:`strippath<compiler-strippath>`, :ref:`angle<compiler-angle>`, :ref:`fusestatic<compiler-fusestatic>` and
 :ref:`discardvisual<compiler-discardvisual>` have different default values for URDF and MJCF.
 
+URDF specifies effort limits on joints and has no actuator model, so a joint's ``<limit effort="...">`` becomes its
+:ref:`actuatorfrcrange<body-joint-actuatorfrcrange>`. When adding actuators to the converted MJCF, either keep this
+joint-level clamp or move the limit to the actuators' :ref:`forcerange<actuator-general-forcerange>` (see
+:ref:`CForceRange`).
+
 Note that the while MJCF models are checked against a custom XML schema by the parser, URDF models are not. Even the
 MuJoCo-specific elements embedded in the URDF file are not checked. As a result, mis-typed attribute names are
 silently ignored, which can result in major confusion if the typo remains unnoticed.
@@ -1614,7 +1595,7 @@ There are two types of dynamic arrays allocated in the ``arena`` memory space.
 By allocating dynamic quantities from both sides of the ``arena`` space, variable-sized memory allocation is controlled
 by a single number: the :at:`memory` attribute of the :ref:`size <size>` MJCF element. Unlike the fixed-size arrays in
 the ``buffer``, variable-sized arrays in the arena can be ``NULL``, for example after a call to :ref:`mj_resetData`.
-When ``arena`` memory runs out, one of three things will happen, depending on the type of memory requested:
+When ``arena`` memory runs out, one of four things will happen, depending on the type of memory requested:
 
 - If memory runs out during contact allocation, a warning will be raised and subsequent contacts will not be added in
   this step, but simulation continues as usual.
@@ -1622,12 +1603,19 @@ When ``arena`` memory runs out, one of three things will happen, depending on th
   disabled in this step, but simulation continues as usual. Note that physics without the constraint solver will
   generally be very different, but allowing the simulation to continue can still be useful, e.g. during
   scene initialization when many bodies are temporarily overlapping.
+- If memory runs out while the Newton solver is constructing or refactoring its Hessian/Cholesky factor (for example,
+  under heavy contact fill-in on a deformable ``flex``), ``mjWARN_CNSTRFULL`` will be raised and the solver will fall
+  back to CG (or to incremental rank-1 cone updates) for that step. If this warning fires repeatedly, each step still
+  incurs symbolic Hessian counting before falling back, so :at:`memory` should be increased.
 - If memory runs out during stack array allocation, a hard error will occur.
 
 Unlike the size of the ``buffer``, the size of the ``arena`` cannot be pre-computed, since the number of contacts and
-stack usage is not known in advance. So how should one choose it? The following simple heuristic is currently used,
-though it may be improved in the future: enough memory is allocated for 100 contacts and 500 scalar constraints, under
-worst-case conditions. If this heuristic is insufficient, we recommend the following procedure. Increase the ``arena``
+stack usage is not known in advance. So how should one choose it? The following heuristic is currently used: for rigid
+degrees of freedom, enough memory is allocated for 100 contacts and 500 scalar constraints under worst-case dense
+conditions; for deformable ``flex`` degrees of freedom, the sparse Newton Hessian and Cholesky factor are estimated
+from a symbolic reverse-Cholesky count on the static flex mesh topology (with a 1.5x safety margin) plus a bounded
+allowance for colliding flex contacts. If this heuristic is insufficient, we recommend the following procedure. Increase
+the ``arena``
 memory significantly using the :at:`memory` attribute, and inspect the actual memory used at runtime.
 ``mjData.maxuse_arena`` keeps track of the maximum ``arena`` memory utilization since the last reset. The :ref:`simulate
 <saSimulate>` viewer shows this number as a fraction of the total arena space (in the info window in the lower-left
@@ -1694,62 +1682,6 @@ Tips and tricks
 Here we provide guidance on how to accomplish some common modeling tasks. There is no new material here, in the sense
 that everything in this section can be inferred from the rest of the documentation. Nevertheless the inference process
 is not always obvious, so it may be useful to have it spelled out.
-
-.. _CPerformance:
-
-Performance tuning
-~~~~~~~~~~~~~~~~~~
-
-Below is a list of steps one can take in order to maximize simulation throughput. All of the recommendations
-involve parameter tweaking. It is recommended that these be carried out in interactive fashion while looking at the
-:ref:`simulate<saSimulate>` utility's built-in profiler. A detailed and sometimes more useful profile is also reported
-by the :ref:`testspeed<saTestspeed>` utility. When embarking on the more elaborate steps below, target the most
-expensive pipeline component reported by the profiler. Note that some of these are subtly different for MJX, see
-dedicated section :ref:`therein<MjxPerformance>`.
-
-1. :ref:`Timestep<option-timestep>`: Try to increase the simulation timestep. As explained at the end of the
-   :ref:`Numerical Integration<geIntegration>` section, the timestep is the single most important parameter in any
-   model. The default value is chosen for stability rather than efficiency, and can often be increased. At some point,
-   increasing it further will cause divergence, so the optimal timestep is the largest timestep at which divergence
-   never happens or is very rare. The actual value is model-dependent.
-2. :ref:`Integrator<option-integrator>`: Choose your integrator according to the recommendations at the end of the
-   :ref:`Numerical Integration<geIntegration>` section. The default recommended choice is the ``implicitfast``
-   integrator.
-3. :ref:`Constraint Jacobians<option-jacobian>`: Try switching the Jacobian setting between "dense" and "sparse". These
-   two options use separate code paths using dense or sparse algebra, but are otherwise computationally identical, so
-   the faster one is always preferred. The default "auto" heuristic does not always make the right choice.
-4. **Constraint solver:** If the profiler reports that a large chunk of time is spent in the solver, consider the
-   following:
-
-   - :ref:`solver<option-solver>`: The default Newton is often the fastest solver, as it requires the smallest
-     number of iterations to converge. For large models the CG solver might be faster, for models with more degrees of
-     freedom than constraints, the PGS solver will be fastest, though this situation is not common.
-   - :ref:`iterations<option-iterations>` and :ref:`tolerance<option-tolerance>`: Try reducing the number of iterations
-     or, equivalently, increasing the solver's termination tolerance. In particular for the Newton solver, which
-     typically achieves numerical convergence in 2-3 (expensive) iterations, the last iteration increases the precision
-     to a level that has no noticeable effect, and can be skipped.
-5. **Collisions:** If the profiler reports that collision detection takes up a large chunk of the computation
-   time, consider the following steps:
-
-   - Enable engine multithreading by creating a thread pool with :ref:`mju_threadpool`. Narrowphase
-     collision detection can run in parallel, which can significantly speed up scenes with many candidate
-     contact pairs.
-   - Reduce the number of checked collisions using the
-     :ref:`contype<body-geom-contype>` / :ref:`conaffinity<body-geom-conaffinity>` mechanism described in the
-     :ref:`Collision detection<Collision>` section.
-   - Modify collision geometries, replacing expensive collision tests (e.g. mesh-mesh) with cheaper primitive-primitive
-     collisions. As a rule of thumb, collisions which have custom pair functions in the collision table at the top of
-     `engine_collision_driver.c <https://github.com/google-deepmind/mujoco/blob/main/src/engine/engine_collision_driver.c>`__
-     are significantly cheaper than those that use the generic convex-convex collider ``mjc_Convex``. The most expensive
-     collisions are those involving SDF geometries.
-   - If replacing collision meshes with primitives is not feasible, decimate the meshes as much as possible. Open source
-     tools like trimesh, Blender, MeshLab and CoACD are very useful in this regard.
-6. :ref:`Friction cones<option-cone>`: Elliptic cones are more accurate and better at preventing slip with high
-   :ref:`impratio<option-impratio>`, but are more expensive. If accurate friction is not important, try switching
-   to pyramidal cones.
-7. For custom builds, MuJoCo can be compiled with 32-bit floating point precision (rather than the default 64-bit). For
-   large models where memory bandwidth is the bottleneck, this can improve performance. See :ref:`mjtNum` for more
-   information. Note that float32 rarely yields measurable speedups in typical models.
 
 .. _CSlippage:
 
@@ -1821,6 +1753,23 @@ better visualize and understand the contact configuration and resulting forces.
      residual slip. Exact zero slip is not guaranteed. NoSlip also adds computational cost, makes inverse dynamics
      ill-defined and can occasionally cause instabilities in complex multi-contact systems. See the
      :ref:`NoSlip solver<soNoSlip>` for details.
+
+.. _CTunneling:
+
+Preventing tunneling
+~~~~~~~~~~~~~~~~~~~~
+
+Collision detection only inspects geom poses at discrete timesteps, so thin or fast-moving geoms (plates, walls,
+projectiles, swinging links) can pass through each other within a single step. Rather than shrinking the
+:ref:`timestep <option-timestep>` or thickening geoms, enable the :ref:`speculative <option-flag-speculative>` flag,
+which adds contacts before impact at a collision cost that is often repaid by the larger timestep it allows. Height
+fields, SDFs and flexes are not supported. See :ref:`Speculative contacts <coSpeculative>` for details and
+`model/speculative/ <https://github.com/google-deepmind/mujoco/tree/main/model/speculative>`__ for examples.
+
+.. admonition:: New feature
+   :class: attention
+
+   Speculative contacts were added in October 2026; their behavior may still change.
 
 .. _CBacklash:
 
@@ -1899,6 +1848,283 @@ be a contributing factor.
 If you suspect that the compile-time approximation is insufficient for your model, you can enable the
 :ref:`diagexact<option-flag-diagexact>` flag to compute the exact diagonal at runtime. See :ref:`Diagonal approximation
 <soExactDiag>` for details on the underlying mechanics and performance implications.
+
+
+.. _CTuning:
+.. _CPerformance:
+
+Model tuning
+------------
+
+Physical fidelity and simulation speed are two sides of the same coin: almost every change that improves accuracy costs
+compute, while relaxing accuracy buys throughput at the expense of realism. Model tuning is the process of choosing the
+right point on this speed--fidelity trade-off for a given task, while taking advantage of the few changes that improve
+*both*.
+
+Before tuning parameters, load the model paused in :ref:`MuJoCo Studio <StudioApp>` (or :ref:`simulate <saSimulate>`)
+and rule out modeling bugs that masquerade as bad contacts: intersecting geoms at ``t = 0`` (toggle contact
+points/forces), visual/collision geom mismatches (toggle geom groups), concave collision meshes replaced by their
+:ref:`convex hulls <coChecking>` (toggle convex hulls; see :ref:`convex decomposition <coDecomposition>`), implausible
+CAD/URDF inertias (toggle equivalent inertia boxes), degree/radian mismatches (:ref:`compiler/angle <compiler-angle>`
+defaults to ``"degree"``), and position targets driving past joint limits or into surfaces. Stiffening contacts to mask
+these issues can cause chatter or divergence. Once the model is clean, tune interactively using the viewer's
+contact-force and profiler overlays, and measure headless throughput with :ref:`testspeed <saTestspeed>` so changes
+target the stage dominating step time.
+
+.. _CTuningDefaults:
+
+Tuning defaults
+~~~~~~~~~~~~~~~
+
+**Unfortunate defaults**:
+   Several of MuJoCo's internal defaults (e.g. ``integrator="Euler"``, ``cone="pyramidal"``, ``solref="0.02 1"``) date
+   back to early versions of the engine and are not what we recommend for new models
+   today. Changing a physics default is difficult because it silently alters simulation trajectories across every
+   existing model that omits the attribute. We may revise some of these defaults in a future release, but for now
+   backwards compatibility keeps them fixed.
+
+**Context-dependent defaults**:
+   Other defaults (e.g. ``damping="0"``, ``condim="3"``, ``contype=conaffinity="1"``) are sensible baselines, but
+   usually need to be overridden on real robots, so we note them in the table below.
+
+Overriding these defaults at the start of a project, typically once in :ref:`option <option>` and the top-level
+:ref:`default <CDefault>` class, avoids the most common modeling pitfalls:
+
+.. list-table::
+   :header-rows: 1
+   :widths: 24 18 22 36
+
+   * - Setting
+     - Internal default
+     - Recommended initial value
+     - Why?
+   * - :ref:`integrator <option-integrator>`
+     - ``"Euler"``
+     - ``"implicitfast"`` (``"discrete"`` with flex elasticity; see note below)
+     - Cheap implicit integration of velocity-dependent forces.
+   * - :ref:`cone <option-cone>`, :ref:`impratio <option-impratio>`
+     - ``"pyramidal"``, ``"1"``
+     - ``"elliptic"``, ``"10"``
+     - Isotropic friction cones and stronger tangential resistance to slip.
+   * - :ref:`solref[0]<CSolver>`
+     - ``"0.02"``
+     - ``"0.004"`` --- ``"0.01"``
+     - Crisper rigid contacts and tighter equality constraints.
+   * - :ref:`solimp[0]<CSolver>`
+     - ``"0.9"``
+     - Keep, or ``"0.95"`` if needed
+     - Halves rest penetration and creep, at the cost of more solver iterations.
+   * - :ref:`contype <body-geom-contype>`, :ref:`conaffinity <body-geom-conaffinity>`
+     - ``"1"``, ``"1"``
+     - Separate visual / collision classes
+     - Keeps detailed visual meshes out of collision detection.
+   * - :ref:`condim <body-geom-condim>`
+     - ``"3"``
+     - ``"4"`` or ``"6"`` on grasp pads
+     - Adds torsional (and rolling) friction needed for stable pinch grasps.
+   * - :ref:`joint/armature <body-joint-armature>`, :ref:`damping <body-joint-damping>`
+     - ``"0"``, ``"0"``
+     - Nonzero rotor inertia & light damping
+     - Better mass-matrix conditioning and free implicit damping of chatter.
+   * - :ref:`actuator/position <actuator-position>`
+     - ``kv="0"``, unlimited force
+     - ``dampratio="1"`` (or ``kv``) + :at:`forcerange`
+     - Critically damped servo response and bounded contact impulses.
+
+The lists below walk through global and model-level knobs in rough order of importance when tuning.
+
+.. _CTuningGlobal:
+
+Global options
+~~~~~~~~~~~~~~
+
+**Timestep** (:ref:`timestep <option-timestep>`: ``"0.002"``):
+   See note under :ref:`Numerical Integration <geChoosingTimestepIntegrator>`. The primary speed--fidelity knob:
+   throughput scales linearly with :at:`timestep` up to the stability limit where simulation diverges. ``2 ms`` is
+   usually reasonable, or slightly high, for contact-rich manipulation (stiff grippers, high gains, or thin objects
+   often prefer ``0.5–2 ms``), whereas ``5–15 ms`` can work well for locomotion. When
+   :ref:`refsafe <option-flag-refsafe>` is enabled (for all integrators besides ``discrete``, which ignores
+   :at:`refsafe`), effective ``solref[0]`` is clamped to at least ``2 * timestep``, so raising :at:`timestep` past half
+   of ``solref[0]`` also softens contacts. If thin or fast-moving geoms start tunneling through each other at the larger
+   timestep, enable :ref:`speculative contacts <CTunneling>` rather than shrinking it.
+
+**Integrator** (:ref:`integrator <option-integrator>`: ``"Euler"``):
+   See note under :ref:`Numerical Integration <geChoosingTimestepIntegrator>`. Use ``implicitfast`` for most models: it
+   has nearly the same per-step cost as ``Euler`` (symmetric Cholesky factorization) while integrating actuator velocity
+   feedback (:at:`kv`, :at:`dampratio`), tendon damping, and fluid viscosity implicitly, and applying exact
+   :ref:`gyroscopic derivatives <geFreeBody>` to standalone free bodies (``Euler`` handles only joint :at:`damping`
+   implicitly). Use ``RK4`` (4x cost per step) for nearly energy-conserving or tumbling systems, and ``implicit``
+   (unsymmetric LU) for fast-spinning coupled multi-link chains where Coriolis derivatives matter. Models with flex
+   :ref:`elasticity <flex-elasticity>` or passive flex contact require ``discrete`` (they raise an error under
+   ``implicit`` and ``implicitfast``); see :ref:`Deformables <CTuningDeformable>`.
+
+   .. note::
+      We are currently trialling :at:`discrete` as a candidate to replace ``implicitfast`` as the recommended
+      integrator. ``discrete`` folds position stiffness (joint and tendon springs, flex elasticity, and actuator
+      :at:`kp`) jointly with the constraints into a single effective metric :math:`\widehat{M} = M + hD + h^2K`,
+      remaining stable at much larger timesteps when stiff servos or springs interact with contacts; see
+      :ref:`Integrators <geIntegrators>` for details and current limitations.
+
+**Solver, iterations, and tolerance** (:ref:`solver <option-solver>`: ``"Newton"``, :ref:`iterations <option-iterations>`: ``"100"``, :ref:`tolerance <option-tolerance>`: ``"1e-8"``):
+   See :ref:`Solver settings <CAlgorithms>`. ``Newton`` is the best choice for most models, converging quadratically in
+   ~2--3 iterations. With :ref:`warmstart <option-flag-warmstart>` and early termination enabled by default, the
+   ``100``-iteration cap is rarely reached: tightening :at:`tolerance` (e.g. ``1e-10``) improves constraint accuracy
+   cheaply, while capping :at:`iterations` to ``2–4`` (or loosening :at:`tolerance`) skips the final polishing step when
+   maximizing speed. Switch to ``CG`` only when Hessian factorization dominates step time, such as on very large
+   particle or high-fill-in scenes, or under heavy active-set churn across many slipping contacts. ``PGS`` is rarely
+   warranted, with the exception of reduced-contact scenes (roughly ``ncon < nv``) like legged locomotion.
+
+**Friction cones, impratio, and NoSlip** (:ref:`cone <option-cone>`: ``"pyramidal"``, :ref:`impratio <option-impratio>`: ``"1"``, :ref:`noslip_iterations <option-noslip_iterations>`: ``"0"``):
+   ``elliptic`` cones model isotropic Coulomb friction and decouple tangential from normal impedance at modest extra
+   cost over ``pyramidal`` cones. When grasp stability or foot slip on slopes matters (see
+   :ref:`Preventing slip <CSlippage>`), set ``cone="elliptic"`` and raise :at:`impratio` (``10`` for manipulation,
+   ``10–100`` for legged locomotion) to stiffen tangential resistance without raising the friction coefficient (avoid
+   large :at:`impratio` with ``pyramidal`` cones). For residual :ref:`slow slippage <CSlowSlippage>`,
+   ``noslip_iterations`` of ``1–3`` suppresses drift strongly, at roughly 2x step time, ill-defined inverse dynamics,
+   and occasional chatter in overconstrained grasps.
+
+**Jacobian sparsity** (:ref:`jacobian <option-jacobian>`: ``"auto"``):
+   ``dense`` and ``sparse`` compute identical physics. The ``auto`` threshold (``nv = 60``) is usually fine, though
+   medium-sized models are worth timing both ways. With ``sparse`` ``Newton`` on rigid scenes, declare moving bodies
+   that contact many objects (such as a tray) *before* those objects in :el:`worldbody` to avoid Cholesky fill-in
+   (models with :el:`flex` elements reorder DOFs automatically when beneficial); see
+   :ref:`Body ordering and fill-in <CBodyOrdering>`.
+
+**Situational flags and overrides**:
+   - :ref:`sleep <option-flag-sleep>` (``"disable"``): freezes settled kinematic trees below
+     :ref:`sleep_tolerance <option-sleep_tolerance>`, giving large speedups in scenes with resting clutter or piles.
+   - :ref:`diagexact <option-flag-diagexact>` (``"disable"``): computes the exact constraint-space inertia diagonal at
+     runtime rather than the compile-time ``qpos0`` approximation; useful when bodies operate far from ``qpos0`` or have
+     strongly anisotropic inertias (see :ref:`Constraint accuracy <CConstraintImpedance>`).
+   - :ref:`Contact override <COverride>` (:ref:`override <option-flag-override>`: ``"disable"``, :at:`o_solref`,
+     :at:`o_solimp`, :at:`o_margin`, :at:`o_friction`): globally replaces contact parameters at runtime, useful in
+     :ref:`Studio <StudioApp>` for sweeping contact softness interactively before editing defaults.
+
+.. _CTuningModel:
+
+Model parameters
+~~~~~~~~~~~~~~~~
+
+**Solver parameters** (:ref:`solref <CSolver>`: ``"0.02 1"``, :ref:`solimp <CSolver>`: ``"0.9 0.95 0.001 0.5 2"``):
+   - :at:`solref`: the ``20 ms`` default time constant (``solref[0] = 0.02``) is 10x the default ``2 ms`` timestep,
+     often too soft for rigid contacts and loop-closure :el:`equality` constraints (roughly speaking, a hard rubber
+     surface). Rigid contacts usually prefer lowering it to ``0.004–0.01`` and loop closures to ``0.004–0.005``, keeping
+     ``solref[0] >= 2 * timestep``. Note that in ``(timeconst, dampratio)`` format, raising ``dampratio`` at fixed
+     ``timeconst`` lowers stiffness (:math:`k \propto 1/(\tau^2 \zeta^2)`) rather than adding damping; to tune stiffness
+     and damping independently (e.g. for :ref:`restitution <CRestitution>` or :ref:`system identification <PySysid>`),
+     use the direct ``-stiffness -damping`` format.
+   - :at:`solimp`: rest penetration and static-friction creep both scale with ``1 - d_0`` (static friction sees zero
+     position residual and therefore uses only ``solimp[0]``; see :ref:`Friction <CSolverFriction>`), so raising
+     ``d_0`` from ``0.9`` to ``0.95`` halves both, but costs solver iterations, especially with ``CG`` and ``PGS``.
+     Lowering :at:`solref` and switching to ``elliptic`` cones are much stronger levers, so try those first. ``d_w``
+     (``solimp[1]``) only applies at penetrations approaching ``width`` (``solimp[2]``, default ``1 mm``); scale
+     ``width`` to the compliant layer or object size, and do not confuse :at:`solimp` with :at:`solref`
+     (``solimp="0.01 1 ..."`` sets ``d_0 = 0.01``, nearly disabling the constraint).
+
+**Collision detection and filtering** (:ref:`contype <body-geom-contype>`: ``"1"``, :ref:`conaffinity <body-geom-conaffinity>`: ``"1"``):
+   See :ref:`Collision detection <Collision>`. Every geom both renders and collides by default; put visual meshes in a
+   :ref:`default <CDefault>` class with ``contype="0" conaffinity="0"`` to keep them out of collision detection.
+   Replacing collision meshes with primitives (``sphere``, ``capsule``, ``box``, ``cylinder``) improves *both* speed
+   and contact normals: dedicated pair functions (see `engine_collision_driver.c
+   <https://github.com/google-deepmind/mujoco/blob/main/src/engine/engine_collision_driver.c>`__) are much cheaper
+   than generic convex ``mjc_Convex`` CCD and far cheaper than ``sdf`` collisions. Where meshes are unavoidable,
+   decimate or :ref:`convex-decompose <coDecomposition>` them, cap :ref:`maxhullvert <asset-mesh-maxhullvert>`, prune
+   pairs via :at:`contype`/:at:`conaffinity` or :ref:`exclude <contact-exclude>`, and attach a thread pool with
+   :ref:`mju_threadpool` when narrowphase dominates. For fast-moving or thin convex geoms, the
+   :ref:`speculative <option-flag-speculative>` flag (``"disable"``) adds contacts before impact to prevent tunneling,
+   at a scene-dependent collision cost (see :ref:`Preventing tunneling <CTunneling>`).
+
+**Contact dimension, friction, and mixing** (:ref:`Contact parameters <CContact>`):
+   - :ref:`condim <body-geom-condim>` (``"3"``): ``"3"`` models sliding friction only. Set ``"4"`` (torsional) or
+     ``"6"`` (torsional + rolling) on fingertips and grasp pads, keeping ``"3"`` elsewhere; note ``friction[1]`` and
+     ``friction[2]`` have units of *length* (contact-patch radii). For frictionless contacts use ``condim="1"`` rather
+     than near-zero ``friction`` (under ``pyramidal`` cones, facet regularization scales as :math:`\mu^2`, severely
+     ill-conditioning tiny-friction contacts; use ``cone="elliptic"`` if very low friction is needed).
+   - :ref:`priority <body-geom-priority>` (``"0"``) and mixing: equal-priority geoms average :at:`solref`/:at:`solimp`
+     and take the element-wise **maximum** :at:`friction` (so a low-friction object on a ``friction="1"`` floor gets
+     ``"1"``). Set ``priority="1"`` on the geom whose parameters should govern.
+   - :ref:`margin <body-geom-margin>` and :ref:`gap <body-geom-gap>` (``"0"``): leave ``margin="0"`` unless paired with
+     matching ``gap``, otherwise contact forces activate at a distance and objects hover by ``margin - gap``.
+
+**Joints: armature, damping, and frictionloss** (:ref:`armature <body-joint-armature>`: ``"0"``, :ref:`damping <body-joint-damping>`: ``"0"``, :ref:`frictionloss <body-joint-frictionloss>`: ``"0"``):
+   Geared actuators add reflected rotor inertia (:math:`I_{\text{rotor}} N^2`) that often exceeds the link inertia of
+   wrists, fingers, and ankles; adding realistic :at:`armature` improves realism, mass-matrix conditioning, and
+   timestep stability for free. Viscous joint :at:`damping` likewise enters :math:`M + hD` implicitly (even under
+   ``Euler``) and damps chatter at no solver cost, whereas dry :at:`frictionloss` adds an active constraint row per
+   joint; reserve it for joints where Coulomb stiction matters.
+
+**Actuator gains and force limits** (:ref:`position <actuator-position>`, :ref:`forcerange <actuator-general-forcerange>`):
+   See :ref:`Shortcuts <CActShortcuts>`. A :el:`position` actuator defaults to ``kv="0"`` and unlimited force. Pair
+   ``dampratio="1"`` (or :at:`kv`) with ``implicitfast`` and bound output via :at:`forcerange` so large setpoint steps
+   do not inject excessive contact impulses; for combined position, velocity or feedforward commands, use a single
+   :ref:`pid <actuator-pid>` rather than stacking actuators and clamping their sum at the joint (see
+   :ref:`Force limits <CForceRange>`). While :at:`forcerange` is saturated the actuator adds no implicit damping, so a
+   single step can accelerate a light link by up to ``h * forcerange / M``; give such joints some :at:`armature` or use
+   a smaller timestep. Keep :at:`ctrlrange` within joint :at:`range` so servos do not fight joint limits, except on
+   grippers where extending slightly past pad contact lets a closed command generate grip force on thin objects.
+
+**Masses and inertias** (:ref:`inertial <body-inertial>`, :ref:`mass <body-geom-mass>`, :ref:`density <body-geom-density>`: ``"1000"``):
+   When :el:`inertial` and geom :at:`mass` are omitted, MuJoCo infers mass and inertia from geom volume assuming water
+   :at:`density` (``1000 kg/m^3``), which can badly misestimate hollow shells or dense metal links. Mass or inertia
+   ratios ``> 1000:1`` across contacts or joints (a heavy robot grasping a gram-scale object, or URDF dummy links with
+   ``1e-6`` inertia) also degrade solver conditioning and accuracy; fix implausible CAD/URDF inertias at the source, or
+   clamp messy imports at compile time with :ref:`boundmass <compiler-boundmass>` and
+   :ref:`boundinertia <compiler-boundinertia>`.
+
+.. _CTuningDeformable:
+
+Deformables
+~~~~~~~~~~~
+
+**Parametrization** (:ref:`dof <body-flexcomp-dof>`: ``"full"``):
+   A deformable body approximates a continuum with infinitely many degrees of freedom, so its discretization is the
+   sharpest form of the speed--fidelity trade-off: the same shape can be represented with a few dozen dofs or with tens
+   of thousands, and cost grows quickly with their number. The default ``full`` gives every vertex three dofs, so cost
+   scales with mesh resolution. Interpolated ``trilinear`` and ``quadratic`` flexes instead move the mesh with a coarse
+   grid of nodes (refined with :ref:`cellcount <body-flexcomp-cellcount>`), decoupling cost from mesh resolution while
+   collisions still use the full mesh. Use ``trilinear`` unless the body is a true thin rod or plate, or undergoes
+   extremely large deformations with a lot of bending; ``quadratic`` captures bending without shear locking at higher
+   cost. Model thin rods as ``dim="1"`` flexes with an elasticity :at:`section` and thin plates as ``dim="2"`` shells,
+   which are far cheaper than 3D volumes. Flexes whose parent body has joints must :ref:`pin <flexcomp-pin>` at least
+   one vertex to it.
+
+**Integrator and solver** (:ref:`integrator <option-integrator>`: ``"discrete"``, :ref:`solver <option-solver>`: ``"Newton"``):
+   Flex :ref:`elasticity <flex-elasticity>` is usually the stiffest force in a deformable model, and only ``discrete``
+   integrates it implicitly in position. Under ``implicit`` and ``implicitfast`` it raises a runtime error, while
+   ``Euler`` integrates it explicitly and needs sub-millisecond timesteps; with ``discrete``, ``1–4 ms`` is typical.
+   ``Newton`` (the default) is the best choice under ``discrete`` -- especially for stiff rods, shells, cloth, and
+   :ref:`ipc <option-flag-ipc>` contact -- typically with :at:`tolerance` ``1e-6`` (raising :at:`iterations` to
+   ``150–400`` only in very contact-rich scenes). Prefer ``CG`` (typically with :at:`tolerance` ``1e-5``--``1e-6``) in
+   two cases: multi-cell ``equality="strain"`` grids (whose dense per-cell constraint blocks cause heavy Cholesky
+   fill-in) and large but relatively soft 3D meshes (where ``CG`` converges in a few cheap matrix-free iterations
+   without 3D fill-in). ``PGS`` and :at:`noslip_iterations` are not supported with flex; see
+   :ref:`Integrators <geIntegrators>` for current limitations.
+
+**Stiffness and damping** (:ref:`elasticity <flex-elasticity>`, :ref:`edge <flexcomp-edge-equality>`):
+   For quick but approximate simulations, edge equality constraints (``true``, or ``strain`` for interpolated flexes)
+   work under ``implicitfast`` or ``Euler``, but are typically softer than the material they stand for; they do not
+   inherit the :el:`equality` default, so set :at:`solref` on :el:`edge` explicitly. For accurate deformations, use
+   continuum :at:`young`/:at:`poisson` (plus :at:`thickness` and :at:`elastic2d` for shells) with Rayleigh
+   :ref:`damping <flex-elasticity-damping>` (units of time, ``0.002``--``0.05``) under ``discrete``; since 1D elasticity
+   is bending-only, rods combine it with edge equality for stretching. Avoid edge :at:`stiffness` and :at:`damping`,
+   which are explicit and rejected by ``discrete``.
+
+**Contact** (:ref:`selfcollide <flex-contact-selfcollide>`: ``"auto"``, :ref:`passive <flex-contact-passive>`: ``"false"``):
+   Set ``selfcollide="none"`` unless the flex folds onto itself. ``passive="true"`` replaces flex-flex, self and
+   static-geom contact rows with an implicit penalty force, cheaper and more stable in piled cloth, but frictionless,
+   so keep it off where grip or resting friction matters. The experimental :ref:`ipc <option-flag-ipc>` flag gives
+   intersection-free (but also frictionless) contact for thin 2D flexes, and requires ``Newton``.
+
+.. _CTuningSysid:
+
+System identification
+~~~~~~~~~~~~~~~~~~~~~
+
+Interactive tuning establishes numerical stability, throughput, and qualitative behavior, whereas matching a *specific
+physical system* (sim-to-real) is best cast as optimization against hardware logs. Rather than hand-tuning joint
+:at:`armature`, :at:`damping`, :at:`frictionloss`, actuator gains (:at:`kp`, :at:`kv`), link inertias, or
+:ref:`delays <CDelay>`, the Python :ref:`mujoco.sysid <PySysid>` toolbox fits these parameters directly to recorded
+control and sensor trajectories via box-constrained nonlinear least squares over batched parallel rollouts.
 
 
 .. |image3| image:: images/modeling/tendonwraps.png

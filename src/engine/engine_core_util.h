@@ -111,8 +111,9 @@ int mj_jacSum(const mjModel* m, mjData* d, int* chain,
 
 // compute bodies and weights of one side of a contact, return number of bodies
 //   the weights interpolate the side at the contact point; weight can be NULL
-int mj_contactBodyWeight(const mjModel* m, const mjData* d, const mjContact* con, int side,
-                         int* body, mjtNum* weight);
+MJAPI int mj_contactBodyWeight(const mjModel* m, const mjData* d,
+                               const mjContact* con, int side, int* body,
+                               mjtNum* weight);
 
 // compute 3/6-by-nv Jacobian time derivative of global point attached to given body
 MJAPI void mj_jacDot(const mjModel* m, const mjData* d,
@@ -141,6 +142,11 @@ MJAPI void mj_local2Global(mjData* d, mjtNum xpos[3], mjtNum xmat[9],
                            const mjtNum pos[3], const mjtNum quat[4],
                            int body, mjtByte sameframe);
 
+// map from body local to global Cartesian position, quaternion and matrix
+void mj_local2GlobalQuat(mjData* d, mjtNum* xpos, mjtNum* xquat, mjtNum* xmat,
+                         const mjtNum pos[3], const mjtNum quat[4],
+                         int body, mjtByte sameframe);
+
 
 //-------------------------- miscellaneous ---------------------------------------------------------
 
@@ -150,8 +156,8 @@ MJAPI int mj_flexSimple(const mjModel* m, int f);
 
 // For standard flexes, gather J*vec in world coordinates; scatter adds scale*J'*vec to forces.
 // Requires kinematics and comPos, and current flexvert_xpos for general attachments.
-MJAPI void mj_flexGather(const mjModel* m, const mjData* d, int f, mjtNum* res, const mjtNum* vec);
-MJAPI void mj_flexScatter(const mjModel* m, const mjData* d, int f, mjtNum* res,
+MJAPI void mj_flexGather(const mjModel* m, mjData* d, int f, mjtNum* res, const mjtNum* vec);
+MJAPI void mj_flexScatter(const mjModel* m, mjData* d, int f, mjtNum* res,
                           const mjtNum* vec, mjtNum scale);
 
 // gather global node positions and velocities
@@ -232,9 +238,29 @@ void mj_flexHessianMul(const mjModel* m, const mjData* d, int f, mjtNum* res,
 
 //-------------------------- 1D rod bending --------------------------------------------------------
 
-// per-hinge data layout in flex_bending for 1D flexes, after a leading hinge count:
-//   [v_prev, v, v_next, k], energy k |kb|^2 (the reference configuration is straight)
-#define mjROD_HINGE_SIZE 4
+// per-record data layout in flex_bending for 1D flexes, after a leading record count; a record is a
+// single hinge (v0, v1, v2) or a pair of adjacent curved hinges (v0, v1, v2) and (v1, v2, v3):
+//   single: [v0, v1, v2, -1, k1, k2 - k1, kb0, twist_jnt, kt, box_b], energy k (|kb| - kb0)^2, with
+//           kb0 = |kb| in the reference (0 if straight, then the energy is k |kb|^2); k2 - k1 != 0
+//           for anisotropic sections, twist_jnt is the twist hinge of edge h + 1 (edge 0's joint
+//           when free is twist_jnt[0] - 1, validated by the compiler; use mj_rodChainTwistJnt),
+//           kt = GJ / (l0 + l1) is the torsional stiffness, and
+//           box_b encodes the box section minor half-size b and initial weak-axis angle psi0
+//           (0 for circle, +b for psi0 = 0, -b for psi0 = pi/2)
+//   pair:   [v0, v1, v2, v3, w0, w1, kb0_a, kb0_b, kt cos(dphi0), kt sin(dphi0)], energy
+//           w0 (|om_a| - kb0_a)^2 + w1 (|om_b| - kb0_b)^2 + kt |R(dphi0) n_a - n_b|^2, with
+//           om_a, om_b the curvature binormals of both hinges in a frame orthogonal to the shared
+//           edge (v1, v2), n_a, n_b their smoothed unit directions, and dphi0 the reference
+//           dihedral angle between them about the shared edge
+// k = EI / (l0 + l1) is the bending stiffness of each hinge and kt = GJ / (2 l) is the torsional
+// stiffness of the shared edge; adjacent curved hinges are paired across every shared edge,
+// splitting the bending stiffness of each hinge evenly among its pairs (w0, w1).
+#define mjROD_HINGE_SIZE 10
+
+// number of vertices of a 1D rod bending record: 3 (single hinge) or 4 (hinge pair)
+static inline int mj_rodHingeVert(const mjtNum* hinge) {
+  return hinge[3] < 0 ? 3 : 4;
+}
 
 // curvature binormal kb = 2 e0 x e1 / (|e0||e1| + e0.e1) of hinge (xa, xv, xb), with
 // e0 = xv - xa and e1 = xb - xv, and its Jacobian J (3x9, columns xa, xv, xb);
@@ -242,13 +268,79 @@ void mj_flexHessianMul(const mjModel* m, const mjData* d, int f, mjtNum* res,
 int mj_rodHinge(const mjtNum xa[3], const mjtNum xv[3], const mjtNum xb[3],
                 mjtNum kb[3], mjtNum J[27]);
 
-// weights of the hinge energy in kb space, both including the factor 2k:
+// weights of the single hinge energy in kb space, all including the factor 2k:
 //   g:  gradient dE/d(kb)
-//   Wk: Hessian d2E/d(kb)2
+//   Wk: Hessian d2E/d(kb)2, projected to PSD (exact at the reference)
 //   Wd: Rayleigh damping weight, restricted to the rate of |kb| (rotation invariant)
-// each output is optional
+// a curved reference (kb0 > 0) is smoothed at kb = 0; each output is optional
 void mj_rodHingeWeights(mjtNum g[3], mjtNum Wk[9], mjtNum Wd[9],
-                        const mjtNum kb[3], mjtNum k);
+                        const mjtNum kb[3], mjtNum k, mjtNum kb0);
+
+// curvature binormals om[4] of hinges (x0, x1, x2) and (x1, x2, x3) in a frame orthogonal to the
+// edge (x1, x2), and their Jacobian J (4x12, columns x0..x3, frame held fixed: the energy does not
+// depend on the frame); returns 0 if either hinge or the shared edge is degenerate
+int mj_rodPair(const mjtNum x0[3], const mjtNum x1[3], const mjtNum x2[3], const mjtNum x3[3],
+               mjtNum om[4], mjtNum J[48]);
+
+// weights of the hinge pair energy in om space:
+//   g:  gradient dE/d(om)
+//   Wk: Hessian d2E/d(om)2, projected to PSD (exact at the reference)
+//   Wd: Rayleigh damping weight, orthogonal to rotations about the shared edge
+// the energy is smoothed at om = 0; each output is optional
+void mj_rodPairWeights(mjtNum g[4], mjtNum Wk[16], mjtNum Wd[16],
+                       const mjtNum om[4], mjtNum w0, mjtNum w1, const mjtNum prm[4]);
+
+// evaluate a 1D DER rod chain of single hinges with time-parallel reference directors and per-edge
+// twist hinge DOFs; returns 1 if handled
+//   each edge carries its tangent (3) and reference director (3) across steps by minimal-rotation
+//   parallel transport in d->plastic + flex_plasticadr[f] (6*nedge numbers), followed by the
+//   unwrapped reference twist of each hinge (nhinge numbers); ktheta_out (optional, nedge numbers)
+//   receives the bending stiffness d2E/dtheta_e^2 of each twist angle, clamped at 0 per hinge side;
+//   state_out (optional) receives the updated state for the current configuration
+MJAPI int mj_rodChain(const mjModel* m, mjData* d, int f, mjtNum* energy_out,
+                      mjtNum* frc, mjtNum* qfrc_out,
+                      mjtNum* Wk_out, mjtNum* Wd_out, mjtNum* ktheta_out,
+                      mjtNum* state_out);
+
+// size of the time-parallel state of a 1D DER rod in d->plastic (6*nedge + nhinge, or 0 if none)
+int mj_rodStateSize(const mjModel* m, int f);
+
+// return 1 if 1D flex f is an open DER rod chain with per-edge twist DOFs or box section, 0 else
+MJAPI int mj_rodHasTwist(const mjModel* m, int f);
+
+// cross-section half-sizes (a >= b) of a 1D DER rod with a box section; returns 1 if box, 0 else
+MJAPI int mj_rodBoxSize(const mjModel* m, int f, mjtNum size[2]);
+
+// per-element 3x3 rotation matrices [m1, m2, t] and half-sizes (a >= b) of a 1D box-section rod;
+// returns 1 if handled, 0 otherwise
+MJAPI int mj_rodBoxEdge(const mjModel* m, const mjData* d, int f, mjtNum* elem_mat, mjtNum size[2]);
+
+// center, 3x3 rotation matrix [m1, m2, t], and half-sizes (a, b, L/2) of element e of a 1D
+// box-section rod; returns 1 if handled, 0 otherwise
+MJAPI int mj_rodBoxElem(const mjModel* m, const mjData* d, int f, int e,
+                        mjtNum pos[3], mjtNum mat[9], mjtNum size[3]);
+
+// twist hinge joint ID of element e of a 1D rod (-1 if none), and optional orientation sign (+-1)
+MJAPI int mj_rodEdgeTwistJnt(const mjModel* m, int f, int e, int* sgn_out);
+
+// clamped first (root) and last (tail) edges of the 1D DER rod chain of flex f: both vertices of
+// the edge on one body (the tail needs at least two hinges)
+void mj_rodClampedEnds(const mjModel* m, int f, int* root, int* tail);
+
+// twist hinge joint ID of chain edge c (0 <= c <= nhinge) of a 1D rod, or -1 if none
+MJAPI int mj_rodChainTwistJnt(const mjModel* m, int f, int c);
+
+// dof address of the twist hinge of chain edge c of a 1D rod, or -1 if none
+int mj_rodChainTwistDof(const mjModel* m, int f, int c);
+
+// element of 1D flex f incident to its flex-local vertex v (for a DER rod chain, the element of
+// the chain edge leaving v, or the last one at the far end), -1 if none
+MJAPI int mj_rodVertElem(const mjModel* m, int f, int v);
+
+// add rotational lever-arm Jacobian terms (axial twist roll, and the pitch/yaw vertex couple of the
+// cross-section) for a 1D DER rod on side (0 or 1) of a contact
+void mj_rodContactJac(const mjModel* m, const mjData* d, const mjContact* con, int side,
+                      int NV, const int* chain, mjtNum* jacdifp, mjtNum* jacdifr);
 
 // element-local geometry, quadratic edge response, and stiffness contractions shared by
 // passive forces and both solver paths; keep the helpers visible to the compiler so the
@@ -288,10 +380,12 @@ static inline void mj_stretchMetric(mjtNum metric[36], const mjtNum* packed, int
 
 // gather squared-length differences in local edge order
 static inline void mj_stretchElongation(mjtNum elongation[6], const int* edge,
-                                        const mjtNum* length, const mjtNum* reference, int nedge) {
+                                        const mjtNum* length, const mjtNum* reference,
+                                        const mjtNum* plastic, int nedge) {
   for (int e = 0; e < nedge; e++) {
     int idx = edge[e];
-    elongation[e] = length[idx]*length[idx] - reference[idx]*reference[idx];
+    elongation[e] = length[idx]*length[idx] - reference[idx]*reference[idx] -
+                    (plastic ? plastic[e] : 0);
   }
 }
 
@@ -336,9 +430,9 @@ static inline void mj_stretchForce(mjtNum* force, const int* vert, const mjtNum 
 // prepare the material and geometric coefficients shared by both solver paths
 static inline void mj_stretchStiffness(mjtNum metric[36], mjtNum tension[6], const mjtNum* packed,
                                        const int* edge, const mjtNum* length,
-                                       const mjtNum* reference, int nedge) {
+                                       const mjtNum* reference, const mjtNum* plastic, int nedge) {
   mjtNum elongation[6];
-  mj_stretchElongation(elongation, edge, length, reference, nedge);
+  mj_stretchElongation(elongation, edge, length, reference, plastic, nedge);
   mj_stretchElasticity(metric, tension, packed, elongation, nedge);
 
   // a compressed edge's geometric block is negative semidefinite; keep only the tensile

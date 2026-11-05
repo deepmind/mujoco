@@ -360,7 +360,7 @@ def process(
 
   raw_headers = {}
   for p in headers or []:
-    with open(p, 'r') as f:
+    with open(p, 'r', encoding='utf-8', newline='') as f:
       raw_headers[os.path.basename(p)] = f.read()
 
   visitor = AstProcessor(raw_headers, excluded or [])

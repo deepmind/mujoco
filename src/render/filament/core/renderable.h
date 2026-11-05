@@ -32,19 +32,30 @@
 #include "render/filament/core/material_manager.h"
 #include "render/filament/core/mesh.h"
 #include "render/filament/core/reflection_manager.h"
-#include "render/filament/core/types.h"
 
 namespace mujoco {
 
-enum LayerMask : uint8_t {
+enum LayerMask : std::uint8_t {
   // Filament's Skybox occupies layer 0 by default; renderables use the rest.
   kLayerMask_Skybox = 0x01 << 0,
   kLayerMask_Object = 0x01 << 1,
   kLayerMask_Decor = 0x01 << 2,
   kLayerMask_Outline = 0x01 << 3,
+  kLayerMask_Haze = 0x01 << 4,
   kLayerMask_All = 0xff,
   kLayerMask_None = 0x00,
 };
+
+// Fraction of the camera's far plane at which infinite planes meet the skybox.
+inline constexpr float kHorizonFarRatio = 0.70f;
+
+// Returns true if the request's draw mode and settings allow a skybox.
+inline bool ShowsSkybox(const mjrfRenderRequest& request) {
+  return request.skybox &&
+         (request.draw_mode == mjDRAW_MODE_DEFAULT ||
+          request.draw_mode == mjDRAW_MODE_DEFAULT_NO_TEXTURES ||
+          request.draw_mode == mjDRAW_MODE_ISLANDS);
+}
 
 // A Renderable is effectively two things: a mesh and a material.
 //
@@ -77,8 +88,16 @@ class Renderable : public mjrfRenderable {
   // are not scaled and remain fixed in size.
   void SetSize(const filament::math::float3& size);
 
+  // Overrides the transform of a single part; reset by the next SetTransform or
+  // SetSize.
+  void SetPartTransform(int index, const filament::math::mat4f& transform);
+
   // Returns the current transform of this renderable.
   const filament::math::mat4f& GetTransform() const;
+
+  // Returns true if this renderable is an infinite plane (a square and a
+  // horizon disk, see SetPartTransform).
+  bool IsInfinitePlane() const { return infinite_plane_; }
 
   // Sets the layer mask for this renderable. Layer masks can be used to
   // show/hide groups of renderables in scenes. Returns the previous layer mask.
@@ -89,17 +108,19 @@ class Renderable : public mjrfRenderable {
   // blend order.
   std::uint16_t SetBlendOrder(std::uint16_t blend_order);
 
-  // Disables this renderable from casting shadows.
+  // Sets the coarse draw priority [0..7] for this renderable (defaults to 4).
+  // Returns the previous priority.
+  std::uint8_t SetPriority(std::uint8_t priority);
+
+  // Enables or disables whether this renderable casts shadows.
   void SetCastShadows(bool cast_shadow);
 
-  // Disables this renderable from receiving shadows.
+  // Enables or disables whether this renderable receives shadows.
   void SetReceiveShadows(bool receive_shadow);
 
-  // If true, forces this renderable to use wireframe rendering.
-  void SetWireframe(bool wireframe);
-
   // Adds this renderable to the filament Scene.
-  void AddToScene(filament::Scene* scene);
+  void AddToScene(filament::Scene* scene,
+                  std::function<void(Renderable*)> on_destroy);
 
   // Removes this renderable from the filament Scene.
   void RemoveFromScene(filament::Scene* scene);
@@ -138,6 +159,7 @@ class Renderable : public mjrfRenderable {
     bool cast_shadow = true;
     bool receive_shadow = true;
     bool wireframe = false;
+    std::uint8_t hidden_parts = 0;  // bitmask of parts to hide
   };
 
   // In most cases, a Renderable will be composed of a single filament Entity.
@@ -168,7 +190,13 @@ class Renderable : public mjrfRenderable {
   void ClearParts();
   void AppendMesh(const Mesh* mesh);
   void InitPartEntity(Part& part);
+  void SetHiddenParts(std::uint8_t hidden_parts);
   void UpdateTransform();
+  void ApplyCastShadows(bool cast_shadow);
+  void ApplyReceiveShadows(bool receive_shadow);
+  void SetWireframe(bool wireframe);
+
+  std::uint8_t GetPartLayerMask(int index) const;
 
   filament::Engine* GetEngine();
 
@@ -179,11 +207,13 @@ class Renderable : public mjrfRenderable {
   std::deque<DrawState> draw_queue_;
   DrawState curr_state_;
   filament::Scene* assigned_scene_ = nullptr;
+  std::function<void(Renderable*)> remove_from_scene_fn_;
   std::vector<Part> parts_;
   filament::math::mat4f transform_;
   GetTransformFn get_transform_fn_;
   Trs trs_;
-  uint8_t layer_mask_ = 0x00;
+  std::uint8_t layer_mask_ = 0x00;
+  std::uint8_t priority_ = 4;
   bool infinite_plane_ = false;
 };
 

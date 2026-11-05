@@ -1,0 +1,66 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 820 264" width="100%" role="img" aria-label="WebViewer Streaming Architecture">
+  <defs>
+    <style>
+      .font-sans { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, sans-serif; fill: #111111; }
+      .font-mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fill: #0b57d0; }
+    </style>
+    <marker id="wv-r" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto">
+      <path d="M 0.5 1 L 9 5 L 0.5 9 z" fill="#475569"/>
+    </marker>
+    <marker id="wv-l" viewBox="0 0 10 10" refX="2" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto">
+      <path d="M 9.5 1 L 1 5 L 9.5 9 z" fill="#475569"/>
+    </marker>
+  </defs>
+
+  <!-- Left Card: Host (Python) -->
+  <rect x="14" y="14" width="286" height="236" rx="12" fill="#f8fafc" stroke="#cbd5e1" stroke-width="1.5"/>
+  <path d="M 14 26 Q 14 14 26 14 L 288 14 Q 300 14 300 26 L 300 54 L 14 54 Z" fill="#eef2f6"/>
+  <line x1="14" y1="54" x2="300" y2="54" stroke="#cbd5e1" stroke-width="1"/>
+  <text x="28" y="39" class="font-sans" font-size="14.5" font-weight="700">Host (Python)</text>
+
+  <!-- Host Subcard 1 -->
+  <rect x="28" y="66" width="258" height="78" rx="8" fill="#ffffff" stroke="#e2e8f0" stroke-width="1"/>
+  <text x="40" y="87" class="font-sans" font-size="12.5" font-weight="700">Headless Dear ImGui</text>
+  <text x="40" y="107" class="font-sans" font-size="11.5">Runs <tspan class="font-mono">BuildGuiEvent</tspan> via NetImgui</text>
+  <text x="40" y="126" class="font-sans" font-size="11.5">Serializes 2D vertex &amp; command lists</text>
+
+  <!-- Host Subcard 2 -->
+  <rect x="28" y="158" width="258" height="78" rx="8" fill="#ffffff" stroke="#e2e8f0" stroke-width="1"/>
+  <text x="40" y="179" class="font-sans" font-size="12.5" font-weight="700">Model &amp; State Server</text>
+  <text x="40" y="199" class="font-sans" font-size="11.5">Serves compiled <tspan class="font-mono">.mjb</tspan> &amp; model resources</text>
+  <text x="40" y="218" class="font-sans" font-size="11.5">Streams sim state, camera and render settings</text>
+
+  <!-- Center HTTP / WebSockets -->
+  <text x="410" y="42" text-anchor="middle" class="font-sans" font-size="12.5" font-weight="700">HTTP / WebSockets</text>
+
+  <!-- Top Middle Box: Host -> Browser -->
+  <line x1="306" y1="104" x2="514" y2="104" stroke="#475569" stroke-width="2.2" marker-end="url(#wv-r)"/>
+  <rect x="327" y="62" width="166" height="84" rx="10" fill="#ffffff" stroke="#94a3b8" stroke-width="1.5"/>
+  <text x="410" y="85" text-anchor="middle" class="font-sans" font-size="11"><tspan class="font-mono" font-weight="700">/ui</tspan> (draw lists)</text>
+  <text x="410" y="108" text-anchor="middle" class="font-sans" font-size="11"><tspan class="font-mono" font-weight="700">/state</tspan> (integration state)</text>
+  <text x="410" y="131" text-anchor="middle" class="font-sans" font-size="11"><tspan class="font-mono" font-weight="700">/model</tspan> (<tspan class="font-mono">.mjb</tspan>, resources)</text>
+
+  <!-- Bottom Middle Box: Browser -> Host -->
+  <line x1="306" y1="197" x2="514" y2="197" stroke="#475569" stroke-width="2.2" marker-start="url(#wv-l)"/>
+  <rect x="327" y="164" width="166" height="66" rx="10" fill="#ffffff" stroke="#94a3b8" stroke-width="1.5"/>
+  <text x="410" y="190" text-anchor="middle" class="font-sans" font-size="11"><tspan class="font-mono" font-weight="700">/ui</tspan> (input)</text>
+  <text x="410" y="213" text-anchor="middle" class="font-sans" font-size="11"><tspan class="font-mono" font-weight="700">/drop</tspan> (dropped file/folder)</text>
+
+  <!-- Right Card: Browser Client -->
+  <rect x="520" y="14" width="286" height="236" rx="12" fill="#f8fafc" stroke="#cbd5e1" stroke-width="1.5"/>
+  <path d="M 520 26 Q 520 14 532 14 L 794 14 Q 806 14 806 26 L 806 54 L 520 54 Z" fill="#eef2f6"/>
+  <line x1="520" y1="54" x2="806" y2="54" stroke="#cbd5e1" stroke-width="1"/>
+  <text x="534" y="39" class="font-sans" font-size="14.5" font-weight="700">Browser Client</text>
+
+  <!-- Browser Subcard 1 -->
+  <rect x="534" y="66" width="258" height="78" rx="8" fill="#ffffff" stroke="#e2e8f0" stroke-width="1"/>
+  <text x="546" y="87" class="font-sans" font-size="12.5" font-weight="700">NetImgui Canvas</text>
+  <text x="546" y="107" class="font-sans" font-size="11.5">Renders dockable 2D UI &amp; plots</text>
+  <text x="546" y="126" class="font-sans" font-size="11.5">Captures mouse, scroll &amp; key input</text>
+
+  <!-- Browser Subcard 2 -->
+  <rect x="534" y="158" width="258" height="78" rx="8" fill="#ffffff" stroke="#e2e8f0" stroke-width="1"/>
+  <text x="546" y="179" class="font-sans" font-size="12.5" font-weight="700">WebAssembly + Filament</text>
+  <text x="546" y="199" class="font-sans" font-size="11.5">Runs <tspan class="font-mono">mj_forward()</tspan> locally</text>
+  <text x="546" y="218" class="font-sans" font-size="11.5">Physically based rendering</text>
+</svg>

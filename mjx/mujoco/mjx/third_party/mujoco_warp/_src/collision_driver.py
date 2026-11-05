@@ -31,6 +31,7 @@ from mujoco.mjx.third_party.mujoco_warp._src.types import BroadphaseFilter
 from mujoco.mjx.third_party.mujoco_warp._src.types import BroadphaseType
 from mujoco.mjx.third_party.mujoco_warp._src.types import CollisionType
 from mujoco.mjx.third_party.mujoco_warp._src.types import Data
+from mujoco.mjx.third_party.mujoco_warp._src.types import DeterminismType
 from mujoco.mjx.third_party.mujoco_warp._src.types import DisableBit
 from mujoco.mjx.third_party.mujoco_warp._src.types import EnableBit
 from mujoco.mjx.third_party.mujoco_warp._src.types import GeomType
@@ -38,6 +39,7 @@ from mujoco.mjx.third_party.mujoco_warp._src.types import Model
 from mujoco.mjx.third_party.mujoco_warp._src.types import SleepState
 from mujoco.mjx.third_party.mujoco_warp._src.types import mat23
 from mujoco.mjx.third_party.mujoco_warp._src.types import mat63
+from mujoco.mjx.third_party.mujoco_warp._src.types import vec6
 from mujoco.mjx.third_party.mujoco_warp._src.warp_util import cache_kernel
 from mujoco.mjx.third_party.mujoco_warp._src.warp_util import event_scope
 
@@ -384,7 +386,7 @@ def _add_geom_pair(
   collision_pairid_out: wp.array[wp.vec2i],
   collision_worldid_out: wp.array[int],
 ):
-  cid = wp.atomic_add(ncollision_out, 0, 1)
+  cid = wp.atomic_add(ncollision_out, 0, 1)  # kernel_analyzer: ignore[atomic]
 
   if cid >= naconmax_in:
     return
@@ -397,6 +399,26 @@ def _add_geom_pair(
   collision_pair_out[cid] = pair
   collision_pairid_out[cid] = pairid
   collision_worldid_out[cid] = worldid
+
+
+@wp.func
+def _geom_surface_velocity(
+  # In:
+  geom_xpos_val: wp.vec3,
+  geom_xmat_val: wp.mat33,
+  surfacevel_val: vec6,
+  point_val: wp.vec3,
+) -> tuple[wp.vec3, wp.vec3]:
+  lin_local = wp.vec3(surfacevel_val[0], surfacevel_val[1], surfacevel_val[2])
+  ang_local = wp.vec3(surfacevel_val[3], surfacevel_val[4], surfacevel_val[5])
+
+  linear = geom_xmat_val * lin_local
+  angular = geom_xmat_val * ang_local
+
+  arm = point_val - geom_xpos_val
+  linear = linear + wp.cross(angular, arm)
+
+  return linear, angular
 
 
 @cache_kernel
@@ -415,8 +437,8 @@ def _sap_pair_margin(npair_margin: int, npair_gap: int):
     pair_margin_id = batchid % npair_margin if wp.static(npair_margin > 1) else 0
     pair_gap_id = batchid % npair_gap if wp.static(npair_gap > 1) else 0
     margin = pair_margin[pair_margin_id, pairid] + pair_gap[pair_gap_id, pairid]  # kernel_analyzer: ignore
-    wp.atomic_max(geom_pair_margin_out, batchid, pair_geom1[pairid], margin)
-    wp.atomic_max(geom_pair_margin_out, batchid, pair_geom2[pairid], margin)
+    wp.atomic_max(geom_pair_margin_out, batchid, pair_geom1[pairid], margin)  # kernel_analyzer: ignore[atomic]
+    wp.atomic_max(geom_pair_margin_out, batchid, pair_geom2[pairid], margin)  # kernel_analyzer: ignore[atomic]
 
   return sap_pair_margin
 
@@ -952,6 +974,77 @@ def _any_awake_changed(
     changed_out[0] = 1
 
 
+@wp.kernel
+def _contact_surfacevel(
+  # Model:
+  geom_surfacevel: wp.array2d[vec6],
+  # Data in:
+  geom_xpos_in: wp.array2d[wp.vec3],
+  geom_xmat_in: wp.array2d[wp.mat33],
+  contact_pos_in: wp.array[wp.vec3],
+  contact_frame_in: wp.array[wp.mat33],
+  contact_geom_in: wp.array[wp.vec2i],
+  contact_worldid_in: wp.array[int],
+  naconmax_in: int,
+  nacon_in: wp.array[int],
+  # Data out:
+  contact_surfacevel_out: wp.array[wp.vec3],
+):
+  conid = wp.tid()
+  if conid >= wp.min(nacon_in[0], naconmax_in):
+    return
+
+  geom = contact_geom_in[conid]
+  g0 = geom[0]
+  g1 = geom[1]
+  if g0 < 0 and g1 < 0:
+    contact_surfacevel_out[conid] = wp.vec3(0.0)
+    return
+
+  worldid = contact_worldid_in[conid]
+  sv_id = worldid % geom_surfacevel.shape[0]
+  sv0 = geom_surfacevel[sv_id, g0] if g0 >= 0 else vec6(0.0)
+  sv1 = geom_surfacevel[sv_id, g1] if g1 >= 0 else vec6(0.0)
+
+  has_sv0 = sv0[0] != 0.0 or sv0[1] != 0.0 or sv0[2] != 0.0 or sv0[3] != 0.0 or sv0[4] != 0.0 or sv0[5] != 0.0
+  has_sv1 = sv1[0] != 0.0 or sv1[1] != 0.0 or sv1[2] != 0.0 or sv1[3] != 0.0 or sv1[4] != 0.0 or sv1[5] != 0.0
+
+  if not (has_sv0 or has_sv1):
+    contact_surfacevel_out[conid] = wp.vec3(0.0)
+    return
+
+  pos = contact_pos_in[conid]
+  svel = wp.vec3(0.0)
+  sang = wp.vec3(0.0)
+
+  if has_sv0:
+    vw0, ww0 = _geom_surface_velocity(
+      geom_xpos_in[worldid, g0],
+      geom_xmat_in[worldid, g0],
+      sv0,
+      pos,
+    )
+    svel -= vw0
+    sang -= ww0
+
+  if has_sv1:
+    vw1, ww1 = _geom_surface_velocity(
+      geom_xpos_in[worldid, g1],
+      geom_xmat_in[worldid, g1],
+      sv1,
+      pos,
+    )
+    svel += vw1
+    sang += ww1
+
+  frame = contact_frame_in[conid]
+  contact_surfacevel_out[conid] = wp.vec3(
+    wp.dot(frame[1], svel),
+    wp.dot(frame[2], svel),
+    wp.dot(frame[0], sang),
+  )
+
+
 @event_scope
 def nxn_broadphase(
   m: Model,
@@ -1058,6 +1151,12 @@ def _narrowphase(m: Model, d: Data, ctx: CollisionContext):
     sdf_narrowphase(m, d, ctx)
 
 
+def _sort_contacts(m: Model, d: Data):
+  """Deterministic contact sort."""
+  # TODO(team): Implementation contact sorting.
+  pass
+
+
 @event_scope
 def collision(
   m: Model,
@@ -1115,5 +1214,26 @@ def collision(
   if m.nflex > 0 and not incremental:
     flex_collision(m, d, ctx)
 
+  if m.flg_surfacevel:
+    wp.launch(
+      _contact_surfacevel,
+      dim=d.naconmax,
+      inputs=[
+        m.geom_surfacevel,
+        d.geom_xpos,
+        d.geom_xmat,
+        d.contact.pos,
+        d.contact.frame,
+        d.contact.geom,
+        d.contact.worldid,
+        d.naconmax,
+        d.nacon,
+      ],
+      outputs=[d.contact.surfacevel],
+    )
+
   if m.callback.contactfilter:
     m.callback.contactfilter(m, d)
+
+  if m.opt.deterministic & DeterminismType.CONTACTS:
+    _sort_contacts(m, d)

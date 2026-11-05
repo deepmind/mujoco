@@ -297,6 +297,16 @@ Equality constraint types. These values are used in ``m->eq_type``.
 .. mujoco-include:: mjtEq
 
 
+.. _mjtTendon:
+
+mjtTendon
+~~~~~~~~~
+
+Tendon types. These values are used in ``m->tendon_type``.
+
+.. mujoco-include:: mjtTendon
+
+
 .. _mjtWrap:
 
 mjtWrap
@@ -2211,6 +2221,47 @@ This data structure defines an encoder. It contains a set of callbacks used for 
 
 
 
+.. _tyBatchStructure:
+
+Batched simulation
+^^^^^^^^^^^^^^^^^^
+
+These types are used by the :ref:`batch API<Batchedsimulation>`, declared in `mjbatch.h
+<https://github.com/google-deepmind/mujoco/blob/main/include/mujoco/mjbatch.h>`__.
+
+
+.. _mjBatch:
+
+mjBatch
+~~~~~~~
+
+An opaque handle to ``nsim`` simulations of one model and the thread pool that runs them, created by
+:ref:`mjb_makeBatch` and freed by :ref:`mjb_deleteBatch`. See :ref:`Batched simulation<siBatch>`.
+
+
+.. _mjBatchConfig:
+
+mjBatchConfig
+~~~~~~~~~~~~~
+
+The parameters of :ref:`mjb_makeBatch`, set to their defaults by :ref:`mjb_defaultConfig`.
+
+.. mujoco-include:: mjBatchConfig
+
+
+.. _mjBatchRecord:
+
+mjBatchRecord
+~~~~~~~~~~~~~
+
+A field or state recorded by :ref:`mjb_rollout` after every substep. ``buf`` holds ``n x nstep x size`` values for the
+``n`` simulations of the call, in call order, where ``size`` is the field's number of elements per simulation, or
+``mj_stateSize(m, spec)`` for a state given by the :ref:`mjtState` bits ``spec``, in which case the values are
+:ref:`mjtNum`.
+
+.. mujoco-include:: mjBatchRecord
+
+
 
 .. _tyFunction:
 
@@ -2454,6 +2505,27 @@ mjfEncode
 This callback populates the :ref:`mjResource<mjResource>` `data` member with bytes representing the
 given spec in the format associated with the owning plugin. This may be called with the associated
 compiled :ref:`mjModel`.
+
+
+.. _tyBatchCallbacks:
+
+Batch callbacks
+^^^^^^^^^^^^^^^
+
+This function type is used by the :ref:`batch API<Batchedsimulation>`.
+
+
+.. _mjfBatchFunc:
+
+mjfBatchFunc
+~~~~~~~~~~~~
+
+.. code-block:: C
+
+   typedef void (*mjfBatchFunc)(const mjModel* m, mjData* d, int sim, void* arg);
+
+This is the function type run by :ref:`mjb_apply` on simulation ``sim``, on a batch thread. The model has the
+simulation's per-simulation fields applied, and ``d`` holds its state.
 
 
 .. _tyNotes:

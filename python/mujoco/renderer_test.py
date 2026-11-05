@@ -167,6 +167,65 @@ class MuJoCoRendererTest(parameterized.TestCase):
       with self.assertRaises(ValueError):
         renderer.render(out=np.zeros((*failing_render_size, 3), np.uint8))
 
+  def test_renderer_output_with_cast_and_non_contiguous_out(self):
+    xml = """
+<mujoco>
+  <worldbody>
+    <camera name="closeup" pos="0 -6 0" xyaxes="1 0 0 0 1 100"/>
+    <geom name="white_box" type="box" size="1 1 1" rgba="1 1 1 1"/>
+  </worldbody>
+</mujoco>
+"""
+    render_size = (50, 50)
+    model = mujoco.MjModel.from_xml_string(xml)
+    data = mujoco.MjData(model)
+    mujoco.mj_forward(model, data)
+    with mujoco.Renderer(model, *render_size) as renderer:
+      renderer.update_scene(data, 'closeup')
+      expected_rgb = renderer.render()
+
+      rgb_int32 = np.zeros((*render_size, 3), dtype=np.int32)
+      pixels = renderer.render(out=rgb_int32)
+      self.assertIs(pixels, rgb_int32)
+      np.testing.assert_array_equal(rgb_int32, expected_rgb.astype(np.int32))
+
+      rgb_fortran = np.asfortranarray(
+          np.zeros((*render_size, 3), dtype=np.uint8)
+      )
+      pixels = renderer.render(out=rgb_fortran)
+      self.assertIs(pixels, rgb_fortran)
+      np.testing.assert_array_equal(rgb_fortran, expected_rgb)
+
+      renderer.enable_depth_rendering()
+      expected_depth = renderer.render()
+      depth_float64 = np.zeros(render_size, dtype=np.float64)
+      depth_pixels = renderer.render(out=depth_float64)
+      self.assertIs(depth_pixels, depth_float64)
+      np.testing.assert_array_equal(
+          depth_float64, expected_depth.astype(np.float64)
+      )
+
+      renderer.enable_segmentation_rendering()
+      expected_seg = renderer.render()
+      seg_int64 = np.zeros((*render_size, 2), dtype=np.int64)
+      seg_pixels = renderer.render(out=seg_int64)
+      self.assertIs(seg_pixels, seg_int64)
+      np.testing.assert_array_equal(seg_int64, expected_seg.astype(np.int64))
+
+  def test_renderer_restores_scene_flags_on_exception(self):
+    model = mujoco.MjModel.from_xml_string('<mujoco><worldbody/></mujoco>')
+    with mujoco.Renderer(model, 50, 50) as renderer:
+      renderer.enable_depth_rendering()
+      original_flags = renderer.scene.flags.copy()
+      with self.assertRaises(ValueError):
+        renderer.render(out=np.zeros((10, 10), dtype=np.float32))
+      np.testing.assert_array_equal(renderer.scene.flags, original_flags)
+
+      renderer.close()
+      with self.assertRaises(RuntimeError):
+        renderer.render()
+      np.testing.assert_array_equal(renderer.scene.flags, original_flags)
+
   def test_renderer_depth_rendering_camera_projection(self):
     """Tests orthographic vs perspective camera depth rendering projections.
 
@@ -223,6 +282,95 @@ class MuJoCoRendererTest(parameterized.TestCase):
         ortho_depth[corner], persp_depth[corner], delta=1e-2
     )
 
+  @parameterized.parameters('persp', 'ortho')
+  def test_mjr_read_pixels_depth_map(self, camera_name):
+    """Tests mjr_readPixels raw depth mapping and far-plane clipping."""
+    znear = 0.1
+    zfar = 10.0
+    xml = f"""
+<mujoco>
+  <statistic extent="1"/>
+  <visual>
+    <map znear="{znear}" zfar="{zfar}"/>
+    <quality offsamples="0"/>
+  </visual>
+  <worldbody>
+    <camera name="persp" pos="0 0 3" xyaxes="1 0 0 0 1 0"
+      projection="perspective" fovy="45"/>
+    <camera name="ortho" pos="0 0 3" xyaxes="1 0 0 0 1 0"
+      projection="orthographic" fovy="2"/>
+    <geom name="near_box" type="box" pos="0 0 1" size="0.3 0.3 0.5"/>
+    <geom name="beyond_far" type="box" pos="0 0 -9" size="10 10 0.5"/>
+  </worldbody>
+</mujoco>
+"""
+    model = mujoco.MjModel.from_xml_string(xml)
+    data = mujoco.MjData(model)
+    mujoco.mj_forward(model, data)
+
+    size = 51
+    gl = mujoco.GLContext(size, size) if mujoco.GLContext is not None else None
+    try:
+      if gl is not None:
+        gl.make_current()
+      ctx = mujoco.MjrContext(model, mujoco.mjtFontScale.mjFONTSCALE_150.value)
+      try:
+        self.assertEqual(ctx.readDepthMap, mujoco.mjtDepthMap.mjDEPTH_ZERONEAR)
+        mujoco.mjr_setBuffer(mujoco.mjtFramebuffer.mjFB_OFFSCREEN.value, ctx)
+
+        scene = mujoco.MjvScene(model=model, maxgeom=10)
+        cam = mujoco.MjvCamera()
+        cam.type = mujoco.mjtCamera.mjCAMERA_FIXED
+        cam.fixedcamid = mujoco.mj_name2id(
+            model, mujoco.mjtObj.mjOBJ_CAMERA.value, camera_name
+        )
+        mujoco.mjv_updateScene(
+            model,
+            data,
+            mujoco.MjvOption(),
+            None,
+            cam,
+            mujoco.mjtCatBit.mjCAT_ALL.value,
+            scene,
+        )
+
+        rect = mujoco.MjrRect(0, 0, size, size)
+        mujoco.mjr_render(rect, scene, ctx)
+
+        depth_zeronear = np.empty((size, size), dtype=np.float32)
+        mujoco.mjr_readPixels(None, depth_zeronear, rect, ctx)
+
+        ctx.readDepthMap = mujoco.mjtDepthMap.mjDEPTH_ZEROFAR
+        depth_zerofar = np.empty((size, size), dtype=np.float32)
+        mujoco.mjr_readPixels(None, depth_zerofar, rect, ctx)
+      finally:
+        ctx.free()
+    finally:
+      if gl is not None:
+        gl.free()
+
+    np.testing.assert_allclose(depth_zeronear + depth_zerofar, 1.0, atol=1e-6)
+
+    # Top face of near_box is at world z = 1.5, so planar camera depth is 1.5.
+    z_box = 1.5
+    if camera_name == 'persp':
+      expected_zerofar = znear * (zfar - z_box) / (z_box * (zfar - znear))
+    else:
+      expected_zerofar = (zfar - z_box) / (zfar - znear)
+    expected_zeronear = 1.0 - expected_zerofar
+
+    center = (size // 2, size // 2)
+    self.assertAlmostEqual(depth_zerofar[center], expected_zerofar, delta=1e-4)
+    self.assertAlmostEqual(
+        depth_zeronear[center], expected_zeronear, delta=1e-4
+    )
+
+    # Geometry beyond zfar (z_cam = 11.5 > 10.0) must be clipped at the far
+    # plane, leaving background corners at far depth.
+    for corner in ((0, 0), (0, -1), (-1, 0), (-1, -1)):
+      self.assertAlmostEqual(depth_zerofar[corner], 0.0, delta=1e-6)
+      self.assertAlmostEqual(depth_zeronear[corner], 1.0, delta=1e-6)
+
   def test_renderer_del_safe_when_init_fails_early(self):
     """Regression test for #3213.
 
@@ -263,6 +411,96 @@ class MuJoCoRendererTest(parameterized.TestCase):
             'see #3213.'
         ),
     )
+
+  def test_renderer_close_preserves_active_context(self):
+    """Closing or GC-collecting a Renderer must not clobber another context."""
+    xml = """
+<mujoco>
+  <worldbody>
+    <camera name="closeup" pos="0 -6 0" xyaxes="1 0 0 0 1 100"/>
+    <geom name="green_box" type="box" size="1 1 1" rgba="0 1 0 1"/>
+  </worldbody>
+</mujoco>
+"""
+    model = mujoco.MjModel.from_xml_string(xml)
+    data = mujoco.MjData(model)
+    mujoco.mj_forward(model, data)
+
+    renderer1 = mujoco.Renderer(model, 50, 50)
+    renderer1.update_scene(data, 'closeup')
+    renderer1.render()
+
+    with mujoco.Renderer(model, 50, 50) as renderer2:
+      renderer2.update_scene(data, 'closeup')
+      expected = renderer2.render().copy()
+      self.assertGreater(np.count_nonzero(expected), 0)
+
+      # Closing renderer1 while renderer2's GL context is current must not
+      # delete renderer2's offscreen FBO.
+      renderer1.close()
+      out = np.zeros_like(expected)
+      renderer2.render(out=out)
+      np.testing.assert_array_equal(out, expected)
+
+      # Finalizing an unclosed Renderer via cyclic GC while renderer2 is
+      # current must likewise preserve renderer2's FBO and active context.
+      cycle = []
+      cycle.append((cycle, mujoco.Renderer(model, 50, 50)))
+      renderer2.render()
+      del cycle
+      gc.collect()
+      out.fill(0)
+      renderer2.render(out=out)
+      np.testing.assert_array_equal(out, expected)
+
+      # PEP 442 does not guarantee finalizer order within an unreachable cycle
+      # (e.g. free-threaded Python can run `_gl_context.__del__` before
+      # `Renderer.__del__`). Verify that order explicitly on all builds.
+      unclosed = mujoco.Renderer(model, 50, 50)
+      renderer2.render()
+      if unclosed._gl_context is not None:  # pylint: disable=protected-access
+        unclosed._gl_context.__del__()
+      unclosed.__del__()
+      del unclosed
+      out.fill(0)
+      renderer2.render(out=out)
+      np.testing.assert_array_equal(out, expected)
+
+    # Also verify that a standalone GLContext stays bound across Renderer.close
+    # without needing another make_current() call.
+    gl = mujoco.GLContext(50, 50)
+    try:
+      gl.make_current()
+      ctx = mujoco.MjrContext(model, mujoco.mjtFontScale.mjFONTSCALE_150.value)
+      try:
+        mujoco.mjr_setBuffer(mujoco.mjtFramebuffer.mjFB_OFFSCREEN.value, ctx)
+        scene = mujoco.MjvScene(model=model, maxgeom=100)
+        cam = mujoco.MjvCamera()
+        cam.type = mujoco.mjtCamera.mjCAMERA_FIXED
+        cam.fixedcamid = 0
+        mujoco.mjv_updateScene(
+            model,
+            data,
+            mujoco.MjvOption(),
+            None,
+            cam,
+            mujoco.mjtCatBit.mjCAT_ALL.value,
+            scene,
+        )
+
+        other = mujoco.Renderer(model, 50, 50)
+        gl.make_current()
+        other.close()
+
+        rect = mujoco.MjrRect(0, 0, 50, 50)
+        rgb = np.zeros((50, 50, 3), dtype=np.uint8)
+        mujoco.mjr_render(rect, scene, ctx)
+        mujoco.mjr_readPixels(rgb, None, rect, ctx)
+        self.assertGreater(np.count_nonzero(rgb), 0)
+      finally:
+        ctx.free()
+    finally:
+      gl.free()
 
 
 if __name__ == '__main__':

@@ -23,8 +23,8 @@ build_wasm/
 build_simulate/
 python/dist/
 python/mujoco/include/
-python/mujoco/experimental/studio/assets/
-python/mujoco/experimental/studio/web/dist/
+python/mujoco/studio/assets/
+python/mujoco/studio/web/dist/
 doc/_build
 
 # Exclude macOS folder attributes

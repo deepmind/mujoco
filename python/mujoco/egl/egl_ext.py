@@ -27,6 +27,15 @@ except OSError:
 from OpenGL import EGL
 from OpenGL import error
 
+# Expose everything from upstream so that this can be used as a drop-in
+# replacement for OpenGL.EGL. Extension wrappers below use eglGetProcAddress
+# because PyOpenGL may not expose these entry points directly.
+# pylint: disable=wildcard-import,g-bad-import-order
+from OpenGL.EGL import *
+
+# From the EGL_NV_device_cuda extension.
+EGL_CUDA_DEVICE_NV = 0x323A
+
 # From the EGL_EXT_device_enumeration extension.
 PFNEGLQUERYDEVICESEXTPROC = ctypes.CFUNCTYPE(
     EGL.EGLBoolean,
@@ -52,6 +61,20 @@ except TypeError as e:
   raise ImportError('eglGetPlatformDisplayEXT is not available.') from e
 
 
+# From the EGL_EXT_device_query extension.
+PFNEGLQUERYDEVICEATTRIBEXTPROC = ctypes.CFUNCTYPE(
+    EGL.EGLBoolean,
+    EGL.EGLDeviceEXT,
+    EGL.EGLint,
+    ctypes.POINTER(ctypes.c_ssize_t),
+)
+try:
+  _eglQueryDeviceAttribEXT = PFNEGLQUERYDEVICEATTRIBEXTPROC(  # pylint: disable=invalid-name
+      EGL.eglGetProcAddress('eglQueryDeviceAttribEXT'))
+except TypeError:
+  _eglQueryDeviceAttribEXT = None  # pylint: disable=invalid-name
+
+
 # Wrap raw _eglQueryDevicesEXT function into something more Pythonic.
 def eglQueryDevicesEXT(max_devices=10):  # pylint: disable=invalid-name
   devices = (EGL.EGLDeviceEXT * max_devices)()
@@ -65,7 +88,15 @@ def eglQueryDevicesEXT(max_devices=10):  # pylint: disable=invalid-name
                         result=success)
 
 
-# Expose everything from upstream so that
-# we can use this as a drop-in replacement for OpenGL.EGL.
-# pylint: disable=wildcard-import,g-bad-import-order
-from OpenGL.EGL import *
+def eglQueryDeviceAttribEXT(device, attribute):  # pylint: disable=invalid-name
+  if _eglQueryDeviceAttribEXT is None:
+    raise ImportError('eglQueryDeviceAttribEXT is not available.')
+
+  value = ctypes.c_ssize_t()
+  success = _eglQueryDeviceAttribEXT(device, attribute, ctypes.byref(value))
+  if success == EGL.EGL_TRUE:
+    return value.value
+  else:
+    raise error.GLError(err=EGL.eglGetError(),
+                        baseOperation=eglQueryDeviceAttribEXT,
+                        result=success)

@@ -112,7 +112,7 @@ converted, and a difference in a setting which changes what compilation infers, 
 :ref:`inertiafromgeom<compiler-inertiafromgeom>`, is an error which says so; saved as compiled values, such a model may
 compile differently. What the parser does not keep in a spec is not saved: comments other than the one at the top of
 the file, the :ref:`include<include>` elements, and the elements which it expands into others, such as
-:ref:`replicate<replicate>`, :ref:`composite<body-composite>`, :ref:`attach<body-attach>` and the actuator shortcuts.
+:ref:`replicate<replicate>`, :ref:`flexcomp<body-flexcomp>`, :ref:`attach<body-attach>` and the actuator shortcuts.
 
 A spec which is saved as written needs a compilation in two cases. The inertials which compilation calculates,
 which :ref:`saveinertial<compiler-saveinertial>` saves, are those of the last compilation, which must follow any

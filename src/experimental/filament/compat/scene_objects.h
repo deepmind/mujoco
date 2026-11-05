@@ -15,6 +15,7 @@
 #ifndef MUJOCO_SRC_EXPERIMENTAL_FILAMENT_COMPAT_SCENE_OBJECTS_H_
 #define MUJOCO_SRC_EXPERIMENTAL_FILAMENT_COMPAT_SCENE_OBJECTS_H_
 
+#include <cstdint>
 #include <unordered_map>
 
 #include <mujoco/mjmodel.h>
@@ -35,7 +36,7 @@ class SceneObjects {
 
   // Returns the mesh for the given geom id, as created by CreateSkinFlexMesh.
   const mjrfMesh* GetSkinMesh(int geom_id) const;
-  const mjrfMesh* GetFlexMesh(int geom_id) const;
+  const mjrfMesh* GetFlexMesh(int geom_id, int data_id = -1) const;
 
   SceneObjects(const SceneObjects&) = delete;
   SceneObjects& operator=(const SceneObjects&) = delete;
@@ -43,7 +44,7 @@ class SceneObjects {
  private:
   mjrfContext* ctx_ = nullptr;
   std::unordered_map<int, UniquePtr<mjrfMesh>> skins_;
-  std::unordered_map<int, UniquePtr<mjrfMesh>> flexes_;
+  std::unordered_map<uint64_t, UniquePtr<mjrfMesh>> flexes_;
 };
 
 }  // namespace mujoco

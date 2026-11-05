@@ -58,8 +58,8 @@ using std::vector;
 
 using ::mujoco::ModelDecorations;
 using ::mujoco::ModelLights;
-using ::mujoco::ModelResources;
 using ::mujoco::ModelRenderables;
+using ::mujoco::ModelResources;
 
 
 //-------------------------------- help & options --------------------------------------------------
@@ -532,7 +532,7 @@ static vector<unsigned char> RenderFilament(const mjModel*   m,
   request.camera              = mjv_camera2GLCamera(m, d, &cam);
   request.viewport            = viewport;
   request.target              = render_target.get();
-  request.headlight    = m->vis.headlight.active;
+  request.headlight           = m->vis.headlight.active;
   request.headlight_color[0]  = m->vis.headlight.diffuse[0];
   request.headlight_color[1]  = m->vis.headlight.diffuse[1];
   request.headlight_color[2]  = m->vis.headlight.diffuse[2];
@@ -553,8 +553,11 @@ static vector<unsigned char> RenderFilament(const mjModel*   m,
     request.draw_mode = mjDRAW_MODE_ISLANDS;
   }
   if (rnd_flags[mjRND_SHADOW] >= 0) { request.shadows = rnd_flags[mjRND_SHADOW]; }
-  if (rnd_flags[mjRND_REFLECTION] >= 0) {
-    request.reflections = rnd_flags[mjRND_REFLECTION];
+  if (rnd_flags[mjRND_REFLECTION] >= 0) { request.reflections = rnd_flags[mjRND_REFLECTION]; }
+  if (rnd_flags[mjRND_SKYBOX] >= 0) { request.skybox = rnd_flags[mjRND_SKYBOX]; }
+  if (rnd_flags[mjRND_HAZE] >= 0) { request.haze = rnd_flags[mjRND_HAZE]; }
+  if (rnd_flags[mjRND_POST_PROCESSING] >= 0) {
+    request.post_processing = rnd_flags[mjRND_POST_PROCESSING];
   }
 
   // prepare output buffer

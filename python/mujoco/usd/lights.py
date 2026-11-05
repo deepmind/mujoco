@@ -20,6 +20,7 @@ import numpy as np
 
 # TODO: b/288149332 - Remove once USD Python Binding works well with pytype.
 from pxr import Gf
+from pxr import Tf
 from pxr import Usd
 from pxr import UsdGeom
 from pxr import UsdLux
@@ -33,8 +34,10 @@ class USDSphereLight:
   ):
     self.stage = stage
 
-    xform_path = f"/World/Light_Xform_{obj_name}"
-    light_path = f"{xform_path}/Light_{obj_name}"
+    xform_name = Tf.MakeValidIdentifier(f"Light_Xform_{obj_name}")
+    light_name = Tf.MakeValidIdentifier(f"Light_{obj_name}")
+    xform_path = f"/World/{xform_name}"
+    light_path = f"{xform_path}/{light_name}"
     self.usd_xform = UsdGeom.Xform.Define(stage, xform_path)
     self.usd_light = UsdLux.SphereLight.Define(stage, light_path)
     self.usd_prim = stage.GetPrimAtPath(light_path)
@@ -66,8 +69,10 @@ class USDDomeLight:
   def __init__(self, stage: Usd.Stage, obj_name: str):
     self.stage = stage
 
-    xform_path = f"/World/Light_Xform_{obj_name}"
-    light_path = f"{xform_path}/Light_{obj_name}"
+    xform_name = Tf.MakeValidIdentifier(f"Light_Xform_{obj_name}")
+    light_name = Tf.MakeValidIdentifier(f"Light_{obj_name}")
+    xform_path = f"/World/{xform_name}"
+    light_path = f"{xform_path}/{light_name}"
     self.usd_xform = UsdGeom.Xform.Define(stage, xform_path)
     self.usd_light = UsdLux.DomeLight.Define(stage, light_path)
     self.usd_prim = stage.GetPrimAtPath(light_path)

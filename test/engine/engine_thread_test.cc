@@ -143,5 +143,41 @@ TEST_F(ThreadTest, IslandSingleAndMultiThreadedMatch) {
   mj_deleteModel(model_threaded);
 }
 
+TEST_F(ThreadTest, ResetAndCopyPreserveThreadPoolAndClearStack) {
+  static constexpr char kXml[] = R"(
+  <mujoco>
+    <worldbody>
+      <body pos="0 0 1">
+        <freejoint/>
+        <geom type="sphere" size="0.1"/>
+      </body>
+    </worldbody>
+  </mujoco>
+  )";
+
+  char error[1024] = "";
+  MjModelPtr m = LoadModelFromString(kXml, error, sizeof(error));
+  ASSERT_THAT(m.get(), NotNull()) << error;
+  mjData* d = mj_makeData(m.get());
+  mjData* src = mj_makeData(m.get());
+
+  mju_threadpool(d, 4);
+  ASSERT_NE(d->threadpool, 0u);
+  EXPECT_EQ(mju_numThread(d), 5);
+
+  d->pstack = 128;
+  mj_resetData(m.get(), d);
+  EXPECT_EQ(d->pstack, 0u);
+  EXPECT_EQ(mju_numThread(d), 5);
+
+  mj_step(m.get(), src);
+  mj_copyData(d, m.get(), src);
+  EXPECT_NE(d->threadpool, 0u);
+  EXPECT_EQ(mju_numThread(d), 5);
+
+  mj_deleteData(src);
+  mj_deleteData(d);
+}
+
 }  // namespace
 }  // namespace mujoco

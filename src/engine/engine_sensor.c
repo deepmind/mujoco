@@ -21,6 +21,7 @@
 #include <mujoco/mjmodel.h>
 #include <mujoco/mjplugin.h>
 #include <mujoco/mjsan.h>  // IWYU pragma: keep
+#include <mujoco/mjtype.h>
 #include "engine/engine_callback.h"
 #include "engine/engine_collision_convex.h"
 #include "engine/engine_collision_sdf.h"
@@ -28,6 +29,7 @@
 #include "engine/engine_core_smooth.h"
 #include "engine/engine_core_util.h"
 #include "engine/engine_crossplatform.h"
+#include "engine/engine_inline.h"
 #include "engine/engine_memory.h"
 #include "engine/engine_plugin.h"
 #include "engine/engine_ray.h"
@@ -253,27 +255,24 @@ static void get_xpos_xmat(const mjData* d, mjtObj type, int id, int sensor_id,
 }
 
 
-// get global quaternion of an object in mjData
-static void get_xquat(const mjModel* m, const mjData* d, mjtObj type, int id, int sensor_id,
-                      mjtNum *quat) {
+// get global quaternion of an object in mjData (computes into cam_quat for cameras)
+static const mjtNum* get_xquat(const mjModel* m, const mjData* d, mjtObj type, int id,
+                               int sensor_id, mjtNum cam_quat[4]) {
   switch (type) {
   case mjOBJ_XBODY:
-    mju_copy4(quat, d->xquat+4*id);
-    break;
+    return d->xquat + 4*id;
   case mjOBJ_BODY:
-    mju_mulQuat(quat, d->xquat+4*id, m->body_iquat+4*id);
-    break;
+    return d->xiquat + 4*id;
   case mjOBJ_GEOM:
-    mju_mulQuat(quat, d->xquat+4*m->geom_bodyid[id], m->geom_quat+4*id);
-    break;
+    return d->geom_xquat + 4*id;
   case mjOBJ_SITE:
-    mju_mulQuat(quat, d->xquat+4*m->site_bodyid[id], m->site_quat+4*id);
-    break;
+    return d->site_xquat + 4*id;
   case mjOBJ_CAMERA:
-    mju_mulQuat(quat, d->xquat+4*m->cam_bodyid[id], m->cam_quat+4*id);
-    break;
+    mji_mulQuat(cam_quat, d->xquat+4*m->cam_bodyid[id], m->cam_quat+4*id);
+    return cam_quat;
   default:
     mjERROR("invalid object type in sensor %d", sensor_id);
+    return NULL;
   }
 }
 
@@ -906,20 +905,20 @@ static void mj_computeSensorPos(const mjModel* m, mjData* d, int i, mjtNum* sens
   case mjSENS_FRAMEQUAT:                              // orientation quaternion
   {
     // get global object quaternion
-    mjtNum objquat[4];
-    get_xquat(m, d, objtype, objid, i, objquat);
+    mjtNum cam_obj[4];
+    const mjtNum* objquat = get_xquat(m, d, objtype, objid, i, cam_obj);
 
     // reference frame unspecified: copy object quaternion
     if (refid == -1) {
-      mju_copy4(sensordata, objquat);
+      mji_copy4(sensordata, objquat);
     } else {
       // reference frame specified, get global reference quaternion
-      mjtNum refquat[4];
-      get_xquat(m, d, reftype, refid, i, refquat);
+      mjtNum cam_ref[4], negref[4];
+      const mjtNum* refquat = get_xquat(m, d, reftype, refid, i, cam_ref);
 
       // relative quaternion
-      mju_negQuat(refquat, refquat);
-      mju_mulQuat(sensordata, refquat, objquat);
+      mji_negQuat(negref, refquat);
+      mji_mulQuat(sensordata, negref, objquat);
     }
   }
   break;
@@ -1596,8 +1595,9 @@ void mj_sensorPos(const mjModel* m, mjData* d) {
   for (int i=0; i < nsensor; i++) {
     mjtSensor type = (mjtSensor) m->sensor_type[i];
 
-    // skip sleeping sensor
-    if (sleep_filter && mj_sleepState(m, d, mjOBJ_SENSOR, i) == mjS_ASLEEP) {
+    // skip sleeping sensor without history
+    if (sleep_filter && m->sensor_history[2*i] == 0 &&
+        mj_sleepState(m, d, mjOBJ_SENSOR, i) == mjS_ASLEEP) {
       continue;
     }
 
@@ -1649,8 +1649,9 @@ void mj_sensorVel(const mjModel* m, mjData* d) {
       continue;
     }
 
-    // skip sleeping sensor
-    if (sleep_filter && mj_sleepState(m, d, mjOBJ_SENSOR, i) == mjS_ASLEEP) {
+    // skip sleeping sensor without history
+    if (sleep_filter && m->sensor_history[2*i] == 0 &&
+        mj_sleepState(m, d, mjOBJ_SENSOR, i) == mjS_ASLEEP) {
       continue;
     }
 
@@ -1698,8 +1699,9 @@ void mj_sensorAcc(const mjModel* m, mjData* d) {
 
   // process sensors matching stage
   for (int i=0; i < m->nsensor; i++) {
-    // skip sleeping sensor
-    if (sleep_filter && mj_sleepState(m, d, mjOBJ_SENSOR, i) == mjS_ASLEEP) {
+    // skip sleeping sensor without history
+    if (sleep_filter && m->sensor_history[2*i] == 0 &&
+        mj_sleepState(m, d, mjOBJ_SENSOR, i) == mjS_ASLEEP) {
       continue;
     }
 
@@ -1753,14 +1755,10 @@ void mj_energyPos(const mjModel* m, mjData* d) {
     }
   }
 
-  int sleep_filter = mjENABLED(mjENBL_SLEEP) && d->nbody_awake < m->nbody;
-
   // add joint-level springs
   if (!mjDISABLED(mjDSBL_SPRING)) {
     int nbody = m->nbody;
     for (int b=1; b < nbody; b++) {
-      if (sleep_filter && d->body_awake[b] != mjS_AWAKE) continue;
-
       int jnt_start = m->body_jntadr[b];
       int jnt_end = jnt_start + m->body_jntnum[b];
       for (int j=jnt_start; j < jnt_end; j++) {
@@ -1770,21 +1768,25 @@ void mj_energyPos(const mjModel* m, mjData* d) {
           continue;
         }
         padr = m->jnt_qposadr[j];
+        const mjtNum* qspring = m->jnt_plasticadr[j] >= 0 ?
+                                d->plastic + m->jnt_plasticadr[j] :
+                                m->qpos_spring + padr;
 
         switch ((mjtJoint) m->jnt_type[j]) {
         case mjJNT_FREE:
-          mju_sub3(dif, d->qpos+padr, m->qpos_spring+padr);
+          mju_sub3(dif, d->qpos+padr, qspring);
           x = mju_norm3(dif);
           d->energy[0] += mju_polyPotential(stiffness, poly, x, mjNPOLY, 0);
           // continue with rotations
           padr += 3;
+          qspring += 3;
           mjFALLTHROUGH;
 
         case mjJNT_BALL:
           // convert quaternion difference into angular "velocity"
           mju_copy4(quat, d->qpos+padr);
           mju_normalize4(quat);
-          mju_subQuat(dif, d->qpos + padr, m->qpos_spring + padr);
+          mju_subQuat(dif, d->qpos + padr, qspring);
           x = mju_norm3(dif);
           d->energy[0] += mju_polyPotential(stiffness, poly, x, mjNPOLY, 0);
 
@@ -1792,7 +1794,7 @@ void mj_energyPos(const mjModel* m, mjData* d) {
 
         case mjJNT_SLIDE:
         case mjJNT_HINGE:
-          x = d->qpos[padr] - m->qpos_spring[padr];
+          x = d->qpos[padr] - qspring[0];
           d->energy[0] += mju_polyPotential(stiffness, poly, x, mjNPOLY, 0);
           break;
         }
@@ -1803,18 +1805,16 @@ void mj_energyPos(const mjModel* m, mjData* d) {
   // add tendon-level springs
   if (!mjDISABLED(mjDSBL_SPRING)) {
     for (int i=0; i < m->ntendon; i++) {
-      // skip sleeping or static tendon
-      if (sleep_filter && mj_sleepState(m, d, mjOBJ_TENDON, i) != mjS_AWAKE) {
-        continue;
-      }
-
       stiffness = m->tendon_stiffness[i];
       const mjtNum* poly = m->tendon_stiffnesspoly + mjNPOLY*i;
       mjtNum length = d->ten_length[i];
 
       // compute spring displacement x
-      mjtNum lower = m->tendon_lengthspring[2*i];
-      mjtNum upper = m->tendon_lengthspring[2*i+1];
+      const mjtNum* lengthspring = m->tendon_plasticadr[i] >= 0 ?
+                                   d->plastic + m->tendon_plasticadr[i] :
+                                   m->tendon_lengthspring + 2*i;
+      mjtNum lower = lengthspring[0];
+      mjtNum upper = lengthspring[1];
       x = (length > upper) ? length - upper : (length < lower) ? length - lower : 0;
 
       // add potential energy
@@ -1822,11 +1822,11 @@ void mj_energyPos(const mjModel* m, mjData* d) {
     }
   }
 
-  // add flex-level springs for dim=1
+  // add flex-level edge springs
   if (!mjDISABLED(mjDSBL_SPRING)) {
     for (int i=0; i < m->nflex; i++) {
       stiffness = m->flex_edgestiffness[i];
-      if (m->flex_rigid[i] || stiffness == 0 || m->flex_dim[i] > 1) {
+      if (m->flex_rigid[i] || m->flex_interp[i] || stiffness == 0) {
         continue;
       }
 

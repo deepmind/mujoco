@@ -645,6 +645,223 @@ TEST_F(DerivativeTest, StepSkip) {
   mj_deleteModel(model);
 }
 
+// mj_stepSkip dispatches to mj_ipc when mjENBL_IPC is enabled
+TEST_F(DerivativeTest, StepSkipIPC) {
+  static constexpr char kXml[] = R"(
+  <mujoco>
+    <option integrator="discrete" timestep="0.005">
+      <flag ipc="enable" warmstart="disable"/>
+    </option>
+    <worldbody>
+      <geom type="plane" size="2 2 0.1"/>
+      <flexcomp name="f" type="grid" count="2 2 1" spacing="0.1 0.1 0.1"
+                pos="0 0 0.02" dim="2" radius="0.01" mass="0.2">
+        <contact selfcollide="none" margin="0.03"/>
+        <elasticity young="1e3" poisson="0.2" damping="1"/>
+      </flexcomp>
+    </worldbody>
+  </mujoco>
+  )";
+
+  char error[1024];
+  MjModelPtr m = LoadModelFromString(kXml, error, sizeof(error));
+  ASSERT_THAT(m.get(), NotNull()) << error;
+  MjDataPtr d_step = MakeData(m);
+  MjDataPtr d_skip = MakeData(m);
+
+  // initial velocity toward the ground plane so IPC barrier is active
+  for (int i = 2; i < m->nv; i += 3) {
+    d_step->qvel[i] = -0.5;
+  }
+
+  for (mjtStage stage : {mjSTAGE_NONE, mjSTAGE_POS, mjSTAGE_VEL}) {
+    mj_copyData(d_skip.get(), m.get(), d_step.get());
+    if (stage >= mjSTAGE_POS) {
+      mj_forward(m.get(), d_skip.get());
+    }
+    if (stage == mjSTAGE_POS) {
+      d_skip->qvel[0] += 0.1;
+    }
+
+    MjDataPtr d_ref = MakeData(m);
+    mj_copyData(d_ref.get(), m.get(), d_skip.get());
+
+    mj_stepSkip(m.get(), d_skip.get(), stage, 0);
+    mj_step(m.get(), d_ref.get());
+
+    EXPECT_THAT(AsVector(d_skip->qpos, m->nq),
+                Pointwise(MjNear(1e-12, 1e-6), AsVector(d_ref->qpos, m->nq)));
+    EXPECT_THAT(AsVector(d_skip->qvel, m->nv),
+                Pointwise(MjNear(1e-12, 1e-6), AsVector(d_ref->qvel, m->nv)));
+  }
+}
+
+// mj_stepSkip refactorizes implicit integrators when qDeriv depends on ctrl/act
+TEST_F(DerivativeTest, StepSkipImplicitCtrlActDeriv) {
+  static constexpr char kXml[] = R"(
+  <mujoco>
+    <option timestep="0.05">
+      <flag warmstart="disable"/>
+    </option>
+    <worldbody>
+      <body>
+        <joint name="j0" type="slide"/>
+        <geom type="sphere" size="0.1" mass="1"/>
+      </body>
+      <body>
+        <joint name="j1" type="slide"/>
+        <geom type="sphere" size="0.1" mass="1"/>
+      </body>
+      <body>
+        <joint name="j2" type="slide"/>
+        <geom type="sphere" size="0.1" mass="1"/>
+      </body>
+    </worldbody>
+    <actuator>
+      <damper joint="j0" kv="10" ctrlrange="0 5"/>
+      <position joint="j1" kp="20" dampratio="1" forcerange="-1 1"/>
+      <general joint="j2" dyntype="filter" dynprm="0.1"
+               gaintype="affine" gainprm="0 0 -8"/>
+    </actuator>
+  </mujoco>
+  )";
+
+  char error[1024];
+  MjModelPtr m = LoadModelFromString(kXml, error, sizeof(error));
+  ASSERT_THAT(m.get(), NotNull()) << error;
+  MjDataPtr d = MakeData(m);
+
+  int nv = m->nv, na = m->na, nu = m->nu;
+  int ndx = 2 * nv + na;
+  mjtNum eps = MjTol(1e-6, 1e-3);
+
+  for (mjtIntegrator integrator : {mjINT_IMPLICIT, mjINT_IMPLICITFAST}) {
+    m->opt.integrator = integrator;
+    mj_resetData(m.get(), d.get());
+    d->qvel[0] = 1.2;
+    d->qvel[1] = 0.8;
+    d->qvel[2] = -0.9;
+    d->ctrl[0] = 1.0;
+    d->ctrl[1] = 0.02;  // unsaturated; large nudge pushes into forcerange
+    d->ctrl[2] = 0.5;
+    d->act[0] = 1.5;
+
+    // verify mj_stepSkip at mjSTAGE_VEL matches mj_step after ctrl and act
+    // nudges
+    mj_forward(m.get(), d.get());
+    MjDataPtr d_skip = MakeData(m);
+    MjDataPtr d_full = MakeData(m);
+    mj_copyData(d_skip.get(), m.get(), d.get());
+    d_skip->ctrl[0] = 3.0;
+    d_skip->ctrl[1] = 2.0;  // crosses into saturation
+    d_skip->act[0] = 2.5;
+    mj_copyData(d_full.get(), m.get(), d_skip.get());
+
+    mj_stepSkip(m.get(), d_skip.get(), mjSTAGE_VEL, 0);
+    mj_step(m.get(), d_full.get());
+    EXPECT_THAT(AsVector(d_skip->qvel, nv),
+                Pointwise(MjNear(1e-12, 1e-6), AsVector(d_full->qvel, nv)));
+
+    // verify mjd_transitionFD matches full mj_step centered differences
+    mj_resetData(m.get(), d.get());
+    d->qvel[0] = 1.2;
+    d->qvel[1] = 0.8;
+    d->qvel[2] = -0.9;
+    d->ctrl[0] = 1.0;
+    d->ctrl[1] = 0.01;
+    d->ctrl[2] = 0.5;
+    d->act[0] = 1.5;
+
+    vector<mjtNum> A(ndx * ndx), B(ndx * nu);
+    mjd_transitionFD(m.get(), d.get(), eps, /*flg_centered=*/1, A.data(),
+                     B.data(), nullptr, nullptr);
+
+    // check B columns (ctrl) and A column 2*nv (filter act) against mj_step
+    for (int col_u = 0; col_u < 2; col_u++) {
+      MjDataPtr dp = MakeData(m), dm = MakeData(m);
+      mj_copyData(dp.get(), m.get(), d.get());
+      mj_copyData(dm.get(), m.get(), d.get());
+      dp->ctrl[col_u] += eps;
+      dm->ctrl[col_u] -= eps;
+      mj_step(m.get(), dp.get());
+      mj_step(m.get(), dm.get());
+      for (int r = 0; r < nv; r++) {
+        mjtNum dq = (dp->qpos[r] - dm->qpos[r]) / (2 * eps);
+        mjtNum dv = (dp->qvel[r] - dm->qvel[r]) / (2 * eps);
+        EXPECT_NEAR(B[r * nu + col_u], dq, MjTol(1e-8, 1e-3));
+        EXPECT_NEAR(B[(nv + r) * nu + col_u], dv, MjTol(1e-8, 1e-3));
+      }
+    }
+
+    MjDataPtr dp = MakeData(m), dm = MakeData(m);
+    mj_copyData(dp.get(), m.get(), d.get());
+    mj_copyData(dm.get(), m.get(), d.get());
+    dp->act[0] += eps;
+    dm->act[0] -= eps;
+    mj_step(m.get(), dp.get());
+    mj_step(m.get(), dm.get());
+    for (int r = 0; r < nv; r++) {
+      mjtNum dv = (dp->qvel[r] - dm->qvel[r]) / (2 * eps);
+      EXPECT_NEAR(A[(nv + r) * ndx + 2 * nv], dv, MjTol(1e-8, 1e-3));
+    }
+  }
+}
+
+// mj_stepSkip refactorizes Euler integrator when nonlinear dampingpoly is
+// present
+TEST_F(DerivativeTest, StepSkipEulerPolyDamping) {
+  static constexpr char kXml[] = R"(
+  <mujoco>
+    <option integrator="Euler" timestep="0.05">
+      <flag warmstart="disable"/>
+    </option>
+    <worldbody>
+      <body>
+        <joint name="j0" type="slide" damping="1 2 3"/>
+        <geom type="sphere" size="0.1" mass="1"/>
+      </body>
+      <body>
+        <joint name="j1" type="slide" damping="0.5"/>
+        <geom type="sphere" size="0.1" mass="1"/>
+      </body>
+    </worldbody>
+    <actuator>
+      <motor joint="j1" damping="0 1.5"/>
+    </actuator>
+  </mujoco>
+  )";
+
+  char error[1024];
+  MjModelPtr m = LoadModelFromString(kXml, error, sizeof(error));
+  ASSERT_THAT(m.get(), NotNull()) << error;
+  MjDataPtr d = MakeData(m);
+  d->qvel[0] = 1.3;
+  d->qvel[1] = -0.9;
+
+  int nv = m->nv;
+  int ndx = 2 * nv;
+  mjtNum eps = MjTol(1e-6, 1e-3);
+  vector<mjtNum> A(ndx * ndx);
+  mjd_transitionFD(m.get(), d.get(), eps, /*flg_centered=*/1, A.data(), nullptr,
+                   nullptr, nullptr);
+
+  for (int j = 0; j < nv; j++) {
+    MjDataPtr dp = MakeData(m), dm = MakeData(m);
+    mj_copyData(dp.get(), m.get(), d.get());
+    mj_copyData(dm.get(), m.get(), d.get());
+    dp->qvel[j] += eps;
+    dm->qvel[j] -= eps;
+    mj_step(m.get(), dp.get());
+    mj_step(m.get(), dm.get());
+    for (int r = 0; r < nv; r++) {
+      mjtNum dq = (dp->qpos[r] - dm->qpos[r]) / (2 * eps);
+      mjtNum dv = (dp->qvel[r] - dm->qvel[r]) / (2 * eps);
+      EXPECT_NEAR(A[r * ndx + nv + j], dq, MjTol(1e-8, 1e-3));
+      EXPECT_NEAR(A[(nv + r) * ndx + nv + j], dv, MjTol(1e-8, 1e-3));
+    }
+  }
+}
+
 // Analytic transition matrices for linear dynamical system xn = A*x + B*u
 //   given modified mass matrix H (`data->qH`) and
 //   Ac = H^-1 [diag(-stiffness) diag(-damping)]
@@ -878,6 +1095,78 @@ TEST_F(DerivativeTest, SensorDerivatives) {
 
   mju_free(DFD);
   mju_free(CFD);
+}
+
+// centered control-to-sensor FD derivatives preserve sign and ctrlrange
+// clamping
+TEST_F(DerivativeTest, CenteredSensorControlDerivatives) {
+  static constexpr char kXml[] = R"(
+  <mujoco>
+    <option gravity="0 0 0">
+      <flag warmstart="disable"/>
+    </option>
+    <default>
+      <geom contype="0" conaffinity="0"/>
+    </default>
+    <worldbody>
+      <body>
+        <joint name="j0" type="slide" axis="1 0 0"/>
+        <geom size=".1" mass="1"/>
+        <site name="s0"/>
+      </body>
+      <body>
+        <joint name="j1" type="slide" axis="1 0 0"/>
+        <geom size=".1" mass="2"/>
+      </body>
+    </worldbody>
+
+    <actuator>
+      <general name="a0" joint="j0" gainprm="3" ctrlrange="-1 1"/>
+      <general name="a1" joint="j1" gainprm="-4"/>
+    </actuator>
+
+    <sensor>
+      <actuatorfrc actuator="a0"/>
+      <actuatorfrc actuator="a1"/>
+      <accelerometer site="s0"/>
+    </sensor>
+  </mujoco>
+  )";
+
+  char error[1024];
+  MjModelPtr m = LoadModelFromString(kXml, error, sizeof(error));
+  ASSERT_THAT(m.get(), NotNull()) << error;
+  MjDataPtr d = MakeData(m);
+
+  int nu = m->nu, ns = m->nsensordata;
+  ASSERT_EQ(nu, 2);
+  ASSERT_EQ(ns, 5);
+  mjtNum eps = MjEps(1e-6, 1e-3);
+
+  // interior and boundary controls: centered and fallback one-sided
+  // differencing
+  d->ctrl[1] = -0.3;
+  vector<mjtNum> D(ns * nu);
+  const vector<mjtNum> expected_D = {
+      3, 0,   // actuatorfrc a0
+      0, -4,  // actuatorfrc a1
+      3, 0,   // accelerometer x
+      0, 0,   // accelerometer y
+      0, 0,   // accelerometer z
+  };
+  for (mjtNum ctrl0 : {mjtNum(0.2), mjtNum(1.0), mjtNum(-1.0)}) {
+    d->ctrl[0] = ctrl0;
+    mjd_transitionFD(m.get(), d.get(), eps, /*flg_centered=*/1, nullptr,
+                     nullptr, nullptr, D.data());
+    EXPECT_THAT(D, Pointwise(MjNear(1e-9, 5e-4), expected_D));
+  }
+
+  // beyond ctrlrange: clamped actuator column is zero
+  d->ctrl[0] = 2.0;
+  mjd_transitionFD(m.get(), d.get(), eps, /*flg_centered=*/1, nullptr, nullptr,
+                   nullptr, D.data());
+  const vector<mjtNum> expected_clamped_D = {0, 0, 0, -4, 0, 0, 0, 0, 0, 0};
+  EXPECT_THAT(D, Pointwise(MjNear(1e-9, 5e-4), expected_clamped_D));
 }
 
 // if sensor derivatives aren't requested, don't compute sensors
@@ -1128,6 +1417,63 @@ TEST_F(DerivativeTest, LinearSystemInverse) {
 
   mj_deleteData(data);
   mj_deleteModel(model);
+}
+
+// mjd_inverseFD updates actuation before acceleration sensors when
+// flg_actuation=1
+TEST_F(DerivativeTest, InverseFDActuationSensor) {
+  static constexpr char kXml[] = R"(
+  <mujoco>
+    <worldbody>
+      <body>
+        <joint name="j" type="slide"/>
+        <geom type="sphere" size="0.1" mass="2"/>
+      </body>
+    </worldbody>
+    <actuator>
+      <general name="act" joint="j" gaintype="fixed" gainprm="1"
+               biastype="affine" biasprm="0 -10 -4"/>
+    </actuator>
+    <sensor>
+      <actuatorfrc actuator="act"/>
+      <jointactuatorfrc joint="j"/>
+    </sensor>
+  </mujoco>
+  )";
+
+  char error[1024];
+  MjModelPtr m = LoadModelFromString(kXml, error, sizeof(error));
+  ASSERT_THAT(m.get(), NotNull()) << error;
+  MjDataPtr d = MakeData(m);
+
+  d->qpos[0] = 0.3;
+  d->qvel[0] = -0.7;
+  d->qacc[0] = 1.2;
+  d->ctrl[0] = 2.0;
+
+  int nv = m->nv, ns = m->nsensordata;
+  vector<mjtNum> DfDq(nv * nv), DfDv(nv * nv), DfDa(nv * nv);
+  vector<mjtNum> DsDq(nv * ns), DsDv(nv * ns), DsDa(nv * ns);
+  mjtNum eps = MjTol(1e-6, 1e-3);
+
+  mjd_inverseFD(m.get(), d.get(), eps, /*flg_actuation=*/1, DfDq.data(),
+                DfDv.data(), DfDa.data(), DsDq.data(), DsDv.data(), DsDa.data(),
+                nullptr);
+
+  // force = m*qacc - (ctrl - 10*qpos - 4*qvel)
+  // dF/dq = 10, dF/dv = 4, dF/da = 2
+  EXPECT_NEAR(DfDq[0], 10.0, MjTol(1e-6, 1e-2));
+  EXPECT_NEAR(DfDv[0], 4.0, MjTol(1e-6, 1e-2));
+  EXPECT_NEAR(DfDa[0], 2.0, MjTol(1e-6, 1e-2));
+
+  // actuatorfrc = jointactuatorfrc = ctrl - 10*qpos - 4*qvel
+  // ds/dq = -10, ds/dv = -4, ds/da = 0
+  EXPECT_NEAR(DsDq[0], -10.0, MjTol(1e-6, 1e-2));
+  EXPECT_NEAR(DsDq[1], -10.0, MjTol(1e-6, 1e-2));
+  EXPECT_NEAR(DsDv[0], -4.0, MjTol(1e-6, 1e-2));
+  EXPECT_NEAR(DsDv[1], -4.0, MjTol(1e-6, 1e-2));
+  EXPECT_NEAR(DsDa[0], 0.0, MjTol(1e-8, 1e-4));
+  EXPECT_NEAR(DsDa[1], 0.0, MjTol(1e-8, 1e-4));
 }
 
 // utility: generate two random quaternions with a given angle difference
@@ -1581,6 +1927,177 @@ TEST_F(DerivativeTest, ForcerangeClampedAfterSO3) {
               Pointwise(MjNear(1e-7, 3e-3), qDerivAnalytic));
 }
 
+// Validate that mjd_actuatorDerivSkip skips joint and jointinparent actuators
+// saturated by joint actuatorfrcrange (both without and with actuatorgravcomp)
+// across implicitfast, implicit, and discrete integrators.
+TEST_F(DerivativeTest, JointActfrcrangeSaturation) {
+  static constexpr char kXml[] = R"(
+  <mujoco>
+    <option timestep="0.01" gravity="0 0 -10"/>
+    <worldbody>
+      <body>
+        <joint name="j0" type="hinge" axis="0 1 0" damping="1.5"/>
+        <geom type="sphere" pos="0.5 0 0" size="0.05" mass="1"/>
+        <body name="b1" pos="0.5 0 0" gravcomp="1">
+          <joint name="j1" type="hinge" axis="0 1 0" damping="2"
+                 actuatorgravcomp="true"
+                 actuatorfrclimited="true" actuatorfrcrange="-12 12"/>
+          <geom type="sphere" pos="1 0 0" size="0.05" mass="1"/>
+        </body>
+      </body>
+    </worldbody>
+    <actuator>
+      <position joint="j0" kp="20" kv="3"/>
+      <position joint="j1" kp="500" kv="50" forcerange="-20 20"/>
+      <general jointinparent="j1" biastype="affine" gainprm="100"
+        biasprm="0 -100 -10"/>
+    </actuator>
+  </mujoco>
+  )";
+
+  char error[1024];
+  MjModelPtr model = LoadModelFromString(kXml, error, sizeof(error));
+  ASSERT_THAT(model.get(), NotNull()) << error;
+  mjModel* m = model.get();
+
+  const int j1_id = mj_name2id(m, mjOBJ_JOINT, "j1");
+  const int b1_id = mj_name2id(m, mjOBJ_BODY, "b1");
+  ASSERT_GT(j1_id, 0);
+  const int dof1 = m->jnt_dofadr[j1_id];
+  const int diag1 = m->D_rowadr[dof1] + m->D_diag[dof1];
+
+  for (bool use_actgravcomp : {false, true}) {
+    SCOPED_TRACE(use_actgravcomp ? "with_actgravcomp" : "without_actgravcomp");
+    m->body_gravcomp[b1_id] = use_actgravcomp ? 1.0 : 0.0;
+    m->jnt_actgravcomp[j1_id] = use_actgravcomp ? 1 : 0;
+
+    // At qpos = 0, qvel = {0.2, -0.1}:
+    // - without actgravcomp: qfrc_gravcomp[1] = 0
+    // - with actgravcomp:    qfrc_gravcomp[1] = -10
+    // Actuators 1 & 2 contribute 500*u1 + 5 + 100*u2 + 1 = 500*u1 + 100*u2 + 6.
+    struct Case {
+      const char* name;
+      mjtNum ctrl1;
+      mjtNum ctrl2;
+      bool clamped;
+      mjtNum expected_jnt_frc;
+    };
+    const Case cases[] = {
+        // Unsaturated:
+        // without gravcomp: 0 + 6 = 6 in (-12, 12)
+        // with gravcomp:    5 + 1 + 6 - 10 = 2 in (-12, 12)
+        {"unsaturated", use_actgravcomp ? mjtNum(0.01) : mjtNum(0.0),
+         use_actgravcomp ? mjtNum(0.01) : mjtNum(0.0), false,
+         use_actgravcomp ? mjtNum(2.0) : mjtNum(6.0)},
+        // Upper-saturated (individual actuator 1 force <= 19, inside [-20,
+        // 20]):
+        // without gravcomp: 10 + 3 + 6 = 19 -> clamped to +12
+        // with gravcomp:    14 + 5 = 19 on act1, 5 + 1 = 6 on act2 => 25 - 10 =
+        // 15 -> +12
+        {"upper_clamped", use_actgravcomp ? mjtNum(0.028) : mjtNum(0.02),
+         use_actgravcomp ? mjtNum(0.05) : mjtNum(0.03), true, mjtNum(12.0)},
+        // Lower-saturated (individual actuator 1 force >= -10, inside [-20,
+        // 20]):
+        // without gravcomp: -15 - 5 + 6 = -14 -> clamped to -12
+        // with gravcomp:    -10 + 5 = -5 on act1, -1 + 1 = 0 on act2 => -5 - 10
+        // = -15 -> -12
+        {"lower_clamped", use_actgravcomp ? mjtNum(-0.02) : mjtNum(-0.03),
+         use_actgravcomp ? mjtNum(-0.01) : mjtNum(-0.05), true, mjtNum(-12.0)},
+    };
+
+    for (const Case& c : cases) {
+      SCOPED_TRACE(c.name);
+      for (mjtIntegrator integ :
+           {mjINT_IMPLICITFAST, mjINT_IMPLICIT, mjINT_DISCRETE}) {
+        SCOPED_TRACE(integ);
+        m->opt.integrator = integ;
+
+        MjDataPtr data = MakeData(model);
+        mjData* d = data.get();
+        d->qvel[0] = 0.2;
+        d->qvel[1] = -0.1;
+        d->ctrl[0] = 0.1;
+        d->ctrl[1] = c.ctrl1;
+        d->ctrl[2] = c.ctrl2;
+        mj_forward(m, d);
+
+        // Individual actuator 1 must NOT be clamped by its own [-20, 20] range
+        ASSERT_GT(d->actuator_force[1], -19.5);
+        ASSERT_LT(d->actuator_force[1], 19.5);
+        EXPECT_NEAR(d->qfrc_actuator[dof1], c.expected_jnt_frc,
+                    MjTol(1e-10, 1e-4));
+
+        if (integ == mjINT_DISCRETE) {
+          EXPECT_EQ(d->nefmA, c.clamped ? 1 : 3);
+        }
+
+        // Compare mjd_smooth_vel against mjd_smooth_velFD and mjd_passive_velFD
+        mjtNum eps = MjEps(1e-7, 1e-3);
+        int flg_bias = (integ == mjINT_IMPLICIT) ? 1 : 0;
+        mju_zero(d->qDeriv, m->nD);
+        mjd_smooth_vel(m, d, flg_bias);
+        vector<mjtNum> qDerivAnalytic = AsVector(d->qDeriv, m->nD);
+
+        if (flg_bias) {
+          mju_zero(d->qDeriv, m->nD);
+          mjd_smooth_velFD(m, d, eps);
+          EXPECT_THAT(AsVector(d->qDeriv, m->nD),
+                      Pointwise(MjNear(1e-6, 1e-2), qDerivAnalytic));
+        } else {
+          // Compare passive-only FD on dof1 diagonal: when clamped, actuator
+          // velocity derivative (-60) is dropped so qDeriv[diag1] equals
+          // passive
+          mju_zero(d->qDeriv, m->nD);
+          mjd_passive_velFD(m, d, eps);
+          mjtNum expected_diag1 =
+              d->qDeriv[diag1] + (c.clamped ? mjtNum(0) : mjtNum(-60));
+          EXPECT_NEAR(qDerivAnalytic[diag1], expected_diag1, MjTol(1e-6, 1e-2));
+        }
+
+        // When saturated, transition Jacobians A and B across all 3 integrators
+        // must match a constant-torque reference model (no phantom kp/kv).
+        if (c.clamped) {
+          mj_forward(m, d);
+          const int ndx = 2 * m->nv;
+          vector<mjtNum> A(ndx * ndx), B(ndx * m->nu);
+          mjd_transitionFD(m, d, MjEps(1e-6, 1e-3), /*flg_centered=*/1,
+                           A.data(), B.data(), nullptr, nullptr);
+
+          // Control columns for saturated joint actuators must vanish
+          for (int row = 0; row < ndx; ++row) {
+            EXPECT_NEAR(B[row * m->nu + 1], 0.0, MjTol(1e-9, 1e-4));
+            EXPECT_NEAR(B[row * m->nu + 2], 0.0, MjTol(1e-9, 1e-4));
+          }
+
+          // Build constant-torque reference model with j1 actuators zeroed
+          MjModelPtr ref_model =
+              LoadModelFromString(kXml, error, sizeof(error));
+          mjModel* m_ref = ref_model.get();
+          m_ref->opt.integrator = integ;
+          m_ref->body_gravcomp[b1_id] = m->body_gravcomp[b1_id];
+          m_ref->jnt_actgravcomp[j1_id] = m->jnt_actgravcomp[j1_id];
+          m_ref->jnt_actfrcrange[2 * j1_id] = c.expected_jnt_frc;
+          m_ref->jnt_actfrcrange[2 * j1_id + 1] = c.expected_jnt_frc;
+          mju_zero(m_ref->actuator_gainprm + mjNGAIN * 1, mjNGAIN * 2);
+          mju_zero(m_ref->actuator_biasprm + mjNBIAS * 1, mjNBIAS * 2);
+
+          MjDataPtr ref_data = MakeData(ref_model);
+          mjData* d_ref = ref_data.get();
+          d_ref->qvel[0] = 0.2;
+          d_ref->qvel[1] = -0.1;
+          d_ref->ctrl[0] = 0.1;
+          mj_forward(m_ref, d_ref);
+
+          vector<mjtNum> A_ref(ndx * ndx);
+          mjd_transitionFD(m_ref, d_ref, MjEps(1e-6, 1e-3), /*flg_centered=*/1,
+                           A_ref.data(), nullptr, nullptr, nullptr);
+          EXPECT_THAT(A, Pointwise(MjNear(1e-6, 5e-3), A_ref));
+        }
+      }
+    }
+  }
+}
+
 TEST_F(DerivativeTest, NonlinearDampingDerivative) {
   static constexpr char xml[] = R"(
   <mujoco>
@@ -1861,6 +2378,421 @@ TEST_F(DerivativeTest, DCMotorThermalDerivative) {
   mjd_smooth_velFD(m.get(), d.get(), MjTol(1e-7, 1e-3));
   EXPECT_THAT(AsVector(d->qDeriv, m->nD),
               Pointwise(MjNear(1e-7, 3e-3), analytic));
+}
+
+// verify hot resistance and cogging torque in DC motor length derivatives
+TEST_F(DerivativeTest, DCMotorLenDerivThermalAndCogging) {
+  static constexpr char kXml[] = R"(
+  <mujoco>
+    <option integrator="discrete" timestep="0.002"/>
+    <worldbody>
+      <body>
+        <joint name="stateless" type="slide"/>
+        <geom type="sphere" size="0.1" mass="1"/>
+      </body>
+      <body>
+        <joint name="stateful" type="slide"/>
+        <geom type="sphere" size="0.1" mass="1"/>
+      </body>
+    </worldbody>
+    <actuator>
+      <dcmotor joint="stateless" motorconst="1" resistance="1"
+               input="pos" controller="30 0 0" cogging="1.5 2 0.3"
+               thermal="1 1 0 0.004 25 25"/>
+      <dcmotor joint="stateful" motorconst="1" resistance="1"
+               inductance="0 0.002" input="pos" controller="30 0 0"
+               cogging="1.5 2 0.3" thermal="1 1 0 0.004 25 25"/>
+    </actuator>
+  </mujoco>
+  )";
+
+  char error[1024];
+  MjModelPtr m = LoadModelFromString(kXml, error, sizeof(error));
+  ASSERT_THAT(m.get(), NotNull()) << error;
+  MjDataPtr d = MakeData(m);
+
+  // 250-degree rise doubles winding resistance (R = 2 * R0)
+  d->act[m->actuator_actadr[0]] = 250;
+  d->act[m->actuator_actadr[1]] = 250;
+  d->qpos[0] = 0.2;
+  d->qpos[1] = 0.2;
+  d->ctrl[0] = 0.5;
+  d->ctrl[1] = 0.5;
+  mj_forward(m.get(), d.get());
+
+  // under discrete integrator, efm_ak = -h * mjd_actuatorLenDeriv when
+  // stabilizing (< 0)
+  ASSERT_EQ(d->nefmA, 2);
+  mjtNum eps = MjTol(1e-6, 1e-3);
+  for (int t = 0; t < 2; t++) {
+    int i = d->efm_aid[t];
+    mjtNum len_deriv_analytic = -d->efm_ak[t] / m->opt.timestep;
+
+    MjDataPtr dp = MakeData(m), dm = MakeData(m);
+    mj_copyData(dp.get(), m.get(), d.get());
+    mj_copyData(dm.get(), m.get(), d.get());
+    dp->qpos[i] += eps;
+    dm->qpos[i] -= eps;
+    mj_forward(m.get(), dp.get());
+    mj_forward(m.get(), dm.get());
+    mjtNum len_deriv_fd =
+        (dp->actuator_force[i] - dm->actuator_force[i]) / (2 * eps);
+
+    EXPECT_NEAR(len_deriv_analytic, len_deriv_fd, MjTol(1e-6, 1e-2));
+  }
+}
+
+// verify DC motor force clamping checks pre-mechanical electrical force
+TEST_F(DerivativeTest, DCMotorForceClampVsLuGreAndCogging) {
+  static constexpr char kXml[] = R"(
+  <mujoco>
+    <option integrator="discrete" timestep="0.002"/>
+    <worldbody>
+      <body>
+        <joint name="j" type="slide"/>
+        <geom type="sphere" size="0.1" mass="1"/>
+      </body>
+    </worldbody>
+    <actuator>
+      <dcmotor joint="j" motorconst="1" resistance="1"
+               input="pos vel" controller="20 0 4" saturation="2 0"
+               cogging="0.5 3 0" lugre="100 2 5 6 0.1"/>
+    </actuator>
+  </mujoco>
+  )";
+
+  char error[1024];
+  MjModelPtr m = LoadModelFromString(kXml, error, sizeof(error));
+  ASSERT_THAT(m.get(), NotNull()) << error;
+  MjDataPtr d = MakeData(m);
+
+  // Case 1: electrical force unsaturated (~1.0), LuGre pushes total force > 2.0
+  mj_resetData(m.get(), d.get());
+  d->ctrl[0] = 0.05;   // kp*0.05 = 1.0 inside [-2, 2]
+  d->act[0] = -0.025;  // -sigma0*z = +2.5 => total actuator_force > 2.0
+  mj_forward(m.get(), d.get());
+  ASSERT_GT(d->actuator_force[0], 2.0);
+
+  mju_zero(d->qDeriv, m->nD);
+  mjd_smooth_vel(m.get(), d.get(), /*flg_bias=*/1);
+  mjtNum vel_analytic_1 = d->qDeriv[0];
+  mju_zero(d->qDeriv, m->nD);
+  mjd_smooth_velFD(m.get(), d.get(), MjTol(1e-7, 1e-3));
+  EXPECT_NEAR(vel_analytic_1, d->qDeriv[0], MjTol(1e-6, 1e-2));
+
+  // Case 2: electrical force saturated (> 2.0), LuGre pulls total force inside
+  // (-2, 2)
+  mj_resetData(m.get(), d.get());
+  d->qpos[0] = 0.9;  // cos(3*0.9) < 0 so cogging stiffness is stabilizing
+  d->ctrl[0] = 1.1;  // kp*(1.1 - 0.9) = 4.0 > 2.0 (clamped at 2.0)
+  d->act[0] =
+      0.015;  // -sigma0*z = -1.5 => total actuator_force ~ 0.5 inside [-2, 2]
+  mj_forward(m.get(), d.get());
+  ASSERT_LT(mju_abs(d->actuator_force[0]), 2.0);
+
+  // electrical velocity derivative is 0, only LuGre -sigma1 = -2.0 remains
+  mju_zero(d->qDeriv, m->nD);
+  mjd_smooth_vel(m.get(), d.get(), /*flg_bias=*/1);
+  mjtNum vel_analytic_2 = d->qDeriv[0];
+  mju_zero(d->qDeriv, m->nD);
+  mjd_smooth_velFD(m.get(), d.get(), MjTol(1e-7, 1e-3));
+  EXPECT_NEAR(vel_analytic_2, d->qDeriv[0], MjTol(1e-6, 1e-2));
+
+  // electrical length derivative is 0, only cogging derivative remains in
+  // efm_ak
+  ASSERT_EQ(d->nefmA, 1);
+  mjtNum eps = MjTol(1e-6, 1e-3);
+  MjDataPtr dp = MakeData(m), dm = MakeData(m);
+  mj_copyData(dp.get(), m.get(), d.get());
+  mj_copyData(dm.get(), m.get(), d.get());
+  dp->qpos[0] += eps;
+  dm->qpos[0] -= eps;
+  mj_forward(m.get(), dp.get());
+  mj_forward(m.get(), dm.get());
+  mjtNum len_fd = (dp->actuator_force[0] - dm->actuator_force[0]) / (2 * eps);
+  EXPECT_NEAR(-d->efm_ak[0] / m->opt.timestep, len_fd, MjTol(1e-6, 1e-2));
+}
+
+// verify DC motor + co-acting tendon actuator under tendon actuatorfrcrange
+TEST_F(DerivativeTest, DCMotorTendonActFrcClampVsLuGreAndCogging) {
+  static constexpr char kXml[] = R"(
+  <mujoco>
+    <option integrator="discrete" timestep="0.002"/>
+    <worldbody>
+      <body>
+        <joint name="j" type="slide"/>
+        <geom type="sphere" size="0.1" mass="1"/>
+      </body>
+    </worldbody>
+    <tendon>
+      <fixed name="t" actuatorfrclimited="true" actuatorfrcrange="-2 2">
+        <joint joint="j" coef="1"/>
+      </fixed>
+    </tendon>
+    <actuator>
+      <dcmotor tendon="t" motorconst="1" resistance="1"
+               input="pos vel" controller="20 0 4"
+               cogging="0.5 3 0" lugre="100 2 5 6 0.1"/>
+      <position tendon="t" kp="4" kv="1"/>
+    </actuator>
+  </mujoco>
+  )";
+
+  char error[1024];
+  MjModelPtr m = LoadModelFromString(kXml, error, sizeof(error));
+  ASSERT_THAT(m.get(), NotNull()) << error;
+  MjDataPtr d = MakeData(m);
+
+  // Case 1: pre-mechanical sum (1.0 + 0.2 = 1.2) inside [-2, 2], LuGre pushes
+  // raw actuator_force sum > 2.0
+  mj_resetData(m.get(), d.get());
+  d->qpos[0] = 0.9;
+  d->ctrl[0] = 0.95;   // dcmotor pos target -> f_elec = 1.0
+  d->ctrl[2] = 0.95;   // position target -> f_pos = 0.2
+  d->act[0] = -0.025;  // -sigma0*z = +2.5 => raw sum > 3.7 > 2.0
+  mj_forward(m.get(), d.get());
+  ASSERT_GT(d->actuator_force[0] + d->actuator_force[1], 2.0);
+  EXPECT_EQ(d->nefmA, 2);
+
+  mju_zero(d->qDeriv, m->nD);
+  mjd_smooth_vel(m.get(), d.get(), /*flg_bias=*/1);
+  mjtNum vel_analytic_1 = d->qDeriv[0];
+  mju_zero(d->qDeriv, m->nD);
+  mjd_smooth_velFD(m.get(), d.get(), MjTol(1e-7, 1e-3));
+  EXPECT_NEAR(vel_analytic_1, d->qDeriv[0], MjTol(1e-6, 1e-2));
+
+  // Case 2: pre-mechanical sum (4.0 + 0.4 = 4.4) clamped to 2.0, LuGre pulls
+  // raw actuator_force sum inside (-2, 2)
+  mj_resetData(m.get(), d.get());
+  d->qpos[0] = 0.9;
+  d->ctrl[0] = 1.1;   // dcmotor pos target -> f_elec = 4.0
+  d->ctrl[2] = 1.0;   // position target -> f_pos = 0.4
+  d->act[0] = 0.015;  // -sigma0*z = -1.5 => raw sum ~ 0.71 inside (-2, 2)
+  mj_forward(m.get(), d.get());
+  ASSERT_LT(mju_abs(d->actuator_force[0] + d->actuator_force[1]), 2.0);
+
+  // electrical and position derivatives vanish; only LuGre -sigma1 remains
+  mju_zero(d->qDeriv, m->nD);
+  mjd_smooth_vel(m.get(), d.get(), /*flg_bias=*/1);
+  mjtNum vel_analytic_2 = d->qDeriv[0];
+  mju_zero(d->qDeriv, m->nD);
+  mjd_smooth_velFD(m.get(), d.get(), MjTol(1e-7, 1e-3));
+  EXPECT_NEAR(vel_analytic_2, d->qDeriv[0], MjTol(1e-6, 1e-2));
+
+  // only dcmotor cogging derivative remains in efm_ak
+  ASSERT_EQ(d->nefmA, 1);
+  EXPECT_EQ(d->efm_aid[0], 0);
+  mjtNum eps = MjTol(1e-6, 1e-3);
+  MjDataPtr dp = MakeData(m), dm = MakeData(m);
+  mj_copyData(dp.get(), m.get(), d.get());
+  mj_copyData(dm.get(), m.get(), d.get());
+  dp->qpos[0] += eps;
+  dm->qpos[0] -= eps;
+  mj_forward(m.get(), dp.get());
+  mj_forward(m.get(), dm.get());
+  mjtNum len_fd = (dp->qfrc_actuator[0] - dm->qfrc_actuator[0]) / (2 * eps);
+  EXPECT_NEAR(-d->efm_ak[0] / m->opt.timestep, len_fd, MjTol(1e-6, 1e-2));
+}
+
+// verify DC motor with LuGre and cogging under joint actuatorfrcrange
+TEST_F(DerivativeTest, DCMotorJointActFrcClampVsLuGreAndCogging) {
+  static constexpr char kXml[] = R"(
+  <mujoco>
+    <option integrator="discrete" timestep="0.002"/>
+    <worldbody>
+      <body>
+        <joint name="j" type="slide" actuatorfrclimited="true" actuatorfrcrange="-2 2"/>
+        <geom type="sphere" size="0.1" mass="1"/>
+      </body>
+    </worldbody>
+    <actuator>
+      <dcmotor joint="j" motorconst="1" resistance="1"
+               input="pos vel" controller="20 0 4"
+               cogging="0.5 3 0" lugre="100 2 5 6 0.1"/>
+      <position joint="j" kp="4" kv="1"/>
+    </actuator>
+  </mujoco>
+  )";
+
+  char error[1024];
+  MjModelPtr m = LoadModelFromString(kXml, error, sizeof(error));
+  ASSERT_THAT(m.get(), NotNull()) << error;
+  MjDataPtr d = MakeData(m);
+
+  // Case 1: Unclamped - actuator forces inside [-2, 2], derivatives active and
+  // match FD
+  mj_resetData(m.get(), d.get());
+  d->qpos[0] = 0.9;
+  d->ctrl[0] = 0.95;  // dcmotor pos target -> f_elec = 1.0
+  d->ctrl[2] = 0.95;  // position target -> f_pos = 0.2
+  d->act[0] = 0.005;  // small LuGre bristle deflection
+  mj_forward(m.get(), d.get());
+  ASSERT_LT(mju_abs(d->qfrc_actuator[0]), 2.0);
+  EXPECT_EQ(d->nefmA, 2);
+
+  mju_zero(d->qDeriv, m->nD);
+  mjd_smooth_vel(m.get(), d.get(), /*flg_bias=*/1);
+  mjtNum vel_analytic_1 = d->qDeriv[0];
+  EXPECT_NE(vel_analytic_1, 0.0);
+  mju_zero(d->qDeriv, m->nD);
+  mjd_smooth_velFD(m.get(), d.get(), MjTol(1e-7, 1e-3));
+  EXPECT_NEAR(vel_analytic_1, d->qDeriv[0], MjTol(1e-6, 1e-2));
+
+  // Case 2: Clamped - total joint actuator force clamped to 2.0.
+  // Joint clamping zeroes ALL derivatives (electrical, position, LuGre, and
+  // cogging).
+  mj_resetData(m.get(), d.get());
+  d->qpos[0] = 0.9;
+  d->ctrl[0] = 1.1;  // dcmotor pos target -> f_elec = 4.0
+  d->ctrl[2] = 1.0;  // position target -> f_pos = 0.4
+  d->act[0] = 0.005;
+  mj_forward(m.get(), d.get());
+  EXPECT_DOUBLE_EQ(d->qfrc_actuator[0], 2.0);
+
+  // Analytical velocity derivative vanishes completely
+  mju_zero(d->qDeriv, m->nD);
+  mjd_smooth_vel(m.get(), d.get(), /*flg_bias=*/1);
+  EXPECT_DOUBLE_EQ(d->qDeriv[0], 0.0);
+
+  // Finite difference derivative also vanishes because joint remains clamped
+  mju_zero(d->qDeriv, m->nD);
+  mjd_smooth_velFD(m.get(), d.get(), MjTol(1e-7, 1e-3));
+  EXPECT_NEAR(d->qDeriv[0], 0.0, MjTol(1e-6, 1e-2));
+
+  // No active actuators in efm_aid under discrete integrator (all clamped)
+  EXPECT_EQ(d->nefmA, 0);
+
+  // verify control sensitivity B vanishes across integrators
+  for (mjtIntegrator integ :
+       {mjINT_IMPLICITFAST, mjINT_IMPLICIT, mjINT_DISCRETE}) {
+    m->opt.integrator = integ;
+    mj_forward(m.get(), d.get());
+    const int ndx = 2 * m->nv + m->na;
+    std::vector<mjtNum> A(ndx * ndx), B(ndx * m->nu);
+    mjd_transitionFD(m.get(), d.get(), MjTol(1e-6, 1e-3), /*flg_centered=*/1,
+                     A.data(), B.data(), nullptr, nullptr);
+    // Control columns for saturated joint actuators must vanish
+    for (int row = 0; row < ndx; ++row) {
+      for (int u = 0; u < m->nu; ++u) {
+        EXPECT_NEAR(B[row * m->nu + u], 0.0, MjTol(1e-8, 1e-4));
+      }
+    }
+  }
+}
+
+// verify DC motor derivatives with delayed ctrl and slew rate limiting in
+// dcmotorInputs
+TEST_F(DerivativeTest, DCMotorInputsDelayedCtrlAndSlew) {
+  static constexpr char kXml[] = R"(
+  <mujoco>
+    <option integrator="discrete" timestep="0.005"/>
+    <worldbody>
+      <body>
+        <joint name="j" type="slide"/>
+        <geom type="sphere" size="0.1" mass="1"/>
+      </body>
+    </worldbody>
+    <actuator>
+      <dcmotor joint="j" delay="0.01" nsample="3" interp="linear"
+               input="pos vel" controller="20 0 5 10 0 0"
+               motorconst="1" resistance="1"/>
+    </actuator>
+  </mujoco>
+  )";
+
+  char error[1024];
+  MjModelPtr m = LoadModelFromString(kXml, error, sizeof(error));
+  ASSERT_THAT(m.get(), NotNull()) << error;
+  MjDataPtr d = MakeData(m);
+
+  // step forward so history buffer is populated
+  d->ctrl[0] = 0.5;
+  for (int step = 0; step < 5; ++step) {
+    mj_step(m.get(), d.get());
+  }
+
+  // verify smooth_vel matches FD
+  mju_zero(d->qDeriv, m->nD);
+  mjd_smooth_vel(m.get(), d.get(), /*flg_bias=*/1);
+  mjtNum vel_analytic = d->qDeriv[0];
+
+  mju_zero(d->qDeriv, m->nD);
+  mjd_smooth_velFD(m.get(), d.get(), MjTol(1e-7, 1e-3));
+  EXPECT_NEAR(vel_analytic, d->qDeriv[0], MjTol(1e-6, 1e-2));
+
+  // verify length derivative in efm_ak matches FD
+  ASSERT_EQ(d->nefmA, 1);
+  mjtNum eps = MjTol(1e-6, 1e-3);
+  MjDataPtr dp = MakeData(m), dm = MakeData(m);
+  mj_copyData(dp.get(), m.get(), d.get());
+  mj_copyData(dm.get(), m.get(), d.get());
+  dp->qpos[0] += eps;
+  dm->qpos[0] -= eps;
+  mj_forward(m.get(), dp.get());
+  mj_forward(m.get(), dm.get());
+  mjtNum len_fd = (dp->qfrc_actuator[0] - dm->qfrc_actuator[0]) / (2 * eps);
+  EXPECT_NEAR(-d->efm_ak[0] / m->opt.timestep, len_fd, MjTol(1e-6, 1e-2));
+}
+
+// verify DC motor derivatives under Vmax controller saturation and dimax
+// current-rate limit
+TEST_F(DerivativeTest, DCMotorVoltageAndCurrentRateSaturation) {
+  static constexpr char kXml[] = R"(
+  <mujoco>
+    <option integrator="discrete" timestep="0.002"/>
+    <worldbody>
+      <body>
+        <joint name="stateless_vmax" type="slide"/>
+        <geom type="sphere" size="0.1" mass="1"/>
+      </body>
+      <body>
+        <joint name="stateful_vmax" type="slide"/>
+        <geom type="sphere" size="0.1" mass="1"/>
+      </body>
+      <body>
+        <joint name="stateful_dimax" type="slide"/>
+        <geom type="sphere" size="0.1" mass="1"/>
+      </body>
+    </worldbody>
+    <actuator>
+      <dcmotor joint="stateless_vmax" motorconst="2" resistance="1"
+               input="pos vel" controller="20 0 6 0 0 3"/>
+      <dcmotor joint="stateful_vmax" motorconst="2" resistance="1"
+               inductance="0 0.005" input="pos vel" controller="20 0 6 0 0 3"/>
+      <dcmotor joint="stateful_dimax" motorconst="2" resistance="1"
+               inductance="0 0.005" saturation="0 0 5"
+               input="pos vel" controller="20 0 6"/>
+    </actuator>
+  </mujoco>
+  )";
+
+  char error[1024];
+  MjModelPtr m = LoadModelFromString(kXml, error, sizeof(error));
+  ASSERT_THAT(m.get(), NotNull()) << error;
+  MjDataPtr d = MakeData(m);
+
+  // large position error saturates Vmax on actuators 0 & 1 and dimax on
+  // actuator 2
+  d->ctrl[0] = 2.0;
+  d->ctrl[2] = 2.0;
+  d->ctrl[4] = 2.0;
+  mj_forward(m.get(), d.get());
+
+  // compare smooth_vel against FD across all 3 DOFs
+  mju_zero(d->qDeriv, m->nD);
+  mjd_smooth_vel(m.get(), d.get(), /*flg_bias=*/1);
+  vector<mjtNum> analytic = AsVector(d->qDeriv, m->nD);
+
+  mju_zero(d->qDeriv, m->nD);
+  mjd_smooth_velFD(m.get(), d.get(), MjTol(1e-6, 1e-3));
+  EXPECT_THAT(AsVector(d->qDeriv, m->nD),
+              Pointwise(MjNear(1e-6, 1e-2), analytic));
+
+  // all 3 length derivatives are zero under Vmax / dimax saturation (efm_ak ==
+  // 0)
+  for (int t = 0; t < d->nefmA; t++) {
+    EXPECT_MJTNUM_EQ(d->efm_ak[t], 0);
+  }
 }
 
 // Utility: Rotate flex grid
@@ -3439,58 +4371,221 @@ TEST_F(DerivativeTest, FlexStiffAssemble) {
   }
 }
 
-// 1D rod bending stiffness: at the (straight) rest configuration the energy
-// gradient vanishes, so the PSD Gauss-Newton Hessian used by the metric is
-// exact. Checked against central differences of the spring force
+// 1D rods pinned at their first vertex (free first edge, per-edge twist joints)
+static const char* const kRodStraightPinned = R"(
+<mujoco>
+  <option integrator="discrete" gravity="0 0 0"/>
+  <worldbody>
+    <body name="turned" euler="20 30 40">
+      <flexcomp name="rod" type="grid" count="6 1 1" spacing="0.1 0.1 0.1"
+                radius="0.01" dim="1" mass="1">
+        <pin id="0"/>
+        <contact selfcollide="none" contype="0" conaffinity="0"/>
+        <elasticity young="1e7"/>
+      </flexcomp>
+    </body>
+  </worldbody>
+</mujoco>
+)";
+static const char* const kRodHelixPinned = R"(
+<mujoco>
+  <option integrator="discrete" gravity="0 0 0"/>
+  <worldbody>
+    <body name="turned" euler="20 30 40">
+      <flexcomp name="helix" type="direct" dim="1" radius="0.01" mass="1"
+                element="0 1  1 2  2 3  3 4  4 5"
+                point="0.15 0.00 0.00   0.106 0.106 0.04   0.00 0.15 0.08
+                       -0.106 0.106 0.12   -0.15 0.00 0.16
+                       -0.106 -0.106 0.20">
+        <pin id="0"/>
+        <contact selfcollide="none" contype="0" conaffinity="0"/>
+        <elasticity young="1e7"/>
+      </flexcomp>
+    </body>
+  </worldbody>
+</mujoco>
+)";
+static const char* const kRodVeePinned = R"(
+<mujoco>
+  <option integrator="discrete" gravity="0 0 0"/>
+  <worldbody>
+    <body name="turned" euler="20 30 40">
+      <flexcomp name="vee" type="direct" dim="1" radius="0.01" mass="1"
+                element="0 1  1 2" point="0 0 0  0.1 0 0  0.18 0.06 0.02">
+        <pin id="0"/>
+        <contact selfcollide="none" contype="0" conaffinity="0"/>
+        <elasticity young="1e7"/>
+      </flexcomp>
+    </body>
+  </worldbody>
+</mujoco>
+)";
+
+// 1D rod bending stiffness: at rest (straight, hinge pairs, and a curved single
+// hinge) the energy gradient vanishes, so the PSD Gauss-Newton Hessian used by
+// the metric is exact. Checked against central differences of the spring force
 TEST_F(DerivativeTest, FlexRodHessianAtRest) {
-  static const char* const kStraight = R"(
+  for (const char* xml : {kRodStraightPinned, kRodHelixPinned, kRodVeePinned}) {
+    char error[1024];
+    MjModelPtr model = LoadModelFromString(xml, error, sizeof(error));
+    ASSERT_THAT(model.get(), NotNull()) << error;
+    SCOPED_TRACE(model->names + model->name_flexadr[0]);
+    int nv = model->nv;
+    MjDataPtr data = MakeData(model);
+    mj_forward(model.get(), data.get());
+
+    // freeze the director state at rest, so finite differences see a fixed one
+    for (int f = 0; f < model->nflex; f++) {
+      if (model->flex_plasticadr[f] >= 0) {
+        mj_rodChain(model.get(), data.get(), f, nullptr, nullptr, nullptr,
+                    nullptr, nullptr, nullptr,
+                    data->plastic + model->flex_plasticadr[f]);
+      }
+    }
+
+    vector<mjtNum> vec(nv), res(nv, 0);
+    for (int i = 0; i < nv; i++) {
+      int jnt = model->dof_jntid[i];
+      vec[i] =
+          (model->jnt_type[jnt] == mjJNT_SLIDE) ? mju_Halton(i, 3) - 0.5 : 0;
+    }
+    mjd_flexStretch_mul(model.get(), data.get(), res.data(), vec.data(), 1, 0);
+
+    // central differences of the spring force
+    mjtNum eps = MjEps(1e-6, 1e-3);
+    mjData* plus = mj_copyData(NULL, model.get(), data.get());
+    mjData* minus = mj_copyData(NULL, model.get(), data.get());
+    mju_addToScl(plus->qpos, vec.data(), eps, nv);
+    mju_addToScl(minus->qpos, vec.data(), -eps, nv);
+    mj_forward(model.get(), plus);
+    mj_forward(model.get(), minus);
+
+    mjtNum max_err = 0, scale = 0;
+    for (int i = 0; i < nv; i++) {
+      if (model->jnt_type[model->dof_jntid[i]] != mjJNT_SLIDE) continue;
+      mjtNum fd = -(plus->qfrc_spring[i] - minus->qfrc_spring[i]) / (2 * eps);
+      max_err = mju_max(max_err, mju_abs(res[i] - fd));
+      scale = mju_max(scale, mju_abs(fd));
+    }
+    EXPECT_GT(scale, 1e-3)
+        << "test should exercise nontrivial bending stiffness";
+    EXPECT_LT(max_err, MjTol(1e-5, 1e-2) * scale)
+        << "rod bending Hessian is not the Jacobian of the force at rest";
+    mj_deleteData(plus);
+    mj_deleteData(minus);
+  }
+}
+
+// twist-twist block of the metric (1D DER rods with per-edge twist joints): the
+// torsion tridiagonal 2 kt plus the bending stiffness of each twist angle
+// (mj_rodChain), against central differences of the spring force in the
+// twist angles. Exact at rest (straight, helix, vee and a curved box ribbon,
+// whose material curvatures give the twist angles bending stiffness); away from
+// rest (a bent box ribbon) the off-diagonals stay exact and the diagonal only
+// gains where a hinge side's second derivative is negative and clamped to 0
+TEST_F(DerivativeTest, FlexRodTwistHessian) {
+  static const char* const kBoxArc = R"(
   <mujoco>
     <option integrator="discrete" gravity="0 0 0"/>
     <worldbody>
-      <body name="turned" euler="20 30 40">
-        <flexcomp name="rod" type="grid" count="6 1 1" spacing="0.1 0.1 0.1"
-                  radius="0.01" dim="1" mass="1">
-          <pin id="0"/>
-          <contact selfcollide="none" contype="0" conaffinity="0"/>
-          <elasticity young="1e7"/>
-        </flexcomp>
-      </body>
+      <flexcomp name="arc" type="direct" dim="1" radius="0.005" mass="0.1"
+                element="0 1  1 2  2 3  3 4  4 5"
+                point="0.2 0 0  0.190211 0.0618034 0  0.161803 0.117557 0
+                       0.117557 0.161803 0  0.0618034 0.190211 0  0 0.2 0">
+        <pin id="0"/>
+        <contact selfcollide="none" contype="0" conaffinity="0"/>
+        <elasticity young="1e7" shear="4e6" section="box"
+                    sectionsize="0.012 0.003"/>
+      </flexcomp>
     </worldbody>
   </mujoco>
   )";
-  char error[1024];
-  MjModelPtr model = LoadModelFromString(kStraight, error, sizeof(error));
-  ASSERT_THAT(model.get(), NotNull()) << error;
-  int nv = model->nv;
-  MjDataPtr data = MakeData(model);
-  mj_forward(model.get(), data.get());
+  struct Case {
+    const char* xml;
+    bool bend;  // deform the vertices away from rest
+  };
+  for (Case c : {Case{kRodStraightPinned, false}, Case{kRodHelixPinned, false},
+                 Case{kRodVeePinned, false}, Case{kBoxArc, false},
+                 Case{kBoxArc, true}}) {
+    char error[1024];
+    MjModelPtr model = LoadModelFromString(c.xml, error, sizeof(error));
+    ASSERT_THAT(model.get(), NotNull()) << error;
+    SCOPED_TRACE(std::string(model->names + model->name_flexadr[0]) +
+                 (c.bend ? " bent" : " rest"));
+    model->flex_damping[0] = 0;  // the stiffness part only: B = h^2 K
+    const mjtNum h = model->opt.timestep;
+    int nv = model->nv;
+    MjDataPtr data = MakeData(model);
+    if (c.bend) {
+      for (int j = 0; j < model->njnt; j++) {
+        if (model->jnt_type[j] == mjJNT_SLIDE) {
+          int qadr = model->jnt_qposadr[j];
+          data->qpos[qadr] = 0.004 * std::sin(1.3 * qadr + 0.4);
+        }
+      }
+    }
+    mj_forward(model.get(), data.get());
+    for (int f = 0; f < model->nflex; f++) {
+      if (model->flex_plasticadr[f] >= 0) {
+        mj_rodChain(model.get(), data.get(), f, nullptr, nullptr, nullptr,
+                    nullptr, nullptr, nullptr,
+                    data->plastic + model->flex_plasticadr[f]);
+      }
+    }
+    mj_forward(model.get(), data.get());
 
-  vector<mjtNum> vec(nv), res(nv, 0);
-  for (int i = 0; i < nv; i++) {
-    vec[i] = mju_Halton(i, 3) - 0.5;
+    int nedge =
+        static_cast<int>(model->flex_bending[model->flex_bendingadr[0]]) + 1;
+    vector<int> dofs;
+    for (int e = 0; e < nedge; e++) {
+      int jnt = mj_rodChainTwistJnt(model.get(), 0, e);
+      ASSERT_GE(jnt, 0) << "edge " << e;
+      dofs.push_back(model->jnt_dofadr[jnt]);
+    }
+    int n = dofs.size();
+
+    // metric columns and central differences of the spring force
+    mjtNum eps = MjEps(1e-6, 1e-3), scale = 0, max_err = 0, kbend = 0;
+    vector<mjtNum> vec(nv), res(nv);
+    for (int j = 0; j < n; j++) {
+      mju_zero(vec.data(), nv);
+      mju_zero(res.data(), nv);
+      vec[dofs[j]] = 1;
+      mj_effMulAdd(model.get(), data.get(), res.data(), vec.data(), 0);
+      int qadr = model->jnt_qposadr[model->dof_jntid[dofs[j]]];
+      mjData* plus = mj_copyData(NULL, model.get(), data.get());
+      mjData* minus = mj_copyData(NULL, model.get(), data.get());
+      plus->qpos[qadr] += eps;
+      minus->qpos[qadr] -= eps;
+      mj_forward(model.get(), plus);
+      mj_forward(model.get(), minus);
+      for (int i = 0; i < n; i++) {
+        mjtNum fd =
+            -(plus->qfrc_spring[dofs[i]] - minus->qfrc_spring[dofs[i]]) /
+            (2 * eps);
+        mjtNum ana = res[dofs[i]] / (h * h);
+        mjtNum err = ana - fd;
+        if (c.bend && i == j) {
+          err = mju_min(0, err);  // PSD clamp: the diagonal may only gain
+        }
+        max_err = mju_max(max_err, mju_abs(err));
+        scale = mju_max(scale, mju_abs(fd));
+      }
+      kbend = mju_max(kbend, data->efm_ck[dofs[j]] / h);
+      mj_deleteData(plus);
+      mj_deleteData(minus);
+    }
+    EXPECT_GT(scale, 0);
+    EXPECT_LT(max_err, MjTol(1e-6, 1e-2) * scale);
+
+    // curved and bent rods exercise the bending stiffness of the twist angles
+    bool straight = (c.xml == kRodStraightPinned) && !c.bend;
+    if (straight) {
+      EXPECT_LT(kbend, MjTol(1e-9, 1e-4) * scale);
+    } else {
+      EXPECT_GT(kbend, 1e-3 * scale);
+    }
   }
-  mjd_flexStretch_mul(model.get(), data.get(), res.data(), vec.data(), 1, 0);
-
-  // central differences of the spring force
-  mjtNum eps = MjEps(1e-6, 1e-3);
-  mjData* plus = mj_copyData(NULL, model.get(), data.get());
-  mjData* minus = mj_copyData(NULL, model.get(), data.get());
-  mju_addToScl(plus->qpos, vec.data(), eps, nv);
-  mju_addToScl(minus->qpos, vec.data(), -eps, nv);
-  mj_forward(model.get(), plus);
-  mj_forward(model.get(), minus);
-
-  mjtNum max_err = 0, scale = 0;
-  for (int i = 0; i < nv; i++) {
-    mjtNum fd = -(plus->qfrc_spring[i] - minus->qfrc_spring[i]) / (2 * eps);
-    max_err = mju_max(max_err, mju_abs(res[i] - fd));
-    scale = mju_max(scale, mju_abs(fd));
-  }
-  EXPECT_GT(scale, 1e-3) << "test should exercise nontrivial bending stiffness";
-  EXPECT_LT(max_err, MjTol(1e-5, 1e-2) * scale)
-      << "rod bending Hessian is not the Jacobian of the force at rest";
-  mj_deleteData(plus);
-  mj_deleteData(minus);
 }
 
 // 1D rod bending stiffness away from rest: symmetric, positive semi-definite,
@@ -3503,6 +4598,20 @@ TEST_F(DerivativeTest, FlexRodStiffAssemble) {
       <body name="turned" euler="20 30 40">
         <flexcomp name="rod" type="grid" count="6 1 1" spacing="0.1 0.1 0.1"
                   radius="0.01" dim="1" mass="1">
+          <pin id="0"/>
+          <contact selfcollide="none" contype="0" conaffinity="0"/>
+          <elasticity young="1e7" damping="0.1"/>
+        </flexcomp>
+        <flexcomp name="ring" type="circle" count="7 1 1"
+                  spacing="0.12 0.12 0.12"
+                  pos="0 0.5 0" radius="0.01" dim="1" mass="1">
+          <pin id="0"/>
+          <contact selfcollide="none" contype="0" conaffinity="0"/>
+          <elasticity young="1e7" damping="0.1"/>
+        </flexcomp>
+        <flexcomp name="vee" type="direct" dim="1" radius="0.01" mass="1"
+                  element="0 1  1 2" point="0 0 0  0.1 0 0  0.18 0.06 0.02"
+                  pos="0 -0.5 0">
           <pin id="0"/>
           <contact selfcollide="none" contype="0" conaffinity="0"/>
           <elasticity young="1e7" damping="0.1"/>
@@ -3651,6 +4760,246 @@ TEST_F(DerivativeTest, FlexStiffAssembleInterp) {
       EXPECT_THAT(res_csr[i], MjNear(res_op[i], 1e-12, 2e-5))
           << "interp assembly/operator mismatch at DOF " << i << " trial "
           << trial;
+    }
+  }
+}
+
+// verify shell-mode interpolated flex (flex_interp < 0, elastic2d="stretch")
+// derivatives and CSR assembly: mjd_flexInterp_mul matches finite differences
+// of qfrc_passive across rotations, is symmetric and PSD, includes the x-normal
+// faces (where k_elem[0] == 0), and matches mjd_flexStiff_assemble
+TEST_F(DerivativeTest, FlexInterpShellDerivatives) {
+  static const char* const kXml = R"(
+  <mujoco>
+    <option integrator="discrete"/>
+    <worldbody>
+      <flexcomp name="flex" type="grid" count="4 4 4" spacing="0.1 0.2 0.3"
+                cellcount="1 2 2" radius=".01" dim="3" mass="1" dof="trilinear">
+        <contact selfcollide="none" contype="0" conaffinity="0"/>
+        <elasticity young="1e4" poisson="0.3" damping="5"
+                    elastic2d="stretch" thickness="0.02"/>
+      </flexcomp>
+    </worldbody>
+  </mujoco>
+  )";
+
+  char error[1024];
+  MjModelPtr model = LoadModelFromString(kXml, error, sizeof(error));
+  ASSERT_THAT(model.get(), NotNull()) << error;
+  EXPECT_EQ(model->flex_interp[0], -1);
+  ASSERT_EQ(mjd_flexInterpAssemblable(model.get()), 1);
+  int nv = model->nv;
+  MjDataPtr data = MakeData(model);
+
+  for (mjtNum angle : {0.0, 0.5, mjPI / 2}) {
+    RotateFlexGrid(model.get(), data.get(), "flex", angle);
+    mj_forward(model.get(), data.get());
+
+    // assemble dense K via mjd_flexInterp_mul (with damping=0, h=1)
+    mjtNum save_damping = model->flex_damping[0];
+    model->flex_damping[0] = 0;
+    std::vector<mjtNum> H(nv * nv, 0);
+    mulKD_dense(model.get(), data.get(), H.data(), nv, 1.0);
+    model->flex_damping[0] = save_damping;
+
+    std::vector<mjtNum> vec(nv), res(nv, 0);
+    for (int i = 0; i < nv; i++) {
+      vec[i] = mju_Halton(i, 2) - 0.5;
+    }
+    mju_mulMatVec(res.data(), H.data(), vec.data(), nv, nv);
+
+    // finite difference of mj_passive at zero velocity
+    mjtNum eps = MjEps(1e-6, 1e-3);
+    mjData* data_perturbed = mj_copyData(NULL, model.get(), data.get());
+    mju_addToScl(data_perturbed->qpos, vec.data(), eps, nv);
+    mj_forward(model.get(), data_perturbed);
+    for (int i = 0; i < nv; ++i) {
+      mjtNum fd =
+          -(data_perturbed->qfrc_passive[i] - data->qfrc_passive[i]) / eps;
+      EXPECT_THAT(res[i], MjNear(fd, 5e-3, 5.0))
+          << "shell stiffness mismatch at DOF " << i << " angle " << angle;
+    }
+    mj_deleteData(data_perturbed);
+
+    // interior nodes on x=0 (node 4) and x=max (node 13) only belong to faces 0
+    // and 1 (where k_elem[0] == 0); verify their diagonal blocks are nonzero
+    for (int node_idx : {4, 13}) {
+      int bid = model->flex_nodebodyid[model->flex_nodeadr[0] + node_idx];
+      int dadr = model->body_dofadr[bid];
+      mjtNum trace = H[(dadr + 0) * nv + (dadr + 0)] +
+                     H[(dadr + 1) * nv + (dadr + 1)] +
+                     H[(dadr + 2) * nv + (dadr + 2)];
+      EXPECT_GT(trace, 1.0) << "expected positive stiffness trace on x-face "
+                               "interior node "
+                            << node_idx;
+    }
+
+    // verify CSR assembly matches mjd_flexInterp_mul
+    std::vector<mjtNum> krot(model->nflexstiffness, 0);
+    mjd_flexInterp_cacheKrot(model.get(), data.get(), krot.data());
+    mjtNum s1 = 4e-6, s2 = 2e-3;
+    std::vector<int> rownnz(nv), rowadr(nv);
+    int nnz = mjd_flexStiff_assemble(
+        model.get(), data.get(), rownnz.data(), rowadr.data(), NULL, NULL, s1,
+        s2, /*flg_bend=*/0, /*flg_stretch=*/0, krot.data());
+    ASSERT_GT(nnz, 0);
+    std::vector<int> colind(nnz);
+    std::vector<mjtNum> val(nnz);
+    mjd_flexStiff_assemble(model.get(), data.get(), rownnz.data(),
+                           rowadr.data(), colind.data(), val.data(), s1, s2,
+                           /*flg_bend=*/0, /*flg_stretch=*/0, krot.data());
+
+    std::vector<mjtNum> res_op(nv, 0), res_csr(nv, 0);
+    mjd_flexInterp_mul(model.get(), data.get(), res_op.data(), vec.data(), -s1,
+                       -s2, krot.data());
+    for (int i = 0; i < nv; i++) {
+      mjtNum sum = 0;
+      for (int k = 0; k < rownnz[i]; k++) {
+        sum += val[rowadr[i] + k] * vec[colind[rowadr[i] + k]];
+      }
+      res_csr[i] = sum;
+      EXPECT_THAT(res_csr[i], MjNear(res_op[i], 1e-12, 2e-5))
+          << "shell CSR/operator mismatch at DOF " << i;
+    }
+  }
+}
+
+// verify passive contact metric and velocity shift on interpolated flexes
+// (trilinear volumetric, trilinear shell elastic2d="bend", quadratic, and with
+// pinned cage nodes) against central finite differences of qfrc_spring
+TEST_F(DerivativeTest, FlexInterpPassiveContactDerivatives) {
+  struct Case {
+    const char* name;
+    const char* dof;
+    const char* elasticity;
+    const char* pin;
+  };
+  const Case cases[] = {
+      {"trilinear_vol", "trilinear",
+       R"(<elasticity young="1e3" poisson="0.3" damping="0"/>)", ""},
+      {"trilinear_shell_bend", "trilinear",
+       R"(<elasticity young="1e3" poisson="0.3" damping="0" thickness="0.01" elastic2d="bend"/>)",
+       ""},
+      {"quadratic_vol", "quadratic",
+       R"(<elasticity young="1e3" poisson="0.3" damping="0"/>)", ""},
+      {"trilinear_pinned", "trilinear",
+       R"(<elasticity young="1e3" poisson="0.3" damping="0"/>)",
+       R"(<pin id="1 3 5 7"/>)"},
+  };
+
+  for (const Case& tc : cases) {
+    SCOPED_TRACE(tc.name);
+    std::string xml = std::string(R"(
+    <mujoco>
+      <option integrator="discrete" gravity="0 0 0" timestep="0.002"/>
+      <worldbody>
+        <geom name="floor" type="plane" size="2 2 0.1"/>
+        <flexcomp name="box" type="grid" count="3 3 3" cellcount="1 1 1"
+                  spacing="0.1 0.1 0.1" radius="0.01" dim="3" mass="1.0"
+                  pos="0 0 0.09" dof=")") +
+                      tc.dof + R"(">
+          <contact selfcollide="none" passive="true"/>
+          )" + tc.elasticity +
+                      "\n" + tc.pin + R"(
+        </flexcomp>
+      </worldbody>
+    </mujoco>
+    )";
+
+    char error[1024] = {0};
+    MjModelPtr m = LoadModelFromString(xml.c_str(), error, sizeof(error));
+    ASSERT_THAT(m.get(), NotNull()) << error;
+    MjDataPtr d = MakeData(m);
+    mj_forward(m.get(), d.get());
+
+    ASSERT_GT(d->nefmcon, 0);
+    ASSERT_EQ(d->nefc, 0);
+
+    // At rest qpos = 0, elastic force is zero so qfrc_spring equals the
+    // contact force interpolated onto cage nodes via mj_contactBodyWeight.
+    std::vector<mjtNum> expected_qfrc(m->nv, 0);
+    for (int i = 0; i < d->ncon; i++) {
+      const mjContact* con = d->contact + i;
+      if (con->exclude != 4 || con->dist >= 0) continue;
+      mjtNum k = mjd_flexContactStiffness(m.get(), d.get(), con, nullptr);
+      ASSERT_GT(k, 0);
+      mjtNum fn = -k * con->dist;
+      mjtNum force[3] = {fn * con->frame[0], fn * con->frame[1],
+                         fn * con->frame[2]};
+      for (int side = 0; side < 2; side++) {
+        if (con->flex[side] < 0) continue;
+        int body[128];
+        mjtNum weight[128];
+        int nb =
+            mj_contactBodyWeight(m.get(), d.get(), con, side, body, weight);
+        mjtNum sign = (side == 0) ? -1.0 : 1.0;
+        for (int j = 0; j < nb; j++) {
+          int b = m->body_weldid[body[j]];
+          if (m->body_dofnum[b] == 3) {
+            int da = m->body_dofadr[b];
+            expected_qfrc[da + 0] += sign * weight[j] * force[0];
+            expected_qfrc[da + 1] += sign * weight[j] * force[1];
+            expected_qfrc[da + 2] += sign * weight[j] * force[2];
+          }
+        }
+      }
+    }
+    for (int i = 0; i < m->nv; i++) {
+      EXPECT_NEAR(d->qfrc_spring[i], expected_qfrc[i],
+                  MjTol(1e-9, 1e-3) * mju_max(1.0, mju_abs(expected_qfrc[i])))
+          << "dof " << i;
+    }
+
+    int nv = m->nv;
+    mjtNum h = m->opt.timestep;
+    std::vector<mjtNum> vec(nv), res_with_con(nv, 0), res_no_con(nv, 0);
+    for (int i = 0; i < nv; i++) {
+      vec[i] = mju_Halton(i, 3) - 0.5;
+    }
+    mj_effMulAdd(m.get(), d.get(), res_with_con.data(), vec.data(),
+                 /*flg_contact=*/1);
+    mj_effMulAdd(m.get(), d.get(), res_no_con.data(), vec.data(),
+                 /*flg_contact=*/0);
+
+    // Isolate the contact-only spring force by comparing against a copy with
+    // contact disabled, perturbed by +/- eps*vec (small enough that active
+    // contacts remain penetrating with constant plane normal).
+    mjtNum eps = MjEps(1e-7, 1e-5);
+    MjDataPtr d_plus(mj_copyData(nullptr, m.get(), d.get()));
+    MjDataPtr d_minus(mj_copyData(nullptr, m.get(), d.get()));
+    mju_addToScl(d_plus->qpos, vec.data(), eps, nv);
+    mju_addToScl(d_minus->qpos, vec.data(), -eps, nv);
+    mj_forward(m.get(), d_plus.get());
+    mj_forward(m.get(), d_minus.get());
+
+    m->opt.disableflags |= mjDSBL_CONTACT;
+    MjDataPtr d_plus_nocon(mj_copyData(nullptr, m.get(), d_plus.get()));
+    MjDataPtr d_minus_nocon(mj_copyData(nullptr, m.get(), d_minus.get()));
+    mj_forward(m.get(), d_plus_nocon.get());
+    mj_forward(m.get(), d_minus_nocon.get());
+    m->opt.disableflags &= ~mjDSBL_CONTACT;
+
+    mjtNum max_err = 0, scale = 0;
+    for (int i = 0; i < nv; i++) {
+      mjtNum f_plus = d_plus->qfrc_spring[i] - d_plus_nocon->qfrc_spring[i];
+      mjtNum f_minus = d_minus->qfrc_spring[i] - d_minus_nocon->qfrc_spring[i];
+      mjtNum fd_h2K = -h * h * (f_plus - f_minus) / (2 * eps);
+      mjtNum analytic_h2K = res_with_con[i] - res_no_con[i];
+      max_err = mju_max(max_err, mju_abs(analytic_h2K - fd_h2K));
+      scale = mju_max(scale, mju_abs(fd_h2K));
+    }
+    EXPECT_GT(scale, 1e-2);
+    EXPECT_LT(max_err, MjTol(1e-6, 1e-3) * scale);
+
+    // Also verify velocity shift d->efm_c: setting qvel = vec must shift efm_c
+    // by -(1/h) * (h^2 K_total * vec) = -h * K_total * vec.
+    mju_copy(d->qvel, vec.data(), nv);
+    mj_forward(m.get(), d.get());
+    for (int i = 0; i < nv; i++) {
+      EXPECT_NEAR(
+          d->efm_c[i], -res_with_con[i] / h,
+          MjTol(1e-9, 1e-3) * mju_max(1.0, mju_abs(res_with_con[i] / h)))
+          << "shift mismatch at DOF " << i;
     }
   }
 }
@@ -3905,13 +5254,317 @@ TEST_P(FlexAttachmentTest, AttachmentCannotUseFreeGyroShortcut) {
       mjd_freeGyroPossible(model.get(), data.get(), model->body_jntadr[body]));
 }
 
-TEST_P(FlexAttachmentTest, RequiresCGForDiscreteIntegrator) {
-  std::string xml = Xml(false, "both");
-  xml.replace(xml.find("solver=\"CG\""), 11, "solver=\"Newton\"");
+TEST_P(FlexAttachmentTest, GeneralAssembleMatchesMatrixFree) {
+  for (bool mixed : {false, true}) {
+    ASSERT_NO_FATAL_FAILURE(Load("both", mixed));
+    Deform();
+    int nv = model->nv;
+    mjtNum s1 = 4e-4, s2 = 2e-2;
+
+    for (auto [flg_bend, flg_stretch] :
+         {std::pair<int, int>{1, 0}, {0, 1}, {1, 1}}) {
+      std::vector<int> rownnz(nv), rowadr(nv);
+      int nnz = mjd_flexStiff_assembleGen(
+          model.get(), data.get(), rownnz.data(), rowadr.data(), nullptr,
+          nullptr, s1, s2, flg_bend, flg_stretch, nullptr, /*flg_general=*/1);
+      ASSERT_GT(nnz, 0);
+      EXPECT_EQ(rowadr[nv - 1] + rownnz[nv - 1], nnz);
+
+      std::vector<int> colind(nnz);
+      std::vector<mjtNum> val(nnz);
+      int nnz2 = mjd_flexStiff_assembleGen(
+          model.get(), data.get(), rownnz.data(), rowadr.data(), colind.data(),
+          val.data(), s1, s2, flg_bend, flg_stretch, nullptr,
+          /*flg_general=*/1);
+      EXPECT_EQ(nnz2, nnz);
+
+      // verify strictly sorted columns and symmetry
+      std::vector<mjtNum> dense(nv * nv, 0);
+      for (int r = 0; r < nv; r++) {
+        for (int k = 0; k < rownnz[r]; k++) {
+          int c = colind[rowadr[r] + k];
+          ASSERT_GE(c, 0);
+          ASSERT_LT(c, nv);
+          if (k > 0) {
+            EXPECT_GT(c, colind[rowadr[r] + k - 1]);
+          }
+          dense[r * nv + c] = val[rowadr[r] + k];
+        }
+      }
+      for (int r = 0; r < nv; r++) {
+        for (int c = r + 1; c < nv; c++) {
+          EXPECT_THAT(dense[r * nv + c],
+                      MjNear(dense[c * nv + r], 1e-12, 1e-6));
+        }
+      }
+
+      // verify CSR * vec matches matrix-free operators
+      auto vec = Direction(3);
+      std::vector<mjtNum> expected(nv, 0), actual(nv, 0);
+      if (flg_bend) {
+        mjd_flexBend_mul(model.get(), data.get(), expected.data(), vec.data(),
+                         s1, s2);
+      }
+      if (flg_stretch) {
+        mjd_flexStretch_mul(model.get(), data.get(), expected.data(),
+                            vec.data(), s1, s2);
+      }
+      for (int r = 0; r < nv; r++) {
+        mjtNum sum = 0;
+        for (int k = 0; k < rownnz[r]; k++) {
+          sum += val[rowadr[r] + k] * vec[colind[rowadr[r] + k]];
+        }
+        actual[r] = sum;
+      }
+      EXPECT_THAT(actual, Pointwise(MjNear(1e-12, 1e-6), expected));
+    }
+  }
+}
+
+TEST_P(FlexAttachmentTest, SupportsNewtonForDiscreteIntegrator) {
+  for (bool mixed : {false, true}) {
+    std::string xml = Xml(false, "both", mixed);
+    const std::string solver_str = "solver=\"CG\"";
+    xml.replace(xml.find(solver_str), solver_str.size(),
+                "solver=\"CG\" tolerance=\"1e-14\"");
+    const std::string wb_str = "<worldbody>";
+    xml.replace(xml.find(wb_str), wb_str.size(),
+                "<worldbody><geom type='plane' pos='0 0 -.05' size='2 2 .1'/>");
+    const std::string nocontact = "contype=\"0\" conaffinity=\"0\" ";
+    for (size_t pos = 0;
+         (pos = xml.find(nocontact, pos)) != std::string::npos;) {
+      xml.erase(pos, nocontact.size());
+    }
+
+    char error[1024];
+    auto m_test = LoadModelFromString(xml, error, sizeof(error));
+    ASSERT_THAT(m_test.get(), NotNull()) << error;
+    auto d_test = MakeData(m_test);
+    int nv = m_test->nv;
+
+    std::vector<mjtNum> dir(nv);
+    for (int i = 0; i < nv; i++) dir[i] = mju_Halton(i, 2) - .5;
+    mj_integratePos(m_test.get(), d_test->qpos, dir.data(), .05);
+    mju_copy(d_test->qvel, dir.data(), nv);
+
+    m_test->opt.solver = mjSOL_CG;
+    mj_forward(m_test.get(), d_test.get());
+    std::vector<mjtNum> qacc_cg(d_test->qacc, d_test->qacc + nv);
+
+    m_test->opt.solver = mjSOL_NEWTON;
+    mj_forward(m_test.get(), d_test.get());
+    EXPECT_GT(d_test->nefmK, 0);
+    EXPECT_EQ(d_test->efm_active, 2);
+
+    // the carrier's joint dofs have rows: the articulated pull-back is in the
+    // CSR
+    int carrier = mj_name2id(m_test.get(), mjOBJ_BODY, "carrier");
+    EXPECT_GT(d_test->efm_K_rownnz[m_test->body_dofadr[carrier]], 0);
+
+    std::vector<mjtNum> rhs(nv), sol(nv), prod(nv);
+    for (int i = 0; i < nv; i++) rhs[i] = mju_Halton(i, 3) - .5;
+    mj_effSolve(m_test.get(), d_test.get(), sol.data(), rhs.data());
+    mj_mulM(m_test.get(), d_test.get(), prod.data(), sol.data());
+    mj_effMulAdd(m_test.get(), d_test.get(), prod.data(), sol.data(), 1);
+    EXPECT_THAT(prod, Pointwise(MjNear(2e-8, 2e-5), rhs));
+
+    mjtNum scale = mju_norm(qacc_cg.data(), nv) / mju_sqrt((mjtNum)nv) + 1;
+    EXPECT_THAT(AsVector(d_test->qacc, nv),
+                Pointwise(MjNear(1e-12 * scale, 1e-4 * scale), qacc_cg));
+  }
+}
+
+TEST_F(DerivativeTest, GeneralFlexStiffAssembleAllDimsAndInterp) {
+  static const char* const kXml = R"(
+  <mujoco>
+    <option integrator="discrete" solver="CG"/>
+    <worldbody>
+      <body name="arm1" pos="0 0 1">
+        <joint type="ball"/>
+        <inertial pos="0 0 0" mass="0.5" diaginertia="0.01 0.02 0.03"/>
+        <flexcomp name="rod" type="grid" count="5 1 1" spacing="0.1 0.1 0.1"
+                  radius="0.01" dim="1" mass="0.4">
+          <pin id="0"/>
+          <contact selfcollide="none" contype="0" conaffinity="0"/>
+          <elasticity young="1e5" damping="0.1"/>
+        </flexcomp>
+        <flexcomp name="tri" type="grid" count="3 3 3" spacing="0.1 0.1 0.1"
+                  pos="0 0.4 0" radius="0.01" dim="3" mass="0.5"
+                  dof="trilinear" cellcount="2 1 1">
+          <pin id="0"/>
+          <contact selfcollide="none" contype="0" conaffinity="0"/>
+          <elasticity young="1e4" poisson="0.25" damping="0.5"/>
+        </flexcomp>
+      </body>
+      <body name="arm2" pos="1 0 1">
+        <joint type="hinge" axis="0 1 0"/>
+        <inertial pos="0 0 0" mass="0.5" diaginertia="0.01 0.02 0.03"/>
+        <flexcomp name="solid" type="grid" count="2 2 2" spacing="0.1 0.1 0.1"
+                  radius="0.01" dim="3" mass="0.5" dof="full">
+          <pin id="0"/>
+          <contact selfcollide="none" contype="0" conaffinity="0"/>
+          <elasticity young="1e4" poisson="0.2" damping="0.2"/>
+        </flexcomp>
+        <flexcomp name="quad" type="grid" count="3 3 3" spacing="0.1 0.1 0.1"
+                  pos="0 0.4 0" radius="0.01" dim="3" mass="0.5"
+                  dof="quadratic" cellcount="1 1 1">
+          <pin id="0"/>
+          <contact selfcollide="none" contype="0" conaffinity="0"/>
+          <elasticity young="1e4" poisson="0.2" damping="0.3"/>
+        </flexcomp>
+      </body>
+      <body name="carrier" pos="2 0 1">
+        <freejoint/>
+        <inertial pos="0 0 0" mass="0.5" diaginertia="0.01 0.02 0.03"/>
+        <flexcomp name="shell" type="grid" count="4 4 4" spacing="0.1 0.1 0.1"
+                  radius="0.01" dim="3" mass="0.5" dof="trilinear"
+                  cellcount="1 2 2">
+          <pin id="0 2"/>
+          <contact selfcollide="none" contype="0" conaffinity="0"/>
+          <elasticity young="1e4" poisson="0.25" damping="0.4"
+                      elastic2d="stretch" thickness="0.01"/>
+        </flexcomp>
+      </body>
+    </worldbody>
+  </mujoco>
+  )";
+
   char error[1024];
-  auto rejected = LoadModelFromString(xml, error, sizeof(error));
-  EXPECT_EQ(rejected.get(), nullptr);
-  EXPECT_THAT(error, HasSubstr("general attachments requires solver='CG'"));
+  MjModelPtr model = LoadModelFromString(kXml, error, sizeof(error));
+  ASSERT_THAT(model.get(), NotNull()) << error;
+  EXPECT_EQ(mjd_flexInterpAssemblable(model.get()), 0);
+  int nv = model->nv;
+  MjDataPtr data = MakeData(model);
+
+  std::vector<mjtNum> dir(nv);
+  for (int i = 0; i < nv; i++) dir[i] = mju_Halton(i, 2) - 0.5;
+  mj_integratePos(model.get(), data->qpos, dir.data(), 0.03);
+  mju_copy(data->qvel, dir.data(), nv);
+  mj_forward(model.get(), data.get());
+
+  std::vector<mjtNum> krot(model->nflexstiffness, 0);
+  mjd_flexInterp_cacheKrot(model.get(), data.get(), krot.data());
+
+  mjtNum s1 = 4e-6, s2 = 2e-3;
+  std::vector<int> rownnz(nv), rowadr(nv);
+  int nnz = mjd_flexStiff_assembleGen(
+      model.get(), data.get(), rownnz.data(), rowadr.data(), nullptr, nullptr,
+      s1, s2, /*flg_bend=*/1, /*flg_stretch=*/1, krot.data(),
+      /*flg_general=*/1);
+  ASSERT_GT(nnz, 0);
+
+  std::vector<int> colind(nnz);
+  std::vector<mjtNum> val(nnz);
+  int nnz2 = mjd_flexStiff_assembleGen(
+      model.get(), data.get(), rownnz.data(), rowadr.data(), colind.data(),
+      val.data(), s1, s2, /*flg_bend=*/1, /*flg_stretch=*/1, krot.data(),
+      /*flg_general=*/1);
+  EXPECT_EQ(nnz2, nnz);
+
+  for (int r = 0; r < nv; r++) {
+    for (int k = 1; k < rownnz[r]; k++) {
+      EXPECT_GT(colind[rowadr[r] + k], colind[rowadr[r] + k - 1]);
+    }
+  }
+
+  for (int trial = 0; trial < 3; trial++) {
+    std::vector<mjtNum> vec(nv), res_op(nv, 0), res_csr(nv, 0);
+    for (int i = 0; i < nv; i++) {
+      vec[i] = mju_Halton(i + trial * nv, 3) - 0.5;
+    }
+    mjd_flexBend_mul(model.get(), data.get(), res_op.data(), vec.data(), s1,
+                     s2);
+    mjd_flexStretch_mul(model.get(), data.get(), res_op.data(), vec.data(), s1,
+                        s2);
+    mjd_flexInterp_mul(model.get(), data.get(), res_op.data(), vec.data(), -s1,
+                       -s2, krot.data());
+
+    for (int r = 0; r < nv; r++) {
+      mjtNum sum = 0;
+      for (int k = 0; k < rownnz[r]; k++) {
+        sum += val[rowadr[r] + k] * vec[colind[rowadr[r] + k]];
+      }
+      res_csr[r] = sum;
+    }
+    mjtNum scale = mju_norm(res_op.data(), nv) / mju_sqrt((mjtNum)nv) + 1;
+    EXPECT_THAT(res_csr,
+                Pointwise(MjNear(1e-12 * scale, 5e-5 * scale), res_op));
+    EXPECT_GE(mju_dot(vec.data(), res_csr.data(), nv), -1e-11 * scale);
+  }
+}
+
+// an interpolated node on a jointless child of a moving body moves with that
+// body: it is not a fixed node, so the stiffness must reach the body's dofs
+// under both solvers
+TEST_F(DerivativeTest, InterpNodeOnWeldedChild) {
+  static const char* const kXml = R"(
+  <mujoco>
+    <option integrator="discrete" solver="CG" tolerance="1e-14" iterations="2000"/>
+    <worldbody>
+      <body name="arm">
+        <joint name="hinge" type="hinge" axis="0 1 0"/>
+        <geom type="sphere" size=".02" pos="-.1 0 0" mass=".3"/>
+        <body name="welded"/>
+      </body>
+      <flexcomp name="pad" type="grid" count="3 3 3" spacing=".05 .05 .05"
+                pos=".1 0 0" radius=".005" dim="3" mass=".5" dof="trilinear"
+                cellcount="1 1 1">
+        <pin id="0"/>
+        <contact contype="0" conaffinity="0" selfcollide="none"/>
+        <elasticity young="1e4" poisson=".2" damping=".1"/>
+      </flexcomp>
+    </worldbody>
+  </mujoco>
+  )";
+
+  // move the pinned node from the world to the welded child, whose frame is the
+  // world frame at qpos0, so its local coordinates are unchanged
+  mjSpec* spec = mj_parseXMLString(kXml, nullptr, nullptr, 0);
+  ASSERT_THAT(spec, NotNull());
+  mjsFlex* flex = mjs_asFlex(mjs_findElement(spec, mjOBJ_FLEX, "pad"));
+  ASSERT_THAT(flex, NotNull());
+  ASSERT_EQ((*flex->nodebody)[0], "world");
+  (*flex->nodebody)[0] = "welded";
+  MjModelPtr model(mj_compile(spec, nullptr));
+  mj_deleteSpec(spec);
+  ASSERT_THAT(model.get(), NotNull());
+  int welded = mj_name2id(model.get(), mjOBJ_BODY, "welded");
+  ASSERT_EQ(model->flex_nodebodyid[model->flex_nodeadr[0]], welded);
+  EXPECT_EQ(mjd_flexInterpAssemblable(model.get()), 0);
+
+  int nv = model->nv;
+  int hinge = model->jnt_dofadr[mj_name2id(model.get(), mjOBJ_JOINT, "hinge")];
+  MjDataPtr data = MakeData(model);
+  std::vector<mjtNum> dir(nv);
+  for (int i = 0; i < nv; i++) dir[i] = mju_Halton(i, 2) - .5;
+  mj_integratePos(model.get(), data->qpos, dir.data(), .02);
+  mju_copy(data->qvel, dir.data(), nv);
+
+  // reference: the matrix-free interp operator, which follows the node's body
+  // chain
+  mj_forward(model.get(), data.get());
+  std::vector<mjtNum> vec(nv), expected(nv, 0);
+  for (int i = 0; i < nv; i++) vec[i] = mju_Halton(i, 3) - .5;
+  mjtNum h = model->opt.timestep;
+  mjd_flexInterp_mul(model.get(), data.get(), expected.data(), vec.data(),
+                     -h * h, -h, data->flexelem_krot);
+  EXPECT_NE(expected[hinge], 0);
+
+  // CG applies the operator matrix-free, Newton assembles the general CSR
+  for (mjtSolver solver : {mjSOL_CG, mjSOL_NEWTON}) {
+    model->opt.solver = solver;
+    mj_forward(model.get(), data.get());
+    std::vector<mjtNum> actual(nv, 0);
+    mj_effMulAdd(model.get(), data.get(), actual.data(), vec.data(), 1);
+    mjtNum scale = mju_norm(expected.data(), nv) / mju_sqrt((mjtNum)nv) + 1;
+    EXPECT_THAT(actual,
+                Pointwise(MjNear(1e-12 * scale, 1e-5 * scale), expected))
+        << "solver " << solver;
+    if (solver == mjSOL_NEWTON) {
+      EXPECT_EQ(data->efm_active, 2);
+      EXPECT_GT(data->efm_K_rownnz[hinge], 0);
+    }
+  }
 }
 
 INSTANTIATE_TEST_SUITE_P(
@@ -4006,6 +5659,7 @@ TEST_F(DerivativeTest, EffSolve) {
                   radius=".005" dim="2" mass="0.5" pos="0 0 0" dof="full">
           <contact selfcollide="none" contype="0" conaffinity="0"/>
           <elasticity young="1e3" poisson="0.2" damping="0.1" elastic2d="stretch" thickness="0.01"/>
+          <pin id="0"/>
         </flexcomp>
       </body>
     </worldbody>
@@ -4086,6 +5740,7 @@ TEST_F(DerivativeTest, EffSolveCapWarns) {
           <contact selfcollide="none" contype="0" conaffinity="0"/>
           <elasticity young="1e9" poisson="0.45" damping="0" elastic2d="stretch"
                       thickness="0.02"/>
+          <pin id="0"/>
         </flexcomp>
       </body>
     </worldbody>
@@ -4135,6 +5790,298 @@ TEST_F(DerivativeTest, EffPrecIsSymmetric) {
     EXPECT_THAT(a, MjNear(b, 1e-10, 1e-4))
         << "preconditioner is not symmetric, trial " << trial;
   }
+}
+
+// mj_effPrecFold adds the 3x3 diagonal blocks of J'*D*J to the step's blocks of
+// M + K: with no rows it reproduces them, and with every row A1 = A0 + Delta,
+// checked through the factors as A1^-1 (A0 y + Delta y) = y
+TEST_F(DerivativeTest, EffPrecFoldAddsRowBlocks) {
+  static constexpr char kXml[] = R"(
+  <mujoco>
+    <option solver="CG" integrator="discrete" jacobian="dense">
+      <flag island="disable"/>
+    </option>
+    <worldbody>
+      <geom type="plane" size="1 1 .01"/>
+      <flexcomp name="sheet" type="grid" dim="2" count="5 5 1" spacing=".04 .04 1"
+                radius=".005" mass=".1" pos="0 0 .004">
+        <contact selfcollide="none"/>
+        <elasticity young="1e4" poisson=".3" thickness="2e-3" elastic2d="stretch"/>
+      </flexcomp>
+    </worldbody>
+  </mujoco>
+  )";
+  char error[1024];
+  MjModelPtr model = LoadModelFromString(kXml, error, sizeof(error));
+  ASSERT_THAT(model.get(), NotNull()) << error;
+  MjDataPtr data = MakeData(model);
+  const mjModel* m = model.get();
+  mjData* d = data.get();
+  mj_forward(m, d);
+  int nb = d->nefmdof, nv = m->nv, nefc = d->nefc;
+  ASSERT_GT(nb, 0);
+  ASSERT_GT(nefc, 0);
+
+  // no rows: the step's own blocks
+  vector<mjtNum> L0(9 * nb), L1(9 * nb);
+  ASSERT_TRUE(mj_effPrecFold(m, d, L0.data(), -1, 0, d->efc_D, 0, d->efc_J,
+                             nullptr, nullptr, nullptr));
+  for (int i = 0; i < 9 * nb; i++) {
+    EXPECT_EQ(L0[i], d->efm_L[i]) << i;
+  }
+
+  // every row
+  ASSERT_TRUE(mj_effPrecFold(m, d, L1.data(), -1, nefc, d->efc_D, 0, d->efc_J,
+                             nullptr, nullptr, nullptr));
+  int folded = 0;
+  for (int k = 0; k < nb; k++) {
+    int base = d->efm_dofid[k];
+    mjtNum delta[9] = {0};
+    for (int r = 0; r < nefc; r++) {
+      const mjtNum* Jk = d->efc_J + r * nv + base;
+      for (int a = 0; a < 3; a++) {
+        for (int b = 0; b < 3; b++) {
+          delta[3 * a + b] += d->efc_D[r] * Jk[a] * Jk[b];
+        }
+      }
+    }
+    folded += mju_norm(delta, 9) > 0;
+    mjtNum v[3] = {static_cast<mjtNum>(mju_Halton(k, 2) - .5),
+                   static_cast<mjtNum>(mju_Halton(k, 3) - .5),
+                   static_cast<mjtNum>(mju_Halton(k, 5) - .5)};
+    mjtNum y[3], dy[3], rhs[3], x[3];
+    mju_cholSolve(y, L0.data() + 9 * k, v, 3);
+    mju_mulMatVec3(dy, delta, y);
+    mju_add3(rhs, v, dy);
+    mju_cholSolve(x, L1.data() + 9 * k, rhs, 3);
+    for (int a = 0; a < 3; a++) {
+      EXPECT_THAT(x[a], MjNear(y[a], 1e-8, 1e-3)) << "block " << k;
+    }
+  }
+  EXPECT_GT(folded, 0) << "the sheet must touch the plane";
+}
+
+// Per-island mj_effPrecFold writes compact blocks matching the island slice of
+// monolithic mj_effPrecFold (0 blocks on rigid islands), and island vs
+// monolithic CG agree for both 3D flexes (effIslandStep) and 2D flexes + sleep
+// (effCholReserved fallback).
+TEST_F(DerivativeTest, EffPrecFoldMultiIsland) {
+  static constexpr char kXml3D[] = R"(
+  <mujoco>
+    <option solver="CG" integrator="discrete" tolerance="1e-12" iterations="300"/>
+    <worldbody>
+      <geom type="plane" size="2 2 .01"/>
+      <flexcomp name="cube0" type="grid" dim="3" count="2 2 2" spacing=".05 .05 .05"
+                radius=".008" mass=".2" pos="-.3 0 .025">
+        <contact selfcollide="none"/>
+        <elasticity young="2e4" poisson=".3" damping=".01"/>
+      </flexcomp>
+      <flexcomp name="cube1" type="grid" dim="3" count="2 2 2" spacing=".05 .05 .05"
+                radius=".008" mass=".3" pos=".3 0 .025">
+        <contact selfcollide="none"/>
+        <elasticity young="5e4" poisson=".25" damping=".01"/>
+      </flexcomp>
+      <body name="box" pos="0 .4 .04">
+        <freejoint/>
+        <geom type="box" size=".05 .05 .05" mass=".4"/>
+      </body>
+    </worldbody>
+  </mujoco>
+  )";
+  char error[1024];
+  MjModelPtr model = LoadModelFromString(kXml3D, error, sizeof(error));
+  ASSERT_THAT(model.get(), NotNull()) << error;
+
+  for (mjtJacobian jac : {mjJAC_SPARSE, mjJAC_DENSE}) {
+    model->opt.jacobian = jac;
+    model->opt.disableflags &= ~mjDSBL_ISLAND;
+    MjDataPtr data = MakeData(model);
+    mjModel* m = model.get();
+    mjData* d = data.get();
+    mj_forward(m, d);
+
+    int is_sparse = mj_isSparse(m);
+    ASSERT_EQ(d->nisland, 3);
+    ASSERT_EQ(d->nefmdof, 16);
+
+    vector<mjtNum> L_mono(9 * d->nefmdof);
+    ASSERT_EQ(mj_effPrecFold(m, d, L_mono.data(), -1, d->nefc, d->efc_D,
+                             is_sparse, d->efc_J, d->efc_J_rownnz,
+                             d->efc_J_rowadr, d->efc_J_colind),
+              d->nefmdof);
+
+    int flex_islands = 0, rigid_islands = 0;
+    for (int isl = 0; isl < d->nisland; isl++) {
+      int inv = d->island_nv[isl];
+      int inefc = d->island_nefc[isl];
+      int idofadr = d->island_idofadr[isl];
+      int iefcadr = d->island_iefcadr[isl];
+
+      vector<int> isl_triples;
+      for (int k = 0; k < d->nefmdof; k++) {
+        if (d->dof_island[d->efm_dofid[k]] == isl) {
+          isl_triples.push_back(k);
+        }
+      }
+      int expected = static_cast<int>(isl_triples.size());
+      EXPECT_EQ(mj_effFoldBlocks(d, isl), expected);
+      if (expected == 0) {
+        rigid_islands++;
+      } else {
+        EXPECT_EQ(expected, 8);
+        flex_islands++;
+      }
+
+      vector<mjtNum> L_isl(std::max(1, 9 * expected), -123);
+      int nfold = 0;
+      if (is_sparse) {
+        int nJ = 0;
+        for (int r = 0; r < inefc; r++) {
+          nJ += d->efc_J_rownnz[d->map_iefc2efc[iefcadr + r]];
+        }
+        vector<mjtNum> iJ(std::max(1, nJ));
+        vector<int> iJ_rownnz(inefc), iJ_rowadr(inefc),
+            iJ_colind(std::max(1, nJ));
+        mju_blockSparse(iJ.data(), iJ_rownnz.data(), iJ_rowadr.data(),
+                        iJ_colind.data(), d->efc_J, d->efc_J_rownnz,
+                        d->efc_J_rowadr, d->efc_J_colind, inefc,
+                        d->map_iefc2efc + iefcadr, d->map_dof2idof, idofadr, 0,
+                        nullptr, nullptr);
+        nfold = mj_effPrecFold(
+            m, d, L_isl.data(), isl, inefc, d->iefc_D + iefcadr, 1, iJ.data(),
+            iJ_rownnz.data(), iJ_rowadr.data(), iJ_colind.data());
+      } else {
+        vector<mjtNum> iJ(std::max(1, inefc * inv));
+        mju_block(iJ.data(), d->efc_J, m->nv, inv, inefc,
+                  d->map_iefc2efc + iefcadr, d->map_idof2dof + idofadr);
+        nfold =
+            mj_effPrecFold(m, d, L_isl.data(), isl, inefc, d->iefc_D + iefcadr,
+                           0, iJ.data(), nullptr, nullptr, nullptr);
+      }
+      ASSERT_EQ(nfold, expected);
+      for (int p = 0; p < nfold; p++) {
+        int k = isl_triples[p];
+        for (int a = 0; a < 9; a++) {
+          EXPECT_THAT(L_isl[9 * p + a], MjNear(L_mono[9 * k + a], 1e-12, 1e-5))
+              << "jac=" << jac << " isl=" << isl << " p=" << p << " a=" << a;
+        }
+      }
+    }
+    EXPECT_EQ(flex_islands, 2);
+    EXPECT_EQ(rigid_islands, 1);
+
+    model->opt.disableflags |= mjDSBL_ISLAND;
+    MjDataPtr data_mono = MakeData(model);
+    mj_forward(m, data_mono.get());
+    for (int i = 0; i < m->nv; i++) {
+      EXPECT_THAT(d->qacc[i], MjNear(data_mono->qacc[i], 1e-4, 1e-2))
+          << "jac=" << jac << " dof=" << i;
+    }
+  }
+
+  // 2D flexes with sleep="enable": effCholReserved holds so per-island CG
+  // exercises the !has_isl fallback in mj_effPrecFold and mj_effPrecIsland.
+  static constexpr char kXml2DSleep[] = R"(
+  <mujoco>
+    <option solver="CG" integrator="discrete" tolerance="1e-12" iterations="300">
+      <flag sleep="enable"/>
+    </option>
+    <worldbody>
+      <geom type="plane" size="2 2 .01"/>
+      <flexcomp name="s0" type="grid" dim="2" count="3 3 1" spacing=".05 .05 1"
+                radius=".005" mass=".1" pos="-.3 0 .004">
+        <contact selfcollide="none"/>
+        <elasticity young="1e4" poisson=".3" thickness="2e-3" elastic2d="stretch"/>
+      </flexcomp>
+      <flexcomp name="s1" type="grid" dim="2" count="3 3 1" spacing=".05 .05 1"
+                radius=".005" mass=".15" pos=".3 0 .004">
+        <contact selfcollide="none"/>
+        <elasticity young="2e4" poisson=".3" thickness="2e-3" elastic2d="stretch"/>
+      </flexcomp>
+    </worldbody>
+  </mujoco>
+  )";
+  MjModelPtr model2d = LoadModelFromString(kXml2DSleep, error, sizeof(error));
+  ASSERT_THAT(model2d.get(), NotNull()) << error;
+  MjDataPtr data2d_isl = MakeData(model2d);
+  mj_forward(model2d.get(), data2d_isl.get());
+  ASSERT_EQ(data2d_isl->nisland, 2);
+
+  model2d->opt.enableflags &= ~mjENBL_SLEEP;
+  model2d->opt.disableflags |= mjDSBL_ISLAND;
+  MjDataPtr data2d_mono = MakeData(model2d);
+  mj_forward(model2d.get(), data2d_mono.get());
+  for (int i = 0; i < model2d->nv; i++) {
+    EXPECT_THAT(data2d_isl->qacc[i], MjNear(data2d_mono->qacc[i], 1e-4, 1e-2))
+        << "2d sleep dof=" << i;
+  }
+}
+
+// Validate that mjd_actuator_vel (d->qDeriv) and mj_effActuation (d->nefmA)
+// skip tendon actuators whose total tendon force saturates tendon_actfrcrange,
+// including when proportional scaling across multiple actuators rounds.
+TEST_F(DerivativeTest, TendonActfrcrangeSaturation) {
+  static constexpr char kXml[] = R"(
+  <mujoco>
+    <option timestep="0.01" integrator="discrete"/>
+    <worldbody>
+      <body>
+        <joint name="slide" type="slide" axis="0 0 1"/>
+        <geom type="sphere" size="0.05" mass="1"/>
+        <site name="s1"/>
+      </body>
+      <site name="s0" pos="0 0 0.3"/>
+    </worldbody>
+    <tendon>
+      <spatial name="ten" actuatorfrclimited="true" actuatorfrcrange="-19 0">
+        <site site="s0"/>
+        <site site="s1"/>
+      </spatial>
+    </tendon>
+    <actuator>
+      <general tendon="ten" biastype="affine" gainprm="3" biasprm="0 -3 -3"/>
+      <general tendon="ten" biastype="affine" gainprm="5" biasprm="0 -5 -5"/>
+      <general tendon="ten" biastype="affine" gainprm="7" biasprm="0 -7 -7"/>
+      <general tendon="ten" biastype="affine" gainprm="11" biasprm="0 -11 -11"/>
+      <general tendon="ten" biastype="affine" gainprm="13" biasprm="0 -13 -13"/>
+      <general tendon="ten" biastype="affine" gainprm="17" biasprm="0 -17 -17"/>
+    </actuator>
+  </mujoco>
+  )";
+
+  char error[1024];
+  MjModelPtr m = LoadModelFromString(kXml, error, sizeof(error));
+  ASSERT_THAT(m.get(), testing::NotNull()) << error;
+  MjDataPtr d = MakeData(m);
+
+  auto eval_with_ctrl = [&](mjtNum ctrl) {
+    for (int i = 0; i < m->nu; ++i) {
+      d->ctrl[i] = ctrl;
+    }
+    mj_forward(m.get(), d.get());
+    mju_zero(d->qDeriv, m->nD);
+    mjd_actuator_vel(m.get(), d.get());
+    mjtNum sum_force = 0;
+    for (int i = 0; i < m->nu; ++i) {
+      sum_force += d->actuator_force[i];
+    }
+    return sum_force;
+  };
+
+  // 1. Unsaturated (-11.2 N in (-19, 0)): both qDeriv and nefmA are populated
+  EXPECT_NEAR(eval_with_ctrl(0.1), -11.2, MjTol(1e-10, 1e-4));
+  EXPECT_LT(d->qDeriv[0], -1.0);
+  EXPECT_EQ(d->nefmA, m->nu);
+
+  // 2. Saturated at lower bound (-19 N): qDeriv and nefmA are both skipped
+  EXPECT_NEAR(eval_with_ctrl(-1.4), -19.0, MjTol(1e-10, 1e-4));
+  EXPECT_EQ(d->qDeriv[0], 0.0);
+  EXPECT_EQ(d->nefmA, 0);
+
+  // 3. Saturated at upper bound (0 N): qDeriv and nefmA are both skipped
+  EXPECT_EQ(eval_with_ctrl(1.0), 0.0);
+  EXPECT_EQ(d->qDeriv[0], 0.0);
+  EXPECT_EQ(d->nefmA, 0);
 }
 
 }  // namespace

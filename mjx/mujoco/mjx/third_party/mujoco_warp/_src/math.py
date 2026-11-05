@@ -200,6 +200,51 @@ def quat_integrate(q: wp.quat, v: wp.vec3, dt: float) -> wp.quat:
 
 
 @wp.func
+def deriv_expmap(expmap: wp.vec3, vel: wp.vec3) -> wp.vec3:
+  """Time-derivative of expmap in quat = quat0 * exp(expmap).
+
+  Given the rotational velocity vel in the rotated frame, computes
+  vel + 1/2 expmap x vel + c expmap x (expmap x vel), with the Bortz
+  coefficient c = (1 - (x/2) cot(x/2)) / x^2, x = |expmap|.
+
+  expmap is first replaced with the equivalent rotation vector of angle in
+  (-pi, pi], since c is singular at multiples of 2*pi. Below x = 1.75, where
+  the closed form loses accuracy to cancellation, c is a minimax polynomial in
+  x^2; with the closed form above, the error is below 6 ulp on [-pi, pi].
+
+  Port of mju_derivExpmap (MuJoCo engine_util_spatial.c), using the
+  single-precision (mjUSESINGLE) coefficients of its bortzCoef.
+  """
+  r = expmap
+  xx = wp.dot(r, r)
+
+  # reduce the angle to (-pi, pi]
+  if xx > wp.static(wp.pi * wp.pi):
+    x = wp.sqrt(xx)
+    r = r * ((x - wp.static(2.0 * wp.pi) * wp.floor(x / wp.static(2.0 * wp.pi) + 0.5)) / x)
+    xx = wp.dot(r, r)
+
+  # Bortz coefficient: minimax polynomial (Horner form), or closed form
+  c = float(0.0)
+  if xx < 3.0625:
+    c = 1.26339661e-09
+    c = -1.64186869e-08 + xx * c
+    c = 8.78585737e-08 + xx * c
+    c = -2.48791736e-07 + xx * c
+    c = 4.23758962e-07 + xx * c
+    c = 4.57548566e-07 + xx * c
+    c = 3.32480922e-05 + xx * c
+    c = 0.00138884981 + xx * c
+    c = 0.0833333358 + xx * c
+  else:
+    x = wp.sqrt(xx)
+    c = (1.0 - 0.5 * x / wp.tan(0.5 * x)) / xx
+
+  rxv = wp.cross(r, vel)
+  return vel + 0.5 * rxv + c * wp.cross(r, rxv)
+
+
+@wp.func
 def orthogonals(a: wp.vec3):
   y = wp.vec3(0.0, 1.0, 0.0)
   z = wp.vec3(0.0, 0.0, 1.0)
@@ -431,3 +476,88 @@ def lu_solve_6x6(
       x[i] -= A_in[i, j] * x[j]
     x[i] /= A_in[i, i]
   return x
+
+
+@wp.func
+def eig3(
+  # In:
+  A_in: wp.mat33,
+) -> tuple[wp.vec3, wp.mat33]:
+  """Eigenvalue decomposition of a symmetric 3x3 matrix.
+
+  Returns eigenvalues sorted in descending order and eigenvectors as columns of the rotation matrix.
+  """
+  scale = float(0.0)
+  for row in range(3):
+    for col in range(3):
+      scale = wp.max(scale, wp.abs(A_in[row, col]))
+
+  V = wp.mat33(
+    1.0, 0.0, 0.0,
+    0.0, 1.0, 0.0,
+    0.0, 0.0, 1.0,
+  )
+  if scale == 0.0:
+    return wp.vec3(0.0, 0.0, 0.0), V
+
+  tol = scale * 2.0e-6
+  for _iter in range(12):
+    D = wp.transpose(V) @ A_in @ V
+    d01 = wp.abs(D[0, 1])
+    d02 = wp.abs(D[0, 2])
+    d12 = wp.abs(D[1, 2])
+    p = int(0)
+    q = int(1)
+    max_od = d01
+    if d02 > max_od:
+      p = int(0)
+      q = int(2)
+      max_od = d02
+    if d12 > max_od:
+      p = int(1)
+      q = int(2)
+      max_od = d12
+    if max_od <= tol:
+      break
+
+    Dpq = D[p, q]
+    tau = (D[q, q] - D[p, p]) / (2.0 * Dpq)
+    t = 1.0 / (tau + wp.sqrt(1.0 + tau * tau)) if tau >= 0.0 else -1.0 / (-tau + wp.sqrt(1.0 + tau * tau))
+    cos_t = 1.0 / wp.sqrt(1.0 + t * t)
+    sin_t = t * cos_t
+    for i in range(3):
+      vip = V[i, p]
+      viq = V[i, q]
+      V[i, p] = cos_t * vip - sin_t * viq
+      V[i, q] = sin_t * vip + cos_t * viq
+
+  D = wp.transpose(V) @ A_in @ V
+  eigval = wp.vec3(D[0, 0], D[1, 1], D[2, 2])
+
+  # Sort eigenvalues descending (bubble sort)
+  if eigval[0] < eigval[1]:
+    t_val = eigval[0]
+    eigval[0] = eigval[1]
+    eigval[1] = t_val
+    for i in range(3):
+      tmp_v = V[i, 0]
+      V[i, 0] = V[i, 1]
+      V[i, 1] = tmp_v
+  if eigval[1] < eigval[2]:
+    t_val = eigval[1]
+    eigval[1] = eigval[2]
+    eigval[2] = t_val
+    for i in range(3):
+      tmp_v = V[i, 1]
+      V[i, 1] = V[i, 2]
+      V[i, 2] = tmp_v
+  if eigval[0] < eigval[1]:
+    t_val = eigval[0]
+    eigval[0] = eigval[1]
+    eigval[1] = t_val
+    for i in range(3):
+      tmp_v = V[i, 0]
+      V[i, 0] = V[i, 1]
+      V[i, 1] = tmp_v
+
+  return eigval, V

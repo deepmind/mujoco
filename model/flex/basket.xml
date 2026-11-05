@@ -31,7 +31,7 @@
               radius=".01" rgba=".68 .53 .38 1" name="box" dim="2" mass="0.25">
       <contact condim="3" solref="0.01 1" solimp=".95 .99 .0001" selfcollide="none"/>
       <edge equality="true" damping="1"/>
-      <elasticity young="6e6" poisson="0.2" thickness="8e-3" elastic2d="bend" damping="1e-5"/>
+      <elasticity young="3.6e6" poisson="0.2" thickness="8e-3" elastic2d="bend" damping="1e-5"/>
     </flexcomp>
 
     <replicate count="3" offset=".2 0 0">

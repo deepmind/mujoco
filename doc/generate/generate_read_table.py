@@ -55,7 +55,7 @@ NOT_TABLE_DRIVEN = {
     'actuator_plugin',
     # equality subtypes: read shared equality_base + per-type refs
     'connect', 'weld', 'equality_joint', 'equality_tendon',
-    'equality_flex', 'flexvert', 'flexstrain',
+    'equality_flex', 'flexstrain',
     # sensors with custom reading logic
     'rangefinder', 'distance', 'user', 'normal', 'fromto',
     'sensor_contact', 'sensor_plugin', 'tactile',

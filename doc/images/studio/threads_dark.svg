@@ -1,0 +1,78 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 820 326" width="100%" role="img" aria-label="Decoupled Simulation and Viewer Threads">
+  <defs>
+    <style>
+      .font-sans { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, sans-serif; fill: #f0f2f5; }
+      .font-mono { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; fill: #7cacf8; }
+    </style>
+    <marker id="arrow-r-d" viewBox="0 0 10 10" refX="8" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto">
+      <path d="M 0.5 1 L 9 5 L 0.5 9 z" fill="#94a3b8"/>
+    </marker>
+    <marker id="arrow-l-d" viewBox="0 0 10 10" refX="2" refY="5" markerWidth="6.5" markerHeight="6.5" orient="auto">
+      <path d="M 9.5 1 L 1 5 L 9.5 9 z" fill="#94a3b8"/>
+    </marker>
+  </defs>
+
+  <!-- Left Card: Simulation Thread -->
+  <rect x="14" y="14" width="286" height="298" rx="12" fill="#1b1f27" stroke="#374151" stroke-width="1.5"/>
+  <path d="M 14 26 Q 14 14 26 14 L 288 14 Q 300 14 300 26 L 300 54 L 14 54 Z" fill="#252a34"/>
+  <line x1="14" y1="54" x2="300" y2="54" stroke="#374151" stroke-width="1"/>
+  <text x="28" y="39" class="font-sans" font-size="14.5" font-weight="700">Simulation Thread</text>
+
+  <!-- Sim Subcard 1 -->
+  <rect x="28" y="66" width="258" height="70" rx="8" fill="#232832" stroke="#333c4d" stroke-width="1"/>
+  <text x="40" y="87" class="font-sans" font-size="12.5" font-weight="700">Authoritative Physics</text>
+  <text x="40" y="106" class="font-sans" font-size="11.5">Exclusive owner of <tspan class="font-mono">mjModel</tspan> &amp; <tspan class="font-mono">mjData</tspan></text>
+  <text x="40" y="124" class="font-sans" font-size="11.5">Drives loop via <tspan class="font-mono">handle.sync()</tspan></text>
+
+  <!-- Sim Subcard 2 -->
+  <rect x="28" y="146" width="258" height="72" rx="8" fill="#232832" stroke="#333c4d" stroke-width="1"/>
+  <text x="40" y="167" class="font-sans" font-size="12.5" font-weight="700">Lifecycle Events</text>
+  <text x="40" y="187" class="font-mono" font-size="11">SimInit · LoadModel · PostModel</text>
+  <text x="40" y="205" class="font-mono" font-size="11">PreStep · Step · PostStep · Exit</text>
+
+  <!-- Sim Subcard 3 -->
+  <rect x="28" y="228" width="258" height="72" rx="8" fill="#232832" stroke="#333c4d" stroke-width="1"/>
+  <text x="40" y="249" class="font-sans" font-size="12.5" font-weight="700">Simulation Plugins (<tspan class="font-mono" font-size="11.5" font-weight="400">SimPlugin</tspan>)</text>
+  <text x="40" y="269" class="font-mono" font-size="11">StepControl · SimHistory</text>
+  <text x="40" y="287" class="font-sans" font-size="11.5">Custom controllers &amp; <tspan class="font-mono">mjSpec</tspan> editors</text>
+
+  <!-- Center Bridge: Message Channels -->
+  <text x="410" y="76" text-anchor="middle" class="font-sans" font-size="12.5" font-weight="700">Message Channels</text>
+
+  <!-- Snapshot Channel -->
+  <line x1="306" y1="125" x2="514" y2="125" stroke="#94a3b8" stroke-width="2.2" marker-start="url(#arrow-l-d)" marker-end="url(#arrow-r-d)"/>
+  <rect x="327" y="92" width="166" height="66" rx="10" fill="#232832" stroke="#64748b" stroke-width="1.5"/>
+  <text x="410" y="113" text-anchor="middle" class="font-mono" font-size="11.5" font-weight="700">SnapshotChannel</text>
+  <text x="410" y="131" text-anchor="middle" class="font-sans" font-size="11">Latest-wins dictionary</text>
+  <text x="410" y="147" text-anchor="middle" class="font-sans" font-size="10.5">(one slot per <tspan class="font-mono">Snapshot</tspan> type)</text>
+
+  <!-- Event Channel -->
+  <line x1="306" y1="202" x2="514" y2="202" stroke="#94a3b8" stroke-width="2.2" marker-start="url(#arrow-l-d)" marker-end="url(#arrow-r-d)"/>
+  <rect x="327" y="176" width="166" height="52" rx="10" fill="#232832" stroke="#64748b" stroke-width="1.5"/>
+  <text x="410" y="198" text-anchor="middle" class="font-mono" font-size="11.5" font-weight="700">EventChannel</text>
+  <text x="410" y="216" text-anchor="middle" class="font-sans" font-size="11">Ordered FIFO queue</text>
+
+  <!-- Right Card: Viewer Thread -->
+  <rect x="520" y="14" width="286" height="298" rx="12" fill="#1b1f27" stroke="#374151" stroke-width="1.5"/>
+  <path d="M 520 26 Q 520 14 532 14 L 794 14 Q 806 14 806 26 L 806 54 L 520 54 Z" fill="#252a34"/>
+  <line x1="520" y1="54" x2="806" y2="54" stroke="#374151" stroke-width="1"/>
+  <text x="534" y="39" class="font-sans" font-size="14.5" font-weight="700">Viewer Thread</text>
+
+  <!-- Viewer Subcard 1 -->
+  <rect x="534" y="66" width="258" height="70" rx="8" fill="#232832" stroke="#333c4d" stroke-width="1"/>
+  <text x="546" y="87" class="font-sans" font-size="12.5" font-weight="700">Local Render State</text>
+  <text x="546" y="106" class="font-sans" font-size="11.5">Private copy of <tspan class="font-mono">mjModel</tspan> &amp; <tspan class="font-mono">mjData</tspan></text>
+  <text x="546" y="124" class="font-sans" font-size="11.5">Runs local <tspan class="font-mono">mj_forward()</tspan> + <tspan class="font-mono">extra_geoms</tspan></text>
+
+  <!-- Viewer Subcard 2 -->
+  <rect x="534" y="146" width="258" height="72" rx="8" fill="#232832" stroke="#333c4d" stroke-width="1"/>
+  <text x="546" y="167" class="font-sans" font-size="12.5" font-weight="700">Lifecycle Events</text>
+  <text x="546" y="187" class="font-mono" font-size="11">ViewerInit · studio_app.Init · PostModel</text>
+  <text x="546" y="205" class="font-mono" font-size="11">Update · BuildGui · Exit</text>
+
+  <!-- Viewer Subcard 3 -->
+  <rect x="534" y="228" width="258" height="72" rx="8" fill="#232832" stroke="#333c4d" stroke-width="1"/>
+  <text x="546" y="249" class="font-sans" font-size="12.5" font-weight="700">Viewer Plugins (<tspan class="font-mono" font-size="11.5" font-weight="400">ViewerPlugin</tspan>)</text>
+  <text x="546" y="269" class="font-mono" font-size="11">studio_app.App</text>
+  <text x="546" y="287" class="font-sans" font-size="11.5">Custom UI panels &amp; 3D overlays</text>
+</svg>

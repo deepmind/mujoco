@@ -45,6 +45,7 @@ API function can be classified as:
    - :ref:`Derivatives<Derivatives-api>`.
    - :ref:`Signed Distance Functions<Signeddistancefunction>`.
    - :ref:`Thread<Thread>` |-| -related functions.
+   - :ref:`Batched simulation<Batchedsimulation>`.
    - :ref:`Plugin<Plugins-api>` |-| -related functions.
 
 - **Math**

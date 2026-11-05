@@ -97,8 +97,19 @@ pxr::SdfRelationshipSpecHandle CreateRelationshipSpec(pxr::SdfLayerRefPtr layer,
                                     const pxr::TfToken& relationship_name,
                                     const pxr::SdfPath& relationship_path,
                                     pxr::SdfVariability variability) {
-  auto spec = pxr::SdfRelationshipSpec::New(prim_spec, relationship_name);
-  spec->GetTargetPathList().Append(relationship_path);
+  const pxr::SdfPath property_path =
+      prim_spec->GetPath().AppendProperty(relationship_name);
+
+  pxr::SdfRelationshipSpecHandle spec;
+  if (layer->HasSpec(property_path)) {
+    spec = layer->GetRelationshipAtPath(property_path);
+  } else {
+    spec = pxr::SdfRelationshipSpec::New(prim_spec, relationship_name,
+                                         /*custom=*/true, variability);
+  }
+  if (spec) {
+    spec->GetTargetPathList().Append(relationship_path);
+  }
 
   return spec;
 }

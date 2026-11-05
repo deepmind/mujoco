@@ -14,6 +14,7 @@
 
 #include "render/filament/core/builtins.h"
 
+#include <algorithm>
 #include <cmath>
 #include <cstddef>
 #include <cstdint>
@@ -179,6 +180,50 @@ class PlaneBuilder : public BuiltinBuilder {
     }
 
     SetBounds({-1, -1, -0.001}, {1, 1, 0.001});
+  }
+};
+
+// Two-band open cylinder (3 rings at z = {0, 0.5, 1}, radius 1) encoding
+// uv0 = (alpha_weight, band) with alpha_weight = {0, 1, 0}. The vertex shader
+// in haze.mat reshapes these rings into an inverted conical frustum spanning
+// from the ground disk rim (radius 1 - HazeRatio, z = 0, alpha = 0) through the
+// horizon seam (alpha = 1) up to camera eye height (radius 1, z = 1,
+// alpha = 0), matching classic OpenGL's mjrHAZE horizon band. Bounds are left
+// unset so frustum culling is disabled while haze.mat displaces vertices.
+class HazeBuilder : public BuiltinBuilder {
+ public:
+  explicit HazeBuilder(int num_slices) {
+    num_slices = std::max(3, num_slices);
+    static constexpr float kBands[3] = {0.0f, 0.5f, 1.0f};
+    static constexpr float kWeights[3] = {0.0f, 1.0f, 0.0f};
+
+    const int num_vertices = 3 * num_slices;
+    positions_.reserve(num_vertices);
+    texcoords_.reserve(num_vertices);
+
+    const float delta_angle =
+        2.0f * std::numbers::pi_v<float> / static_cast<float>(num_slices);
+    for (int k = 0; k < 3; ++k) {
+      for (int j = 0; j < num_slices; ++j) {
+        const float angle = static_cast<float>(j) * delta_angle;
+        positions_.emplace_back(std::cos(angle), std::sin(angle), kBands[k]);
+        texcoords_.emplace_back(kWeights[k], kBands[k]);
+      }
+    }
+
+    orientations_.resize(positions_.size(), {0, 0, 0, 1});
+
+    const int num_indices = 2 * num_slices * kNumIndicesPerQuad;
+    indices_.reserve(num_indices);
+    for (int k = 0; k < 2; ++k) {
+      const int lower_base = k * num_slices;
+      const int upper_base = (k + 1) * num_slices;
+      for (int j = 0; j < num_slices; ++j) {
+        const int next = (j + 1) % num_slices;
+        AppendQuadIndices(indices_, lower_base + j, lower_base + next,
+                          upper_base + next, upper_base + j);
+      }
+    }
   }
 };
 
@@ -464,32 +509,50 @@ class ConeBuilder : public BuiltinBuilder {
 
 class DiskBuilder : public BuiltinBuilder {
  public:
-  explicit DiskBuilder(int num_slices) {
-    const int num_vertices = num_slices + 1;
+  explicit DiskBuilder(int num_slices, int num_rings = 1) {
+    num_slices = std::max(3, num_slices);
+    num_rings = std::clamp(num_rings, 1, std::max(1, 65534 / num_slices));
+
+    const int num_vertices = 1 + num_rings * num_slices;
     positions_.reserve(num_vertices);
     texcoords_.reserve(num_vertices);
     const float delta_angle =
-        2.0 * std::numbers::pi / static_cast<float>(num_slices);
+        2.0f * std::numbers::pi_v<float> / static_cast<float>(num_slices);
 
     positions_.push_back({0, 0, 0});
     texcoords_.emplace_back(0.5f, 0.5f);
-    for (int i = 0; i < num_slices; ++i) {
-      const float angle = static_cast<float>(i) * delta_angle;
-      const float x = std::cos(angle);
-      const float y = std::sin(angle);
-      positions_.push_back({x, y, 0});
-      texcoords_.emplace_back(0.5f + 0.5f * x, 0.5f + 0.5f * y);
+    for (int r = 1; r <= num_rings; ++r) {
+      const float radius =
+          static_cast<float>(r) / static_cast<float>(num_rings);
+      for (int i = 0; i < num_slices; ++i) {
+        const float angle = static_cast<float>(i) * delta_angle;
+        const float x = radius * std::cos(angle);
+        const float y = radius * std::sin(angle);
+        positions_.push_back({x, y, 0});
+        texcoords_.emplace_back(0.5f + 0.5f * x, 0.5f + 0.5f * y);
+      }
     }
 
     orientations_.resize(positions_.size(), CalculateOrientation({0, 0, 1}));
 
-    const int num_indices = num_slices * kNumVerticesPerTriangle;
+    const int num_indices =
+        num_slices * kNumIndicesPerTriangle +
+        (num_rings - 1) * num_slices * kNumIndicesPerQuad;
     indices_.reserve(num_indices);
     for (int i = 0; i < num_slices; ++i) {
-      const int next = i < (num_slices - 1) ? i + 1 : 0;
+      const int next = (i + 1) % num_slices;
       indices_.push_back(0);
       indices_.push_back(1 + i);
       indices_.push_back(1 + next);
+    }
+    for (int r = 1; r < num_rings; ++r) {
+      const int inner_base = 1 + (r - 1) * num_slices;
+      const int outer_base = 1 + r * num_slices;
+      for (int i = 0; i < num_slices; ++i) {
+        const int next = (i + 1) % num_slices;
+        AppendQuadIndices(indices_, inner_base + i, outer_base + i,
+                          outer_base + next, inner_base + next);
+      }
     }
 
     SetBounds({-1, -1, -0.001}, {1, 1, 0.001});
@@ -695,12 +758,13 @@ Builtins::Builtins(filament::Engine* engine, int nstack, int nslice,
                    int nquad) {
   line_ = BuiltinBuilder::Create<LineBuilder>(engine);
   plane_ = BuiltinBuilder::Create<PlaneBuilder>(engine, nquad);
+  haze_ = BuiltinBuilder::Create<HazeBuilder>(engine, nslice);
   triangle_ = BuiltinBuilder::Create<TriangleBuilder>(engine);
   box_ = BuiltinBuilder::Create<BoxBuilder>(engine, nquad);
   line_box_ = BuiltinBuilder::Create<LineBoxBuilder>(engine);
   sphere_ = BuiltinBuilder::Create<SphereBuilder>(engine, nstack, nslice);
   tube_ = BuiltinBuilder::Create<TubeBuilder>(engine, nstack, nslice);
-  disk_ = BuiltinBuilder::Create<DiskBuilder>(engine, nslice);
+  disk_ = BuiltinBuilder::Create<DiskBuilder>(engine, nslice, nquad);
   dome_top_ =
       BuiltinBuilder::Create<DomeBuilder>(engine, nstack, nslice, false, true);
   dome_bottom_ =
@@ -711,6 +775,7 @@ Builtins::Builtins(filament::Engine* engine, int nstack, int nslice,
 const Mesh* Builtins::Line() { return line_.get(); }
 const Mesh* Builtins::LineBox() { return line_box_.get(); }
 const Mesh* Builtins::Plane() { return plane_.get(); }
+const Mesh* Builtins::Haze() { return haze_.get(); }
 const Mesh* Builtins::Triangle() { return triangle_.get(); }
 const Mesh* Builtins::Box() { return box_.get(); }
 const Mesh* Builtins::Sphere() { return sphere_.get(); }

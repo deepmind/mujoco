@@ -80,6 +80,11 @@ NameList EnumNames(ToneMapperType v) {
   return names;
 }
 
+NameList EnumNames(OutputColorSpace v) {
+  static const char* names[] = {"Rec709-Linear-D65", "Rec709-sRGB-D65"};
+  return names;
+}
+
 NameList EnumNames(filament::QualityLevel v) {
   static const char* names[] = {"LOW", "MEDIUM", "HIGH", "ULTRA"};
   return names;
@@ -421,6 +426,7 @@ void DrawColorGradingGui(SceneView* scene_view) {
 
   bool changed = false;
   changed |= Ui("Tone Mapper", &opts.tone_mapper);
+  changed |= Ui("Output Color Space", &opts.output_color_space);
   changed |= Ui("Lut Format", &opts.format);
   changed |= Ui("Lut Dimension", &opts.dimension);
   changed |= Ui("Luminance Scaling", &opts.luminance_scaling);
@@ -477,11 +483,14 @@ void DrawColorGradingGui(SceneView* scene_view) {
 void DrawDepthOfFieldGui(SceneView* scene_view) {
   filament::View* view = scene_view->GetDefaultRenderView();
   auto opts = view->getDepthOfFieldOptions();
+  float focus_distance = scene_view->GetFocusDistance();
   bool changed = false;
+
   changed |= Ui("Enabled", &opts.enabled);
   changed |= Ui("Filter", &opts.filter);
   changed |= Ui("Max. Aperture", &opts.maxApertureDiameter);
   changed |= Ui("Resolution", &opts.nativeResolution);
+  changed |= Ui("Focal Distance", &focus_distance);
   changed |= Ui("COC Scale", &opts.cocScale);
   changed |= Ui("COC Aspect Ratio", &opts.cocAspectRatio);
   changed |= Ui("Max COC (Foreground)", &opts.maxForegroundCOC);
@@ -491,6 +500,7 @@ void DrawDepthOfFieldGui(SceneView* scene_view) {
   changed |= Ui("Fast Gather Ring Count", &opts.fastGatherRingCount);
   if (changed) {
     view->setDepthOfFieldOptions(opts);
+    scene_view->SetFocusDistance(focus_distance);
   }
 }
 
@@ -521,6 +531,18 @@ void DrawFogGui(SceneView* scene_view) {
   if (changed) {
     opts.maximumOpacity = std::clamp(opts.maximumOpacity, 0.0f, 1.0f);
     view->setFogOptions(opts);
+  }
+}
+
+void DrawHazeGui(SceneView* scene_view) {
+  float ratio = scene_view->GetHazeRatio();
+  float4 color = scene_view->GetHazeColor();
+  bool changed = false;
+  changed |= Ui("Ratio", &ratio, {.min = 0.0f, .max = 1.0f});
+  changed |= ImGui::ColorEdit4("Color", &color.x);
+  if (changed) {
+    const float rgba[4] = {color.x, color.y, color.z, color.w};
+    scene_view->SetHaze(ratio, rgba);
   }
 }
 
@@ -671,6 +693,10 @@ void DrawSceneEditor(mjrfScene* scene) {
   }
   if (ImGui::TreeNodeEx("Shadowing")) {
     mujoco::DrawShadowingGui(scene_view);
+    ImGui::TreePop();
+  }
+  if (ImGui::TreeNodeEx("Haze")) {
+    mujoco::DrawHazeGui(scene_view);
     ImGui::TreePop();
   }
   if (ImGui::TreeNodeEx("Post Processing")) {

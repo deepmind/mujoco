@@ -152,6 +152,7 @@ typedef enum mjtRndFlag_ {        // flags enabling rendering effects
   mjRND_SEGMENT,                  // segmentation with random color
   mjRND_IDCOLOR,                  // segmentation with segid+1 color
   mjRND_CULL_FACE,                // cull backward faces
+  mjRND_POST_PROCESSING,          // post-processing (e.g. color grading, bloom, etc.)
 
   mjNRNDFLAG                      // number of rendering flags
 } mjtRndFlag;
@@ -226,7 +227,8 @@ typedef struct mjvGLCamera_ {     // OpenGL camera
 typedef struct mjvGeom_ {         // abstract geom
   // type info
   int      type;                  // geom type (mjtGeom)
-  int      dataid;                // mesh, hfield or plane id; -1: none; mesh: 2*id or 2*id+1 (hull)
+  int      dataid;                // mesh, hfield or plane id; -1: none; mesh: 2*id or 2*id+1 (hull);
+                                  // multi-material flex: material slice index
   int      objtype;               // mujoco object type; mjOBJ_UNKNOWN for decor
   int      objid;                 // mujoco object id; -1 for decor
   int      category;              // visual category
@@ -237,7 +239,7 @@ typedef struct mjvGeom_ {         // abstract geom
   int      segid;                 // segmentation id; -1: not shown
 
   // spatial transform
-  float    size[3];               // size parameters
+  float    size[3];               // size parameters; multi-material flex: (radius, face offset, face count)
   float    pos[3];                // Cartesian position
   float    mat[9];                // Cartesian orientation
 
@@ -248,6 +250,7 @@ typedef struct mjvGeom_ {         // abstract geom
   float    shininess;             // shininess coef
   float    reflectance;           // reflectance coef
   float    texrepeat[2];          // texture repetition for 2d mapping
+  mjtByte  castshadow;            // does geom cast shadows
 
   char     label[100];            // text label
 

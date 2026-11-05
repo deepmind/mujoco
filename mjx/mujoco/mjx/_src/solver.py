@@ -148,10 +148,10 @@ class _LSPoint(PyTreeNode):
       jv: jax.Array,
       quad: jax.Array,
       quad_gauss: jax.Array,
-      uu: jax.Array,
+      u_perp_sq: jax.Array,
       v0: jax.Array,
-      uv: jax.Array,
-      vv: jax.Array,
+      u_par: jax.Array,
+      v_norm: jax.Array,
   ) -> '_LSPoint':
     """Creates a linesearch point with first and second derivatives."""
     # roughly corresponds to CGEval in mujoco/src/engine/engine_solver.c
@@ -179,7 +179,8 @@ class _LSPoint(PyTreeNode):
     if m.opt.cone == ConeType.ELLIPTIC:
       mu, u0 = ctx.fri[:, 0], ctx.u[:, 0]
       n = u0 + alpha * v0
-      tsqr = uu + alpha * (2 * uv + alpha * vv)
+      w_par = u_par + alpha * v_norm
+      tsqr = jp.square(w_par) + u_perp_sq
       t = jp.sqrt(tsqr)  # tangential force
 
       bottom_zone = ((tsqr <= 0) & (n < 0)) | ((tsqr > 0) & ((mu * n + t) <= 0))
@@ -199,13 +200,16 @@ class _LSPoint(PyTreeNode):
       t += (t == 0) * mujoco.mjMINVAL
       tsqr += (tsqr == 0) * mujoco.mjMINVAL
       n1 = v0
-      t1 = (uv + alpha * vv) / t
-      t2 = vv / t - (uv + alpha * vv) * t1 / tsqr
+      t1 = w_par * v_norm / t
+      # squared norm of (unit tangent) ^ v, folded with 1/T into (N/T - mu)
+      det = (u_perp_sq / tsqr) * jp.square(v_norm)
       dm = ctx.dm * middle_zone
       nmt = n - mu * t
       cost = 0.5 * jp.sum(dm * jp.square(nmt))
       deriv_0 = jp.sum(dm * nmt * (n1 - mu * t1))
-      deriv_1 = jp.sum(dm * (jp.square(n1 - mu * t1) - nmt * mu * t2))
+      deriv_1 = jp.sum(
+          dm * (jp.square(n1 - mu * t1) + (n / t - mu) * (-mu * det))
+      )
     elif m.opt.cone == ConeType.PYRAMIDAL:
       quad = jax.vmap(jp.multiply)(quad, active)  # only active
       quad_total += jp.sum(quad, axis=0)
@@ -303,7 +307,10 @@ def _update_constraint(m: Model, d: Data, ctx: Context) -> Context:
         )
     )
     u = slice_fn(efc_address) * ctx.fri
-    mu, n, t = ctx.fri[:, 0], u[:, 0], jax.vmap(math.norm)(u[:, 1:])
+    mu, n = ctx.fri[:, 0], u[:, 0]
+    # exact tangent norm, gradient-safe at 0 (math.norm flushes |x| <= 1e-8)
+    tsqr = jp.sum(jp.square(u[:, 1:]), axis=1)
+    t = jp.where(tsqr > 0, jp.sqrt(jp.where(tsqr > 0, tsqr, 1.0)), 0.0)
 
     # bottom zone: quadratic
     bottom_zone = ((t <= 0) & (n < 0)) | ((t > 0) & ((mu * n + t) <= 0))
@@ -338,19 +345,20 @@ def _update_constraint(m: Model, d: Data, ctx: Context) -> Context:
     # cone hessian
     h = 0.0
     if m.opt.solver == SolverType.NEWTON:
-      t = jp.maximum(t, mujoco.mjMINVAL)
-      # h = mu*N/T^3 * U*U'
-      ttt = jp.maximum(t * t * t, mujoco.mjMINVAL)
-      h = jax.vmap(lambda x, y: x * jp.outer(y, y.T))(mu * n / ttt, u)
+      t_safe = jp.where(middle_zone, t, 1.0)
+      # unit tangent: normalize before forming products so T^3 never appears
+      uhat = u / t_safe[:, None]
+      # h = (mu*N/T) * Uhat*Uhat'
+      h = jax.vmap(lambda x, y: x * jp.outer(y, y.T))(mu * n / t_safe, uhat)
       # add to diagonal: (mu^2 - mu*N/T) * I
-      h += jax.vmap(lambda x: x * jp.eye(6, 6))(mu * mu - mu * n / t)
-      # set first row: (1, -mu/T * U)
-      h_0 = jax.vmap(lambda mu, t, u: jp.append(1, -mu / t * u[1:]))(mu, t, u)
+      h += jax.vmap(lambda x: x * jp.eye(6, 6))(mu * mu - mu * n / t_safe)
+      # set first row: (1, -mu * Uhat)
+      h_0 = jax.vmap(lambda mu, uhat: jp.append(1, -mu * uhat[1:]))(mu, uhat)
       h = h.at[:, 0].set(h_0).at[:, :, 0].set(h_0)
       # pre and post multiply by diag(mu, friction), scale by Dm
       h *= jax.vmap(lambda d, f: d * jp.outer(f, f.T))(dm, ctx.fri)
       # only cone constraints
-      h = jax.vmap(jp.multiply)(h, middle_zone)
+      h = jp.where(middle_zone[:, None, None], h, 0.0)
   else:
     raise NotImplementedError(f'unsupported cone type: {m.opt.cone}')
 
@@ -468,7 +476,7 @@ def _linesearch(m: Model, d: Data, ctx: Context) -> Context:
   ))
   quad = jp.stack((0.5 * ctx.Jaref * ctx.Jaref, jv * ctx.Jaref, 0.5 * jv * jv))
   quad = (quad * d._impl.efc_D).T
-  uu, v0, uv, vv = 0.0, 0.0, 0.0, 0.0
+  u_perp_sq, v0, u_par, v_norm = 0.0, 0.0, 0.0, 0.0
   if m.opt.cone == ConeType.ELLIPTIC:
     mask = d._impl.contact.dim > 1
     # complete vector quadratic (for bottom zone)
@@ -489,13 +497,27 @@ def _linesearch(m: Model, d: Data, ctx: Context) -> Context:
     )
     efc_elliptic = d._impl.contact.efc_address[mask]
     v = jv_fn(efc_elliptic) * ctx.fri
-    uu = jp.sum(ctx.u[:, 1:] * ctx.u[:, 1:], axis=1)
+    u_tan, v_tan = ctx.u[:, 1:], v[:, 1:]
+    uu = jp.sum(u_tan * u_tan, axis=1)
     v0 = v[:, 0]
-    uv = jp.sum(ctx.u[:, 1:] * v[:, 1:], axis=1)
-    vv = jp.sum(v[:, 1:] * v[:, 1:], axis=1)
+    uv = jp.sum(u_tan * v_tan, axis=1)
+    vv = jp.sum(v_tan * v_tan, axis=1)
+
+    # decompose tangential u into components parallel and orthogonal to v
+    wedge = (
+        u_tan[:, :, None] * v_tan[:, None, :]
+        - u_tan[:, None, :] * v_tan[:, :, None]
+    )
+    det = 0.5 * jp.sum(jp.square(wedge), axis=(1, 2))
+    v_pos = vv > 0
+    vv_safe = jp.where(v_pos, vv, 1.0)
+    v_norm = jp.where(v_pos, jp.sqrt(vv_safe), 0.0)
+    v_norm_safe = jp.where(v_pos, v_norm, 1.0)
+    u_par = jp.where(v_pos, uv / v_norm_safe, 0.0)
+    u_perp_sq = jp.where(v_pos, det / vv_safe, uu)
 
   point_fn = lambda a: _LSPoint.create(
-      m, d, ctx, a, jv, quad, quad_gauss, uu, v0, uv, vv  # pyrefly: ignore[bad-argument-type]
+      m, d, ctx, a, jv, quad, quad_gauss, u_perp_sq, v0, u_par, v_norm  # pyrefly: ignore[bad-argument-type]
   )
   # initialize interval
   p0 = point_fn(jp.array(0.0))

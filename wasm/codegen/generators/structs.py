@@ -19,7 +19,7 @@ import dataclasses
 import math
 from typing import Tuple, Union, cast
 
-from mujoco.codegen import code_builder
+from codegen import code_builder
 from introspect import ast_nodes
 from introspect import functions as introspect_functions
 from introspect import structs as introspect_structs

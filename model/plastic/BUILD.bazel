@@ -1,0 +1,10 @@
+# Description:
+#   Plasticity models.
+
+licenses(["notice"])
+
+filegroup(
+    name = "plastic",
+    srcs = glob(["**/*.xml"]),
+    visibility = ["//:visibility"],
+)
