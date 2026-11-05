@@ -682,7 +682,7 @@ def generate_add() -> None:
 
     # include helper functions
     if set_types:
-      for t in set(set_types):
+      for t in sorted(set(set_types)):
         if t == 'orientation':
           code += """\n
            auto set_orientation = [](raw::MjsOrientation& orientation,
