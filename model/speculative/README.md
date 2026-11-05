@@ -6,6 +6,14 @@ through obstacles within a single timestep. See the
 [Speculative contacts documentation](https://mujoco.readthedocs.io/en/latest/computation/speculative.html)
 for the underlying formulation.
 
+<p float="left">
+  <a href="https://live.mujoco.org/?model=github:google-deepmind/mujoco/main/model/speculative/newton.xml" title="Open newton.xml in live.mujoco.org"><img src="https://www.gstatic.com/mujoco/model/speculative/newton.webp" width="32%"></a>
+  <a href="https://live.mujoco.org/?model=github:google-deepmind/mujoco/main/model/speculative/chain.xml" title="Open chain.xml in live.mujoco.org"><img src="https://www.gstatic.com/mujoco/model/speculative/chain.webp" width="32%"></a>
+  <a href="https://live.mujoco.org/?model=github:google-deepmind/mujoco/main/model/speculative/flipper.xml" title="Open flipper.xml in live.mujoco.org"><img src="https://www.gstatic.com/mujoco/model/speculative/flipper.webp" width="32%"></a>
+</p>
+
+Click an animation to open the model in the browser viewer at [live.mujoco.org](https://live.mujoco.org).
+
 | Model                        | Timestep | Description                                            |
 | ---------------------------- | -------- | ------------------------------------------------------ |
 | [`newton.xml`](newton.xml)   | 4 ms     | Five 3 mm steel plates suspended on twin wires         |
@@ -22,9 +30,9 @@ Disable the `speculative` flag in any of these models (`<flag speculative="disab
   reaches ~3 m/s (12 mm per 4 ms step, or 4× the plate thickness) at the bottom of its swing.
   Without speculative contacts, the swinging plate passes straight through its neighbors.
 * **Interlocking chain ([`chain.xml`](chain.xml)):** Four free-jointed rectangular links built from
-  6 mm radius capsules drop 28 cm onto a fixed horizontal catch bar at a 6 ms timestep. Speculative
-  contacts catch both the top link on the bar and the thin capsule bars of each link against the
-  next as the shock wave travels down the chain.
+  6 mm radius capsules start with 13 cm of vertical slack between adjacent links and drop onto a
+  fixed horizontal catch bar at a 6 ms timestep. Speculative contacts arrest each link against the
+  next in sequence as the chain pulls taut from top to bottom.
 * **Baseball and flipper ([`flipper.xml`](flipper.xml)):** A spring-loaded plunger launches a 4 cm
   ball toward a 1.2 cm thick hinged bat that whips through the impact zone under a stiff torsional
   spring at a 10 ms timestep. Both the ball's linear travel and the bat's rotational sweep exceed
@@ -44,7 +52,7 @@ Disable the `speculative` flag in any of these models (`<flag speculative="disab
   (`mjData.qvel`), a stationary intermediate body struck by a fast neighbor acquires its
   post-impact velocity only after the solver runs. In multi-body impact chains (such as
   [`newton.xml`](newton.xml)), keep a small clearance between adjacent plates or choose a timestep
-  where a single step's travel does not jump across two gaps at once.
+  where a single step travel does not jump across two gaps at once.
 
 ## Changelog
 

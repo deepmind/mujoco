@@ -17,10 +17,20 @@
   <option timestep="0.004" gravity="0 0 -9.81">
     <flag speculative="enable"/>
   </option>
+  <statistic center="0 0 0.70" extent="1.38"/>
   <visual>
-    <headlight ambient="0.4 0.4 0.4" diffuse="0.8 0.8 0.8" specular="0.3 0.3 0.3"/>
+    <global realtime="0.5" elevation="-16" azimuth="110"/>
+    <quality shadowsize="4096"/>
+    <headlight ambient=".25 .25 .25" diffuse=".4 .4 .4" specular=".2 .2 .2"/>
+    <rgba haze=".12 .16 .20 1"/>
     <map force="0.01"/>
   </visual>
+  <asset>
+    <texture name="ibl" type="cube" builtin="gradient" rgb1=".25 .3 .45" rgb2=".55 .5 .45" width="32" height="32"/>
+    <texture type="skybox" builtin="gradient" rgb1=".12 .16 .28" rgb2=".5 .45 .4" width="32" height="512"/>
+    <texture name="floor" type="2d" builtin="checker" rgb1=".1 .2 .3" rgb2=".2 .3 .4" width="512" height="512"/>
+    <material name="floor" texture="floor" texrepeat="2 2" texuniform="true" reflectance=".08"/>
+  </asset>
   <default>
     <joint type="hinge" axis="0 1 0" frictionloss="0.08"/>
     <default class="wire">
@@ -36,8 +46,10 @@
     </default>
   </default>
   <worldbody>
-    <light pos="0 -1.5 2.5" dir="0 0.6 -0.8" directional="true"/>
-    <geom name="floor" type="plane" size="2 2 0.01" rgba="0.2 0.22 0.25 1"
+    <light pos="1.2 -2 3" dir="-.3 .5 -.8" cutoff="35" softness="1" range="15" diffuse=".9 .85 .75" intensity="900000"/>
+    <light pos="-1 1.5 2.2" dir=".35 -.45 -.75" cutoff="50" softness="1" range="15" diffuse=".5 .65 .8" intensity="300000" castshadow="false"/>
+    <light type="image" texture="ibl" intensity="3000"/>
+    <geom name="floor" type="plane" size="0 0 0.01" material="floor"
           contype="0" conaffinity="0"/>
     <!-- Support frame -->
     <geom type="capsule" fromto="-0.35 -0.07 1.40  0.35 -0.07 1.40" size="0.008"

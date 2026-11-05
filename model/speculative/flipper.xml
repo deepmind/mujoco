@@ -17,8 +17,9 @@
   <option timestep="0.01" gravity="0 0 -9.81">
     <flag speculative="enable"/>
   </option>
+  <statistic center="0.40 -0.10 0.23" extent="1.06"/>
   <visual>
-    <global realtime="0.2"/>
+    <global realtime="0.2" elevation="-23" azimuth="118"/>
     <quality shadowsize="4096"/>
     <headlight ambient=".25 .25 .25" diffuse=".4 .4 .4" specular=".2 .2 .2"/>
     <rgba haze=".12 .16 .20 1"/>
