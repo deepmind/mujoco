@@ -23,6 +23,8 @@ directly from the command line with :ref:`live hot reload <StudioHotReload>`:
 
    python -m mujoco.studio.viewer --model=humanoid.xml --plugins=my_plugin.py --hot_reload=all
 
+``--plugins`` also accepts module names, such as ``--plugins=pkg.module`` for plugins in an installed package.
+
 .. code-block:: python
 
    from mujoco.studio.dear_imgui import dear_imgui as imgui
