@@ -51,6 +51,7 @@ from mujoco.studio import viewer_protocol
 # modules that dispatch them so plugin authors only need this module.
 SimInitEvent = viewer_handle.SimInitEvent
 ViewerInitEvent = viewer_protocol.ViewerInitEvent
+ThemeEvent = viewer_protocol.ThemeEvent
 
 
 class SimPlugin:

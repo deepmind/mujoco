@@ -89,6 +89,8 @@ _MAX_SPECTATORS_DEFAULT = 8
 
 # Controller-only message prefix carrying the new spectator limit.
 _MAX_SPECTATORS_PREFIX = "max_spectators="
+# Controller-only message prefix carrying the UI theme ("light", "dark", ...).
+_THEME_PREFIX = "theme="
 # Sent to the page whose control claim the controller slot is reserved for.
 _GRANT_MESSAGE = "grant"
 # Sent by the browser after applying each state payload (keep in sync:
@@ -102,6 +104,8 @@ _STATE_ACK_MESSAGE = "state_ack"
 # there is nothing left to prefetch. Each bundle is fetched as
 # /model?crc32=<crc32> (see _serve_model).
 _PREFETCH_PREFIX = "prefetch="
+
+_THEMES = ("light", "dark", "classic")
 
 # A lost ack must not stall the stream forever; after this long the next
 # payload is sent unacked.
@@ -684,6 +688,12 @@ def _run_server(
               pass
           excess -= 1
         await broadcast_roster()
+      elif text.startswith(_THEME_PREFIX):
+        if sid != controller_sid:
+          return  # Only the controller drives the remote UI.
+        theme = text[len(_THEME_PREFIX) :]
+        if theme in _THEMES:
+          server.set_theme(theme)
 
     async def enforce_activity() -> None:
       """Releases a silent controller when someone waits; kicks silent tabs."""
@@ -1239,6 +1249,7 @@ class WebServer:
     self._state_payload: bytes | None = None
     self._state_generation: int = 0
     self._wake_state_streams: Callable[[], Any] | None = None
+    self._pending_theme: str | None = None
 
     # Model bundles by crc32 (see _serve_model), least recently used first,
     # including the current model. add_model() announces bundles browsers may
@@ -1389,6 +1400,18 @@ class WebServer:
     with self._models_lock:
       items = self._prefetch_items()
     return _PREFETCH_PREFIX + ",".join(f"{c}:{n}" for c, n in items)
+
+  def set_theme(self, theme: str) -> None:
+    """Records a UI theme picked by the controller browser."""
+    with self._state_lock:
+      self._pending_theme = theme
+
+  def pop_theme(self) -> str | None:
+    """Returns and clears any UI theme picked by the controller browser."""
+    with self._state_lock:
+      theme = self._pending_theme
+      self._pending_theme = None
+      return theme
 
   def start(self) -> None:
     """Starts the server on a background daemon thread."""

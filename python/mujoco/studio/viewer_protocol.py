@@ -77,6 +77,13 @@ class ViewerInitEvent(messages.Event):
   viewer: 'Viewer'
 
 
+@dataclasses.dataclass(frozen=True)
+class ThemeEvent(messages.Event):
+  """Dispatched on the viewer when the host changes the UI theme."""
+
+  theme: ux.GuiTheme
+
+
 # -----------------------------------------------------------------------------
 # Base class for any viewer.
 # -----------------------------------------------------------------------------

@@ -193,6 +193,12 @@ class Session : public SessionActions {
   void SetCameraMode(int mode) override;
   void SetMaxSpectators(int count) override;
 
+  // Remembers this page's theme name ("light", "dark" or "classic") and sends
+  // it to the server, which applies it to the remote UI if this page controls.
+  // Sent again whenever this page gains control, so the remote UI matches the
+  // page's theme from the first frame.
+  void SetTheme(const char* theme);
+
  private:
   // Detaches callbacks and frees socket_ (if any), resetting to disconnected.
   void CloseSocket();
@@ -200,6 +206,9 @@ class Session : public SessionActions {
   // Sends a session message (control requests, acks, activity reports) to the
   // server as a text frame. Dropped silently while not connected.
   void SendText(const char* text);
+
+  // Sends theme_ (see SetTheme).
+  void SendTheme();
 
   // Updates the role and mirrors it into JS (Module.isSpectator), which gates
   // controller-only page behavior (model drag-and-drop upload).
@@ -241,6 +250,7 @@ class Session : public SessionActions {
   // Role state machine and roster.
   SessionRole role_ = SessionRole::kClaiming;
   Roster roster_;
+  std::string theme_;  // See SetTheme.
 
   // Consecutive rejected /ui claims; the page eventually stops claiming and
   // settles into spectating.

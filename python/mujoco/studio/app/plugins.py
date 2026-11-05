@@ -756,6 +756,12 @@ class App(plugin.ViewerPlugin):
     ux.save_settings(self.theme)
 
   @messages.handler(priority=messages.Priority.INTERNAL)
+  def _on_theme(self, event: plugin.ThemeEvent) -> None:
+    self.theme = event.theme
+    ux.setup_theme(self.theme)
+    ux.save_settings(self.theme)
+
+  @messages.handler(priority=messages.Priority.INTERNAL)
   def _on_update(self, _: messages.UpdateEvent) -> None:
     self.update()
 

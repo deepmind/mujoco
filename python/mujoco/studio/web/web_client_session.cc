@@ -34,6 +34,7 @@ constexpr char kMsgMaxSpectatorsPrefix[] = "max_spectators=";
 // The model bundles the page may prefetch, "prefetch=<crc32>:<bytes>,...";
 // handled by the page's JS (index.html), which owns the model cache.
 constexpr char kMsgPrefetchPrefix[] = "prefetch=";
+constexpr char kMsgThemePrefix[] = "theme=";
 
 // Liveness heartbeat period. A hidden tab's rendering loop stops, so Update()
 // and the heartbeat stop with it. The server kicks spectators (and releases a
@@ -255,6 +256,7 @@ void Session::HandleRemoteUiState(RemoteUiState state, int close_code) {
     ui_reject_count_ = 0;
     if (role_ != SessionRole::kControlling) {
       SetRole(SessionRole::kControlling);  // The claim succeeded.
+      SendTheme();  // The remote UI takes this page's theme.
     }
   } else if (state == RemoteUiState::kClosedOrError) {
     last_ui_retry_time_ = now;
@@ -327,6 +329,16 @@ void Session::SetMaxSpectators(int count) {
   char msg[48];
   snprintf(msg, sizeof(msg), "%s%d", kMsgMaxSpectatorsPrefix, count);
   SendText(msg);
+}
+
+void Session::SetTheme(const char* theme) {
+  theme_ = theme;
+  SendTheme();
+}
+
+void Session::SendTheme() {
+  if (theme_.empty()) return;
+  SendText((std::string(kMsgThemePrefix) + theme_).c_str());
 }
 
 }  // namespace mujoco::studio

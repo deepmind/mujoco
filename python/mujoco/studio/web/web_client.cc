@@ -401,10 +401,10 @@ void HandleSpectatorCameraInput() {
 }
 
 // Styles the browser's local ImGui context (the role bar and notices) with
-// one of the Studio themes. The theme is this browser's own choice, made
-// with the role bar's theme button and remembered in localStorage so it
-// survives page reloads (every model change reloads the page); it has
-// nothing to do with the theme of the Python app serving the session.
+// one of the Studio themes. Picked with the role bar's theme button and
+// remembered in localStorage so it survives page reloads (every model change
+// reloads the page). The remote UI follows this page's theme while it
+// controls (see Session::SetTheme).
 constexpr char kThemeStorageKey[] = "mjwv_theme";
 
 // The theme's key in localStorage: "light", "dark" or "classic".
@@ -442,6 +442,8 @@ void ApplyTheme(GuiTheme theme) {
                              kThemeStorageKey + "', '" +
                              ThemeStorageValue(theme) + "'); } catch (e) {}";
   emscripten_run_script(script.c_str());
+  // The remote UI follows this page's theme while it controls.
+  g_app.session.SetTheme(ThemeStorageValue(theme));
 }
 
 // --- AppCallbacks method bodies (see the class declaration above App). ---

@@ -65,6 +65,12 @@ from mujoco.studio.implot import implot
 # File extensions a dropped file may load as a model.
 _MODEL_EXTENSIONS = ('.xml', '.urdf', '.mjb', '.mjz', '.zip')
 
+_THEMES = {
+    'light': ux.GuiTheme.LIGHT,
+    'dark': ux.GuiTheme.DARK,
+    'classic': ux.GuiTheme.CLASSIC,
+}
+
 
 def _find_assets_dir() -> str:
   """Locates the Studio assets directory inside the mujoco package."""
@@ -337,6 +343,16 @@ class WebViewer(viewer_protocol.Viewer):
       return
     mjb_data = state_payload.serialize_model_bundle(event.model)
     self._web_server.add_model(mjb_data)
+
+  @messages.handler(priority=messages.Priority.CRITICAL)
+  def _on_update(self, _: messages.UpdateEvent) -> None:
+    """Applies any UI theme picked by the controller browser."""
+    if self._web_server is None:
+      return
+    theme = _THEMES.get(self._web_server.pop_theme() or '')
+    if theme is not None:
+      ux.setup_theme(theme)
+      self.dispatch(viewer_protocol.ThemeEvent(theme=theme))
 
   # ---------------------------------------------------------------------------
   # Viewer interface.
