@@ -1051,7 +1051,9 @@ The basic usage form is
   ``control_spec`` bitflag.
 
 If a rollout diverges, the current state and sensor values are used to fill the remainder of the trajectory.
-Therefore, non-increasing time values can be used to detect diverged rollouts.
+Therefore, non-increasing time values can be used to detect diverged rollouts. By default, MuJoCo errors still raise
+exceptions, but passing ``raise_on_error=False`` handles them like diverged rollouts and fills the remainder of the
+failed trajectory.
 
 The ``rollout`` function is designed to be computationally stateless, so all inputs of the stepping pipeline are set and
 any values already present in the given ``MjData`` instance will have no effect on the output.
