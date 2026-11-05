@@ -320,6 +320,8 @@ Rendering
 Python bindings
 ^^^^^^^^^^^^^^^
 - Removed support for Python 3.10, now that it's `deprecated upstream <https://devguide.python.org/versions>`__.
+- Bundled the MuJoCo Sphinx manual (``doc/**/*.rst``) and agent skills (``doc/skills/**/*.md``) inside the ``mujoco``
+  package under ``mujoco/doc/``.
 
 Samples
 ^^^^^^^

@@ -1,5 +1,6 @@
 include LICENSE *.md
 recursive-include mujoco *.h *.cc *.cc.inc *.cpp *.inl *.html *.mm CMakeLists.txt *.cmake
+recursive-include mujoco/doc *.rst *.md
 recursive-include mujoco/mjpython mjpython.* Info.plist
 recursive-include mujoco/studio/web *.html
 recursive-include mujoco/studio/web/dist *

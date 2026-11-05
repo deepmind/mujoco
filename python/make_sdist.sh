@@ -78,6 +78,17 @@ for item in "${package_dir}"/../simulate/*; do
   cp -r "${item}" mujoco/simulate/
 done
 
+# Copy over documentation chapters and agent skills (excluding images and scripts).
+mkdir -p mujoco/doc
+(
+  cd "${package_dir}/../doc"
+  find . -path ./internal -prune -o -type f \( -name '*.rst' -o -path './skills/*.md' \) -print0 |
+    while IFS= read -r -d '' f; do
+      mkdir -p "${tmp_dir}/mujoco/doc/${f%/*}"
+      cp -p "${f}" "${tmp_dir}/mujoco/doc/${f}"
+    done
+)
+
 python -m build --no-isolation . --sdist
 tar -tf dist/mujoco-*.tar.gz
 popd

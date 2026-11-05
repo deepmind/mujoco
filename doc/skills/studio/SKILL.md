@@ -31,8 +31,9 @@ and agent monitoring/control workflows.
 > **Official MuJoCo documentation (`doc/*.rst`):** Detailed Studio architecture,
 > lifecycle tables, and C++/web docs live in
 > [`../../studio/`](../../studio/index.rst)—read these short `.rst` chapters
-> directly when in a MuJoCo checkout (reserve `.. _Label:` grep for large files
-> like `XMLreference.rst`), or fetch
+> directly when present locally or in `pip install mujoco` under
+> `pathlib.Path(mujoco.__file__).parent / 'doc'` (reserve `.. _Label:` grep for
+> large files like `XMLreference.rst`), or fetch
 > `https://mujoco.readthedocs.io/en/latest/studio/<page>.html` (or `/en/stable/`
 > once released; Sphinx anchors lowercase the label, e.g. `#studiodiffsync`).
 >

@@ -16,8 +16,11 @@ duplicate—the official MuJoCo Sphinx manual in `../index.rst`:
   `` `.. _sensor-contact:` ``) or `../APIreference/functions.rst` (e.g.,
   `` `.. _mj_step:` ``), grep for the literal `.. _Label:` string to jump to the
   target section.
-- **Online fallback (standalone skill installs)**: If `doc/skills/` is installed
-  outside a MuJoCo checkout, every `doc/<path>.rst` page is published at
+- **Standalone installs (pip package & online fallback)**: The `mujoco` PyPI
+  package (`pip install mujoco`) bundles `doc/**/*.rst` and `doc/skills/` under
+  `mujoco/doc/` (`pathlib.Path(mujoco.__file__).parent / 'doc'`), so relative
+  `../../<path>.rst` links resolve offline there as well. When no local `doc/`
+  tree is present, every `doc/<path>.rst` page is published at
   https://mujoco.readthedocs.io/en/stable/ as `<path>.html` (or `/en/latest/`
   for `main` and unreleased chapters like `studio/`;
   `APIreference/functions.rst` renders inside `APIreference/APIfunctions.html`,

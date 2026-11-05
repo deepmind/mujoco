@@ -455,10 +455,22 @@ install_python_bindings() {
 }
 
 
-test_python_bindings() {
-    echo "Testing Python bindings..."
+smoke_test_python_bindings() {
+    echo "Smoke testing Python bindings..."
     source ${TMPDIR}/venv/bin/activate
-    pytest -v --pyargs mujoco
+    local doc_dir=""
+    for d in "${TMPDIR}"/venv/[lL]ib*/python*/site-packages/mujoco/doc \
+             "${TMPDIR}"/venv/[lL]ib*/pypy*/site-packages/mujoco/doc \
+             "${TMPDIR}"/venv/[lL]ib/site-packages/mujoco/doc; do
+        if [[ -d "${d}" ]]; then
+            doc_dir="${d}"
+            break
+        fi
+    done
+    [[ -f "${doc_dir}/index.rst" ]]
+    [[ -f "${doc_dir}/APIreference/functions.rst" ]]
+    [[ -f "${doc_dir}/skills/python/SKILL.md" ]]
+    python -c "import mujoco; m = mujoco.MjModel.from_xml_string('<mujoco/>'); mujoco.mj_step(m, mujoco.MjData(m))"
     if _has_studio_platform build; then
         echo "Smoke testing Studio Python modules..."
         python -c "import mujoco._render_filament, mujoco.studio.window, mujoco.studio.ux, mujoco.studio.sim, mujoco.studio.native_viewer"
@@ -466,6 +478,14 @@ test_python_bindings() {
             python -c "import mujoco.studio.web.headless_ui, mujoco.studio.web.state_payload"
         fi
     fi
+}
+
+
+test_python_bindings() {
+    echo "Testing Python bindings..."
+    source ${TMPDIR}/venv/bin/activate
+    pytest -v --pyargs mujoco
+    smoke_test_python_bindings
 }
 
 

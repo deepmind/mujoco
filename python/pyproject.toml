@@ -46,6 +46,7 @@ include = ["mujoco*"]
 exclude = [
     "mujoco.cmake*",
     "mujoco.codegen",
+    "mujoco.doc*",
     "mujoco.mjpython",
     "mujoco.simulate*",
 ]
@@ -56,6 +57,10 @@ mujoco = [
     "libmujoco*.so.*",
     "mujoco.dll",
     "include/mujoco/*.h",
+    "doc/*.rst",
+    "doc/*/*.rst",
+    "doc/skills/*.md",
+    "doc/skills/*/*.md",
     "testdata/*.xml",
     "testdata/*.msh",
     "testdata/*.usda",

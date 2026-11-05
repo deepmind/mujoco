@@ -19,10 +19,11 @@ description: >-
 > [`../../mjwarp/index.rst`](../../mjwarp/index.rst) (`.. _MJW:`), and
 > [`../../mjwarp/api.rst`](../../mjwarp/api.rst) directly when in a MuJoCo
 > checkout (reserve `.. _Label:` grep for large files like `python.rst`).
-> Outside a checkout, fetch
-> `https://mujoco.readthedocs.io/en/latest/<path>.html` (or `/en/stable/` for
-> released pages; Sphinx anchors lowercase the label, e.g. `.. _PyBatch:` →
-> `#pybatch`) and browse repo paths (`../../../`) under
+> Outside a checkout, the same `doc/*.rst` tree ships offline in
+> `pip install mujoco` at `pathlib.Path(mujoco.__file__).parent / 'doc'`;
+> otherwise fetch `https://mujoco.readthedocs.io/en/latest/<path>.html` (or
+> `/en/stable/` for released pages; Sphinx anchors lowercase the label, e.g.
+> `.. _PyBatch:` → `#pybatch`) and browse repo paths (`../../../`) under
 > `https://github.com/google-deepmind/mujoco/tree/main/`.
 >
 > **Related skills:**
