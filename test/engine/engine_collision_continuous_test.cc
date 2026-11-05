@@ -1362,5 +1362,117 @@ TEST_F(ContinuousCollisionTest, ArenaExhaustionIPCMergeActiveSet) {
   EXPECT_GT(d->flexvert_conage[m->nflexvert - 1], 25);
 }
 
+TEST_F(ContinuousCollisionTest, WitnessTransportPreservesToiAndMulticontact) {
+  constexpr char kTransportXml[] = R"(
+  <mujoco>
+    <option timestep="0.01" gravity="0 0 0"/>
+    <asset>
+      <mesh name="octa"
+            vertex=" 0.06  0.00  0.00  -0.06  0.00  0.00
+                     0.00  0.06  0.00   0.00 -0.06  0.00
+                     0.00  0.00  0.06   0.00  0.00 -0.06
+                     0.04  0.04  0.02  -0.04  0.04  0.02
+                     0.04 -0.04  0.02  -0.04 -0.04  0.02"/>
+    </asset>
+    <worldbody>
+      <geom name="floor_box" type="box" size="1.0 1.0 0.02" pos="0 0 0"/>
+      <body name="moving_box" pos="0 0 0.12">
+        <freejoint/>
+        <geom name="box_geom" type="box" size="0.05 0.05 0.02" mass="0.5"/>
+      </body>
+      <body name="moving_cap" pos="0.5 0 0.12">
+        <freejoint/>
+        <geom name="cap_geom" type="capsule" size="0.02 0.04"
+              euler="0 90 0" mass="0.5"/>
+      </body>
+      <geom name="target_ell" type="ellipsoid" size="0.08 0.05 0.03"
+            pos="-3.0 0 0"/>
+      <body name="moving_ell" pos="-3.0 0 0.10" euler="15 -10 25">
+        <freejoint/>
+        <geom name="ell_geom" type="ellipsoid" size="0.03 0.06 0.02"
+              mass="0.5"/>
+      </body>
+      <geom name="target_mesh" type="mesh" mesh="octa" pos="3.0 0 0"/>
+      <body name="moving_mesh" pos="3.0 0 0.18" euler="10 20 -15">
+        <freejoint/>
+        <geom name="mesh_geom" type="mesh" mesh="octa" mass="0.5"/>
+      </body>
+    </worldbody>
+  </mujoco>)";
+
+  mjModel* m = Load(kTransportXml);
+  mjData* d = mj_makeData(m);
+
+  // Set downward linear velocity + angular spin on all 4 moving bodies
+  d->qvel[2] = -25.0;
+  d->qvel[5] = 8.0;
+  d->qvel[8] = -25.0;
+  d->qvel[11] = 10.0;
+  d->qvel[14] = -25.0;
+  d->qvel[15] = 6.0;
+  d->qvel[20] = -25.0;
+  d->qvel[22] = 8.0;
+  mj_fwdPosition(m, d);
+
+  mjPreContact con[4];
+  std::vector<char> buffer(mjc_ccdSize(m->npolygonmax, m->nmeshdegmax, 0));
+
+  int g_floor = mj_name2id(m, mjOBJ_GEOM, "floor_box");
+  int g_box = mj_name2id(m, mjOBJ_GEOM, "box_geom");
+  int g_cap = mj_name2id(m, mjOBJ_GEOM, "cap_geom");
+  int g_target_ell = mj_name2id(m, mjOBJ_GEOM, "target_ell");
+  int g_ell = mj_name2id(m, mjOBJ_GEOM, "ell_geom");
+  int g_target_mesh = mj_name2id(m, mjOBJ_GEOM, "target_mesh");
+  int g_mesh = mj_name2id(m, mjOBJ_GEOM, "mesh_geom");
+
+  // 1. Box vs floor_box recovers all 4 face contacts with witness transport
+  int ncon_box =
+      mjc_advanceGeomPair(m, d, g_floor, g_box, 0.0, con, buffer.data());
+  EXPECT_EQ(ncon_box, 4);
+
+  // 2. Capsule (inflated line core r > 0) vs floor_box recovers 2 line contacts
+  int ncon_cap =
+      mjc_advanceGeomPair(m, d, g_floor, g_cap, 0.0, con, buffer.data());
+  EXPECT_EQ(ncon_cap, 2);
+
+  // 3. Ellipsoid vs ellipsoid under converged reference and default (35)
+  //    ccd_iterations
+  mjPreContact con_ref[4], con_full[4];
+  mjtNum orig_tol = m->opt.ccd_tolerance;
+  m->opt.ccd_iterations = 100;
+  m->opt.ccd_tolerance = 1e-10;
+  int ncon_ell_ref = mjc_advanceGeomPair(m, d, g_target_ell, g_ell, 0.0,
+                                         con_ref, buffer.data());
+  EXPECT_EQ(ncon_ell_ref, 1);
+
+  m->opt.ccd_tolerance = orig_tol;
+  m->opt.ccd_iterations = 35;
+  int ncon_ell_full = mjc_advanceGeomPair(m, d, g_target_ell, g_ell, 0.0,
+                                          con_full, buffer.data());
+  EXPECT_EQ(ncon_ell_full, 1);
+  if (ncon_ell_full == 1 && ncon_ell_ref == 1) {
+    EXPECT_NEAR(con_full[0].dist, con_ref[0].dist, MjTol(1e-5, 1e-3));
+  }
+
+  // 4. Convex mesh vs convex mesh with meshindex persistence + witness
+  // transport matches converged reference
+  m->opt.ccd_iterations = 100;
+  m->opt.ccd_tolerance = 1e-10;
+  int ncon_mesh_ref = mjc_advanceGeomPair(m, d, g_target_mesh, g_mesh, 0.0,
+                                          con_ref, buffer.data());
+  EXPECT_GE(ncon_mesh_ref, 1);
+
+  m->opt.ccd_tolerance = orig_tol;
+  m->opt.ccd_iterations = 35;
+  int ncon_mesh =
+      mjc_advanceGeomPair(m, d, g_target_mesh, g_mesh, 0.0, con, buffer.data());
+  EXPECT_EQ(ncon_mesh, ncon_mesh_ref);
+  if (ncon_mesh >= 1 && ncon_mesh_ref >= 1) {
+    EXPECT_NEAR(con[0].dist, con_ref[0].dist, MjTol(1e-5, 1e-3));
+  }
+
+  mj_deleteData(d);
+  mj_deleteModel(m);
+}
 }  // namespace
 }  // namespace mujoco
