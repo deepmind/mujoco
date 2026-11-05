@@ -365,7 +365,7 @@ def _qderiv_actuator_passive_vel(
     te = dynprm[0]
     K = gainprm[1]
 
-    # electrical terms vanish when the electrical force is clamped by forcerange or tendon actfrcrange
+    # electrical terms vanish when electrical force is clamped by forcerange or tendon actfrcrange
     if (sat_dcmotor & 1) == 0:
       # controller velocity derivative dV/dω using nameplate resistance, zero under Vmax
       dVdw = 0.0
@@ -2444,7 +2444,7 @@ def _eff_actuator_actuation(nv: int, deterministic: bool = False):
       R0 = gainprm[0]
       K = gainprm[1]
 
-      # electrical terms vanish when the electrical force is clamped by forcerange or tendon actfrcrange
+      # electrical terms vanish when electrical force is clamped by forcerange or tendon actfrcrange
       if (sat_dc & 1) == 0:
         # controller derivatives through the tau->V map, zero under Vmax
         dVdl = float(0.0)
@@ -4508,6 +4508,9 @@ def eff_actuation(m: Model, d: Data):
       ],
       outputs=[d.qH],
     )
+
+  if smooth.skip_qacc_smooth(m, d):
+    return
 
   # Factor qH into qHLD and qHDiagInv (adding efm_K diagonal into the factor only,
   # keeping d.qH = M + efm_sdiag so regularize_constraint and Newton Hessian assembly

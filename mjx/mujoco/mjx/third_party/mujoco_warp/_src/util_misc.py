@@ -60,7 +60,7 @@ def is_intersect(p1: wp.vec2, p2: wp.vec2, p3: wp.vec2, p4: wp.vec2) -> bool:
   b0 = (u[0] * w[1] - u[1] * w[0]) * s
   b1 = (u[0] * d[1] - u[1] * d[0]) * s
 
-  return a0 >= 0.0 and a1 <= 0.0 and b0 >= 0.0 and b1 <= 0.0
+  return a0 >= 0.0 and a1 < 0.0 and b0 >= 0.0 and b1 < 0.0
 
 
 @wp.func
@@ -97,8 +97,8 @@ def length_circle(p0: wp.vec2, p1: wp.vec2, ind: int, radius: float) -> float:
   cross = p0[1] * p1[0] - p0[0] * p1[1]
   angle = wp.atan2(wp.abs(cross), wp.dot(p0, p1))
 
-  # flip if necessary
-  if (cross > 0.0 and ind != 0) or (cross < 0.0 and ind == 0):
+  # flip if necessary; avoid a full-circle arc at float32 wrap onset
+  if angle > 1.0e-6 and ((cross > 0.0 and ind != 0) or (cross < 0.0 and ind == 0)):
     angle = 2.0 * wp.pi - angle
 
   return radius * angle

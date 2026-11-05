@@ -31,6 +31,8 @@ MJ_MAXCONPAIR = mujoco.mjMAXCONPAIR
 MJ_MINMU = mujoco.mjMINMU  # minimum friction
 MJ_MINAWAKE = mujoco.mjMINAWAKE  # minimum number of timesteps before sleeping
 FLEX_STIFFNESS_3D = 24 if util_pkg.check_version("mujoco>=3.14.1.dev989511280") else 21
+# TODO(team): remove version check once mujoco >= 4.0.0 is required.
+FLEX_INTERP_PHYS_JAC = util_pkg.check_version("mujoco>=3.17.1.dev1010658301")
 
 
 # TODO(team): Remove dynamic version probe once minimum MuJoCo version
@@ -789,6 +791,32 @@ class RayDataField(enum.IntEnum):
   DEPTH = mujoco.mjtRayDataField.mjRAYDATA_DEPTH
 
 
+class ConDataField(enum.IntEnum):
+  """Contact data fields for contact sensors.
+
+  Attributes:
+    FOUND: number of matching contacts found
+    FORCE: contact force in contact frame
+    TORQUE: contact torque in contact frame
+    DIST: penetration distance
+    POS: contact position
+    NORMAL: contact frame normal
+    TANGENT: contact frame first tangent
+    LINVEL: relative linear velocity in contact frame
+    ANGVEL: relative angular velocity in contact frame
+  """
+
+  FOUND = mujoco.mjtConDataField.mjCONDATA_FOUND
+  FORCE = mujoco.mjtConDataField.mjCONDATA_FORCE
+  TORQUE = mujoco.mjtConDataField.mjCONDATA_TORQUE
+  DIST = mujoco.mjtConDataField.mjCONDATA_DIST
+  POS = mujoco.mjtConDataField.mjCONDATA_POS
+  NORMAL = mujoco.mjtConDataField.mjCONDATA_NORMAL
+  TANGENT = mujoco.mjtConDataField.mjCONDATA_TANGENT
+  LINVEL = mujoco.mjtConDataField.mjCONDATA_LINVEL
+  ANGVEL = mujoco.mjtConDataField.mjCONDATA_ANGVEL
+
+
 class ObjType(enum.IntEnum):
   """Type of object.
 
@@ -898,7 +926,6 @@ class State(enum.IntEnum):
   QVEL = mujoco.mjtState.mjSTATE_QVEL
   ACT = mujoco.mjtState.mjSTATE_ACT
   HISTORY = mujoco.mjtState.mjSTATE_HISTORY
-  PLASTIC = mujoco.mjtState.mjSTATE_PLASTIC
   WARMSTART = mujoco.mjtState.mjSTATE_WARMSTART
   CTRL = mujoco.mjtState.mjSTATE_CTRL
   QFRC_APPLIED = mujoco.mjtState.mjSTATE_QFRC_APPLIED
@@ -906,13 +933,14 @@ class State(enum.IntEnum):
   EQ_ACTIVE = mujoco.mjtState.mjSTATE_EQ_ACTIVE
   MOCAP_POS = mujoco.mjtState.mjSTATE_MOCAP_POS
   MOCAP_QUAT = mujoco.mjtState.mjSTATE_MOCAP_QUAT
+  USERDATA = mujoco.mjtState.mjSTATE_USERDATA
+  # unsupported: PLUGIN
+  PLASTIC = getattr(mujoco.mjtState, "mjSTATE_PLASTIC", 1 << 14)
   NSTATE = mujoco.mjtState.mjNSTATE
   PHYSICS = mujoco.mjtState.mjSTATE_PHYSICS  # includes HISTORY and PLASTIC
   FULLPHYSICS = mujoco.mjtState.mjSTATE_FULLPHYSICS
   USER = mujoco.mjtState.mjSTATE_USER
   INTEGRATION = mujoco.mjtState.mjSTATE_INTEGRATION
-  USERDATA = mujoco.mjtState.mjSTATE_USERDATA
-  # unsupported: PLUGIN
 
 
 class SetConstGroup(enum.IntFlag):
@@ -1076,6 +1104,9 @@ class Option:
       zeros out the contacts at each step)
     run_rne_postconstraint: if True, evaluates rne_postconstraint after the solver step even if
       sensors are disabled or no sensors are present
+    run_qacc_smooth: if False, the Newton solver starts every world from qacc_warmstart and the
+      step skips computing qacc_smooth (left stale) and factorizing M (experimental); ignored with
+      CG, disabled warmstart, noslip, or zero njmax or iterations
     contact_sensor_maxmatch: max number of contacts considered by contact sensor matching criteria
                              contacts matched after this value is exceded will be ignored
     warn_overflow: overflow warning bitmask (OverflowType)
@@ -1111,6 +1142,7 @@ class Option:
   graph_conditional: bool
   run_collision_detection: bool
   run_rne_postconstraint: bool
+  run_qacc_smooth: bool
   contact_sensor_maxmatch: int
   warn_overflow: int
   deterministic: int
@@ -1723,6 +1755,7 @@ class Model:
     sensor_tendonactfrc_adr: address for tendonactfrc sensor
     sensor_subtree_vel: evaluate subtree_vel
     sensor_contact_pos_adr: addresses for position contact sensors (nsensor_contact_pos,)
+    sensor_contact_vel_adr: addresses for velocity contact sensors (nsensor_contact_vel,)
     sensor_contact_acc_adr: addresses for acceleration contact sensors (nsensor_contact_acc,)
     sensor_rne_postconstraint: evaluate rne_postconstraint
     sensor_rangefinder_bodyid: bodyid for rangefinder        (nrangefinder,)
@@ -1749,6 +1782,12 @@ class Model:
     flex_shelladr: maps each flex to its start shell index                  (nflex,)
     flex_faceadr: maps each flex to its start face index                    (nflex,)
     flex_simple: whether all vertices of flex are on simple bodies          (nflex,)
+    flex_efcnum: number of edge equality rows (non-rigid edges)             (nflex,)
+    flex_efcnnz: number of Jacobian nonzeros in edge equality rows          (nflex,)
+    flexedge_efcadr: row of the edge among its flex's edge equality rows,   (nflexedge,)
+                     -1 if the edge has no row
+    flexedge_efcnnzadr: Jacobian nonzero offset of the edge among its       (nflexedge,)
+                        flex's edge equality rows
     flex_cell_map: precomputed flex cell mapping (nflexintcell,)
     flexstrain_J_rownnz: number of nonzeros in flex strain Jacobian row     (neq_flexstrain,)
     flexstrain_J_rowadr: row start address in colind array (neq_flexstrain,)
@@ -2281,6 +2320,7 @@ class Model:
   sensor_tendonactfrc_adr: array("nsensor_tendonactfrc", int)
   sensor_subtree_vel: bool
   sensor_contact_pos_adr: array("nsensor_contact_pos", int)
+  sensor_contact_vel_adr: array("nsensor_contact_vel", int)
   sensor_contact_acc_adr: array("nsensor_contact_acc", int)
   sensor_rne_postconstraint: bool
   sensor_rangefinder_bodyid: array("nrangefinder", int)
@@ -2310,6 +2350,10 @@ class Model:
   flex_shelladr: array("nflex", int)
   flex_faceadr: array("nflex", int)
   flex_simple: array("nflex", bool)
+  flex_efcnum: array("nflex", int)
+  flex_efcnnz: array("nflex", int)
+  flexedge_efcadr: array("nflexedge", int)
+  flexedge_efcnnzadr: array("nflexedge", int)
   flex_cell_map: array("nflexintcell", wp.vec4i)
   flexstrain_J_rownnz: array("neq_flexstrain", int)
   flexstrain_J_rowadr: array("neq_flexstrain", int)
@@ -2574,6 +2618,7 @@ class Data:
     efm_as: actuator metric scale h^2*gp + h*gv                 (nworld, nactuator)
     contact: contact data
     efc: constraint data
+    dof_frictionadr: friction efc address (-1: none) if nf > 0  (nworld, nv)
     tree_island: island ID per tree (-1 if unconstrained)       (nworld, ntree)
     dof_island: island ID per DOF (-1 if unconstrained)         (nworld, nv)
     island_dofadr: island start address in dof vector           (nworld, ntree)
@@ -2751,6 +2796,7 @@ class Data:
   efm_as: array("nworld", "nactuator", float)
   contact: Contact
   efc: Constraint
+  dof_frictionadr: array("nworld", "nv", int)
   tree_island: array("nworld", "ntree", int)
   dof_island: array("nworld", "nv", int)
   island_dofadr: array("nworld", "ntree", int)

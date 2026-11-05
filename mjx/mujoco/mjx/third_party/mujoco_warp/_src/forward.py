@@ -337,16 +337,12 @@ def _next_time_builder(warn_overflow: int):
   def _next_time(
     # Model:
     opt_timestep: wp.array[float],
-    is_sparse: bool,
     # Data in:
     nefc_in: wp.array[int],
     time_in: wp.array[float],
-    efc_J_rownnz_in: wp.array2d[int],
-    efc_J_rowadr_in: wp.array2d[int],
     nworld_in: int,
     naconmax_in: int,
     njmax_in: int,
-    njmax_nnz_in: int,
     nacon_in: wp.array[int],
     ncollision_in: wp.array[int],
     # Data out:
@@ -365,17 +361,6 @@ def _next_time_builder(warn_overflow: int):
           njmax_in,
         )
       overflow_out[worldid] = overflow_out[worldid] | OverflowType.NEFC
-    elif nefc > 0 and is_sparse:
-      efcid = wp.min(nefc, njmax_in) - 1
-      efc_nnz = efc_J_rowadr_in[worldid, efcid] + efc_J_rownnz_in[worldid, efcid]
-      if efc_nnz > njmax_nnz_in:
-        if wp.static(bool(warn_overflow & OverflowType.NJMAX_NNZ)):
-          wp.printf(
-            "njmax_nnz overflow - please increase njmax_nnz beyond %u\n"
-            "To disable the print warning: m.opt.warn_overflow &= ~mjw.OverflowType.NJMAX_NNZ (or = 0 for all)\n",
-            njmax_nnz_in,
-          )
-        overflow_out[worldid] = overflow_out[worldid] | OverflowType.NJMAX_NNZ
 
     ncollision = ncollision_in[0]
     if ncollision > naconmax_in:
@@ -639,8 +624,8 @@ def _next_plastic_tendon(
   plastic_in: wp.array2d[float],
   ten_J_in: wp.array2d[float],
   ten_length_in: wp.array2d[float],
-  body_awake_in: wp.array2d[int],
   tree_awake_in: wp.array2d[int],
+  body_awake_in: wp.array2d[int],
   # Data out:
   plastic_out: wp.array2d[float],
 ):
@@ -1393,8 +1378,8 @@ def _advance(m: Model, d: Data, qacc: wp.array, qvel: Optional[wp.array] = None)
         d.plastic,
         d.ten_J,
         d.ten_length,
-        d.body_awake,
         d.tree_awake,
+        d.body_awake,
       ],
       outputs=[d.plastic],
     )
@@ -1516,15 +1501,11 @@ def _advance(m: Model, d: Data, qacc: wp.array, qvel: Optional[wp.array] = None)
     dim=d.nworld,
     inputs=[
       m.opt.timestep,
-      m.is_sparse,
       d.nefc,
       d.time,
-      d.efc.J_rownnz,
-      d.efc.J_rowadr,
       d.nworld,
       d.naconmax,
       d.njmax,
-      d.njmax_nnz,
       d.nacon,
       d.ncollision,
     ],
@@ -1708,8 +1689,9 @@ def _rk_correct_velocity(
   # Out:
   qvel_stage_out: wp.array2d[float],
 ):
-  # Runge-Kutta-Munthe-Kaas (RKMK) correction: maps the stage angular velocities of ball and free joints to the
-  # rates of their rotation vectors rot = timestep * scale * (previous corrected stage velocity), in place
+  # Runge-Kutta-Munthe-Kaas (RKMK) correction: maps the stage angular velocities of ball and
+  # free joints to the rates of their rotation vectors rot = timestep * scale * (previous
+  # corrected stage velocity), in place
   worldid, jntid = wp.tid()
   timestep = opt_timestep[worldid % opt_timestep.shape[0]]
   jnttype = jnt_type[jntid]
@@ -1838,8 +1820,8 @@ def rungekutta4(m: Model, d: Data):
     xquat_t0 = None
     xmat_t0 = None
 
-  # stage velocities with the RKMK correction (rates of the rotation vectors of ball and free joints); the first
-  # stage has a zero rotation vector, so it needs no correction
+  # stage velocities with the RKMK correction (rates of the rotation vectors of ball and
+  # free joints); the first stage has a zero rotation vector, so it needs no correction
   qvel_stage = wp.clone(d.qvel)
 
   _rk_accumulate(m, d, B[0], qvel_stage, qvel_rk, qacc_rk, act_dot_rk)
@@ -3487,7 +3469,10 @@ def fwd_acceleration(m: Model, d: Data, factorize: bool = False):
   )
   xfrc_accumulate(m, d, d.qfrc_smooth)
 
-  if m.opt.integrator == IntegratorType.DISCRETE:
+  if smooth.skip_qacc_smooth(m, d):
+    if enable_sleep and m.opt.integrator != IntegratorType.DISCRETE:
+      island.update_active_dofs(m, d)
+  elif m.opt.integrator == IntegratorType.DISCRETE:
     derivative.eff_solve(m, d, d.qacc_smooth)
   elif enable_sleep:
     # update the active-DOF set (needs contacts from fwd_position) and solve
@@ -3582,7 +3567,7 @@ def step(m: Model, d: Data):
 def step1(m: Model, d: Data):
   """Advance simulation in two phases: before input is set by user."""
   check_discrete(m)
-  fwd_position(m, d)
+  fwd_position(m, d, factorize=not smooth.skip_qacc_smooth(m, d))
   d.sensordata.zero_()
   sensor.sensor_pos(m, d)
 

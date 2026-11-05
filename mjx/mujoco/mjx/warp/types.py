@@ -173,6 +173,7 @@ class OptionWarp(PyTreeNode):
   noslip_iterations: int
   noslip_tolerance: jax.Array
   run_collision_detection: bool
+  run_qacc_smooth: bool
   run_rne_postconstraint: bool
   sdf_initpoints: int
   sdf_iterations: int
@@ -259,6 +260,8 @@ class ModelWarp(PyTreeNode):
   flex_edgeflexid: np.ndarray
   flex_edgenum: np.ndarray
   flex_edgestiffness: np.ndarray
+  flex_efcnnz: np.ndarray
+  flex_efcnum: np.ndarray
   flex_eff_possible: np.ndarray
   flex_elem: np.ndarray
   flex_elem_rodedge: np.ndarray
@@ -317,6 +320,8 @@ class ModelWarp(PyTreeNode):
   flexedge_J_colind: np.ndarray
   flexedge_J_rowadr: np.ndarray
   flexedge_J_rownnz: np.ndarray
+  flexedge_efcadr: np.ndarray
+  flexedge_efcnnzadr: np.ndarray
   flexedge_invweight0: np.ndarray
   flexedge_length0: np.ndarray
   flexedge_rigid: np.ndarray
@@ -429,6 +434,7 @@ class ModelWarp(PyTreeNode):
   sensor_collision_start_adr: np.ndarray
   sensor_contact_acc_adr: np.ndarray
   sensor_contact_pos_adr: np.ndarray
+  sensor_contact_vel_adr: np.ndarray
   sensor_delay: jax.Array
   sensor_e_kinetic: bool
   sensor_e_potential: bool
@@ -523,6 +529,7 @@ class DataWarp(PyTreeNode):
   cx: jax.Array
   dof_awake_ind: jax.Array
   dof_cdof: jax.Array
+  dof_frictionadr: jax.Array
   dof_island: jax.Array
   dof_islandid: jax.Array
   efc__D: jax.Array
@@ -761,6 +768,7 @@ _NDIM = {
         'cx': 3,
         'dof_awake_ind': 2,
         'dof_cdof': 2,
+        'dof_frictionadr': 2,
         'dof_island': 2,
         'dof_islandid': 2,
         'efc__D': 2,
@@ -1093,6 +1101,8 @@ _NDIM = {
         'flex_edgeflexid': 1,
         'flex_edgenum': 1,
         'flex_edgestiffness': 1,
+        'flex_efcnnz': 1,
+        'flex_efcnum': 1,
         'flex_eff_possible': 1,
         'flex_elem': 1,
         'flex_elem_rodedge': 2,
@@ -1159,6 +1169,8 @@ _NDIM = {
         'flexedge_J_colind': 1,
         'flexedge_J_rowadr': 1,
         'flexedge_J_rownnz': 1,
+        'flexedge_efcadr': 1,
+        'flexedge_efcnnzadr': 1,
         'flexedge_invweight0': 1,
         'flexedge_length0': 1,
         'flexedge_rigid': 1,
@@ -1399,6 +1411,7 @@ _NDIM = {
         'opt__noslip_iterations': 0,
         'opt__noslip_tolerance': 1,
         'opt__run_collision_detection': 0,
+        'opt__run_qacc_smooth': 0,
         'opt__run_rne_postconstraint': 0,
         'opt__sdf_initpoints': 0,
         'opt__sdf_iterations': 0,
@@ -1436,6 +1449,7 @@ _NDIM = {
         'sensor_collision_start_adr': 1,
         'sensor_contact_acc_adr': 1,
         'sensor_contact_pos_adr': 1,
+        'sensor_contact_vel_adr': 1,
         'sensor_cutoff': 1,
         'sensor_datatype': 1,
         'sensor_delay': 2,
@@ -1539,6 +1553,7 @@ _NDIM = {
         'noslip_iterations': 0,
         'noslip_tolerance': 1,
         'run_collision_detection': 0,
+        'run_qacc_smooth': 0,
         'run_rne_postconstraint': 0,
         'sdf_initpoints': 0,
         'sdf_iterations': 0,
@@ -1609,6 +1624,7 @@ _BATCH_DIM = {
         'cx': True,
         'dof_awake_ind': True,
         'dof_cdof': True,
+        'dof_frictionadr': True,
         'dof_island': True,
         'dof_islandid': True,
         'efc__D': True,
@@ -1941,6 +1957,8 @@ _BATCH_DIM = {
         'flex_edgeflexid': False,
         'flex_edgenum': False,
         'flex_edgestiffness': False,
+        'flex_efcnnz': False,
+        'flex_efcnum': False,
         'flex_eff_possible': False,
         'flex_elem': False,
         'flex_elem_rodedge': False,
@@ -2007,6 +2025,8 @@ _BATCH_DIM = {
         'flexedge_J_colind': False,
         'flexedge_J_rowadr': False,
         'flexedge_J_rownnz': False,
+        'flexedge_efcadr': False,
+        'flexedge_efcnnzadr': False,
         'flexedge_invweight0': False,
         'flexedge_length0': False,
         'flexedge_rigid': False,
@@ -2247,6 +2267,7 @@ _BATCH_DIM = {
         'opt__noslip_iterations': False,
         'opt__noslip_tolerance': True,
         'opt__run_collision_detection': False,
+        'opt__run_qacc_smooth': False,
         'opt__run_rne_postconstraint': False,
         'opt__sdf_initpoints': False,
         'opt__sdf_iterations': False,
@@ -2284,6 +2305,7 @@ _BATCH_DIM = {
         'sensor_collision_start_adr': False,
         'sensor_contact_acc_adr': False,
         'sensor_contact_pos_adr': False,
+        'sensor_contact_vel_adr': False,
         'sensor_cutoff': False,
         'sensor_datatype': False,
         'sensor_delay': True,
@@ -2387,6 +2409,7 @@ _BATCH_DIM = {
         'noslip_iterations': False,
         'noslip_tolerance': True,
         'run_collision_detection': False,
+        'run_qacc_smooth': False,
         'run_rne_postconstraint': False,
         'sdf_initpoints': False,
         'sdf_iterations': False,

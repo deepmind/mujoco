@@ -612,18 +612,20 @@ def compute_grad(
   volume_data2: VolumeData,
   mesh_data1: MeshData,
   mesh_data2: MeshData,
-) -> wp.vec3:
+) -> Tuple[wp.vec3, float]:
   A = sdf(type1, p1, params.attr1, sdf_type1, volume_data1, mesh_data1)
   B = sdf(GeomType.SDF, p2, params.attr2, sdf_type2, volume_data2, mesh_data2)
   grad1 = sdf_grad(type1, p1, params.attr1, sdf_type1, volume_data1, mesh_data1)
   grad2 = sdf_grad(GeomType.SDF, p2, params.attr2, sdf_type2, volume_data2, mesh_data2)
   grad1_transformed = wp.transpose(params.rel_mat) * grad1
   if sfd_intersection:
+    dist = wp.max(A, B)
     if A > B:
-      return grad1_transformed
+      gradient = grad1_transformed
     else:
-      return grad2
+      gradient = grad2
   else:
+    dist = A + B + wp.abs(wp.max(A, B))
     gradient = grad2 + grad1_transformed
     max_val = wp.max(A, B)
     if A > B:
@@ -632,7 +634,7 @@ def compute_grad(
       max_grad = grad2
     sign = wp.sign(max_val)
     gradient += max_grad * sign
-    return gradient
+  return gradient, dist
 
 
 @wp.func
@@ -645,6 +647,7 @@ def gradient_step(
   sdf_type2: int,
   niter: int,
   sfd_intersection: bool,
+  alpha0: float,
   volume_data1: VolumeData,
   volume_data2: VolumeData,
   mesh_data1: MeshData,
@@ -655,25 +658,11 @@ def gradient_step(
   c = 0.1
   dist = float(1e10)
   for i in range(niter):
-    alpha = float(2.0)
+    alpha = alpha0
     x2 = wp.vec3(x[0], x[1], x[2])
     x1 = params.rel_mat * x2 + params.rel_pos
-    grad = compute_grad(
+    grad, dist0 = compute_grad(
       type1, x1, x2, params, sdf_type1, sdf_type2, sfd_intersection, volume_data1, volume_data2, mesh_data1, mesh_data2
-    )
-    dist0 = clearance(
-      type1,
-      x1,
-      x,
-      params.attr1,
-      params.attr2,
-      sdf_type1,
-      sdf_type2,
-      sfd_intersection,
-      volume_data1,
-      volume_data2,
-      mesh_data1,
-      mesh_data2,
     )
     grad_dot = wp.dot(grad, grad)
     if grad_dot < 1e-12:
@@ -719,6 +708,7 @@ def gradient_descent(
   sdf_type1: int,
   sdf_type2: int,
   sdf_iterations: int,
+  linesearch_alpha0: float,
   volume_data1: VolumeData,
   volume_data2: VolumeData,
   mesh_data1: MeshData,
@@ -729,10 +719,30 @@ def gradient_descent(
   params.rel_pos = wp.transpose(rot1) * (pos2 - pos1)
   params.attr1 = attr1
   params.attr2 = attr2
-  dist, x = gradient_step(
-    type1, x0_initial, params, sdf_type1, sdf_type2, sdf_iterations, False, volume_data1, volume_data2, mesh_data1, mesh_data2
-  )
-  dist, x = gradient_step(type1, x, params, sdf_type1, sdf_type2, 1, True, volume_data1, volume_data2, mesh_data1, mesh_data2)
+  dist = float(0.0)
+  x = x0_initial
+  phase = int(0)
+  while phase < 2:
+    niter = sdf_iterations
+    intersection = False
+    if phase == 1:
+      niter = 1
+      intersection = True
+    dist, x = gradient_step(
+      type1,
+      x,
+      params,
+      sdf_type1,
+      sdf_type2,
+      niter,
+      intersection,
+      linesearch_alpha0,
+      volume_data1,
+      volume_data2,
+      mesh_data1,
+      mesh_data2,
+    )
+    phase += 1
   x_1 = params.rel_mat * x + params.rel_pos
   grad1 = sdf_grad(type1, x_1, params.attr1, sdf_type1, volume_data1, mesh_data1)
   grad1 = wp.transpose(params.rel_mat) * grad1
@@ -806,6 +816,7 @@ def _sdf_narrowphase(
   collision_worldid_in: wp.array[int],
   sdf_initpoints: int,
   sdf_iterations: int,
+  linesearch_alpha0: float,
   # Data out:
   contact_dist_out: wp.array[float],
   contact_pos_out: wp.array[wp.vec3],
@@ -988,6 +999,7 @@ def _sdf_narrowphase(
     g1_plugin_id,
     g2_plugin_id,
     sdf_iterations,
+    linesearch_alpha0,
     volume_data1,
     volume_data2,
     mesh_data1,
@@ -1089,6 +1101,8 @@ def sdf_narrowphase(m: Model, d: Data, ctx: CollisionContext):
       ctx.collision_worldid,
       m.opt.sdf_initpoints,
       m.opt.sdf_iterations,
+      # initial line-search step; passed at launch so NVRTC 13.1+ cannot unroll the line search
+      2.0,
     ],
     outputs=[
       d.contact.dist,

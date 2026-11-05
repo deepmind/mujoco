@@ -131,6 +131,7 @@ def _jtdaj_groups(mjd: mujoco.MjData) -> tuple[np.ndarray, np.ndarray]:
 
   MuJoCo lays each constraint's rows out contiguously, so this reproduces the block list
   make_constraint builds in-kernel. Returns block start rows (adr) and lengths (nrow).
+  DOF friction rows get no block, matching make_constraint.
   """
   nefc = mjd.nefc
   if nefc == 0:
@@ -141,7 +142,8 @@ def _jtdaj_groups(mjd: mujoco.MjData) -> tuple[np.ndarray, np.ndarray]:
   boundary[1:] = (etype[1:] != etype[:-1]) | (eid[1:] != eid[:-1])
   adr = np.flatnonzero(boundary)
   nrow = np.diff(np.append(adr, nefc))
-  return adr, nrow
+  keep = etype[adr] != mujoco.mjtConstraint.mjCNSTR_FRICTION_DOF
+  return adr[keep], nrow[keep]
 
 
 def _flex_has_stiffness(mjm: mujoco.MjModel, f: int) -> bool:
@@ -486,10 +488,10 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
   if (mjm.sensor_plugin != -1).any():
     raise NotImplementedError("Sensor plugins not supported.")
 
-  # TODO(team): contact sensor linvel and angvel (mjSTAGE_VEL)
+  # TODO(team): contact sensor linvel and angvel for flex contacts (contact Jacobian)
   contact_dataspec = mjm.sensor_intprm[mjm.sensor_type == mujoco.mjtSensor.mjSENS_CONTACT, 0]
-  if (contact_dataspec & ((1 << 7) | (1 << 8))).any():
-    raise NotImplementedError("Contact sensor linvel and angvel not supported.")
+  if mjm.nflex and (contact_dataspec & ((1 << types.ConDataField.LINVEL) | (1 << types.ConDataField.ANGVEL))).any():
+    raise NotImplementedError("Contact sensor linvel and angvel not supported for models with flexes.")
 
   if mjm.nflex > 0:
     for fi in range(mjm.nflex):
@@ -569,6 +571,7 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
   opt.warn_overflow = int(types.OverflowType.ALL)
   opt.deterministic = int(types.DeterminismType.NONE)
   opt.run_rne_postconstraint = False
+  opt.run_qacc_smooth = True
   contact_sensor_maxmatch_id = mujoco.mj_name2id(mjm, mujoco.mjtObj.mjOBJ_NUMERIC, "contact_sensor_maxmatch")
   if contact_sensor_maxmatch_id > -1:
     opt.contact_sensor_maxmatch = mjm.numeric_data[mjm.numeric_adr[contact_sensor_maxmatch_id]]
@@ -1183,6 +1186,7 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
     (mjm.sensor_needstage == mujoco.mjtStage.mjSTAGE_VEL)
     & (mjm.sensor_type != mujoco.mjtSensor.mjSENS_JOINTLIMITVEL)
     & (mjm.sensor_type != mujoco.mjtSensor.mjSENS_TENDONLIMITVEL)
+    & ~is_contact
   )[0]
   m.sensor_limitvel_adr = np.nonzero(
     (mjm.sensor_type == mujoco.mjtSensor.mjSENS_JOINTLIMITVEL) | (mjm.sensor_type == mujoco.mjtSensor.mjSENS_TENDONLIMITVEL)
@@ -1215,6 +1219,7 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
   subtreevel_sensors = (mujoco.mjtSensor.mjSENS_SUBTREELINVEL, mujoco.mjtSensor.mjSENS_SUBTREEANGMOM)
   m.sensor_subtree_vel = np.isin(mjm.sensor_type, subtreevel_sensors).any()
   m.sensor_contact_pos_adr = np.nonzero(is_contact & (mjm.sensor_needstage == mujoco.mjtStage.mjSTAGE_POS))[0]
+  m.sensor_contact_vel_adr = np.nonzero(is_contact & (mjm.sensor_needstage == mujoco.mjtStage.mjSTAGE_VEL))[0]
   m.sensor_contact_acc_adr = np.nonzero(is_contact & (mjm.sensor_needstage == mujoco.mjtStage.mjSTAGE_ACC))[0]
   m.sensor_rne_postconstraint = np.isin(
     mjm.sensor_type,
@@ -1389,6 +1394,10 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
   flex_shellflexid = np.zeros(mjm.nflexshelldata, dtype=np.int32)
   flex_vertflexid = np.zeros(mjm.nflexvert, dtype=np.int32)
   flex_shelladr = np.zeros(mjm.nflex, dtype=np.int32)
+  flex_efcnum = np.zeros(mjm.nflex, dtype=np.int32)
+  flex_efcnnz = np.zeros(mjm.nflex, dtype=np.int32)
+  flexedge_efcadr = np.full(mjm.nflexedge, -1, dtype=np.int32)
+  flexedge_efcnnzadr = np.zeros(mjm.nflexedge, dtype=np.int32)
 
   if mjm.nflex > 0:
     shell_offset = 0
@@ -1400,6 +1409,17 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
       edge_start = mjm.flex_edgeadr[fi]
       edge_num = mjm.flex_edgenum[fi]
       flex_edgeflexid[edge_start : edge_start + edge_num] = fi
+
+      # edge equality rows of a flex are allocated as one block: rigid edges and interpolated
+      # flexes have no rows
+      if mjm.flex_interp[fi] == 0:
+        edges = np.arange(edge_start, edge_start + edge_num)
+        edges = edges[~mjm.flexedge_rigid[edges].astype(bool)]
+        edge_nnz = mjm.flexedge_J_rownnz[edges]
+        flexedge_efcadr[edges] = np.arange(edges.size)
+        flexedge_efcnnzadr[edges] = np.cumsum(edge_nnz) - edge_nnz
+        flex_efcnum[fi] = edges.size
+        flex_efcnnz[fi] = edge_nnz.sum()
 
       flex_shelladr[fi] = shell_offset
       shell_num = mjm.flex_shellnum[fi]
@@ -1415,6 +1435,10 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
   m.flex_shellflexid = flex_shellflexid
   m.flex_vertflexid = flex_vertflexid
   m.flex_shelladr = flex_shelladr
+  m.flex_efcnum = flex_efcnum
+  m.flex_efcnnz = flex_efcnnz
+  m.flexedge_efcadr = flexedge_efcadr
+  m.flexedge_efcnnzadr = flexedge_efcnnzadr
 
   flex_bend_interp_map = []
   flex_face_map = []
@@ -1648,6 +1672,7 @@ def put_model(mjm: mujoco.MjModel, batch_sizes: dict[str, int] | None = None) ->
       "nsensor_limitfrc": len(m.sensor_limitfrc_adr),
       "nsensor_tendonactfrc": len(m.sensor_tendonactfrc_adr),
       "nsensor_contact_pos": len(m.sensor_contact_pos_adr),
+      "nsensor_contact_vel": len(m.sensor_contact_vel_adr),
       "nsensor_contact_acc": len(m.sensor_contact_acc_adr),
       "nsensor_collision_start_adr": len(m.sensor_collision_start_adr),
       "nqLD_all_updates": len(m.qLD_all_updates),
@@ -2317,7 +2342,14 @@ def make_data(
 
   nv_compact = nvmax < mjm.nv
 
-  sizes = dict({"*": 1}, **{f.name: getattr(mjm, f.name, None) for f in dataclasses.fields(types.Model) if f.type is int})
+  sizes = dict(
+    {"*": 1},
+    **{
+      f.name: (getattr(mjm, f.name, 0) if f.name == "nplastic" else getattr(mjm, f.name, None))
+      for f in dataclasses.fields(types.Model)
+      if f.type is int
+    },
+  )
   condim_arrays = [np.array([0]), mjm.geom_condim, mjm.pair_dim]
   if mjm.nflex > 0:
     condim_arrays.append(mjm.flex_condim)
@@ -2558,7 +2590,14 @@ def put_data(
 
   nv_compact = nvmax < mjm.nv
 
-  sizes = dict({"*": 1}, **{f.name: getattr(mjm, f.name, None) for f in dataclasses.fields(types.Model) if f.type is int})
+  sizes = dict(
+    {"*": 1},
+    **{
+      f.name: (getattr(mjm, f.name, 0) if f.name == "nplastic" else getattr(mjm, f.name, None))
+      for f in dataclasses.fields(types.Model)
+      if f.type is int
+    },
+  )
   condim_arrays = [np.array([0]), mjm.geom_condim, mjm.pair_dim]
   if mjm.nflex > 0:
     condim_arrays.append(mjm.flex_condim)
@@ -2766,6 +2805,12 @@ def put_data(
     "tree_asleep": wp.array(np.tile(tree_asleep_init, (nworld, 1)), dtype=int),
     "tree_awake": wp.array(np.tile((tree_asleep_init < 0).astype(np.int32), (nworld, 1)), dtype=int),
     "body_awake": wp.array(np.tile(body_awake_init.astype(np.int32), (nworld, 1)), dtype=int),
+    # plastic
+    "plastic": (
+      wp.array(np.tile(mjd.plastic, (nworld, 1)), shape=(nworld, getattr(mjm, "nplastic", 0)), dtype=float)
+      if getattr(mjm, "nplastic", 0) > 0 and hasattr(mjd, "plastic")
+      else wp.zeros((nworld, 0), dtype=float)
+    ),
   }
   for f in dataclasses.fields(types.Data):
     if f.name in d_kwargs:
@@ -2777,6 +2822,11 @@ def put_data(
       val = np.zeros(mjm.ntendon, dtype=np.float32)
       if mjd.nefmT > 0 and mjd.efm_ts is not None and mjd.efm_tid is not None:
         val[mjd.efm_tid[: mjd.nefmT]] = mjd.efm_ts[: mjd.nefmT]
+    elif f.name == "dof_frictionadr":
+      # efc address of each DOF's friction row, as make_constraint writes it
+      val = np.full(mjm.nv, -1, dtype=np.int32)
+      rows = np.flatnonzero(mjd.efc_type[: min(mjd.nefc, njmax)] == mujoco.mjtConstraint.mjCNSTR_FRICTION_DOF)
+      val[mjd.efc_id[rows]] = rows
     elif f.name == "efm_as":
       val = np.zeros(mjm.nactuator, dtype=np.float32)
       if mjd.nefmA > 0 and mjd.efm_as is not None and mjd.efm_aid is not None:
@@ -3616,10 +3666,10 @@ def reset_data_keyframe(m: types.Model, d: types.Data, key: int | wp.array):
     qpos_out: wp.array2d[float],
     qvel_out: wp.array2d[float],
     act_out: wp.array2d[float],
+    plastic_out: wp.array2d[float],
     ctrl_out: wp.array2d[float],
     mocap_pos_out: wp.array2d[wp.vec3],
     mocap_quat_out: wp.array2d[wp.quat],
-    plastic_out: wp.array2d[float],
   ):
     worldid = wp.tid()
 
@@ -3668,10 +3718,10 @@ def reset_data_keyframe(m: types.Model, d: types.Data, key: int | wp.array):
       d.qpos,
       d.qvel,
       d.act,
+      d.plastic,
       d.ctrl,
       d.mocap_pos,
       d.mocap_quat,
-      d.plastic,
     ],
   )
 
@@ -3712,6 +3762,7 @@ def override_model(model: types.Model | mujoco.MjModel, overrides: dict[str, Any
     "opt.deterministic",
     "opt.run_collision_detection",
     "opt.run_rne_postconstraint",
+    "opt.run_qacc_smooth",
   }
   mj_only_fields = {"opt.jacobian", "vis.quality.offsamples"}
 

@@ -509,16 +509,14 @@ def _com_pos_shim(
     nworld: int,
     body_inertia: wp.array2d[wp.vec3],
     body_mass: wp.array2d[float],
-    body_parentid: wp.array[int],
     body_rootid: wp.array[int],
     body_subtreemass: wp.array2d[float],
-    body_tree: tuple[wp.array[int], ...],
+    body_subtreenum: wp.array[int],
     jnt_bodyid: wp.array[int],
     jnt_dofadr: wp.array[int],
     jnt_type: wp.array[int],
     nbody: int,
     njnt: int,
-    opt__deterministic: int,
     # Data
     cdof: wp.array2d[wp.spatial_vector],
     cinert: wp.array2d[mjwp_types.vec10],
@@ -535,16 +533,14 @@ def _com_pos_shim(
   _d.contact = _c
   _m.body_inertia = body_inertia
   _m.body_mass = body_mass
-  _m.body_parentid = body_parentid
   _m.body_rootid = body_rootid
   _m.body_subtreemass = body_subtreemass
-  _m.body_tree = body_tree
+  _m.body_subtreenum = body_subtreenum
   _m.jnt_bodyid = jnt_bodyid
   _m.jnt_dofadr = jnt_dofadr
   _m.jnt_type = jnt_type
   _m.nbody = nbody
   _m.njnt = njnt
-  _m.opt.deterministic = opt__deterministic
   _d.cdof = cdof
   _d.cinert = cinert
   _d.subtree_com = subtree_com
@@ -590,16 +586,14 @@ def _com_pos_jax_impl(m: types.Model, d: types.Data):
       d.qpos.shape[0],
       m.body_inertia,
       m.body_mass,
-      m.body_parentid,
       m.body_rootid,
       m.body_subtreemass,
-      m._impl.body_tree,
+      m._impl.body_subtreenum,
       m.jnt_bodyid,
       m.jnt_dofadr,
       m.jnt_type,
       m.nbody,
       m.njnt,
-      m.opt._impl.deterministic,
       d.cdof,
       d._impl.cinert,
       d.subtree_com,

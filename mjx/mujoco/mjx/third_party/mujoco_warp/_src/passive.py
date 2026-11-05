@@ -4255,18 +4255,7 @@ def _flex_passive_interp(deterministic: bool = False):
       cell_quat = face_quat_in[worldid, flex_faceadr[f] + ci]
     else:
       cell_quat = support.compute_interp_cell_quat(
-        flex_node0,
-        flexnode_xpos_in,
-        order_abs,
-        ci,
-        cj,
-        ck,
-        cy,
-        cz,
-        ny_g,
-        nz_g,
-        nstart,
-        worldid,
+        flex_node0, flexnode_xpos_in, order_abs, ci, cj, ck, cy, cz, ny_g, nz_g, nstart, worldid
       )
 
     # mju_negQuat: conjugate (R⁻¹) — negate xyz, keep w
@@ -4761,8 +4750,8 @@ def _flex_contact_stiffness(
 
 @wp.func
 def _add_con_dof(
-  max_dof: int,
   # In:
+  max_dof: int,
   cid: int,
   dof: int,
   val: float,

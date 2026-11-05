@@ -661,7 +661,8 @@ def _wake_tendon_kernel(
         if val < wakeval:
           wakeval = val
 
-  # Pass 2: If at least one tree is awake and a limit or frictionloss constraint is active, wake all sleeping trees
+  # Pass 2: If at least one tree is awake and a limit or frictionloss constraint is active,
+  # wake all sleeping trees
   if any_awake == 1:
     has_limit = not (opt_disableflags & DisableBit.LIMIT) and _tendon_limit_active(
       tendon_limited, tendon_range, tendon_margin, ten_length_in, worldid, tenid

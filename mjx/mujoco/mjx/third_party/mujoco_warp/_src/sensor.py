@@ -27,6 +27,7 @@ from mujoco.mjx.third_party.mujoco_warp._src.collision_sdf import sdf
 from mujoco.mjx.third_party.mujoco_warp._src.types import MJ_MAXCONPAIR
 from mujoco.mjx.third_party.mujoco_warp._src.types import MJ_MAXVAL
 from mujoco.mjx.third_party.mujoco_warp._src.types import MJ_MINVAL
+from mujoco.mjx.third_party.mujoco_warp._src.types import ConDataField
 from mujoco.mjx.third_party.mujoco_warp._src.types import ConeType
 from mujoco.mjx.third_party.mujoco_warp._src.types import ConstraintType
 from mujoco.mjx.third_party.mujoco_warp._src.types import ContactType
@@ -813,7 +814,8 @@ def _sensor_pos(
 
     # initialize
     dist = float(sensor_cutoff[sensorid])
-    pnts = vec6(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
+    pos = wp.vec3()
+    normal = wp.vec3()
     flip = bool(False)
 
     # check for flip direction
@@ -847,11 +849,14 @@ def _sensor_pos(
           if dist_new < dist:
             dist = dist_new
 
-            if sensortype == SensorType.GEOMNORMAL or sensortype == SensorType.GEOMFROMTO:
-              pnts = vec6(
+            if sensortype == SensorType.GEOMFROMTO:
+              pos = wp.vec3(
                 sensor_collision_in[worldid, collisionid, i, 1],
                 sensor_collision_in[worldid, collisionid, i, 2],
                 sensor_collision_in[worldid, collisionid, i, 3],
+              )
+            if sensortype == SensorType.GEOMNORMAL or sensortype == SensorType.GEOMFROMTO:
+              normal = wp.vec3(
                 sensor_collision_in[worldid, collisionid, i, 4],
                 sensor_collision_in[worldid, collisionid, i, 5],
                 sensor_collision_in[worldid, collisionid, i, 6],
@@ -863,22 +868,22 @@ def _sensor_pos(
               flip = geomid1 > geomid2
             else:
               flip = False
+    # the segment from geom 1 to geom 2, which points along the contact normal or against it
+    if dist >= sensor_cutoff[sensorid] or dist == 0.0:
+      segment = wp.vec3()
+    else:
+      segment = wp.where(flip != (dist < 0.0), -normal, normal)
+
     if sensortype == int(SensorType.GEOMDIST.value):
       _write_scalar(sensor_type, sensor_datatype, sensor_adr, sensor_cutoff, sensorid, dist, out)
     elif sensortype == int(SensorType.GEOMNORMAL.value):
-      if dist <= sensor_cutoff[sensorid]:
-        normal = wp.normalize(wp.vec3(pnts[3] - pnts[0], pnts[4] - pnts[1], pnts[5] - pnts[2]))
-        if flip:
-          normal *= -1.0
-      else:
-        normal = wp.vec3(0.0, 0.0, 0.0)
-      _write_vector(sensor_type, sensor_datatype, sensor_adr, sensor_cutoff, sensorid, 3, normal, out)
+      _write_vector(sensor_type, sensor_datatype, sensor_adr, sensor_cutoff, sensorid, 3, segment, out)
     elif sensortype == int(SensorType.GEOMFROMTO.value):
-      if dist <= sensor_cutoff[sensorid]:
-        if flip:
-          fromto = vec6(pnts[3], pnts[4], pnts[5], pnts[0], pnts[1], pnts[2])
-        else:
-          fromto = pnts
+      if dist < sensor_cutoff[sensorid]:
+        half = 0.5 * wp.abs(dist) * segment
+        fromto = vec6(
+          pos[0] - half[0], pos[1] - half[1], pos[2] - half[2], pos[0] + half[0], pos[1] + half[1], pos[2] + half[2]
+        )
       else:
         fromto = vec6(0.0, 0.0, 0.0, 0.0, 0.0, 0.0)
       _write_vector(sensor_type, sensor_datatype, sensor_adr, sensor_cutoff, sensorid, 6, fromto, out)
@@ -959,17 +964,14 @@ def _sensor_collision(
   dist = contact_dist_in[conid]
   pos = contact_pos_in[conid]
   frame = contact_frame_in[conid]
-  normal = wp.vec3(frame[0, 0], frame[0, 1], frame[0, 2])
-  pnt1 = pos - 0.5 * dist * normal
-  pnt2 = pos + 0.5 * dist * normal
 
   sensor_collision_out[worldid, collisionid, geomcollisionid, 0] = dist
-  sensor_collision_out[worldid, collisionid, geomcollisionid, 1] = pnt1[0]
-  sensor_collision_out[worldid, collisionid, geomcollisionid, 2] = pnt1[1]
-  sensor_collision_out[worldid, collisionid, geomcollisionid, 3] = pnt1[2]
-  sensor_collision_out[worldid, collisionid, geomcollisionid, 4] = pnt2[0]
-  sensor_collision_out[worldid, collisionid, geomcollisionid, 5] = pnt2[1]
-  sensor_collision_out[worldid, collisionid, geomcollisionid, 6] = pnt2[2]
+  sensor_collision_out[worldid, collisionid, geomcollisionid, 1] = pos[0]
+  sensor_collision_out[worldid, collisionid, geomcollisionid, 2] = pos[1]
+  sensor_collision_out[worldid, collisionid, geomcollisionid, 3] = pos[2]
+  sensor_collision_out[worldid, collisionid, geomcollisionid, 4] = frame[0, 0]
+  sensor_collision_out[worldid, collisionid, geomcollisionid, 5] = frame[0, 1]
+  sensor_collision_out[worldid, collisionid, geomcollisionid, 6] = frame[0, 2]
 
 
 @event_scope
@@ -1772,6 +1774,8 @@ def sensor_vel(m: Model, d: Data):
       ],
     )
 
+  _eval_sensor_contact(m, d, m.sensor_contact_vel_adr)
+
   # apply sensor delay/interval for velocity sensors
   history.apply_sensor_delay(m, d, m.sensor_stage_vel_adr)
 
@@ -2516,7 +2520,6 @@ def _contact_match_builder(warn_overflow: int, deterministic: bool = False):
     sensor_contact_nmatch_out: wp.array2d[int],
     sensor_contact_matchid_out: wp.array3d[int],
     sensor_contact_criteria_out: wp.array3d[float],
-    sensor_contact_direction_out: wp.array3d[float],
   ):
     contactsensorid, contactid = wp.tid()
     sensorid = sensor_contact_adr_in[contactsensorid]
@@ -2599,7 +2602,9 @@ def _contact_match_builder(warn_overflow: int, deterministic: bool = False):
       wp.atomic_or(overflow_out, worldid, OverflowType.CONTACT_MATCH)
       return
 
-    sensor_contact_matchid_out[worldid, contactsensorid, contactmatchid] = contactid
+    # Keep direction attached to the ID through sorting without a second payload.
+    # Complement encodes a negative direction even for contact zero (~0 == -1).
+    sensor_contact_matchid_out[worldid, contactsensorid, contactmatchid] = ~contactid if dir < 0.0 else contactid
 
     if reduce == 1:  # mindist
       sensor_contact_criteria_out[worldid, contactsensorid, contactmatchid] = contact_dist_in[contactid]
@@ -2622,9 +2627,6 @@ def _contact_match_builder(warn_overflow: int, deterministic: bool = False):
         contact_force[0] * contact_force[0] + contact_force[1] * contact_force[1] + contact_force[2] * contact_force[2]
       )
       sensor_contact_criteria_out[worldid, contactsensorid, contactmatchid] = -force_magnitude
-
-    # contact direction
-    sensor_contact_direction_out[worldid, contactsensorid, contactmatchid] = dir
 
   return _contact_match
 
@@ -2669,15 +2671,20 @@ def _sensor_contact(
   # Model:
   opt_cone: int,
   opt_contact_sensor_maxmatch: int,
+  body_rootid: wp.array[int],
+  geom_bodyid: wp.array[int],
   sensor_intprm: wp.array2d[int],
   sensor_dim: wp.array[int],
   sensor_adr: wp.array[int],
   # Data in:
+  subtree_com_in: wp.array2d[wp.vec3],
+  cvel_in: wp.array2d[wp.spatial_vector],
   contact_dist_in: wp.array[float],
   contact_pos_in: wp.array[wp.vec3],
   contact_frame_in: wp.array[wp.mat33],
   contact_friction_in: wp.array[vec5],
   contact_dim_in: wp.array[int],
+  contact_geom_in: wp.array[wp.vec2i],
   contact_efc_address_in: wp.array2d[int],
   contact_adhesion_in: wp.array[float],
   efc_force_in: wp.array2d[float],
@@ -2687,7 +2694,6 @@ def _sensor_contact(
   sensor_contact_adr_in: wp.array[int],
   sensor_contact_nmatch_in: wp.array2d[int],
   sensor_contact_matchid_in: wp.array3d[int],
-  sensor_contact_direction_in: wp.array3d[float],
   # Data out:
   sensordata_out: wp.array2d[float],
 ):
@@ -2699,40 +2705,28 @@ def _sensor_contact(
   reduce = sensor_intprm[sensorid, 1]
   dim = sensor_dim[sensorid]
 
-  # found, force, torque, dist, pos, normal, tangent
   # TODO(thowell): precompute slot size
-  found = False
-  force = False
-  torque = False
-  dist = False
-  pos = False
-  normal = False
-  tangent = False
+  found = bool(dataspec & (1 << ConDataField.FOUND))
+  force = bool(dataspec & (1 << ConDataField.FORCE))
+  torque = bool(dataspec & (1 << ConDataField.TORQUE))
+  dist = bool(dataspec & (1 << ConDataField.DIST))
+  pos = bool(dataspec & (1 << ConDataField.POS))
+  normal = bool(dataspec & (1 << ConDataField.NORMAL))
+  tangent = bool(dataspec & (1 << ConDataField.TANGENT))
+  linvel = bool(dataspec & (1 << ConDataField.LINVEL))
+  angvel = bool(dataspec & (1 << ConDataField.ANGVEL))
 
-  size = int(0)
-  for i in range(7):
-    if dataspec & (1 << i):
-      if i == 0:
-        found = True
-        size += 1
-      elif i == 1:
-        force = True
-        size += 3
-      elif i == 2:
-        torque = True
-        size += 3
-      elif i == 3:
-        dist = True
-        size += 1
-      elif i == 4:
-        pos = True
-        size += 3
-      elif i == 5:
-        normal = True
-        size += 3
-      elif i == 6:
-        tangent = True
-        size += 3
+  size = (
+    (1 if found else 0)
+    + (3 if force else 0)
+    + (3 if torque else 0)
+    + (1 if dist else 0)
+    + (3 if pos else 0)
+    + (3 if normal else 0)
+    + (3 if tangent else 0)
+    + (3 if linvel else 0)
+    + (3 if angvel else 0)
+  )
 
   num = dim // size  # number of slots
 
@@ -2752,8 +2746,9 @@ def _sensor_contact(
     total_force_magnitude = float(0.0)
 
     for i in range(nmatch):
-      cid = sensor_contact_matchid_in[worldid, contactsensorid, i]
-      dir = sensor_contact_direction_in[worldid, contactsensorid, i]
+      matchid = sensor_contact_matchid_in[worldid, contactsensorid, i]
+      cid = ~matchid if matchid < 0 else matchid
+      dir = -1.0 if matchid < 0 else 1.0
 
       contact_forcetorque = support.contact_force_fn(
         opt_cone,
@@ -2839,11 +2834,10 @@ def _sensor_contact(
   else:
     nslots = wp.min(nmatch, num)
     for i in range(nslots):
-      # sorted contact id
-      cid = sensor_contact_matchid_in[worldid, contactsensorid, i]
-
-      # contact direction
-      dir = sensor_contact_direction_in[worldid, contactsensorid, i]
+      # Decode only valid matches; unused padded slots are bounded by nslots.
+      matchid = sensor_contact_matchid_in[worldid, contactsensorid, i]
+      cid = ~matchid if matchid < 0 else matchid
+      dir = -1.0 if matchid < 0 else 1.0
 
       adr_slot = adr + i * size
 
@@ -2878,13 +2872,14 @@ def _sensor_contact(
       if dist:
         out[adr_slot] = contact_dist_in[cid]
         adr_slot += 1
-      if pos:
+      if pos or linvel:
         contact_pos = contact_pos_in[cid]
+      if pos:
         out[adr_slot + 0] = contact_pos[0]
         out[adr_slot + 1] = contact_pos[1]
         out[adr_slot + 2] = contact_pos[2]
         adr_slot += 3
-      if normal or tangent:
+      if normal or tangent or linvel or angvel:
         frame = contact_frame_in[cid]
       if normal:
         contact_normal = frame[0]
@@ -2897,6 +2892,33 @@ def _sensor_contact(
         out[adr_slot + 0] = dir * contact_tangent[0]
         out[adr_slot + 1] = dir * contact_tangent[1]
         out[adr_slot + 2] = dir * contact_tangent[2]
+        adr_slot += 3
+      if linvel or angvel:
+        # velocity of geom[1] relative to geom[0] at the contact point, in the contact frame
+        con_geom = contact_geom_in[cid]
+        body0 = geom_bodyid[con_geom[0]]
+        body1 = geom_bodyid[con_geom[1]]
+        cvel0 = cvel_in[worldid, body0]
+        cvel1 = cvel_in[worldid, body1]
+      if linvel:
+        root0 = body_rootid[body0]
+        root1 = body_rootid[body1]
+        com0 = subtree_com_in[worldid, root0]
+        if root1 == root0:
+          com1 = com0
+        else:
+          com1 = subtree_com_in[worldid, root1]
+        rel_lin = _transform_spatial(cvel1, contact_pos - com1) - _transform_spatial(cvel0, contact_pos - com0)
+        lin_local = frame @ rel_lin
+        out[adr_slot + 0] = lin_local[0]
+        out[adr_slot + 1] = lin_local[1]
+        out[adr_slot + 2] = dir * lin_local[2]
+        adr_slot += 3
+      if angvel:
+        ang_local = frame @ (wp.spatial_top(cvel1) - wp.spatial_top(cvel0))
+        out[adr_slot + 0] = ang_local[0]
+        out[adr_slot + 1] = ang_local[1]
+        out[adr_slot + 2] = dir * ang_local[2]
 
     # zero remaining slots
     for i in range(nslots, num):
@@ -2913,7 +2935,6 @@ def _eval_sensor_contact(m: Model, d: Data, sensor_contact_adr: wp.array[int]):
   sensor_contact_nmatch = wp.zeros((d.nworld, ncontact), dtype=int)
   sensor_contact_matchid = wp.full((d.nworld, ncontact, maxmatch), -1, dtype=int)
   sensor_contact_criteria = wp.full((d.nworld, ncontact, maxmatch), 1.0e32, dtype=float)
-  sensor_contact_direction = wp.empty((d.nworld, ncontact, maxmatch), dtype=float)
 
   wp.launch(
     _contact_match_builder(int(m.opt.warn_overflow), bool(m.opt.deterministic & DeterminismType.ATOMICS)),
@@ -2947,14 +2968,20 @@ def _eval_sensor_contact(m: Model, d: Data, sensor_contact_adr: wp.array[int]):
       d.nacon,
       sensor_contact_adr,
     ],
-    outputs=[d.overflow, sensor_contact_nmatch, sensor_contact_matchid, sensor_contact_criteria, sensor_contact_direction],
+    outputs=[d.overflow, sensor_contact_nmatch, sensor_contact_matchid, sensor_contact_criteria],
   )
 
   # sorting
   wp.launch_tiled(
     _contact_sort(maxmatch),
     dim=(d.nworld, ncontact),
-    inputs=[m.sensor_intprm, sensor_contact_adr, sensor_contact_nmatch, sensor_contact_matchid, sensor_contact_criteria],
+    inputs=[
+      m.sensor_intprm,
+      sensor_contact_adr,
+      sensor_contact_nmatch,
+      sensor_contact_matchid,
+      sensor_contact_criteria,
+    ],
     outputs=[sensor_contact_matchid],
     block_dim=m.block_dim.contact_sort,
   )
@@ -2965,14 +2992,19 @@ def _eval_sensor_contact(m: Model, d: Data, sensor_contact_adr: wp.array[int]):
     inputs=[
       m.opt.cone,
       maxmatch,
+      m.body_rootid,
+      m.geom_bodyid,
       m.sensor_intprm,
       m.sensor_dim,
       m.sensor_adr,
+      d.subtree_com,
+      d.cvel,
       d.contact.dist,
       d.contact.pos,
       d.contact.frame,
       d.contact.friction,
       d.contact.dim,
+      d.contact.geom,
       d.contact.efc_address,
       d.contact.adhesion,
       d.efc.force,
@@ -2981,7 +3013,6 @@ def _eval_sensor_contact(m: Model, d: Data, sensor_contact_adr: wp.array[int]):
       sensor_contact_adr,
       sensor_contact_nmatch,
       sensor_contact_matchid,
-      sensor_contact_direction,
     ],
     outputs=[d.sensordata],
   )
@@ -3349,9 +3380,9 @@ def _energy_pos_passive_flex(deterministic: bool = False):
   @wp.kernel(module="unique", module_options=module_options)
   def kernel(
     # Model:
+    flex_interp: wp.array[int],
     flexedge_length0: wp.array[float],
     flex_edgestiffness: wp.array[float],
-    flex_interp: wp.array[int],
     flexedge_rigid: wp.array[bool],
     flex_edgeflexid: wp.array[int],
     # Data in:
@@ -3434,9 +3465,9 @@ def energy_pos(m: Model, d: Data):
       _energy_pos_passive_flex(bool(m.opt.deterministic & DeterminismType.ATOMICS)),
       dim=(d.nworld, m.nflexedge),
       inputs=[
+        m.flex_interp,
         m.flexedge_length0,
         m.flex_edgestiffness,
-        m.flex_interp,
         m.flexedge_rigid,
         m.flex_edgeflexid,
         d.flexedge_length,
