@@ -1,5 +1,5 @@
 diff --git a/CMakeLists.txt b/CMakeLists.txt
-index f0c3466..c087999 100644
+index c02e80d..a15cef3 100644
 --- a/CMakeLists.txt
 +++ b/CMakeLists.txt
 @@ -11,12 +11,7 @@ cmake_minimum_required(VERSION 3.22.1)
@@ -16,7 +16,7 @@ index f0c3466..c087999 100644
  
  # ==================================================================================================
  # Toolchain configuration
-@@ -304,59 +299,61 @@ if (WIN32)
+@@ -302,59 +297,61 @@ if (WIN32)
      # __declspec(dllexport) in front of each functions).
      set(CMAKE_WINDOWS_EXPORT_ALL_SYMBOLS ON)
  
@@ -128,7 +128,7 @@ index f0c3466..c087999 100644
      endif()
  
      if (MSVC)
-@@ -403,7 +400,7 @@ endif()
+@@ -401,7 +398,7 @@ endif()
  # Detect use of the clang-cl.exe frontend, which does not support all of clangs normal options
  if ("${CMAKE_CXX_COMPILER_ID}" STREQUAL "Clang")
      if ("${CMAKE_CXX_SIMULATE_ID}" STREQUAL "MSVC")
@@ -137,7 +137,7 @@ index f0c3466..c087999 100644
      endif()
  endif()
  
-@@ -435,7 +432,7 @@ if (APPLE AND NOT IOS)
+@@ -433,7 +430,7 @@ if (APPLE AND NOT IOS)
  endif()
  
  set(CXX_STANDARD "-std=c++20")
@@ -146,7 +146,7 @@ index f0c3466..c087999 100644
      set(CXX_STANDARD "/std:c++20")
  endif()
  
-@@ -824,9 +821,14 @@ function(combine_static_libs TARGET OUTPUT DEPS)
+@@ -816,9 +813,14 @@ function(combine_static_libs TARGET OUTPUT DEPS)
      endforeach()
  
      if (WIN32)
@@ -163,10 +163,10 @@ index f0c3466..c087999 100644
              COMMENT "Combining ${target} dependencies into single shared library"
              VERBATIM
 diff --git a/filament/CMakeLists.txt b/filament/CMakeLists.txt
-index b94f0e6..8d98fbd 100644
+index 43ebef8..16f0b1b 100644
 --- a/filament/CMakeLists.txt
 +++ b/filament/CMakeLists.txt
-@@ -819,6 +819,9 @@ else()
+@@ -809,6 +809,9 @@ else()
              -Wover-aligned
              -Werror
      )
@@ -177,7 +177,7 @@ index b94f0e6..8d98fbd 100644
  
  target_compile_options(${TARGET} PRIVATE
 diff --git a/filament/backend/CMakeLists.txt b/filament/backend/CMakeLists.txt
-index 3e03cd3..eb3d088 100644
+index 8da778b..181aa12 100644
 --- a/filament/backend/CMakeLists.txt
 +++ b/filament/backend/CMakeLists.txt
 @@ -546,6 +546,10 @@ else()
@@ -334,7 +334,7 @@ index 5d22cb8..f8adccc 100644
          const char* d = nullptr;
          float c = 0;
 diff --git a/libs/imageio/src/ImageEncoder.cpp b/libs/imageio/src/ImageEncoder.cpp
-index df54a37..39e61dd 100644
+index 9f83c6c..6593581 100644
 --- a/libs/imageio/src/ImageEncoder.cpp
 +++ b/libs/imageio/src/ImageEncoder.cpp
 @@ -867,39 +867,39 @@ const uint32_t DDS_FOURCC_DX10 = 0x30315844; // "DX10"
@@ -442,10 +442,10 @@ index 1aba109..3680a06 100644
      return *this;
  }
 diff --git a/libs/utils/include/utils/compiler.h b/libs/utils/include/utils/compiler.h
-index 319b5ef..2cd8bd4 100644
+index e55126d..09fc91e 100644
 --- a/libs/utils/include/utils/compiler.h
 +++ b/libs/utils/include/utils/compiler.h
-@@ -398,7 +398,7 @@ void __asan_unpoison_memory_region(void const volatile *addr, size_t size);
+@@ -376,7 +376,7 @@ void __asan_unpoison_memory_region(void const volatile *addr, size_t size);
  // AND multi-threading is enabled (UTILS_HAS_THREADING is not 0).
  // This prevents compile failures on single-threaded targets or builds where standard
  // annotations are disabled by default in the platform's standard library headers.
