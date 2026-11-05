@@ -1,6 +1,9 @@
 <mujoco model="Gothic arch">
   <visual>
     <global azimuth="140" elevation="-20"/>
+    <quality shadowsize="4096"/>
+    <headlight ambient=".25 .25 .25" diffuse=".4 .4 .4" specular=".2 .2 .2"/>
+    <rgba haze=".12 .16 .20 1"/>
   </visual>
 
   <!-- Frictional stability requires elliptic cones and large impratio. The
@@ -49,11 +52,12 @@
   </default>
 
   <worldbody>
-    <light name="key" pos="-1.35 -2.7 5.4" dir=".3 .6 -1" cutoff="25" softness="1" range="30" ambient=".15 .15 .15" specular=".15 .15 .15" intensity="3000000"/>
-    <light type="image" texture="ibl" intensity="7500"/>
+    <light name="key" pos="-1.35 -2.7 5.4" dir=".3 .6 -1" cutoff="25" softness="1" range="30" diffuse=".9 .85 .75" specular=".15 .15 .15" intensity="3000000"/>
+    <light pos="2.4 2.2 3.5" dir="-.5 -.5 -.7" cutoff="35" softness="1" range="30" diffuse=".5 .65 .8" intensity="300000" castshadow="false"/>
+    <light type="image" texture="ibl" intensity="3000"/>
     <camera name="front" pos="3.6 0 1.1" xyaxes="0 1 0 0 0 1"/>
 
-    <geom name="floor" type="plane" size="4 4 .01" material="grid"/>
+    <geom name="floor" type="plane" size="0 0 .01" material="grid"/>
 
     <!-- Left flank: arc centered at the right springing. -->
     <frame pos="0 1 0">

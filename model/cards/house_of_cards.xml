@@ -7,6 +7,8 @@
 
   <visual>
     <global azimuth="150" elevation="-15"/>
+    <quality shadowsize="4096"/>
+    <rgba haze=".2 .23 .28 1"/>
     <map force=".002"/>
   </visual>
 
@@ -123,11 +125,11 @@
   </default>
 
   <worldbody>
-    <light cutoff="40" pos="0 1 1" dir="0 -1 -2" ambient=".2 .2 .2" softness="1" intensity="150000"/>
-    <light cutoff="40" pos="0 -1 1" dir="0 1 -2" softness="1" intensity="60000"/>
-    <light type="image" texture="ibl" intensity="7500"/>
+    <light cutoff="22" pos="0 1 1" dir="0 -1 -.9" softness="1" range="5" diffuse=".9 .85 .75" intensity="150000"/>
+    <light cutoff="30" pos="0 -1 1" dir="0 1 -.9" softness="1" range="5" diffuse=".5 .65 .8" intensity="50000" castshadow="false"/>
+    <light type="image" texture="ibl" intensity="3000"/>
 
-    <geom type="plane" size="1.5 1.5 .01" material="grid"/>
+    <geom type="plane" size="0 0 .01" material="grid"/>
 
     <!-- Base card poses (levels 1-3) are baked at their settled equilibrium
          (quat, not euler), so the house loads at rest instead of bedding in;

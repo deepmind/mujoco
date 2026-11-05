@@ -18,17 +18,24 @@
     <flag speculative="enable"/>
   </option>
   <visual>
-    <headlight ambient="0.4 0.4 0.4" diffuse="0.6 0.6 0.6" specular="0.2 0.2 0.2"/>
+    <global realtime="0.2"/>
+    <quality shadowsize="4096"/>
+    <headlight ambient=".25 .25 .25" diffuse=".4 .4 .4" specular=".2 .2 .2"/>
+    <rgba haze=".12 .16 .20 1"/>
     <scale contactwidth="0.02" contactheight="0.005" forcewidth="0.01"/>
   </visual>
   <asset>
+    <texture name="ibl" type="cube" builtin="gradient" rgb1=".25 .3 .45" rgb2=".55 .5 .45" width="32" height="32"/>
+    <texture type="skybox" builtin="gradient" rgb1=".12 .16 .28" rgb2=".5 .45 .4" width="32" height="512"/>
     <texture name="grid" type="2d" builtin="checker" width="512" height="512"
              rgb1="0.2 0.25 0.3" rgb2="0.3 0.35 0.4"/>
-    <material name="grid" texture="grid" texrepeat="8 8" reflectance="0.1"/>
+    <material name="grid" texture="grid" texrepeat="2 2" texuniform="true" reflectance="0.1"/>
   </asset>
   <worldbody>
-    <light pos="0.4 -1 3" dir="0 0.3 -1"/>
-    <geom name="ground" type="plane" size="3 3 0.01" material="grid"/>
+    <light pos="1 -1.6 2.6" dir="-.3 .5 -.8" cutoff="35" softness="1" range="15" diffuse=".9 .85 .75" intensity="800000"/>
+    <light pos="-1 1.3 2" dir=".35 -.45 -.75" cutoff="50" softness="1" range="15" diffuse=".5 .65 .8" intensity="300000" castshadow="false"/>
+    <light type="image" texture="ibl" intensity="3000"/>
+    <geom name="ground" type="plane" size="0 0 0.01" material="grid"/>
     <!-- Spring-loaded pitching plunger at x = 0.83 m that launches the ball on step 1 -->
     <body name="pitcher_plunger" pos="0.83 0.05 0.42">
       <joint name="plunger_slide" type="slide" axis="-1 0 0"
