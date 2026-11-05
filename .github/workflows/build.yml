@@ -143,7 +143,15 @@ jobs:
         save: ${{ github.ref_name == 'main' }}
 
     - name: Cache external dependencies
+      if: github.ref_name == 'main'
       uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+      with:
+        path: ${{ runner.temp }}/external_deps
+        key: external-deps-v2-${{ runner.os == 'Windows' && 'windows' || 'posix' }}-${{ contains(matrix.cmake_args, 'MUJOCO_BUILD_STUDIO:BOOL=ON') && 'studio' || 'core' }}-${{ hashFiles('cmake/**', 'python/mujoco/CMakeLists.txt') }}
+
+    - name: Restore external dependencies
+      if: github.ref_name != 'main'
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
       with:
         path: ${{ runner.temp }}/external_deps
         key: external-deps-v2-${{ runner.os == 'Windows' && 'windows' || 'posix' }}-${{ contains(matrix.cmake_args, 'MUJOCO_BUILD_STUDIO:BOOL=ON') && 'studio' || 'core' }}-${{ hashFiles('cmake/**', 'python/mujoco/CMakeLists.txt') }}
@@ -330,7 +338,15 @@ jobs:
         key: emsdk-sysroot-4.0.10
 
     - name: Cache external dependencies
+      if: github.ref_name == 'main'
       uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+      with:
+        path: ${{ runner.temp }}/external_deps
+        key: external-deps-v2-posix-wasm-${{ hashFiles('cmake/**') }}
+
+    - name: Restore external dependencies
+      if: github.ref_name != 'main'
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
       with:
         path: ${{ runner.temp }}/external_deps
         key: external-deps-v2-posix-wasm-${{ hashFiles('cmake/**') }}
@@ -408,7 +424,15 @@ jobs:
         save: ${{ github.ref_name == 'main' }}
 
     - name: Cache external dependencies
+      if: github.ref_name == 'main'
       uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+      with:
+        path: ${{ runner.temp }}/external_deps
+        key: external-deps-v2-posix-mjx-${{ hashFiles('cmake/**', 'python/mujoco/CMakeLists.txt') }}
+
+    - name: Restore external dependencies
+      if: github.ref_name != 'main'
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
       with:
         path: ${{ runner.temp }}/external_deps
         key: external-deps-v2-posix-mjx-${{ hashFiles('cmake/**', 'python/mujoco/CMakeLists.txt') }}
