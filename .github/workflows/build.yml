@@ -130,12 +130,14 @@ jobs:
         UV_CACHE_DIR: ${{ runner.temp }}/uv_cache
       run: bash ./.github/workflows/build_steps.sh prepare_python
 
-    # ccache dramatically speeds up warm rebuilds. The key is the matrix label so
-    # each compiler gets its own cache; the action's restore-keys let PR branches
-    # fall back to main's cache. MSVC is skipped because it is finicky with /Zi,
-    # but Windows with Clang uses ccache via Ninja.
+    # ccache dramatically speeds up warm rebuilds. Controlled by matrix.ccache
+    # in build_matrix.json (enabled for core non-MSVC jobs; skipped on MSVC
+    # and extended postsubmit-only jobs to keep per-push cache churn within
+    # GitHub's 10 GiB limit). The key is the matrix label so each compiler gets
+    # its own cache; the action's restore-keys let PR branches fall back to
+    # main's cache.
     - name: Setup ccache
-      if: ${{ runner.os != 'Windows' || contains(matrix.label, 'clang') }}
+      if: ${{ matrix.ccache }}
       uses: hendrikmuhs/ccache-action@d62db5f07c26379fc4b4e0916f098a92573c3b03 # v1.2.23
       with:
         key: ${{ matrix.label }}-mujoco
@@ -519,12 +521,33 @@ jobs:
       uses: bazel-contrib/setup-bazel@c5acdfb288317d0b5c0bbd7a396a3dc868bb0f86 # 0.19.0
       with:
         bazelisk-cache: true
-        repository-cache: true
+        # setup-bazel's post step uploads --repository_cache unconditionally even
+        # when a build fails mid-fetch, which poisons the cache on transient
+        # 504s. We manage ~/.cache/bazel-repo explicitly below.
+        repository-cache: false
         # Bazel 9 keeps unpacked external repos (the repo contents cache) inside
         # the repository cache, which roughly doubles what is saved to the
         # GitHub cache. Re-extracting them from the cached archives only takes
         # seconds, so turn it off here. It is already off by default in Bazel 8.
         bazelrc: common --repo_contents_cache=
+
+    # Manage the Bazel repository cache explicitly instead of via setup-bazel,
+    # whose post step uploads the cache even when a build fails mid-fetch and
+    # would poison an immutable cache key on transient HTTP 504s.
+    - name: Restore Bazel repository cache
+      id: bazel-repo-cache
+      uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+      with:
+        path: ~/.cache/bazel-repo
+        key: bazel-repo-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('**/MODULE.bazel*', '.bazelversion', '.github/workflows/python-version', 'python/build_requirements.txt') }}
+        restore-keys: |
+          bazel-repo-${{ runner.os }}-${{ runner.arch }}-
+
+    - name: Enable Bazel repository cache
+      run: |
+        mkdir -p ~/.cache/bazel-repo
+        # setup-bazel writes ~/.bazelrc without a trailing newline.
+        printf '\ncommon --repository_cache=%s/.cache/bazel-repo\n' "${HOME}" >> ~/.bazelrc
 
     # Bazel disk cache, only for jobs with disk_cache in build_matrix.json. Like
     # ccache above, each push to main saves a new entry and every run restores
@@ -535,8 +558,8 @@ jobs:
       uses: actions/cache/restore@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
       with:
         path: ~/.cache/bazel-disk
-        key: bazel-disk-${{ matrix.label }}-${{ github.sha }}
-        restore-keys: bazel-disk-${{ matrix.label }}-
+        key: bazel-disk-${{ matrix.label }}--${{ github.sha }}
+        restore-keys: bazel-disk-${{ matrix.label }}--
 
     - name: Enable Bazel disk cache
       if: ${{ matrix.disk_cache }}
@@ -553,6 +576,13 @@ jobs:
         USE_BAZEL_VERSION: ${{ matrix.bazel_version }}
       run: bash ./.github/workflows/build_steps.sh test_bazel
 
+    - name: Save Bazel repository cache
+      if: ${{ github.event_name == 'push' && github.ref_name == 'main' && matrix.bazel_version == '' && steps.bazel-repo-cache.outputs.cache-hit != 'true' }}
+      uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
+      with:
+        path: ~/.cache/bazel-repo
+        key: bazel-repo-${{ runner.os }}-${{ runner.arch }}-${{ hashFiles('**/MODULE.bazel*', '.bazelversion', '.github/workflows/python-version', 'python/build_requirements.txt') }}
+
     # Drop the entries this build didn't use before saving, so the cache only
     # holds the current build's outputs instead of growing (and growing more
     # stale) with every push.
@@ -565,7 +595,7 @@ jobs:
       uses: actions/cache/save@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6
       with:
         path: ~/.cache/bazel-disk
-        key: bazel-disk-${{ matrix.label }}-${{ github.sha }}
+        key: bazel-disk-${{ matrix.label }}--${{ github.sha }}
 
     - name: Notify team chat
       if: failure() && github.ref_name == 'main' && github.event_name == 'push'
