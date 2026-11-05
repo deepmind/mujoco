@@ -52,6 +52,7 @@
 #include "studio/sim/model_holder.h"
 #include "studio/ux/imgui_widgets.h"
 #include "studio/ux/interaction.h"
+#include "studio/ux/theme.h"
 #include <NetImgui_Api.h>
 #include "google/logging.h"
 #include "state_payload.h"
@@ -71,6 +72,7 @@
 extern "C" GLenum __wrap_glGetError(void) { return GL_NO_ERROR; }
 
 using mujoco::studio::DisconnectNotice;
+using mujoco::studio::GuiTheme;
 using mujoco::studio::RemoteUi;
 using mujoco::studio::RemoteUiState;
 using mujoco::studio::RoleWindow;
@@ -168,6 +170,7 @@ struct App {
   Session session{callbacks};
   DisconnectNotice disconnect_notice;
   RoleWindow role_window;
+  GuiTheme theme = GuiTheme::kDark;
 };
 App g_app;
 
@@ -290,10 +293,10 @@ void SetSpectatorCameraMode(int mode) {
   const mjModel* model = g_app.model_holder->model();
   if (mode == kSpecCamTumble) {
     mujoco::studio::SetCamera(model, &g_app.camera,
-                                mujoco::studio::kTumbleCameraIdx);
+                              mujoco::studio::kTumbleCameraIdx);
   } else if (mode == kSpecCamWasd) {
     mujoco::studio::SetCamera(model, &g_app.camera,
-                                mujoco::studio::kFreeCameraIdx);
+                              mujoco::studio::kFreeCameraIdx);
   }
   // kSpecCamFollow: the next state payload restores the controller's camera.
 }
@@ -322,7 +325,7 @@ void HandleSpectatorCameraInput() {
     mjv_defaultFreeCamera(model, &g_app.camera);
     if (wasd) {
       mujoco::studio::SetCamera(model, &g_app.camera,
-                                  mujoco::studio::kFreeCameraIdx);
+                                mujoco::studio::kFreeCameraIdx);
     }
   }
 
@@ -397,6 +400,50 @@ void HandleSpectatorCameraInput() {
   }
 }
 
+// Styles the browser's local ImGui context (the role bar and notices) with
+// one of the Studio themes. The theme is this browser's own choice, made
+// with the role bar's theme button and remembered in localStorage so it
+// survives page reloads (every model change reloads the page); it has
+// nothing to do with the theme of the Python app serving the session.
+constexpr char kThemeStorageKey[] = "mjwv_theme";
+
+// The theme's key in localStorage: "light", "dark" or "classic".
+const char* ThemeStorageValue(GuiTheme theme) {
+  switch (theme) {
+    case GuiTheme::kLight:
+      return "light";
+    case GuiTheme::kClassic:
+      return "classic";
+    case GuiTheme::kDark:
+      return "dark";
+  }
+  return "dark";
+}
+
+// The theme stored by a previous page load, or dark.
+GuiTheme LoadTheme() {
+  const std::string script = std::string("(function() { try { return ") +
+                             "localStorage.getItem('" + kThemeStorageKey +
+                             "') || ''; } catch (e) { return ''; } })()";
+  const char* name = emscripten_run_script_string(script.c_str());
+  const std::string stored = name != nullptr ? name : "";
+  if (stored == "light") return GuiTheme::kLight;
+  if (stored == "classic") return GuiTheme::kClassic;
+  return GuiTheme::kDark;
+}
+
+void ApplyTheme(GuiTheme theme) {
+  g_app.theme = theme;
+  // SetupTheme sizes paddings from FontScaleDpi, which Window set for the
+  // display's DPI. The font scale itself stays 1: browser zoom scales the
+  // whole page, bar included.
+  mujoco::studio::SetupTheme(theme);
+  const std::string script = std::string("try { localStorage.setItem('") +
+                             kThemeStorageKey + "', '" +
+                             ThemeStorageValue(theme) + "'); } catch (e) {}";
+  emscripten_run_script(script.c_str());
+}
+
 // --- AppCallbacks method bodies (see the class declaration above App). ---
 
 uintptr_t AppCallbacks::UploadTexture(uintptr_t current, const std::byte* rgba,
@@ -465,7 +512,11 @@ void BuildBrowserGui() {
   view.retry_count = g_app.download_status.retry_count;
   // The session is the SessionActions implementation: the role window's
   // intents land there directly.
-  g_app.role_window.Draw(view, g_app.session);
+  GuiTheme theme = g_app.theme;
+  g_app.role_window.Draw(view, g_app.session, &theme);
+  if (theme != g_app.theme) {
+    ApplyTheme(theme);
+  }
 }
 
 // The scene's viewport in framebuffer pixels (GL convention: origin at the
@@ -872,9 +923,8 @@ static void RegisterBundledTextures(mjModel* m,
   for (int i = 0; i < m->ntex; ++i) {
     if (m->tex_adr[i] != -1 || m->tex_pathadr[i] < 0) continue;
     std::string_view path(m->paths + m->tex_pathadr[i]);
-    auto it = std::find_if(
-        b.resources.begin(), b.resources.end(),
-        [path](const auto& r) { return r.path == path; });
+    auto it = std::find_if(b.resources.begin(), b.resources.end(),
+                           [path](const auto& r) { return r.path == path; });
     if (it == b.resources.end()) {
       LOG(Warning, "Texture %d (%.*s) is not in the model bundle", i,
           static_cast<int>(path.size()), path.data());
@@ -887,11 +937,11 @@ static void RegisterBundledTextures(mjModel* m,
                 (slash == std::string_view::npos || dot > slash)
             ? path.substr(dot)
             : std::string_view();
-    std::string name = std::string(kBundledTexturePrefix) +
-                       std::to_string(i) + std::string(ext);
+    std::string name = std::string(kBundledTexturePrefix) + std::to_string(i) +
+                       std::string(ext);
     AssetRegistry::Instance().RegisterAssetView(
-        name, std::string_view(reinterpret_cast<const char*>(it->data),
-                               it->size));
+        name,
+        std::string_view(reinterpret_cast<const char*>(it->data), it->size));
     const std::string uri = "asset:" + name;
     m->tex_pathadr[i] = static_cast<int>(paths.size());
     paths.insert(paths.end(), uri.begin(), uri.end());
@@ -1059,8 +1109,11 @@ void StartApp() {
   config.load_fonts = true;
 
   g_app.window = std::make_unique<mujoco::studio::Window>("MuJoCo Web Viewer",
-                                                            1400, 720, config);
+                                                          1400, 720, config);
   ImPlot::CreateContext();  // Needed if the server app uses ImPlot.
+  // The local UI's theme from the first frame: the one this browser last
+  // chose, or dark.
+  ApplyTheme(LoadTheme());
 
   for (int i = 0; i < mjNRNDFLAG; i++) {
     g_app.render_flags[i] = (mjRNDSTRING[i][1][0] == '1');

@@ -33,22 +33,13 @@
 #include "studio/sim/sim_history.h"
 #include "studio/sim/sim_profiler.h"
 #include "studio/sim/step_control.h"
+#include "studio/ux/theme.h"
 
 namespace mujoco::studio {
-
-// Standard default UX themes for MuJoCo applications.
-enum class GuiTheme {
-  kLight,
-  kDark,
-  kClassic,
-};
 
 // Render a section header with custom, visually-balanced smaller
 // expand/collapse arrow.
 bool SectionHeader(const char* label, ImGuiTreeNodeFlags flags = 0, float arrow_scale = 0.55f);
-
-// Updates the ImGui internal style state to match the requested theme.
-void SetupTheme(GuiTheme theme);
 
 // Returns the default INI settings file path (~/.mujoco.ini).
 std::string GetDefaultIniPath();

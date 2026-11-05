@@ -16,12 +16,13 @@
 // DISCONNECTED notices. Deliberately decoupled from the app: it reads a
 // SessionView snapshot and reports user intent through the SessionActions
 // interface (both defined in web_client_session.h), so drawing depends
-// only on ImGui.
+// only on ImGui and the Studio theme enum.
 
 #ifndef MUJOCO_PYTHON_STUDIO_WEB_WEB_CLIENT_LOCAL_UI_H_
 #define MUJOCO_PYTHON_STUDIO_WEB_WEB_CLIENT_LOCAL_UI_H_
 
 #include <imgui.h>
+#include "studio/ux/theme.h"
 #include "role_transitions.h"
 #include "web_client_session.h"
 
@@ -60,11 +61,13 @@ class DisconnectNotice {
 // sees how many are waiting, next to Release control. A queued spectator's
 // only inline cue is the amber dot; the queue details are in the buttons'
 // tooltips. Role transitions raise a short toast at the top of the canvas.
-// Owns its presentation state: the transition detector, the toast timer,
-// the measured cluster width, and the spectator-limit edit grace.
+// The cluster ends with a theme picker for the local UI's theme; the bar
+// only shows and changes it, the app applies and stores it. Owns its
+// presentation state: the transition detector, the toast timer, the
+// measured cluster width, and the spectator-limit edit grace.
 class RoleWindow {
  public:
-  void Draw(const SessionView& view, SessionActions& actions);
+  void Draw(const SessionView& view, SessionActions& actions, GuiTheme* theme);
 
   // The bar's height in logical pixels for the current DPI and font scale,
   // floored to whole pixels so the scene rect above it meets it exactly.
@@ -82,15 +85,20 @@ class RoleWindow {
   static constexpr double kEditGraceSec = 1.5;
 
   void UpdateTransitions(const SessionView& view, double now);
-  void DrawBar(const SessionView& view, SessionActions& actions);
+  void DrawBar(const SessionView& view, SessionActions& actions,
+               GuiTheme* theme);
   void DrawDownloading(const SessionView& view);
   void DrawRoleChip(const SessionView& view);
   void DrawCameraToken(const SessionView& view, SessionActions& actions);
   void DrawCapacityToken(const SessionView& view, SessionActions& actions);
-  void DrawActions(const SessionView& view, SessionActions& actions);
+  void DrawActions(const SessionView& view, SessionActions& actions,
+                   GuiTheme* theme);
+  void DrawThemeButton(GuiTheme* theme);
   void DrawDataRate(const SessionView& view);
   void DrawToast(const SessionView& view, double now);
 
+  // The theme being drawn this frame.
+  GuiTheme theme_ = GuiTheme::kDark;
   // Role changes and the toast each one deserves; a button click registers
   // the wording it expects (see RoleTransitions).
   RoleTransitions transitions_;

@@ -68,6 +68,8 @@ target_sources(${MUJOCO_STUDIO_PLATFORM_TARGET_NAME}
         ux/plugin.h
         ux/spec_editor.cc
         ux/spec_editor.h
+        ux/theme.cc
+        ux/theme.h
         ux/well_tempered.h
 )
 
