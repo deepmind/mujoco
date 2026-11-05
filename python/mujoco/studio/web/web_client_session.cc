@@ -20,6 +20,7 @@
 #include <cstring>
 
 #include "google/logging.h"
+#include "state_payload.h"
 
 namespace mujoco::studio {
 
@@ -343,4 +344,10 @@ void Session::SendTheme() {
   SendText((std::string(kMsgThemePrefix) + theme_).c_str());
 }
 
+void Session::SendCamera(const mjvCamera& camera, uint32_t generation) {
+  if (socket_ && connected_) {
+    ClientCameraMessage message = MakeClientCameraMessage(camera, generation);
+    emscripten_websocket_send_binary(socket_, &message, sizeof(message));
+  }
+}
 }  // namespace mujoco::studio

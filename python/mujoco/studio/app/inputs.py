@@ -313,7 +313,7 @@ def handle_freecam_wasd_keyboard_events(
   """Handles keyboard shortcuts for free camera movement.
 
   Flies the camera with W/S, A/D and Q/E using the camera controls shared with
-  the C++ Studio app (ux.move_camera_with_keys).
+  the C++ Studio app and the web viewer (ux.move_camera_with_keys).
 
   Args:
     model: The MuJoCo model.
@@ -426,8 +426,21 @@ def handle_mouse_events(
     vis_options: mujoco.MjvOption,
     perturb: mujoco.MjvPerturb,
     ux_state: ux.UxState,
+    move_camera: bool = True,
 ) -> None:
-  """Handles mouse events."""
+  """Handles mouse events.
+
+  Args:
+    model: The MuJoCo model.
+    data: The MuJoCo data.
+    camera: The MuJoCo camera object.
+    vis_options: The MuJoCo visualization options.
+    perturb: The MuJoCo perturbation object.
+    ux_state: The UX state object.
+    move_camera: Whether drags and scrolls move the camera. False when the
+      viewer's client moves it itself (Viewer.client_camera); picking and
+      perturbation are handled either way.
+  """
   io = imgui.GetIO()
   if io.WantCaptureMouse:
     return
@@ -500,12 +513,13 @@ def handle_mouse_events(
       )
 
   # Camera drags and wheel, with the camera controls shared with the C++ Studio
-  # app (which leave Ctrl drags to the perturbation above).
-  ux.move_camera_with_mouse(
-      model,
-      camera,
-      fly_camera=ux_state.camera_index == ux.FREE_CAMERA_IDX,
-  )
+  # app and the web viewer (which leave Ctrl drags to the perturbation above).
+  if move_camera:
+    ux.move_camera_with_mouse(
+        model,
+        camera,
+        fly_camera=ux_state.camera_index == ux.FREE_CAMERA_IDX,
+    )
 
   aspect_ratio = io.DisplaySize.x / io.DisplaySize.y
 

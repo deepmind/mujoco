@@ -54,6 +54,7 @@ from mujoco.studio import endpoints
 from mujoco.studio import messages
 from mujoco.studio import ux
 from mujoco.studio import viewer_protocol
+from mujoco.studio.web import client_camera
 from mujoco.studio.web import headless_ui
 from mujoco.studio.web import state_payload
 from mujoco.studio.web import web_server
@@ -251,6 +252,11 @@ class WebViewer(viewer_protocol.Viewer):
     # The persistent single-port server (HTTP + /ui + /state + /drop).
     self._model_crc32 = 0
 
+    # The browser moves the camera locally at the browser's frame rate rather
+    # than once per network round trip.
+    self._client_camera = client_camera.ClientCameraSync()
+    self.client_camera = self._client_camera
+
     # Files dropped onto the browser page arrive here from the server thread as
     # a dict of relative path -> bytes.
     self._drop_queue: queue.Queue[Any] = queue.Queue()
@@ -360,7 +366,12 @@ class WebViewer(viewer_protocol.Viewer):
 
   def prepare_next_frame(self) -> bool:
     """Advances to the next headless frame; returns False when disconnected."""
-    return self._headless_ui.new_frame()
+    frame = self._headless_ui.new_frame()
+    if self._web_server is not None:
+      camera = self._web_server.take_client_camera()
+      if camera is not None:
+        self._client_camera.apply(self.camera, camera)
+    return frame
 
   def sync(self) -> None:
     """Streams state to the browser and ends the headless ImGui frame."""
@@ -379,6 +390,14 @@ class WebViewer(viewer_protocol.Viewer):
           self.model,
           list(self.render_flags.flags),
           self.extra_geoms[: state_payload.MAX_EXTRA_GEOMS],
+          state_payload.ViewerInputState(
+              mouse_focus=not imgui.GetIO().WantCaptureMouse,
+              camera_index=self.camera_index,
+              keyboard_focus=not imgui.GetIO().WantCaptureKeyboard,
+              camera_generation=self._client_camera.update_generation(
+                  self.camera
+              ),
+          ),
       )
       self._web_server.update_state(payload)
 

@@ -956,6 +956,12 @@ def _run_server(
       async def recv_messages() -> None:
         nonlocal in_flight
         async for message in ws:
+          if isinstance(message, bytes):
+            # The controller's locally moved camera, a ClientCameraMessage
+            # (state_payload.h) for the viewer thread to adopt.
+            if sid == controller_sid:
+              server.set_client_camera(message)
+            continue
           if isinstance(message, str):
             if message == _STATE_ACK_MESSAGE:
               # Deliberately does NOT count as liveness: acks keep flowing from
@@ -1264,6 +1270,7 @@ class WebServer:
     self._state_payload: bytes | None = None
     self._state_generation: int = 0
     self._wake_state_streams: Callable[[], Any] | None = None
+    self._client_camera: bytes | None = None
     self._pending_theme: str | None = None
 
     # Model bundles by crc32 (see _serve_model), least recently used first,
@@ -1427,6 +1434,17 @@ class WebServer:
       theme = self._pending_theme
       self._pending_theme = None
       return theme
+
+  def set_client_camera(self, camera: bytes) -> None:
+    """Records the latest camera sent by the controlling browser."""
+    with self._state_lock:
+      self._client_camera = camera
+
+  def take_client_camera(self) -> bytes | None:
+    """Returns the camera the controller last sent, once; else None."""
+    with self._state_lock:
+      camera, self._client_camera = self._client_camera, None
+    return camera
 
   def start(self) -> None:
     """Starts the server on a background daemon thread."""

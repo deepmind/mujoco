@@ -20,7 +20,9 @@
 
 #include <cstddef>
 #include <cstdint>
+#include <optional>
 #include <string>
+#include <string_view>
 #include <vector>
 
 #include <mujoco/mujoco.h>
@@ -32,14 +34,15 @@
 namespace py = pybind11;
 
 // Serialize the complete state WebSocket payload (see state_payload.h):
-// physics state, render state and extra geoms as tagged blocks.
+// physics state, render state, extra geoms and viewer input as tagged blocks.
 static py::bytes SerializeStatePayload(
     uint32_t model_crc32, int physics_spec, const py::bytes& physics_state,
     const mujoco::python::MjvCameraWrapper& camera,
     const mujoco::python::MjvPerturbWrapper& perturb,
     const mujoco::python::MjvOptionWrapper& vis_options,
     const mujoco::python::MjModelWrapper& model,
-    const std::vector<uint8_t>& render_flags, const py::iterable& extra_geoms) {
+    const std::vector<uint8_t>& render_flags, const py::iterable& extra_geoms,
+    const mujoco::studio::ViewerInputState& viewer_input) {
   std::vector<mjvGeom> geoms;
   geoms.reserve(py::len_hint(extra_geoms));
   for (py::handle item : extra_geoms) {
@@ -58,9 +61,30 @@ static py::bytes SerializeStatePayload(
         model_crc32, physics_spec, physics.data(), physics.size(),
         *camera.get(), *perturb.get(), *vis_options.get(), model.get()->opt,
         model.get()->vis, model.get()->stat, render_flags, geoms.data(),
-        geoms.size());
+        geoms.size(), viewer_input);
   }
   return py::bytes(reinterpret_cast<const char*>(buffer.data()), buffer.size());
+}
+
+// Parses a ClientCameraMessage sent by the controlling browser; None if it is
+// malformed.
+static std::optional<mujoco::studio::ClientCameraMessage> ParseClientCamera(
+    const py::bytes& message) {
+  const std::string_view data = message;
+  mujoco::studio::ClientCameraMessage parsed;
+  if (!mujoco::studio::ParseClientCameraMessage(data.data(), data.size(),
+                                                &parsed)) {
+    return std::nullopt;
+  }
+  return parsed;
+}
+
+// Serializes `camera` as the controlling browser sends it.
+static py::bytes SerializeClientCamera(
+    const mujoco::python::MjvCameraWrapper& camera, uint32_t generation) {
+  const mujoco::studio::ClientCameraMessage message =
+      mujoco::studio::MakeClientCameraMessage(*camera.get(), generation);
+  return py::bytes(reinterpret_cast<const char*>(&message), sizeof(message));
 }
 
 // Upper bound of a serialized payload for a model whose physics state is
@@ -115,7 +139,50 @@ void InitStatePayload(py::module_& m) {
   py::module_::import("mujoco._structs");
   m.doc() = "MuJoCo web viewer state payload serialization";
 
-  m.def("serialize_state_payload", &SerializeStatePayload);
+  using mujoco::studio::ViewerInputState;
+  py::class_<ViewerInputState>(m, "ViewerInputState")
+      .def(py::init([](bool mouse_focus, int camera_index, bool keyboard_focus,
+                       uint32_t camera_generation) {
+             return ViewerInputState{
+                 .mouse_focus = mouse_focus ? 1 : 0,
+                 .camera_index = camera_index,
+                 .keyboard_focus = keyboard_focus ? 1 : 0,
+                 .camera_generation = camera_generation,
+             };
+           }),
+           py::kw_only(), py::arg("mouse_focus") = false,
+           py::arg("camera_index") = 0, py::arg("keyboard_focus") = false,
+           py::arg("camera_generation") = 0)
+      .def_readwrite("mouse_focus", &ViewerInputState::mouse_focus)
+      .def_readwrite("camera_index", &ViewerInputState::camera_index)
+      .def_readwrite("keyboard_focus", &ViewerInputState::keyboard_focus)
+      .def_readwrite("camera_generation", &ViewerInputState::camera_generation);
+
+  using mujoco::studio::ClientCameraMessage;
+  py::class_<ClientCameraMessage>(m, "ClientCameraMessage")
+      .def_readonly("generation", &ClientCameraMessage::generation)
+      .def_readonly("type", &ClientCameraMessage::type)
+      .def_readonly("fixedcamid", &ClientCameraMessage::fixedcamid)
+      .def_readonly("trackbodyid", &ClientCameraMessage::trackbodyid)
+      .def_readonly("orthographic", &ClientCameraMessage::orthographic)
+      .def_property_readonly("lookat",
+                             [](const ClientCameraMessage& message) {
+                               return py::make_tuple(message.lookat[0],
+                                                     message.lookat[1],
+                                                     message.lookat[2]);
+                             })
+      .def_readonly("distance", &ClientCameraMessage::distance)
+      .def_readonly("azimuth", &ClientCameraMessage::azimuth)
+      .def_readonly("elevation", &ClientCameraMessage::elevation);
+  m.def("parse_client_camera", &ParseClientCamera, py::arg("message"));
+  m.def("serialize_client_camera", &SerializeClientCamera, py::arg("camera"),
+        py::arg("generation"));
+
+  m.def("serialize_state_payload", &SerializeStatePayload,
+        py::arg("model_crc32"), py::arg("physics_spec"),
+        py::arg("physics_state"), py::arg("camera"), py::arg("perturb"),
+        py::arg("vis_options"), py::arg("model"), py::arg("render_flags"),
+        py::arg("extra_geoms"), py::arg("viewer_input"));
   m.def("max_state_payload_size", &MaxStatePayloadSize);
   m.def("serialize_model_bundle", &SerializeModelBundle);
   m.def("parse_model_bundle", &ParseModelBundle);

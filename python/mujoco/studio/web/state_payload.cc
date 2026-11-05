@@ -107,10 +107,36 @@ void ParseRenderState(const std::byte* data, RenderStateView* out) {
   memcpy(out->render_flags, ptr, mjNRNDFLAG);
 }
 
+ClientCameraMessage MakeClientCameraMessage(const mjvCamera& camera,
+                                            uint32_t generation) {
+  ClientCameraMessage message;
+  message.generation = generation;
+  message.type = camera.type;
+  message.fixedcamid = camera.fixedcamid;
+  message.trackbodyid = camera.trackbodyid;
+  message.orthographic = camera.orthographic;
+  for (int i = 0; i < 3; ++i) {
+    message.lookat[i] = camera.lookat[i];
+  }
+  message.distance = camera.distance;
+  message.azimuth = camera.azimuth;
+  message.elevation = camera.elevation;
+  return message;
+}
+
+bool ParseClientCameraMessage(const void* data, size_t size,
+                              ClientCameraMessage* out) {
+  if (size != sizeof(ClientCameraMessage)) {
+    return false;
+  }
+  std::memcpy(out, data, sizeof(ClientCameraMessage));
+  return out->magic == kClientCameraMagic;
+}
+
 size_t MaxStatePayloadSize(size_t physics_bytes) {
-  return sizeof(StatePayloadHeader) + 3 * sizeof(StateBlockHeader) +
+  return sizeof(StatePayloadHeader) + 4 * sizeof(StateBlockHeader) +
          (sizeof(int32_t) + physics_bytes) + kRenderStateSize +
-         kMaxExtraGeoms * sizeof(mjvGeom);
+         kMaxExtraGeoms * sizeof(mjvGeom) + sizeof(ViewerInputState);
 }
 
 std::vector<std::byte> SerializeStatePayload(
@@ -118,14 +144,15 @@ std::vector<std::byte> SerializeStatePayload(
     size_t physics_bytes, const mjvCamera& camera, const mjvPerturb& perturb,
     const mjvOption& vis_options, const mjOption& opt, const mjVisual& vis,
     const mjStatistic& stat, const std::vector<uint8_t>& render_flags,
-    const mjvGeom* extra_geoms, size_t extra_geom_count) {
+    const mjvGeom* extra_geoms, size_t extra_geom_count,
+    const ViewerInputState& viewer_input) {
   extra_geom_count =
       extra_geom_count > kMaxExtraGeoms ? kMaxExtraGeoms : extra_geom_count;
   std::vector<std::byte> buffer;
   buffer.reserve(MaxStatePayloadSize(physics_bytes));
 
   StatePayloadHeader header;
-  header.nblocks = extra_geom_count > 0 ? 3 : 2;
+  header.nblocks = extra_geom_count > 0 ? 4 : 3;
   header.model_crc32 = model_crc32;
   AppendBytes(buffer, &header, sizeof(header));
 
@@ -150,6 +177,9 @@ std::vector<std::byte> SerializeStatePayload(
     AppendStateBlock(buffer, kTagExtraGeoms, extra_geoms,
                      extra_geom_count * sizeof(mjvGeom));
   }
+
+  AppendStateBlock(buffer, kTagViewerInput, &viewer_input,
+                   sizeof(viewer_input));
 
   return buffer;
 }
@@ -191,6 +221,10 @@ bool ParseStatePayload(const void* data, size_t size, StatePayloadView* out) {
         if (block.size % sizeof(mjvGeom) != 0) return false;
         out->extra_geoms = payload;
         out->extra_geom_count = block.size / sizeof(mjvGeom);
+        break;
+      case kTagViewerInput:
+        if (block.size != sizeof(ViewerInputState)) return false;
+        memcpy(&out->viewer_input, payload, sizeof(ViewerInputState));
         break;
       default:
         break;  // Unknown tag: skip.

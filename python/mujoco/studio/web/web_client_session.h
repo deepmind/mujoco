@@ -204,6 +204,12 @@ class Session : public SessionActions {
   // page's theme from the first frame.
   void SetTheme(const char* theme);
 
+  // Sends the controller's locally moved camera to the viewer as a
+  // ClientCameraMessage (state_payload.h). The viewer adopts it unless it
+  // changed the camera itself since `generation`
+  // (ViewerInputState::camera_generation; see client_camera.py).
+  void SendCamera(const mjvCamera& camera, uint32_t generation);
+
  private:
   // Detaches callbacks and frees socket_ (if any), resetting to disconnected.
   void CloseSocket();

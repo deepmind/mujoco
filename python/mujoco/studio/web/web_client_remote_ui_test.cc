@@ -599,9 +599,13 @@ TEST_F(RemoteUiTest, StateQueueSynchronizesFullPayloadAndBoundsLatency) {
     for (int i = 0; i < ngeom; ++i) {
       geoms[i].objid = 100 + i;
     }
+    // The viewer input rides along too; tag it with the azimuth to tell the
+    // payloads apart.
+    const ViewerInputState viewer_input{.camera_generation =
+                                            static_cast<uint32_t>(azimuth)};
     return SerializeStatePayload(
         /*model_crc32=*/42u, spec, physics, sizeof(physics), cam, pert, vopt,
-        opt, vis, stat, rflags, geoms.data(), geoms.size());
+        opt, vis, stat, rflags, geoms.data(), geoms.size(), viewer_input);
   };
 
   const std::vector<std::byte> b1 = make_payload(1.0, 10.0, 7, 15.0, 1);
@@ -628,6 +632,7 @@ TEST_F(RemoteUiTest, StateQueueSynchronizesFullPayloadAndBoundsLatency) {
   EXPECT_THAT(out.state, testing::ElementsAre(1.0, 10.0));
   ASSERT_TRUE(out.has_render_state);
   EXPECT_DOUBLE_EQ(out.render_state.camera.azimuth, 15.0);
+  EXPECT_EQ(out.viewer_input.camera_generation, 15u);
   ASSERT_EQ(out.extra_geoms.size(), 1u);
   EXPECT_EQ(out.extra_geoms[0].objid, 100);
 
@@ -636,6 +641,7 @@ TEST_F(RemoteUiTest, StateQueueSynchronizesFullPayloadAndBoundsLatency) {
   EXPECT_THAT(out.state, testing::ElementsAre(2.0, 20.0));
   ASSERT_TRUE(out.has_render_state);
   EXPECT_DOUBLE_EQ(out.render_state.camera.azimuth, 30.0);
+  EXPECT_EQ(out.viewer_input.camera_generation, 30u);
   ASSERT_EQ(out.extra_geoms.size(), 2u);
   EXPECT_EQ(out.extra_geoms[1].objid, 101);
   EXPECT_FALSE(queue.Pop(&out));

@@ -372,7 +372,7 @@ class App(plugin.ViewerPlugin):
     if inputs.handle_miscellaneous_keyboard_events(self):
       return
 
-    if is_freecam_wasd:
+    if is_freecam_wasd and self.viewer.client_camera is None:
       handled, self.viewer.cam_speed = (
           inputs.handle_freecam_wasd_keyboard_events(
               self.model, self.data, self.viewer.camera, self.viewer.cam_speed
@@ -402,6 +402,7 @@ class App(plugin.ViewerPlugin):
         self.viewer.vis_options,
         self.viewer.perturb,
         self.ux_state,
+        move_camera=self.viewer.client_camera is None,
     )
 
   def reset_physics(self) -> None:
@@ -719,6 +720,10 @@ class App(plugin.ViewerPlugin):
             imgui.EndTable()
         imgui.End()
         imgui.PopStyleVar(3)
+
+    # Mirrored for viewers whose client moves the camera (client_camera), after
+    # everything above that can switch the camera mode.
+    self.viewer.camera_index = self.ux_state.camera_index
 
   @messages.handler(priority=messages.Priority.INTERNAL)
   def _on_step_control(self, event: messages.StepControlSnapshot) -> None:
