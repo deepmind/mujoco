@@ -26,7 +26,7 @@ from mujoco.mjx.third_party.mujoco_warp._src.types import OverflowType
 from mujoco.mjx.third_party.mujoco_warp._src.warp_util import cache_kernel
 from mujoco.mjx.third_party.mujoco_warp._src.warp_util import event_scope
 
-wp.set_module_options({"default_grid_stride": False})
+wp.set_module_options({"enable_backward": False, "default_grid_stride": False})
 
 
 @wp.func
@@ -115,6 +115,7 @@ def _flex_contact_bodies(
   jnt_bodyid: wp.array[int],
   geom_bodyid: wp.array[int],
   flex_dim: wp.array[int],
+  flex_interp: wp.array[int],
   flex_cellnum: wp.array[wp.vec3i],
   flex_nodeadr: wp.array[int],
   flex_vertadr: wp.array[int],
@@ -156,6 +157,7 @@ def _flex_contact_bodies(
     jnt_bodyid,
     geom_bodyid,
     flex_dim,
+    flex_interp,
     flex_cellnum,
     flex_nodeadr,
     flex_vertadr,
@@ -186,6 +188,7 @@ def _flex_contact_bodies(
     jnt_bodyid,
     geom_bodyid,
     flex_dim,
+    flex_interp,
     flex_cellnum,
     flex_nodeadr,
     flex_vertadr,
@@ -286,6 +289,7 @@ def _passive_contact_island_dsu(
   jnt_bodyid: wp.array[int],
   geom_bodyid: wp.array[int],
   flex_dim: wp.array[int],
+  flex_interp: wp.array[int],
   flex_cellnum: wp.array[wp.vec3i],
   flex_nodeadr: wp.array[int],
   flex_vertadr: wp.array[int],
@@ -335,6 +339,7 @@ def _passive_contact_island_dsu(
     jnt_bodyid,
     geom_bodyid,
     flex_dim,
+    flex_interp,
     flex_cellnum,
     flex_nodeadr,
     flex_vertadr,
@@ -374,7 +379,7 @@ def _passive_contact_island_dsu(
       _dsu_union(island_parent_out, worldid, tree1, tree2, tree_island_out)
 
 
-@wp.kernel(module="unique")
+@wp.kernel(module="unique", enable_backward=False)
 def _island_dsu(
   # Model:
   nv: int,
@@ -386,6 +391,7 @@ def _island_dsu(
   geom_bodyid: wp.array[int],
   site_bodyid: wp.array[int],
   flex_dim: wp.array[int],
+  flex_interp: wp.array[int],
   flex_cellnum: wp.array[wp.vec3i],
   flex_nodeadr: wp.array[int],
   flex_vertadr: wp.array[int],
@@ -487,6 +493,7 @@ def _island_dsu(
           jnt_bodyid,
           geom_bodyid,
           flex_dim,
+          flex_interp,
           flex_cellnum,
           flex_nodeadr,
           flex_vertadr,
@@ -683,6 +690,7 @@ def direct_dsu(m: types.Model, d: types.Data, island_parent: wp.array2d[int]):
           m.jnt_bodyid,
           m.geom_bodyid,
           m.flex_dim,
+          m.flex_interp,
           m.flex_cellnum,
           m.flex_nodeadr,
           m.flex_vertadr,
@@ -728,6 +736,7 @@ def direct_dsu(m: types.Model, d: types.Data, island_parent: wp.array2d[int]):
       m.geom_bodyid,
       m.site_bodyid,
       m.flex_dim,
+      m.flex_interp,
       m.flex_cellnum,
       m.flex_nodeadr,
       m.flex_vertadr,
@@ -1017,6 +1026,7 @@ def _compute_efc_tree(
   geom_bodyid: wp.array[int],
   site_bodyid: wp.array[int],
   flex_dim: wp.array[int],
+  flex_interp: wp.array[int],
   flex_cellnum: wp.array[wp.vec3i],
   flex_nodeadr: wp.array[int],
   flex_vertadr: wp.array[int],
@@ -1121,6 +1131,7 @@ def _compute_efc_tree(
         jnt_bodyid,
         geom_bodyid,
         flex_dim,
+        flex_interp,
         flex_cellnum,
         flex_nodeadr,
         flex_vertadr,
@@ -1294,6 +1305,7 @@ def compute_island_mapping(m: types.Model, d: types.Data):
       m.geom_bodyid,
       m.site_bodyid,
       m.flex_dim,
+      m.flex_interp,
       m.flex_cellnum,
       m.flex_nodeadr,
       m.flex_vertadr,
