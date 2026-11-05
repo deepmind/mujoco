@@ -22,7 +22,8 @@ Significant new features
 
 - Added the :ref:`speculative<option-flag-speculative>` enable flag for :doc:`speculative contacts
   <computation/speculative>` to prevent fast-moving convex geoms from tunneling through thin obstacles within a single
-  timestep. On the right, one step of conservative advancement between two rotating boxes.
+  timestep. On the right, one step of conservative advancement between two rotating boxes. See
+  `model/speculative/ <https://github.com/google-deepmind/mujoco/tree/main/model/speculative/>`__ for examples.
 
   .. container:: custom-clear
 
@@ -37,6 +38,7 @@ Significant new features
   - Continuum elasto-plasticity (:ref:`yield<flex-elasticity-yield>`) for 2D and 3D :ref:`flexes<deformable-flex>`,
     with separate stretching and bending yield strains for 2D shells, volumetric-deviatoric (von Mises :math:`J_2`)
     stretching and 2D shell bending return mapping (right).
+  - See `model/plastic/ <https://github.com/google-deepmind/mujoco/tree/main/model/plastic/>`__ for examples.
 
   .. image:: https://www.gstatic.com/mujoco/model/plastic/wire.webp
      :align: left
@@ -418,6 +420,14 @@ Bug fixes
 - Legacy ``.msh`` meshes with mirrored :ref:`scale<asset-mesh-scale>` no longer double-flip face winding (which
   inverted faces), and ``.msh`` files without vertex normals no longer populate empty face normals or reject custom
   normals on recompilation.
+
+Models
+^^^^^^
+- Added six `elasto-plasticity <https://github.com/google-deepmind/mujoco/tree/main/model/plastic/>`__ example
+  models, each placing an elastic reference next to a plastic counterpart: joint and tendon springs, 2D shells and 3D
+  continua.
+- Added `speculative contacts <https://github.com/google-deepmind/mujoco/tree/main/model/speculative/>`__ example
+  models: a Newton's cradle of thin plates, an interlocking chain, and a ball struck by a hinged flipper.
 
 Documentation
 ^^^^^^^^^^^^^

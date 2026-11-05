@@ -2631,7 +2631,7 @@ rotations as unit quaternions.
    corresponding to mjModel.qpos_spring is also used to compute the spring reference lengths of all tendons, stored in
    mjModel.tendon_lengthspring. This is because :ref:`tendons <tendon>` can also have springs.
 
-.. image:: https://www.gstatic.com/mujoco/doc/images/changelog/wire.gif
+.. image:: https://www.gstatic.com/mujoco/model/plastic/wire.webp
    :width: 40%
    :align: right
    :target: https://github.com/google-deepmind/mujoco/blob/main/model/plastic/wire.xml
@@ -2647,7 +2647,8 @@ rotations as unit quaternions.
    ``springyield`` (ideal elasto-plasticity). When ``0`` (default), plasticity is disabled
    (``mjModel.jnt_plasticadr[j] == -1``) and the spring is purely elastic; setting ``mjModel.jnt_springyield[j] = 0`` at
    runtime on an already-plastic joint (``jnt_plasticadr[j] >= 0``) corresponds to zero yield threshold (full plastic
-   slip).
+   slip). See `model/plastic/ <https://github.com/google-deepmind/mujoco/tree/main/model/plastic/>`__ for example
+   models.
 
 .. image:: images/XMLreference/armature.gif
    :width: 40%
@@ -4659,7 +4660,7 @@ except for 1D flexes with zero :ref:`damping<flex-elasticity-damping>`.
    This thickness can be set equal to 2 times the :ref:`radius <deformable-flex-radius>` in order to match the geometry,
    but is exposed separately since the radius might be constrained by considerations related to collision detection.
 
-.. image:: https://www.gstatic.com/mujoco/doc/images/changelog/clay.gif
+.. image:: https://www.gstatic.com/mujoco/model/plastic/clay.webp
    :width: 40%
    :align: right
    :target: https://github.com/google-deepmind/mujoco/blob/main/model/plastic/clay.xml
@@ -4690,7 +4691,8 @@ except for 1D flexes with zero :ref:`damping<flex-elasticity-damping>`.
    (``3 * 2 * (cy*cz + cx*cz + cx*cy)`` entries); the elastic strain is measured in the corotated frame of the polar
    decomposition of the physical deformation gradient :math:`J_e = \partial x / \partial X`. Bending plasticity is not
    supported for interpolated flexes: with :ref:`elastic2d<flex-elasticity-elastic2d>` **bend**, :at:`yield` is ignored
-   and the flex remains purely elastic.
+   and the flex remains purely elastic. See
+   `model/plastic/ <https://github.com/google-deepmind/mujoco/tree/main/model/plastic/>`__ for example models.
 
 .. _flex-elasticity-elastic2d:
 

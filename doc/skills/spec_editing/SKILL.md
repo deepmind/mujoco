@@ -405,8 +405,8 @@ existing models:
     `model/slider_crank/slider_crank.xml`, `model/flex/` (`bag.xml`,
     `jelly.xml`, `drape.xml`, `poncho.xml`), `model/replicate/`
     (`newton_cradle.xml`, `particle.xml`, `bunnies.xml`), `model/plugin/`
-    (cable, elasticity, actuator, SDF), `model/tactile/`, `model/adhesion/`,
-    `model/sleep/`, and `model/speculative/`.
+    (actuator, sensor, SDF), `model/tactile/`, `model/adhesion/`,
+    `model/sleep/`, `model/speculative/`, and `model/plastic/`.
 -   **MuJoCo Menagerie ([models.rst](../../models.rst), `.. _Menagerie:`)**:
     Production robot descriptions (Franka Panda/FR3, UR5e/UR10e, Unitree
     G1/H1/Go2, Spot, Barkour, Shadow Hand, Robotiq 2F-85, ALOHA 2, Skydio X2,
