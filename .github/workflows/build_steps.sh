@@ -441,11 +441,11 @@ build_python_bindings() {
     mkdir -p "${py_deps_dir}/_deps"
     local ext_deps_args=()
     _setup_ext_deps_args
-    local sdists=(mujoco_core-*.tar.gz mujoco-*.tar.gz)
+    local sdists=(mujoco_core-*.tar.gz)
     if [[ -f "${TMPDIR}/mujoco_install/lib/libmujoco_studio_platform.a" || \
           -f "${TMPDIR}/mujoco_install/lib/mujoco_studio_platform.lib" || \
           -f "${TMPDIR}/mujoco_install/bin/Release/mujoco_studio_platform.lib" ]]; then
-        sdists+=(mujoco_studio-*.tar.gz)
+        sdists+=(mujoco_studio-*.tar.gz mujoco-*.tar.gz)
     fi
     MUJOCO_PATH="${TMPDIR}/mujoco_install" \
     MUJOCO_PLUGIN_PATH="${TMPDIR}/mujoco_install/mujoco_plugin" \
@@ -459,11 +459,11 @@ build_python_bindings() {
 install_python_bindings() {
     echo "Installing Python bindings..."
     source ${TMPDIR}/venv/bin/activate &&
-    pip install --no-deps --no-index mujoco_core-*.whl mujoco-*.whl &&
+    pip install --no-deps --no-index mujoco_core-*.whl &&
     if compgen -G "mujoco_studio-*.whl" > /dev/null; then
-        pip install --no-deps --no-index mujoco_studio-*.whl
-        pip check
-    fi
+        pip install --no-deps --no-index mujoco_studio-*.whl mujoco-*.whl
+    fi &&
+    pip check
 }
 
 
@@ -672,13 +672,12 @@ _build_python_wheel() {
     # A clean python/dist keeps the wheel glob below unambiguous.
     rm -rf python/dist python/studio/dist python/mujoco_full/dist
     (cd python && ./make_sdist.sh)
-    (cd python/mujoco_full && ./make_sdist.sh)
-    mv python/mujoco_full/dist/mujoco-*.tar.gz python/dist/
-    local sdists=(python/dist/mujoco_core-*.tar.gz python/dist/mujoco-*.tar.gz)
+    local sdists=(python/dist/mujoco_core-*.tar.gz)
     if _has_studio_platform "${prefix}"; then
         (cd python/studio && ./make_sdist.sh)
-        mv python/studio/dist/mujoco_studio-*.tar.gz python/dist/
-        sdists+=(python/dist/mujoco_studio-*.tar.gz)
+        (cd python/mujoco_full && ./make_sdist.sh)
+        mv python/studio/dist/mujoco_studio-*.tar.gz python/mujoco_full/dist/mujoco-*.tar.gz python/dist/
+        sdists+=(python/dist/mujoco_studio-*.tar.gz python/dist/mujoco-*.tar.gz)
     fi
 
     # See build_python_bindings for why CCACHE_BASEDIR/SLOPPINESS are set.
@@ -719,9 +718,9 @@ _install_python_wheel() {
     # --no-index to replace whatever mujoco is installed with the one just built
     # without disturbing the rest of the environment.
     _pip_install_requirements python/build_requirements.txt
-    pip install --force-reinstall --no-deps --no-index python/dist/mujoco_core-*.whl python/dist/mujoco-*.whl
+    pip install --force-reinstall --no-deps --no-index python/dist/mujoco_core-*.whl
     if compgen -G "python/dist/mujoco_studio-*.whl" > /dev/null; then
-        pip install --force-reinstall --no-deps --no-index python/dist/mujoco_studio-*.whl
+        pip install --force-reinstall --no-deps --no-index python/dist/mujoco_studio-*.whl python/dist/mujoco-*.whl
     fi
 }
 
