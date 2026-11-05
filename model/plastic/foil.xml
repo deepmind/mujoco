@@ -1,0 +1,111 @@
+<!-- Copyright 2026 DeepMind Technologies Limited
+
+     Licensed under the Apache License, Version 2.0 (the "License");
+     you may not use this file except in compliance with the License.
+     You may obtain a copy of the License at
+
+         http://www.apache.org/licenses/LICENSE-2.0
+
+     Unless required by applicable law or agreed to in writing, software
+     distributed under the License is distributed on an "AS IS" BASIS,
+     WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+     See the License for the specific language governing permissions and
+     limitations under the License.
+-->
+
+<mujoco model="Foil hailstorm">
+  <compiler autolimits="true"/>
+  <option timestep="0.003" integrator="discrete"/>
+  <size memory="20M"/>
+
+  <visual>
+    <global elevation="-16" azimuth="90" realtime="0.3"/>
+    <rgba haze="0.15 0.25 0.35 1"/>
+    <quality shadowsize="4096"/>
+    <map stiffness="700" fogstart="1" fogend="15" zfar="40" haze="1"/>
+    <headlight ambient="0.08 0.08 0.08" diffuse="0.22 0.22 0.22" specular="0.08 0.08 0.08"/>
+  </visual>
+
+  <statistic meansize="0.025" center="0 0.02 0.17" extent="0.51"/>
+
+  <default>
+    <default class="frame">
+      <geom material="frame_mat" contype="0" conaffinity="0"/>
+      <default class="bar">
+        <geom type="box"/>
+      </default>
+      <default class="leg">
+        <geom type="cylinder" size="0.008"/>
+      </default>
+    </default>
+    <default class="hail">
+      <geom type="sphere" material="ball_mat" condim="1" solref="0.003 1" priority="1"/>
+    </default>
+    <default class="spot">
+      <light cutoff="16" exponent="8" diffuse="0.45 0.45 0.43" specular="1 1 0.95" castshadow="false"/>
+    </default>
+  </default>
+
+  <asset>
+    <texture type="skybox" builtin="gradient" rgb1="0.3 0.5 0.7" rgb2="0 0 0" width="512" height="512"/>
+    <texture name="grid" type="2d" builtin="checker" rgb1=".1 .2 .3" rgb2=".2 .3 .4" width="100" height="100"/>
+    <material name="grid" texture="grid" texrepeat="8 8" texuniform="true" reflectance="0.06"/>
+    <material name="frame_mat" rgba="0.22 0.25 0.30 1" specular="0.5" shininess="0.5" metallic="0.5" roughness="0.35"/>
+    <material name="steel_sheet_mat" rgba="0.33 0.49 0.66 1" specular="0.4" shininess="0.4" metallic="0.3" roughness="0.35"/>
+    <material name="foil_sheet_mat" rgba="0.88 0.72 0.40 1" specular="0.95" shininess="0.85" metallic="0.9" roughness="0.14"/>
+    <material name="ball_mat" rgba="0.90 0.93 0.97 1" specular="1.0" shininess="0.92" metallic="0.93" roughness="0.09"/>
+  </asset>
+
+  <worldbody>
+    <light name="key" pos="-0.45 -0.65 1.2" dir="0.45 0.65 -1.1" cutoff="32" softness="1" diffuse=".75 .70 .62"
+           ambient=".12 .12 .12" specular=".25 .24 .22"/>
+    <light name="rim" type="directional" pos="0.6 1.0 0.8" dir="-0.45 -0.75 -0.5" castshadow="false"
+           diffuse=".16 .20 .28" specular=".12 .14 .18"/>
+    <!-- spotlights at the mirror image of the default camera: dents distort the specular highlight -->
+    <light name="spot_steel" class="spot" pos="-0.391 0.282 0.90" dir=" 0.246 -0.345 -0.906"/>
+    <light name="spot_foil" class="spot" pos="0.391 0.282 0.90" dir="-0.246 -0.345 -0.906"/>
+    <geom name="ground" type="plane" size="0 0 1" material="grid" condim="3" friction="0.8 0.005 0.0001"/>
+
+    <!-- Left sheet: elastic spring steel -->
+    <flexcomp name="steel" type="grid" dim="2" count="13 13 1" spacing="0.022 0.022 0.022"
+              pos="-0.19 0 0.16" euler="26 0 0" radius="0.0024" mass="0.08" material="steel_sheet_mat">
+      <pin gridrange="0 0 3 0  9 0 12 0  0 12 12 12  0 0 0 12  12 0 12 12"/>
+      <contact condim="1" solref="0.003 1" solimp="0.96 0.99 0.001" selfcollide="none"/>
+      <elasticity young="1.0e7" poisson="0.3" thickness="0.0048" elastic2d="both" damping="0.008"/>
+    </flexcomp>
+
+    <!-- Right sheet: plastic metallic foil -->
+    <flexcomp name="foil" type="grid" dim="2" count="13 13 1" spacing="0.022 0.022 0.022"
+              pos="0.19 0 0.16" euler="26 0 0" radius="0.0024" mass="0.08" material="foil_sheet_mat">
+      <pin gridrange="0 0 3 0  9 0 12 0  0 12 12 12  0 0 0 12  12 0 12 12"/>
+      <contact condim="1" solref="0.003 1" solimp="0.96 0.99 0.001" selfcollide="none"/>
+      <elasticity young="1.0e7" poisson="0.3" thickness="0.0048" elastic2d="both" damping="0.010" yield="0.00016 0.0016"/>
+    </flexcomp>
+
+    <!-- two identical rigs, left for the spring steel and right for the foil: frame and falling spheres -->
+    <replicate count="2" offset="0.38 0 0" sep="_">
+      <body name="frame" childclass="frame" pos="-0.19 0 0.16" euler="26 0 0">
+        <geom class="bar" pos="-0.140 0 0" size="0.008 0.148 0.008"/>
+        <geom class="bar" pos=" 0.140 0 0" size="0.008 0.148 0.008"/>
+        <geom class="bar" pos="0  0.140 0" size="0.132 0.008 0.008"/>
+        <geom class="bar" pos="0 -0.140 0" size="0.132 0.008 0.008"/>
+        <geom class="leg" fromto="-0.140  0.140 -0.008 -0.140  0.140 -0.22"/>
+        <geom class="leg" fromto=" 0.140  0.140 -0.008  0.140  0.140 -0.22"/>
+        <geom class="leg" fromto="-0.140 -0.140 -0.008 -0.140 -0.140 -0.10"/>
+        <geom class="leg" fromto=" 0.140 -0.140 -0.008  0.140 -0.140 -0.10"/>
+      </body>
+      <body name="hail1" pos="-0.245 -0.010 0.34">
+        <freejoint/>
+        <geom class="hail" size="0.028" mass="0.38"/>
+      </body>
+      <body name="hail2" pos="-0.190  0.045 0.50">
+        <freejoint/>
+        <geom class="hail" size="0.030" mass="0.44"/>
+      </body>
+      <body name="hail3" pos="-0.135 -0.005 0.76">
+        <freejoint/>
+        <geom class="hail" size="0.032" mass="0.48"/>
+      </body>
+    </replicate>
+  </worldbody>
+</mujoco>

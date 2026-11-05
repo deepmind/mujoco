@@ -14,27 +14,35 @@
 -->
 
 <mujoco model="Plastic wires and suspension cables">
+  <compiler autolimits="true"/>
   <option integrator="implicitfast" timestep="0.002"/>
 
   <visual>
-    <headlight diffuse=".7 .7 .7" ambient=".3 .3 .3"/>
-    <global elevation="-22" azimuth="122" realtime="0.25"/>
+    <global elevation="-20" azimuth="130"/>
+    <rgba haze="0.15 0.25 0.35 1"/>
+    <quality shadowsize="4096"/>
+    <map stiffness="700" fogstart="1" fogend="15" zfar="40" haze="1"/>
+    <headlight ambient="0.08 0.08 0.08" diffuse="0.22 0.22 0.22" specular="0.08 0.08 0.08"/>
   </visual>
 
-  <statistic center="0.34 0 0.36" extent="1.2"/>
+  <statistic meansize="0.025" center="0.23 -0.02 0.34" extent="0.84"/>
 
   <asset>
-    <texture type="skybox" builtin="gradient" rgb1=".35 .45 .6" rgb2=".08 .1 .15" width="32" height="512"/>
-    <texture name="grid" type="2d" builtin="checker" width="512" height="512" rgb1=".18 .2 .22" rgb2=".24 .27 .3"/>
-    <material name="grid" texture="grid" texrepeat="6 6" texuniform="true" reflectance=".1"/>
-    <material name="clamp" rgba=".28 .3 .33 1"/>
-    <material name="steel" rgba=".45 .62 .82 1"/>
-    <material name="brass" rgba=".85 .7 .28 1"/>
-    <material name="copper" rgba=".82 .44 .26 1"/>
+    <texture type="skybox" builtin="gradient" rgb1="0.3 0.5 0.7" rgb2="0 0 0" width="512" height="512"/>
+    <texture name="grid" type="2d" builtin="checker" rgb1=".1 .2 .3" rgb2=".2 .3 .4" width="100" height="100"/>
+    <material name="grid" texture="grid" texrepeat="8 8" texuniform="true" reflectance="0.06"/>
+    <material name="clamp" rgba="0.28 0.32 0.38 1" specular="0.6" shininess="0.5" metallic="0.55" roughness="0.32"/>
+    <material name="weight" rgba="0.48 0.52 0.58 1" specular="0.90" shininess="0.85" metallic="0.82" roughness="0.18"/>
+    <material name="steel" rgba="0.46 0.68 0.90 1" specular="0.90" shininess="0.80" metallic="0.82" roughness="0.18"/>
+    <material name="brass" rgba="0.90 0.72 0.30 1" specular="0.92" shininess="0.85" metallic="0.88" roughness="0.18"/>
+    <material name="copper" rgba="0.88 0.46 0.26 1" specular="0.90" shininess="0.80" metallic="0.88" roughness="0.20"/>
   </asset>
 
   <default>
-    <site size="0.014" rgba=".85 .85 .88 1"/>
+    <site size="0.009" material="clamp"/>
+    <default class="rig">
+      <geom material="clamp" contype="0" conaffinity="0"/>
+    </default>
     <default class="wire_seg">
       <geom type="capsule" fromto="0 0 0 0.06 0 0" size="0.012" density="800"/>
     </default>
@@ -48,27 +56,38 @@
       <joint type="hinge" axis="0 1 0" stiffness="35" damping="1.0" springyield="0.5"/>
     </default>
     <default class="drop_weight">
-      <geom type="box" size="0.045 0.045 0.045" mass="3.2" rgba=".78 .25 .25 1"/>
+      <geom type="sphere" size="0.048" mass="3.2" material="weight"/>
     </default>
     <default class="cable">
-      <tendon width="0.006" springlength="0.25" stiffness="240" damping="8"/>
+      <tendon width="0.005" springlength="0.25" stiffness="240" damping="8"/>
     </default>
   </default>
 
   <worldbody>
-    <light pos="0.4 -0.8 1.5" dir="-0.2 0.4 -0.9" diffuse=".8 .8 .8"/>
-    <light pos="-0.4 0.8 1.2" dir="0.2 -0.4 -0.9" diffuse=".4 .4 .45"/>
-    <geom name="floor" type="plane" size="2 2 .05" material="grid"/>
+    <light name="key" pos="0.30 -0.95 1.45" dir="-0.05 0.62 -0.78" cutoff="36" softness="1"
+           diffuse=".78 .73 .65" ambient=".12 .12 .12" specular=".30 .28 .25"/>
+    <light name="rim" directional="true" pos="-0.4 0.9 1.1" dir="0.35 -0.75 -0.55" castshadow="false"
+           diffuse=".20 .24 .32" specular=".18 .20 .26"/>
+    <geom name="floor" type="plane" size="0 0 1" material="grid" friction="0.8 0.005 0.0001"/>
 
-    <!-- Mounting tower and overhead gantry for suspension cables -->
-    <geom name="clamp_base" type="box" pos="-0.04 0 0.36" size="0.04 0.44 0.36" material="clamp"/>
-    <geom name="gantry_L" type="capsule" fromto="-0.04 0.42 0.70 0.54 0.42 0.70" size="0.016" material="clamp"/>
-    <geom name="gantry_R" type="capsule" fromto="-0.04 -0.42 0.70 0.54 -0.42 0.70" size="0.016" material="clamp"/>
-    <geom name="gantry_bar" type="capsule" fromto="0.54 -0.42 0.70 0.54 0.42 0.70" size="0.018" material="clamp"/>
+    <!-- Open clamp bar and overhead gantry for suspension cables -->
+    <replicate count="2" offset="0 -0.84 0">
+      <geom class="rig" type="cylinder" pos="-0.03 0.42 0.010" size="0.044 0.010"/>
+      <geom class="rig" type="capsule" fromto="-0.03 0.42 0.010 -0.03 0.42 0.70" size="0.016"/>
+      <geom class="rig" type="capsule" fromto="-0.03 0.42 0.70 0.54 0.42 0.70" size="0.015"/>
+    </replicate>
+    <geom name="clamp_bar" class="rig" type="box" pos="-0.03 0 0.45" size="0.028 0.436 0.024"/>
+    <geom name="gantry_bar" class="rig" type="capsule" fromto="0.54 -0.42 0.70 0.54 0.42 0.70" size="0.016"/>
 
-    <site name="anchor_steel" pos="0.54 0.35 0.70"/>
-    <site name="anchor_brass" pos="0.54 0 0.70"/>
-    <site name="anchor_copper" pos="0.54 -0.35 0.70"/>
+    <!-- Root collets, suspension anchors, and off-center falling spheres that roll away after impact -->
+    <replicate count="3" offset="0 -0.35 0" sep="_">
+      <geom class="rig" type="cylinder" pos="0.004 0.35 0.45" euler="0 90 0" size="0.019 0.008"/>
+      <site name="anchor" pos="0.54 0.35 0.70"/>
+      <body name="weight" pos="0.38 0.358 0.685">
+        <freejoint/>
+        <geom class="drop_weight"/>
+      </body>
+    </replicate>
 
     <!-- 1. Elastic spring-steel cantilever + elastic suspension cable (springyield = 0) -->
     <body name="steel_0" pos="0 0.35 0.45">
@@ -222,33 +241,19 @@
         </body>
       </body>
     </body>
-
-    <!-- Falling weights that strike the cantilevers, stretching the suspension cables before rolling off -->
-    <body name="weight_steel" pos="0.38 0.356 0.68">
-      <freejoint/>
-      <geom class="drop_weight"/>
-    </body>
-    <body name="weight_brass" pos="0.38 0.006 0.68">
-      <freejoint/>
-      <geom class="drop_weight"/>
-    </body>
-    <body name="weight_copper" pos="0.38 -0.344 0.68">
-      <freejoint/>
-      <geom class="drop_weight"/>
-    </body>
   </worldbody>
 
   <tendon>
-    <spatial name="cable_steel" class="cable" rgba=".45 .62 .82 1">
-      <site site="anchor_steel"/>
+    <spatial name="cable_steel" class="cable" material="steel">
+      <site site="anchor_0"/>
       <site site="tip_steel"/>
     </spatial>
-    <spatial name="cable_brass" class="cable" springyield="0.085" rgba=".85 .7 .28 1">
-      <site site="anchor_brass"/>
+    <spatial name="cable_brass" class="cable" springyield="0.085" material="brass">
+      <site site="anchor_1"/>
       <site site="tip_brass"/>
     </spatial>
-    <spatial name="cable_copper" class="cable" springyield="0.042" rgba=".82 .44 .26 1">
-      <site site="anchor_copper"/>
+    <spatial name="cable_copper" class="cable" springyield="0.042" material="copper">
+      <site site="anchor_2"/>
       <site site="tip_copper"/>
     </spatial>
   </tendon>

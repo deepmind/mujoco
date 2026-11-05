@@ -4662,7 +4662,7 @@ except for 1D flexes with zero :ref:`damping<flex-elasticity-damping>`.
 .. image:: https://www.gstatic.com/mujoco/doc/images/changelog/clay.gif
    :width: 40%
    :align: right
-   :target: https://github.com/google-deepmind/mujoco/blob/main/model/flex/clay.xml
+   :target: https://github.com/google-deepmind/mujoco/blob/main/model/plastic/clay.xml
 
 .. _flex-elasticity-yield:
 

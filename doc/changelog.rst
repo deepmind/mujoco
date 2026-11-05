@@ -38,15 +38,15 @@ Significant new features
     with separate stretching and bending yield strains for 2D shells, volumetric-deviatoric (von Mises :math:`J_2`)
     stretching and 2D shell bending return mapping (right).
 
-  .. image:: https://www.gstatic.com/mujoco/doc/images/changelog/wire.gif
+  .. image:: https://www.gstatic.com/mujoco/model/plastic/wire.webp
      :align: left
-     :width: 48%
+     :width: 45%
      :target: https://github.com/google-deepmind/mujoco/blob/main/model/plastic/wire.xml
 
-  .. image:: https://www.gstatic.com/mujoco/doc/images/changelog/clay.gif
+  .. image:: https://www.gstatic.com/mujoco/model/plastic/clay.webp
      :align: right
-     :width: 42%
-     :target: https://github.com/google-deepmind/mujoco/blob/main/model/flex/clay.xml
+     :width: 45%
+     :target: https://github.com/google-deepmind/mujoco/blob/main/model/plastic/clay.xml
 
 .. container:: custom-clear
 
