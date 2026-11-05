@@ -237,12 +237,17 @@ void Outliner::Reset() {
 
 void Outliner::Render(filament::Renderer* renderer, filament::View* view,
                       filament::RenderTarget* render_target) {
-  filament::Viewport viewport = view->getViewport();
+  const filament::Viewport viewport = view->getViewport();
   Prepare(viewport.width, viewport.height);
 
-  for (auto& view : views_) {
-    view->setViewport(viewport);
+  // The offscreen passes render into targets the size of the viewport, so
+  // they cover them from the origin. Only the final pass draws onto the
+  // caller's target, where the viewport may be offset (e.g. a scene above a
+  // status bar).
+  for (auto& pass_view : views_) {
+    pass_view->setViewport({0, 0, viewport.width, viewport.height});
   }
+  views_[kPassDrawOutline]->setViewport(viewport);
 
   // Re-render the view's scene to capture the scene depth (used for occlusion
   // dimming) and to create the flattened selection mask.
