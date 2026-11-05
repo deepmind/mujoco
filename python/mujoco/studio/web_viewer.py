@@ -33,6 +33,9 @@ The WebViewer streams UI and simulation state to a browser:
     model over HTTP, the UI stream at path /ui and the state stream at /state.
     Exposing or tunneling that single port exposes the whole viewer; the other
     ports are loopback-internal.
+  * Models the sim announces ahead of time (``PreloadModelEvent``) are served
+    by content hash as well, so browsers download them in the background and
+    switch to them instantly when they become the current model.
 """
 
 import os
@@ -291,7 +294,7 @@ class WebViewer(viewer_protocol.Viewer):
     mjb_data = self._serialize_model()
     self._model_crc32 = zlib.crc32(mjb_data)
     if self._web_server is not None:
-      self._web_server.update_model(mjb_data)
+      self._web_server.update_model(mjb_data, self._model_crc32)
 
   def _serialize_model(self) -> bytes:
     """Returns the bytes served at /model: the MJB plus by-reference textures.
@@ -321,6 +324,19 @@ class WebViewer(viewer_protocol.Viewer):
     del event
     self._update_model()
     print('Model changed: the browser page reloads automatically.', flush=True)
+
+  @messages.handler(priority=messages.Priority.INTERNAL)
+  def _on_preload_model(self, event: messages.PreloadModelEvent) -> None:
+    """Serves a model the sim may show soon, so browsers can fetch it early.
+
+    The bundle is served by its crc32 and announced on the state stream; the
+    browser downloads it in the background and, when the model's ModelEvent
+    arrives with the same crc32, switches to it without a download.
+    """
+    if self._web_server is None:
+      return
+    mjb_data = state_payload.serialize_model_bundle(event.model)
+    self._web_server.add_model(mjb_data)
 
   # ---------------------------------------------------------------------------
   # Viewer interface.

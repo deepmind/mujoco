@@ -340,6 +340,10 @@ events to ``ViewerPlugin`` instances in chronological order:
      - Dispatched locally once ``viewer.model`` and ``viewer.data`` are initialized. Subscribe here rather than
        ``ModelEvent`` to reset viewer-plugin state; reloading the same ``path`` preserves camera, pause, and playback
        speed in ``studio_app.App``.
+   * - ``PreloadModelEvent(model)``
+     - A hint from a simulation plugin that ``model`` may become the current model soon, for example the next scene
+       of a playlist. Viewers may ignore it; the :ref:`web viewer <StudioWebViewers>` serializes the model and has
+       connected browsers download it in the background, so the later ``ModelEvent`` switches without a download.
    * - ``HotReloadEvent(plugins)``
      - Dispatched between frames when :ref:`hot reload <StudioHotReload>` swaps modified plugin classes.
    * - ``UpdateEvent()``

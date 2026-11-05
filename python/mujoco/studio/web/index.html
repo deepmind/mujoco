@@ -45,42 +45,119 @@ limitations under the License.
       const WS_CLOSE_INACTIVE = 4003;
       const WS_CLOSE_NOT_CONTROLLER = 4004;
 
+      // Model bundles: download, cache, and prefetch.
+      //
+      // Every bundle is identified by the crc32 the Python side stamps into
+      // each state payload. Bundles this page has loaded stay in modelCache
+      // (least recently used first out once MODEL_CACHE_BYTES is exceeded),
+      // so switching back to a model needs no download. The server lists the
+      // bundles it holds in "prefetch=" lines on /state (forwarded by the
+      // WASM client as Module.onPrefetchHint), upcoming models first; the page
+      // downloads them one at a time in the background once the current model
+      // is on screen, so a later switch to one of them is instant.
+      //
+      // The page keeps the bytes itself rather than relying on the browser's
+      // HTTP cache alone: Chromium refuses cache entries over 1/8 of its disk
+      // cache (40 MiB on the default 320 MiB cache), which a full 64 MiB chunk
+      // below already exceeds, and the rest of the user's browsing can evict
+      // entries at any time.
+      const MODEL_CACHE_BYTES = 256 * 1024 * 1024;
+      const modelCache = new Map(); // crc32 -> Uint8Array; insertion order = LRU order
+      let modelCacheBytes = 0;
+      let currentModelCrc = 0;
+      // The server's latest hint as {crc, size}, in the order to download,
+      // and the part of it not cached yet.
+      let prefetchHint = [];
+      const prefetchQueue = [];
+      let prefetching = false;
+      let foregroundLoads = 0;
+
+      function cacheModel(crc, bytes) {
+        if (!crc || bytes.length > MODEL_CACHE_BYTES) return;
+        if (modelCache.has(crc)) {
+          modelCacheBytes -= modelCache.get(crc).length;
+          modelCache.delete(crc);
+        }
+        modelCache.set(crc, bytes);
+        modelCacheBytes += bytes.length;
+        for (const [oldCrc, old] of modelCache) {
+          if (modelCacheBytes <= MODEL_CACHE_BYTES) break;
+          if (oldCrc === crc || oldCrc === currentModelCrc) continue;
+          modelCache.delete(oldCrc);
+          modelCacheBytes -= old.length;
+        }
+      }
+
+      // Returns the cached bundle, marking it most recently used.
+      function cachedModel(crc) {
+        const bytes = modelCache.get(crc);
+        if (bytes) {
+          modelCache.delete(crc);
+          modelCache.set(crc, bytes);
+        }
+        return bytes || null;
+      }
+
+      // /model serves the current bundle; /model?crc32=N serves a cached one.
+      function modelUrl(crc, query) {
+        const params = [];
+        if (crc) params.push("crc32=" + crc);
+        if (query) params.push(query);
+        return "/model" + (params.length ? "?" + params.join("&") : "");
+      }
+
+      // A download in progress. A background prefetch and a foreground load
+      // of the same bundle share one job (see downloadModel): `report` says
+      // whether its progress drives the DOWNLOADING bar, `priority` is the
+      // fetch priority for the requests still to be issued, and the counters
+      // let a foreground load that joins late pick up the progress so far.
+      function newDownloadJob(report) {
+        return {
+          report: report,
+          priority: report ? "high" : "low",
+          bytesDownloaded: 0,
+          totalBytes: 0,
+          retries: 0,
+          promise: null,
+        };
+      }
+
+      function reportProgress(job) {
+        if (job.report && Module.updateModelDownloadProgress) {
+          Module.updateModelDownloadProgress(job.bytesDownloaded, job.totalBytes, job.retries);
+        }
+      }
+
       // Parallel chunked model download.
       //
-      // Fetches /model in up to PARALLEL concurrent 64 MiB requests
-      // and streams the chunks directly into a WASM linear heap buffer
-      // allocated via allocModelBuffer(totalSize). Each chunk is retried up
-      // to MAX_RETRIES times on transient errors (proxy resets, HTTP2
-      // protocol errors, etc.). Returns { ptr, size } on success, or null
-      // on failure.
-      async function fetchModelChunked() {
+      // Fetches a bundle in up to PARALLEL concurrent 64 MiB requests into a
+      // Uint8Array. Each chunk is retried up to MAX_RETRIES times on transient
+      // errors (proxy resets, HTTP2 protocol errors, etc.). Returns the bytes
+      // on success, null on failure, and undefined when the server no longer
+      // has the bundle.
+      async function fetchModelChunked(crc, job) {
         const CHUNK = 64 * 1024 * 1024; // 64 MiB per request
         const PARALLEL = 6; // concurrent fetches
         const MAX_RETRIES = 3; // per-chunk retry limit
         const RETRY_DELAY = 500; // ms between retries
-        let ptr = 0;
         try {
-          const totalSizeResp = await fetch("/model?total_bytes");
+          const totalSizeResp = await fetch(modelUrl(crc, "total_bytes"), { priority: job.priority });
+          if (totalSizeResp.status === 404 && crc) return undefined;
           if (!totalSizeResp.ok) return null;
           const totalSizeData = await totalSizeResp.json();
           const totalSize = totalSizeData.total_bytes;
           if (!totalSize || totalSize <= 0) return null;
 
-          ptr = Module.allocModelBuffer(totalSize);
-          if (!ptr) {
-            console.error("[model] failed to allocate WASM buffer of size:", totalSize);
-            return null;
-          }
+          const bytes = new Uint8Array(totalSize);
           const chunks = [];
           for (let offset = 0; offset < totalSize; offset += CHUNK) {
             chunks.push({ offset: offset, size: Math.min(CHUNK, totalSize - offset) });
           }
 
-          if (Module.updateModelDownloadProgress) {
-            Module.updateModelDownloadProgress(0, totalSize, 0);
-          }
-          let bytesDownloaded = 0;
-          let maxRetry = 0;
+          job.bytesDownloaded = 0;
+          job.totalBytes = totalSize;
+          job.retries = 0;
+          reportProgress(job);
           // Bounded-parallelism worker pool with per-chunk retries.
           let nextIndex = 0;
           let errors = 0;
@@ -88,26 +165,22 @@ limitations under the License.
             while (nextIndex < chunks.length) {
               const index = nextIndex++;
               const chunk = chunks[index];
-              const url = "/model?offset_bytes=" + chunk.offset + "&size_bytes=" + chunk.size;
+              const url = modelUrl(crc, "offset_bytes=" + chunk.offset + "&size_bytes=" + chunk.size);
               let ok = false;
               for (let attempt = 0; attempt <= MAX_RETRIES; attempt++) {
                 try {
                   if (attempt > 0) {
-                    if (attempt > maxRetry) maxRetry = attempt;
-                    if (Module.updateModelDownloadProgress) {
-                      Module.updateModelDownloadProgress(bytesDownloaded, totalSize, maxRetry);
-                    }
+                    if (attempt > job.retries) job.retries = attempt;
+                    reportProgress(job);
                     console.log("[model] chunk", index, "retry", attempt);
                     await new Promise((r) => setTimeout(r, RETRY_DELAY * attempt));
                   }
-                  const resp = await fetch(url);
+                  const resp = await fetch(url, { priority: job.priority });
                   if (!resp.ok) continue;
                   const buffer = await resp.arrayBuffer();
-                  HEAPU8.set(new Uint8Array(buffer), ptr + chunk.offset);
-                  bytesDownloaded += chunk.size;
-                  if (Module.updateModelDownloadProgress) {
-                    Module.updateModelDownloadProgress(bytesDownloaded, totalSize, maxRetry);
-                  }
+                  bytes.set(new Uint8Array(buffer), chunk.offset);
+                  job.bytesDownloaded += chunk.size;
+                  reportProgress(job);
                   ok = true;
                   break;
                 } catch (e) {
@@ -125,77 +198,206 @@ limitations under the License.
             workers.push(worker());
           }
           await Promise.all(workers);
-          if (errors > 0) return null;  // finally frees ptr
-          if (Module.updateModelDownloadProgress) {
-            Module.updateModelDownloadProgress(totalSize, totalSize, 0);
-          }
-          // Allow ~4 frames (60ms) to elapse so the 100% progress bar paints
-          // before C++ synchronous parsing blocks the thread.
-          await new Promise((resolve) => setTimeout(resolve, 60));
-          const result = { ptr: ptr, size: totalSize };
-          ptr = 0;  // transfer ownership to caller
-          return result;
+          if (errors > 0) return null;
+          return bytes;
         } catch (e) {
           console.error("[model] chunked fetch failed:", e);
-          return null;  // finally frees ptr
-        } finally {
-          if (ptr) Module.freeModelBuffer(ptr);
+          return null;
         }
       }
 
       // Single-fetch fallback if chunked download using fetchModelChunked() fails.
-      async function fetchModelSingle() {
-        let ptr = 0;
+      async function fetchModelSingle(crc, job) {
         try {
-          const resp = await fetch("/model");
+          const resp = await fetch(modelUrl(crc, ""), { priority: job.priority });
           if (!resp.ok) return null;
           const buffer = await resp.arrayBuffer();
-          const totalSize = buffer.byteLength;
-          if (Module.updateModelDownloadProgress) {
-            Module.updateModelDownloadProgress(0, totalSize, 0);
-          }
-          ptr = Module.allocModelBuffer(totalSize);
-          if (!ptr) return null;
-          HEAPU8.set(new Uint8Array(buffer), ptr);
-          if (Module.updateModelDownloadProgress) {
-            Module.updateModelDownloadProgress(totalSize, totalSize, 0);
-          }
-          // Allow ~4 frames (60ms) to elapse so the 100% progress bar paints
-          // before C++ synchronous parsing blocks the thread.
-          await new Promise((resolve) => setTimeout(resolve, 60));
-          const result = { ptr: ptr, size: totalSize };
-          ptr = 0;  // transfer ownership to caller
-          return result;
+          job.bytesDownloaded = job.totalBytes = buffer.byteLength;
+          reportProgress(job);
+          return new Uint8Array(buffer);
         } catch (e) {
           console.error("[model] single fetch failed:", e);
-          return null;  // finally frees ptr
-        } finally {
-          if (ptr) Module.freeModelBuffer(ptr);
+          return null;
         }
       }
 
-      // Called from C++ (via EM_ASM) when the Python side swaps the model.
-      async function reloadModel() {
-        // Retry the chunked download up to 3 times with increasing delay.
-        // Falling back to a single-fetch for large models hits the same
-        // proxy errors, so retrying chunks is the only viable path.
+      // Downloads a bundle: the chunked download, retried up to 3 times with
+      // increasing delay (falling back to a single fetch for large models hits
+      // the same proxy errors, so retrying chunks is the only viable path),
+      // then the single fetch. Returns the bytes, or null. A bundle already
+      // being downloaded (say, a prefetch the user just switched to) is shared
+      // rather than fetched twice, and a foreground load joining a background
+      // one promotes it: the progress bar starts from the bytes already
+      // downloaded, and the remaining chunks and retries fetch at high
+      // priority (requests already issued keep the priority they were sent
+      // with).
+      const inflightDownloads = new Map(); // crc32 -> download job
+      function downloadModel(crc, report) {
+        let job = crc ? inflightDownloads.get(crc) : undefined;
+        if (job) {
+          if (report && !job.report) {
+            job.report = true;
+            job.priority = "high";
+            reportProgress(job);
+          }
+          return job.promise;
+        }
+        job = newDownloadJob(report);
+        job.promise = downloadModelOnce(crc, job);
+        if (crc) {
+          inflightDownloads.set(crc, job);
+          job.promise.finally(() => inflightDownloads.delete(crc));
+        }
+        return job.promise;
+      }
+
+      async function downloadModelOnce(crc, job) {
         for (let attempt = 0; attempt < 3; attempt++) {
           if (attempt > 0) {
             console.log("[model] retrying chunked download, attempt", attempt + 1);
             await new Promise((r) => setTimeout(r, 1000 * attempt));
           }
-          const modelRes = await fetchModelChunked();
-          if (modelRes) {
-            Module.parseModelBuffer(modelRes.ptr, modelRes.size);
-            Module.freeModelBuffer(modelRes.ptr);
-            return;
-          }
+          const bytes = await fetchModelChunked(crc, job);
+          if (bytes === undefined) return null; // Gone from the server.
+          if (bytes) return bytes;
         }
         console.error("[model] all chunked download attempts failed; trying single-fetch");
-        const modelRes = await fetchModelSingle();
-        if (modelRes) {
-          Module.parseModelBuffer(modelRes.ptr, modelRes.size);
-          Module.freeModelBuffer(modelRes.ptr);
+        return (await fetchModelSingle(crc, job)) || null;
+      }
+
+      // Hands a bundle to the WASM client: copies it into the heap, parses it
+      // (which rebuilds the scene), and returns its crc32, or 0 on failure.
+      function loadModelBytes(bytes) {
+        const ptr = Module.allocModelBuffer(bytes.length);
+        if (!ptr) {
+          console.error("[model] failed to allocate WASM buffer of size:", bytes.length);
+          return 0;
+        }
+        try {
+          HEAPU8.set(bytes, ptr);
+          return Module.parseModelBuffer(ptr, bytes.length) >>> 0;
+        } finally {
+          Module.freeModelBuffer(ptr);
+        }
+      }
+
+      // Called from C++ (via EM_ASM) when the Python side swaps the model,
+      // with the new model's crc32 from the state payload, and once at
+      // startup without one (whatever /model serves now). A cached bundle
+      // loads synchronously, so the state payload that announced the switch
+      // already applies to the new model; anything else downloads first. Only
+      // the latest request loads: a download the model changed away from
+      // mid-flight is dropped. The server never evicts the current model, so a
+      // crc32 it does not have means the model changed again, and the request
+      // that follows takes over.
+      let loadGeneration = 0;
+      async function reloadModel(crc) {
+        crc = (crc || 0) >>> 0; // C++ passes the uint32 as a signed int.
+        const generation = ++loadGeneration;
+        const startMs = performance.now();
+        let bytes = crc ? cachedModel(crc) : null;
+        const cached = bytes !== null;
+        if (!cached) {
+          foregroundLoads++;
+          try {
+            bytes = await downloadModel(crc, true);
+          } finally {
+            foregroundLoads--;
+          }
+          if (!bytes) {
+            console.error("[model] could not download model", crc);
+            return;
+          }
+          if (generation !== loadGeneration) return;
+          // Allow ~4 frames (60ms) to elapse so the 100% progress bar paints
+          // before C++ synchronous parsing blocks the thread.
+          await new Promise((resolve) => setTimeout(resolve, 60));
+          if (generation !== loadGeneration) return;
+        }
+        const downloadedMs = performance.now();
+        const loadedCrc = loadModelBytes(bytes);
+        if (loadedCrc) {
+          currentModelCrc = loadedCrc;
+          cacheModel(loadedCrc, bytes);
+        }
+        console.log(
+          "[model] " + (cached ? "cache hit" : "downloaded") + " " + loadedCrc +
+            " (" + (bytes.length / (1024 * 1024)).toFixed(1) + " MiB): download " +
+            (downloadedMs - startMs).toFixed(0) + " ms, parse+scene " +
+            (performance.now() - downloadedMs).toFixed(0) + " ms",
+        );
+        prefetchModels();
+      }
+
+      // "prefetch=<crc32>:<bytes>,..." from the server: the bundles it holds,
+      // upcoming ones first, in the order to download them. A bare line means
+      // there is nothing left to prefetch.
+      function onPrefetchHint(line) {
+        prefetchHint = [];
+        prefetchQueue.length = 0;
+        for (const item of line.slice("prefetch=".length).split(",")) {
+          const [crcText, sizeText] = item.split(":");
+          const crc = Number(crcText) >>> 0;
+          const size = Number(sizeText) || 0;
+          if (!crc || size > MODEL_CACHE_BYTES) continue;
+          prefetchHint.push({ crc: crc, size: size });
+          if (!modelCache.has(crc)) prefetchQueue.push({ crc: crc, size: size });
+        }
+        prefetchModels();
+      }
+
+      // The bytes the cache must keep alongside a prefetch of `crc`: the
+      // current model and the hinted bundles ahead of it that are cached
+      // already. Once those plus the bundle itself exceed the cap, downloading
+      // it would evict a sooner one, so prefetching stops there.
+      function reservedBytesBefore(crc) {
+        const current = modelCache.get(currentModelCrc);
+        let reserved = current ? current.length : 0;
+        for (const item of prefetchHint) {
+          if (item.crc === crc) break;
+          if (item.crc !== currentModelCrc && modelCache.has(item.crc)) reserved += item.size;
+        }
+        return reserved;
+      }
+
+      // Drains the prefetch queue one download at a time, never while a
+      // foreground load is in flight or before the first model is on screen,
+      // and stops at the first bundle that would not fit (see
+      // reservedBytesBefore); that bundle stays queued, since the next model
+      // switch frees room or brings a new hint.
+      async function prefetchModels() {
+        if (prefetching) return;
+        prefetching = true;
+        try {
+          while (prefetchQueue.length) {
+            if (foregroundLoads > 0 || !currentModelCrc) {
+              await new Promise((r) => setTimeout(r, 250));
+              continue;
+            }
+            const { crc, size } = prefetchQueue[0];
+            if (modelCache.has(crc)) {
+              prefetchQueue.shift();
+              continue;
+            }
+            if (reservedBytesBefore(crc) + size > MODEL_CACHE_BYTES) {
+              console.log(
+                "[model] prefetch paused: " + crc + " (" + (size / (1024 * 1024)).toFixed(1) +
+                  " MiB) would evict a sooner model",
+              );
+              break;
+            }
+            prefetchQueue.shift();
+            const bytes = await downloadModel(crc, false);
+            if (bytes) {
+              cacheModel(crc, bytes);
+              console.log(
+                "[model] prefetched " + crc + " (" + (bytes.length / (1024 * 1024)).toFixed(1) +
+                  " MiB), " + modelCache.size + " cached",
+              );
+            }
+          }
+        } finally {
+          prefetching = false;
         }
       }
 
@@ -214,6 +416,7 @@ limitations under the License.
           }
           return prefix + path;
         },
+        onPrefetchHint: onPrefetchHint,
         onRuntimeInitialized: async () => {
           <!-- Keep in sync with assets staged in web/CMakeLists.txt -->
           const assetsToPrefetch = [

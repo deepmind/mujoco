@@ -116,7 +116,7 @@ class AppCallbacks final : public RemoteUi::Callbacks,
   // Session::Callbacks
   bool ReadyForPayload() override;
   void OnPayload(const StatePayloadView& view) override;
-  void OnModelChanged() override;
+  void OnModelChanged(uint32_t model_crc32) override;
   void ConnectRemoteUi() override;
   void ShutdownRemoteUi() override;
   void SetCameraMode(int mode) override;
@@ -469,11 +469,15 @@ void AppCallbacks::OnPayload(const StatePayloadView& view) {
   ApplyStatePayload(view);
 }
 
-void AppCallbacks::OnModelChanged() {
+void AppCallbacks::OnModelChanged(uint32_t model_crc32) {
   // Mark downloading immediately so the main loop stops applying state updates
-  // to the old model while the new one downloads asynchronously.
+  // to the old model while the new one downloads asynchronously. The page
+  // loads the bundle from its cache when it was prefetched (synchronously, so
+  // the payload that announced the change already applies to the new model),
+  // and fetches it by crc32 otherwise. The crc32 crosses as a signed int; the
+  // page restores the unsigned value.
   g_app.download_status.is_downloading = true;
-  EM_ASM({ reloadModel(); });
+  EM_ASM({ reloadModel($0); }, model_crc32);
 }
 
 void AppCallbacks::ConnectRemoteUi() { g_app.remote_ui.Connect(WsUrl("/ui")); }
@@ -951,12 +955,14 @@ static void RegisterBundledTextures(mjModel* m,
   if (rewritten) m->paths = paths.data();
 }
 
-bool ParseModelBufferImpl(const char* data, size_t size) {
+// Parses a model bundle and installs its model; returns the bundle's crc32
+// (the identity the state payloads carry), or 0 on failure.
+uint32_t ParseModelBufferImpl(const char* data, size_t size) {
   LOG(Info, "Fetched model bundle, size: %zu", size);
   mujoco::studio::ModelBundleView bundle;
   if (!mujoco::studio::ParseModelBundle(data, size, &bundle)) {
     LOG(Error, "Failed to load model: malformed model bundle");
-    return false;
+    return 0;
   }
   LOG(Info, "Model bundle: %zu byte MJB, %zu texture file(s)", bundle.mjb_size,
       bundle.resources.size());
@@ -984,15 +990,15 @@ bool ParseModelBufferImpl(const char* data, size_t size) {
       }
     }
     if (m) RegisterBundledTextures(m, bundle);
-    g_app.session.SetModelCrc32(
-        Crc32(reinterpret_cast<const uint8_t*>(data), size));
+    const uint32_t crc = Crc32(reinterpret_cast<const uint8_t*>(data), size);
+    g_app.session.SetModelCrc32(crc);
     LOG(Info, "Model parsed successfully!");
-    return true;
+    return crc;
   }
   LOG(Error, "Failed to load model: %s",
       g_app.model_holder ? g_app.model_holder->error().data()
                          : "Unknown error");
-  return false;
+  return 0;
 }
 
 void UpdateModelDownloadProgress(size_t bytes_downloaded, size_t total_bytes,
@@ -1036,15 +1042,19 @@ void FreeModelBuffer(uintptr_t ptr_val) {
 }
 
 // Parses a model bundle from a buffer and rebuilds the scene from it. The
-// buffer is the page's to free once this returns.
-void ParseModelBuffer(uintptr_t ptr_val, size_t size) {
-  if (ParseModelBufferImpl(reinterpret_cast<char*>(ptr_val), size)) {
+// buffer is the page's to free once this returns. Returns the bundle's crc32,
+// under which the page caches the bundle, or 0 if it failed to load.
+uint32_t ParseModelBuffer(uintptr_t ptr_val, size_t size) {
+  const uint32_t crc =
+      ParseModelBufferImpl(reinterpret_cast<char*>(ptr_val), size);
+  if (crc != 0) {
     FinishModelLoad();
   }
   // SetupScene() has uploaded every bundled texture to the GPU, and nothing
   // reads the encoded bytes again; drop the views before the buffer they
   // point into is freed. A re-upload would need the bundle fetched again.
   AssetRegistry::Instance().ClearPrefix(kBundledTexturePrefix);
+  return crc;
 }
 
 // Exposed to JS (see EMSCRIPTEN_BINDINGS): the page calls this once per asset.
@@ -1161,7 +1171,8 @@ EMSCRIPTEN_BINDINGS(web_client_bindings) {
   emscripten::function("freeModelBuffer", &FreeModelBuffer);
 
   // Parses a completed model bundle buffer (MJB plus by-reference textures)
-  // and reinitializes the Filament scene.
+  // and reinitializes the Filament scene. Returns the bundle's crc32 (0 on
+  // failure), the key the page caches the bundle under.
   emscripten::function("parseModelBuffer", &ParseModelBuffer);
 
   // Initializes the Filament window, ImGui context, WebSocket connections, and

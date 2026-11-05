@@ -116,8 +116,9 @@ class Session : public SessionActions {
     virtual bool ReadyForPayload() = 0;
     // Applies a parsed payload to the application.
     virtual void OnPayload(const StatePayloadView& view) = 0;
-    // Server swapped models; fetch and load the new one in-place.
-    virtual void OnModelChanged() = 0;
+    // Server swapped models: fetch (or take from the page's cache) and load
+    // the bundle whose crc32 the state payload now carries, in place.
+    virtual void OnModelChanged(uint32_t model_crc32) = 0;
     // Role transition: claim the controller slot.
     virtual void ConnectRemoteUi() = 0;
     // Role transition: drop the stream when spectating
@@ -204,7 +205,8 @@ class Session : public SessionActions {
   // controller-only page behavior (model drag-and-drop upload).
   void SetRole(SessionRole role);
 
-  // Routes a session text frame: roster updates, control grants.
+  // Routes a session text frame: roster updates, control grants, and the
+  // list of model bundles the page may prefetch (handed to the page's JS).
   void OnSessionText(const char* text);
 
   static EM_BOOL OnWsMessage(int event_type,

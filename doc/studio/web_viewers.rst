@@ -109,8 +109,10 @@ viewer endpoints—the host-to-browser wire protocol is fixed and independent of
   compiled :ref:`mjModel` (``.mjb``) and bundled resources over ``/model``, and streams per-frame integration state,
   camera transforms, :ref:`mjvOption` flags, :ref:`mjvPerturb` state, and ``extra_geoms`` over ``/state`` with
   latest-wins semantics so the browser's WebAssembly client can run :ref:`mj_forward` and render via Filament WebGL 2.0.
-  Model files or folders dropped onto the browser canvas upload over ``/drop`` to the host and trigger
-  ``LoadModelEvent`` on the simulation thread.
+  Models that a simulation plugin announces ahead of time with ``PreloadModelEvent`` (for example the next scenes of a
+  playlist) are also served by content hash, and browsers download them in the background so that switching to one of
+  them later needs no download. Model files or folders dropped onto the browser canvas upload over ``/drop`` to the
+  host and trigger ``LoadModelEvent`` on the simulation thread.
 
 Multi-Viewer Sessions
 ---------------------
