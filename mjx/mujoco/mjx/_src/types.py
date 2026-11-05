@@ -16,14 +16,15 @@
 
 import dataclasses
 import enum
-from typing import Any, Tuple, Union
+from typing import Any, Optional, Tuple, Union
 import warnings
 
 import jax
+import numpy as np
+
 import mujoco
 from mujoco.mjx._src.dataclasses import PyTreeNode  # pylint: disable=g-importing-member
 from mujoco.mjx.warp import types as mjxw_types
-import numpy as np
 
 
 class Impl(enum.Enum):
@@ -526,6 +527,7 @@ class Option(PyTreeNode):
 
 class ModelCPP(PyTreeNode):
   """Minimal Model implementation holding only the pointer."""
+
   # To ensure that we retain the full pointer even if jax.config.enable_x64 is
   # set to True, we store the pointer as two 32-bit values. In the FFI call,
   # we combine the two values into a single pointer value.
@@ -535,6 +537,7 @@ class ModelCPP(PyTreeNode):
 
 class DataCPP(PyTreeNode):
   """Minimal Data implementation holding only the pointer."""
+
   # To ensure that we retain the full pointer even if jax.config.enable_x64 is
   # set to True, we store the pointer as two 32-bit values. In the FFI call,
   # we combine the two values into a single pointer value.
@@ -553,6 +556,49 @@ class ModelJAX(PyTreeNode):
   wrap_inside_tolerance: float
   wrap_inside_z_init: float
   is_wrap_inside: np.ndarray
+
+
+@dataclasses.dataclass(frozen=True)
+class _ElementView:
+  """Base class for named element views in mjx.Model."""
+
+  id: int
+  name: str
+
+
+@dataclasses.dataclass(frozen=True)
+class BodyView(_ElementView):
+  """View of a body element by name or id."""
+
+  pass
+
+
+@dataclasses.dataclass(frozen=True)
+class JointView(_ElementView):
+  """View of a joint element by name or id."""
+
+  pass
+
+
+@dataclasses.dataclass(frozen=True)
+class GeomView(_ElementView):
+  """View of a geom element by name or id."""
+
+  pass
+
+
+@dataclasses.dataclass(frozen=True)
+class SiteView(_ElementView):
+  """View of a site element by name or id."""
+
+  pass
+
+
+@dataclasses.dataclass(frozen=True)
+class ActuatorView(_ElementView):
+  """View of an actuator element by name or id."""
+
+  pass
 
 
 class Model(PyTreeNode):
@@ -963,6 +1009,140 @@ class Model(PyTreeNode):
           f"'{type(self).__name__}' object has no attribute '{name}'"
       )
     return val
+
+  def _name2id(self, typ: mujoco._enums.mjtObj, name: str) -> int:
+    """Gets the id of an object with the specified mjtObj type and name."""
+    num_map = {
+        mujoco.mjtObj.mjOBJ_BODY: self.nbody,
+        mujoco.mjtObj.mjOBJ_JOINT: self.njnt,
+        mujoco.mjtObj.mjOBJ_GEOM: self.ngeom,
+        mujoco.mjtObj.mjOBJ_SITE: self.nsite,
+        mujoco.mjtObj.mjOBJ_ACTUATOR: self.nu,
+    }
+    adr_map = {
+        mujoco.mjtObj.mjOBJ_BODY: self.name_bodyadr,
+        mujoco.mjtObj.mjOBJ_JOINT: self.name_jntadr,
+        mujoco.mjtObj.mjOBJ_GEOM: self.name_geomadr,
+        mujoco.mjtObj.mjOBJ_SITE: self.name_siteadr,
+        mujoco.mjtObj.mjOBJ_ACTUATOR: self.name_actuatoradr,
+    }
+    num = num_map.get(typ, 0)
+    adr = adr_map.get(typ)
+    if adr is None:
+      return -1
+    for i in range(num):
+      obj_name = self.names[adr[i] :].decode('utf-8').split('\x00', 1)[0]
+      if obj_name == name:
+        return i
+    return -1
+
+  def _id2name(self, typ: mujoco._enums.mjtObj, i: int) -> Optional[str]:
+    """Gets the name of an object with the specified mjtObj type and id."""
+    num_map = {
+        mujoco.mjtObj.mjOBJ_BODY: self.nbody,
+        mujoco.mjtObj.mjOBJ_JOINT: self.njnt,
+        mujoco.mjtObj.mjOBJ_GEOM: self.ngeom,
+        mujoco.mjtObj.mjOBJ_SITE: self.nsite,
+        mujoco.mjtObj.mjOBJ_ACTUATOR: self.nu,
+    }
+    adr_map = {
+        mujoco.mjtObj.mjOBJ_BODY: self.name_bodyadr,
+        mujoco.mjtObj.mjOBJ_JOINT: self.name_jntadr,
+        mujoco.mjtObj.mjOBJ_GEOM: self.name_geomadr,
+        mujoco.mjtObj.mjOBJ_SITE: self.name_siteadr,
+        mujoco.mjtObj.mjOBJ_ACTUATOR: self.name_actuatoradr,
+    }
+    num = num_map.get(typ, 0)
+    adr = adr_map.get(typ)
+    if adr is None or i < 0 or i >= num:
+      return None
+    name = self.names[adr[i] :].decode('utf-8').split('\x00', 1)[0]
+    return name or None
+
+  def body(self, name: str) -> BodyView:
+    """Gets a body by name.
+
+    Args:
+      name: The name of the body.
+
+    Returns:
+      A BodyView with the body's id and name.
+
+    Raises:
+      KeyError: If no body with the given name exists.
+    """
+    id_ = self._name2id(mujoco.mjtObj.mjOBJ_BODY, name)
+    if id_ < 0:
+      raise KeyError(f"body '{name}' not found")
+    return BodyView(id=id_, name=name)
+
+  def joint(self, name: str) -> JointView:
+    """Gets a joint by name.
+
+    Args:
+      name: The name of the joint.
+
+    Returns:
+      A JointView with the joint's id and name.
+
+    Raises:
+      KeyError: If no joint with the given name exists.
+    """
+    id_ = self._name2id(mujoco.mjtObj.mjOBJ_JOINT, name)
+    if id_ < 0:
+      raise KeyError(f"joint '{name}' not found")
+    return JointView(id=id_, name=name)
+
+  def geom(self, name: str) -> GeomView:
+    """Gets a geom by name.
+
+    Args:
+      name: The name of the geom.
+
+    Returns:
+      A GeomView with the geom's id and name.
+
+    Raises:
+      KeyError: If no geom with the given name exists.
+    """
+    id_ = self._name2id(mujoco.mjtObj.mjOBJ_GEOM, name)
+    if id_ < 0:
+      raise KeyError(f"geom '{name}' not found")
+    return GeomView(id=id_, name=name)
+
+  def site(self, name: str) -> SiteView:
+    """Gets a site by name.
+
+    Args:
+      name: The name of the site.
+
+    Returns:
+      A SiteView with the site's id and name.
+
+    Raises:
+      KeyError: If no site with the given name exists.
+    """
+    id_ = self._name2id(mujoco.mjtObj.mjOBJ_SITE, name)
+    if id_ < 0:
+      raise KeyError(f"site '{name}' not found")
+    return SiteView(id=id_, name=name)
+
+  def actuator(self, name: str) -> ActuatorView:
+    """Gets an actuator by name.
+
+    Args:
+      name: The name of the actuator.
+
+    Returns:
+      An ActuatorView with the actuator's id and name.
+
+    Raises:
+      KeyError: If no actuator with the given name exists.
+    """
+    id_ = self._name2id(mujoco.mjtObj.mjOBJ_ACTUATOR, name)
+    if id_ < 0:
+      raise KeyError(f"actuator '{name}' not found")
+    return ActuatorView(id=id_, name=name)
 
 
 class Contact(PyTreeNode):

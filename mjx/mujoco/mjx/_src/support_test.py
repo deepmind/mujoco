@@ -18,11 +18,12 @@ from absl.testing import absltest
 from absl.testing import parameterized
 import jax
 from jax import numpy as jp
+import numpy as np
+
 import mujoco
 from mujoco import mjx
 from mujoco.mjx._src import support
 from mujoco.mjx._src import test_util
-import numpy as np
 
 
 class SupportTest(parameterized.TestCase):
@@ -233,9 +234,7 @@ class SupportTest(parameterized.TestCase):
       np.testing.assert_array_equal(m.bind(s.bodies[i]).pos, m.body_pos[i, :])
       np.testing.assert_array_equal(mx.bind(s.bodies[i]).pos, m.body_pos[i, :])
       np.testing.assert_array_equal(d.bind(s.bodies[i]).xpos, d.xpos[i, :])
-      np.testing.assert_array_equal(
-          dx.bind(mx, s.bodies[i]).xpos, d.xpos[i, :]
-          )
+      np.testing.assert_array_equal(dx.bind(mx, s.bodies[i]).xpos, d.xpos[i, :])
       np.testing.assert_array_equal(
           dx.bind(mx, s.bodies[i]).xfrc_applied, d.xfrc_applied[i, :]
       )
@@ -262,15 +261,18 @@ class SupportTest(parameterized.TestCase):
       np.testing.assert_array_equal(mx.bind(s.joints[i]).axis, m.jnt_axis[i, :])
       np.testing.assert_array_almost_equal(
           dx.bind(mx, s.joints[i]).qpos,
-          d.qpos[m.jnt_qposadr[i]:m.jnt_qposadr[i] + qposnum[i]], decimal=6
+          d.qpos[m.jnt_qposadr[i] : m.jnt_qposadr[i] + qposnum[i]],
+          decimal=6,
       )
       np.testing.assert_array_almost_equal(
           dx.bind(mx, s.joints[i]).qvel,
-          d.qvel[m.jnt_dofadr[i]:m.jnt_dofadr[i] + dofnum[i]], decimal=6
+          d.qvel[m.jnt_dofadr[i] : m.jnt_dofadr[i] + dofnum[i]],
+          decimal=6,
       )
       np.testing.assert_array_almost_equal(
           dx.bind(mx, s.joints[i]).qacc,
-          d.qacc[m.jnt_dofadr[i]:m.jnt_dofadr[i] + dofnum[i]], decimal=6
+          d.qacc[m.jnt_dofadr[i] : m.jnt_dofadr[i] + dofnum[i]],
+          decimal=6,
       )
       np.testing.assert_array_almost_equal(
           dx.bind(mx, s.joints[i]).qfrc_actuator,
@@ -281,9 +283,7 @@ class SupportTest(parameterized.TestCase):
     np.testing.assert_array_equal(dx.bind(mx, s.actuators).ctrl, d.ctrl)
     for i in range(m.nu):
       np.testing.assert_array_equal(d.bind(s.actuators[i]).ctrl, d.ctrl[i])
-      np.testing.assert_array_equal(
-          dx.bind(mx, s.actuators[i]).ctrl, d.ctrl[i]
-      )
+      np.testing.assert_array_equal(dx.bind(mx, s.actuators[i]).ctrl, d.ctrl[i])
 
     np.testing.assert_array_equal(
         dx.bind(mx, s.sensors).sensordata, d.sensordata
@@ -386,7 +386,8 @@ class SupportTest(parameterized.TestCase):
     batch_size = 16
     ds = [d for _ in range(batch_size)]
     vdx = jax.vmap(lambda xpos: dx.replace(xpos=xpos))(
-        jp.array([d.xpos for d in ds], device=jax.devices('cpu')[0]))
+        jp.array([d.xpos for d in ds], device=jax.devices('cpu')[0])
+    )
     for i in range(m.nbody):
       np.testing.assert_array_equal(
           vdx.bind(mx, s.bodies[i]).xpos, [d.xpos[i, :]] * batch_size
@@ -511,7 +512,9 @@ class SupportTest(parameterized.TestCase):
     # radius < mjMINVAL
     np.testing.assert_equal(
         support.wrap_inside(
-            jp.array([1, 0, 0, 1]), jp.array([0.1 * mujoco.mjMINVAL]), maxiter,
+            jp.array([1, 0, 0, 1]),
+            jp.array([0.1 * mujoco.mjMINVAL]),
+            maxiter,
             tolerance,
             z_init,
         )[0],
@@ -809,6 +812,63 @@ class SupportTest(parameterized.TestCase):
           rtol=1e-5,
           atol=1e-5,
       )
+
+  def test_model_named_accessors(self):
+    """Tests Model.body(), Model.joint(), Model.geom(), etc."""
+    xml = """
+    <mujoco model="test_model">
+      <worldbody>
+        <geom name="plane" type="plane" size="1 1 1"/>
+        <body name="body1" pos="0 0 1">
+          <joint name="joint1" type="slide" axis="1 0 0" range="-5 5"/>
+          <geom name="box1" type="box" size=".2 .1 .1" rgba=".9 .3 .3 1"/>
+          <site name="site1" size="0.01"/>
+        </body>
+      </worldbody>
+      <actuator>
+        <motor joint="joint1" name="motor1"/>
+      </actuator>
+    </mujoco>
+    """
+    m = mujoco.MjModel.from_xml_string(xml)
+    mx = mjx.put_model(m)
+
+    # Test body accessor
+    body = mx.body('body1')
+    self.assertEqual(body.id, m.body('body1').id)
+    self.assertEqual(body.name, 'body1')
+
+    # Test joint accessor
+    joint = mx.joint('joint1')
+    self.assertEqual(joint.id, m.joint('joint1').id)
+    self.assertEqual(joint.name, 'joint1')
+
+    # Test geom accessor
+    geom = mx.geom('box1')
+    self.assertEqual(geom.id, m.geom('box1').id)
+    self.assertEqual(geom.name, 'box1')
+
+    # Test site accessor
+    site = mx.site('site1')
+    self.assertEqual(site.id, m.site('site1').id)
+    self.assertEqual(site.name, 'site1')
+
+    # Test actuator accessor
+    actuator = mx.actuator('motor1')
+    self.assertEqual(actuator.id, m.actuator('motor1').id)
+    self.assertEqual(actuator.name, 'motor1')
+
+    # Test KeyError for non-existent elements
+    with self.assertRaises(KeyError):
+      mx.body('nonexistent')
+    with self.assertRaises(KeyError):
+      mx.joint('nonexistent')
+    with self.assertRaises(KeyError):
+      mx.geom('nonexistent')
+    with self.assertRaises(KeyError):
+      mx.site('nonexistent')
+    with self.assertRaises(KeyError):
+      mx.actuator('nonexistent')
 
 
 if __name__ == '__main__':
