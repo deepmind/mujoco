@@ -85,7 +85,7 @@ namespace {
 mjVFS* GetOpenVfs(MjVfs* vfs) {
   if (vfs) {
     if (!vfs->is_open()) {
-      throw std::runtime_error("VFS is closed");
+      throw py_runtime_error("VFS is closed");
     }
     return vfs->get();
   }
@@ -318,7 +318,7 @@ PYBIND11_MODULE(_specs, m, pybind11::mod_gil_not_used()) {
       .def("__setitem__",
            [](MjVfs& self, const std::string& name, py::bytes data) {
              if (!self.is_open()) {
-               throw std::runtime_error("VFS is closed");
+               throw py_runtime_error("VFS is closed");
              }
              std::string_view buffer = data;
              const int err = mj_addBufferVFS(self.get(), name.c_str(),
@@ -332,7 +332,7 @@ PYBIND11_MODULE(_specs, m, pybind11::mod_gil_not_used()) {
       .def("__delitem__",
            [](MjVfs& self, const std::string& name) {
              if (!self.is_open()) {
-               throw std::runtime_error("VFS is closed");
+               throw py_runtime_error("VFS is closed");
              }
              if (mj_deleteFileVFS(self.get(), name.c_str())) {
                throw py::key_error(name);
@@ -340,7 +340,7 @@ PYBIND11_MODULE(_specs, m, pybind11::mod_gil_not_used()) {
            })
       .def("__contains__", [](MjVfs& self, const std::string& name) {
         if (!self.is_open()) {
-          throw std::runtime_error("VFS is closed");
+          throw py_runtime_error("VFS is closed");
         }
         return mj_containsBufferVFS(self.get(), name.c_str()) == 1;
       });

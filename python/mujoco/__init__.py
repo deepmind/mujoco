@@ -34,7 +34,9 @@ __path__ = __import__('pkgutil').extend_path(__path__, __name__)
 
 _SYSTEM = platform.system()
 if _SYSTEM == 'Windows':
-  ctypes.WinDLL(os.path.join(os.path.dirname(__file__), 'mujoco.dll'))
+  _dll_path = os.path.join(os.path.dirname(__file__), 'mujoco.dll')
+  if os.path.exists(_dll_path):
+    ctypes.WinDLL(_dll_path)
 elif _SYSTEM == 'Darwin':
   # sysctl is in /usr/sbin, which is not on minimal PATHs (e.g. the
   # environment Bazel runs tests in), so don't rely on PATH lookup.
@@ -50,6 +52,31 @@ elif _SYSTEM == 'Darwin':
         'You are running an x86_64 build of Python on an Apple Silicon '
         'machine. This is not supported by MuJoCo. Please install and run a '
         'native, arm64 build of Python.')
+
+_EXPECTED_VERSION = '4.0.0'
+try:
+  from mujoco._version import __version__ as _core_version
+  import mujoco._specs
+except ModuleNotFoundError as _e:
+  if not (_e.name or '').startswith('mujoco'):
+    raise
+  raise ImportError(
+      "The 'mujoco' package is installed, but its core bindings "
+      "('mujoco-core') are missing or corrupted (for example, after "
+      "uninstalling a previous monolithic 'mujoco' package). "
+      "Repair your environment with:\n"
+      '  pip install --force-reinstall --no-deps '
+      'mujoco mujoco-core mujoco-studio'
+  ) from _e
+if _core_version != _EXPECTED_VERSION:
+  raise ImportError(
+      f"Version mismatch between 'mujoco' ({_EXPECTED_VERSION}) and "
+      f"'mujoco-core' ({_core_version}). Please upgrade all packages "
+      'together:\n'
+      f"  pip install --upgrade 'mujoco=={_EXPECTED_VERSION}' "
+      f"'mujoco-core=={_EXPECTED_VERSION}' "
+      f"'mujoco-studio=={_EXPECTED_VERSION}'"
+  )
 
 from mujoco import _specs
 from mujoco import _structs

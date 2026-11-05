@@ -66,6 +66,7 @@ set_target_properties(implot PROPERTIES
 # when linking both GLFW (via Filament) and SDL2 statically on Linux.
 if(UNIX AND NOT APPLE)
   target_link_options(_studio PRIVATE "-Wl,--allow-multiple-definition")
+  set_property(TARGET _studio APPEND PROPERTY INSTALL_RPATH "$ORIGIN/..")
 endif()
 
 if(APPLE)

@@ -320,7 +320,7 @@ namespace {
 mjVFS* GetOpenVfs(MjVfs* vfs) {
   if (vfs) {
     if (!vfs->is_open()) {
-      throw std::runtime_error("VFS is closed");
+      throw py_runtime_error("VFS is closed");
     }
     return vfs->get();
   }

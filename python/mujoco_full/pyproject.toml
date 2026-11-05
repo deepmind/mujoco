@@ -1,0 +1,64 @@
+[build-system]
+requires = ["setuptools"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mujoco"
+version = "4.0.0"
+authors = [
+    {name = "Google DeepMind", email = "mujoco@deepmind.com"},
+]
+description = "MuJoCo Physics Simulator"
+requires-python = ">=3.11"
+license = "Apache-2.0"
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "Natural Language :: English",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Programming Language :: Python :: 3.14",
+    "Programming Language :: Python :: 3.15",
+    "Topic :: Scientific/Engineering",
+]
+dependencies = [
+    "glfw",
+    "mujoco-core==4.0.0",
+    "mujoco-studio==4.0.0",
+    "numpy",
+    "pyopengl",
+]
+dynamic = ["readme"]
+
+[project.urls]
+Homepage = "https://github.com/google-deepmind/mujoco"
+Documentation = "https://mujoco.readthedocs.io/en/4.0.0"
+Repository = "https://github.com/google-deepmind/mujoco"
+Changelog = "https://mujoco.readthedocs.io/en/4.0.0/changelog.html"
+
+[tool.setuptools]
+include-package-data = false
+
+[tool.setuptools.packages.find]
+include = ["mujoco"]
+
+[project.optional-dependencies]
+sysid = [
+    "absl-py",
+    "colorama",
+    "imageio[ffmpeg]",
+    "jinja2",
+    "matplotlib",
+    "plotly",
+    "pyyaml",
+    "scipy",
+    "tabulate",
+    "typing_extensions",
+]
+usd = [
+    "usd-core",
+    "pillow",
+]

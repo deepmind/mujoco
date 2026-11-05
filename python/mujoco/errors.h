@@ -18,7 +18,6 @@
 #include <array>
 #include <csetjmp>
 #include <cstdio>
-#include <cstring>
 #include <stdexcept>
 #include <string>
 #include <type_traits>
@@ -222,6 +221,18 @@ class UnexpectedError : public _impl::ErrorBase<UnexpectedError> {
                   " (this error not expected to ever occur,"
                   " please report it to MuJoCo developers!)") {}
   virtual ~UnexpectedError() = default;
+};
+
+// Subclass pybind11::builtin_exception so that RuntimeErrors thrown from
+// secondary extension modules (which only register translate_local_exception)
+// are caught within the throwing DSO on Linux builds with static hidden
+// libc++abi, rather than failing cross-DSO std::exception type_info matching.
+class py_runtime_error : public pybind11::builtin_exception {
+ public:
+  using pybind11::builtin_exception::builtin_exception;
+  void set_error() const override {
+    PyErr_SetString(PyExc_RuntimeError, what());
+  }
 };
 
 template <typename Callable>

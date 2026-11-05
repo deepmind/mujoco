@@ -21,6 +21,7 @@ licenses(["notice"])
 exports_files([
     "LICENSE",
     "setup.py",
+    "mujoco_full/setup.py",
     "build_requirements.txt",
     "CMakeLists.txt",
 ])
@@ -51,6 +52,7 @@ py_library(
     name = "mujoco",
     srcs = [
         "__init__.py",
+        "_version.py",
         "batch.py",
         "gl_context.py",
         "minimize.py",
@@ -78,7 +80,6 @@ py_library(
         "//python/mujoco/pypi:glfw",
         "//python/mujoco/pypi:numpy",  # buildcleaner: keep
         "//python/mujoco/pypi:pyopengl",
-        "//python/mujoco/pypi:websockets",
         "//python/mujoco/rendering",
     ],
 )

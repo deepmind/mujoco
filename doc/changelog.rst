@@ -54,6 +54,13 @@ Significant new features
 
       <div style="clear: both;"></div>
 
+- Split the Python distribution into ``mujoco-core`` (minimal bindings and C library depending only on ``numpy``),
+  ``mujoco-studio`` (Studio and Filament renderer bindings), and ``mujoco`` (default package installing both). When
+  upgrading from a pre-split ``mujoco`` installation with ``pip``, uninstall first (``pip uninstall -y mujoco && pip
+  install mujoco``) or run ``pip install --force-reinstall --no-deps mujoco mujoco-core mujoco-studio`` after
+  upgrading so ``pip`` does not remove files moved to ``mujoco-core``. To switch an existing ``mujoco`` installation
+  to core-only, run ``pip uninstall -y mujoco mujoco-studio && pip install --force-reinstall --no-deps mujoco-core``.
+
 Engine
 ^^^^^^
 .. admonition:: Breaking changes

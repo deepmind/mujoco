@@ -15,6 +15,9 @@
 project(mujoco_python)
 cmake_minimum_required(VERSION 3.15)
 
+option(MUJOCO_PYTHON_BUILD_CORE "Build core MuJoCo Python extensions." ON)
+option(MUJOCO_PYTHON_BUILD_STUDIO "Build Studio and Filament Python extensions." OFF)
+
 # Support new IN_LIST if() operator.
 set(CMAKE_POLICY_DEFAULT_CMP0057 NEW)
 # INTERPROCEDURAL_OPTIMIZATION is enforced when enabled.
@@ -148,7 +151,7 @@ if(NOT TARGET mujoco)
 endif()
 
 # =================== MUJOCO PLATFORM STATIC LIBRARY ==========================
-if(NOT TARGET mujoco::platform)
+if(MUJOCO_PYTHON_BUILD_STUDIO AND NOT TARGET mujoco::platform)
   set(MUJOCO_PLATFORM_HINTS ${MUJOCO_LIBRARY_DIR})
   if(MUJOCO_FRAMEWORK)
     list(APPEND MUJOCO_PLATFORM_HINTS "${MUJOCO_FRAMEWORK}/mujoco.framework/Versions/A")
@@ -317,75 +320,12 @@ findorfetch(
 )
 
 # ==================== MUJOCO PYTHON BINDINGS ==================================
-set(SIMULATE_BUILD_EXECUTABLE OFF)
-set(SIMULATE_GLFW_DYNAMIC_SYMBOLS ON)
-add_subdirectory(simulate)
-
 add_subdirectory(util)
 
 add_library(mujoco_private_api_header INTERFACE)
 target_sources(mujoco_private_api_header INTERFACE private.h)
 set_target_properties(mujoco_private_api_header PROPERTIES PUBLIC_HEADER private.h)
 target_link_libraries(mujoco_private_api_header INTERFACE mujoco)
-
-# enum_traits.h, function_traits.h, specs.cc.inc and
-# render_filament_generated.cc.inc are pre-generated into the sdist by
-# make_sdist.sh, so only the EXISTS branches below are taken by any build we
-# run: CI and Kokoro both build the wheel from an sdist.
-#
-# The else() branches are stale and are not known to work. The generators do
-# `from mujoco.introspect import ...`, which needs the *parent* of the mujoco
-# package on PYTHONPATH, not the package itself as set below; and importing
-# mujoco.introspect executes mujoco/__init__.py, which imports the native
-# _specs and _structs extensions that do not exist yet at codegen time. Making
-# these branches usable therefore needs more than a corrected PYTHONPATH --
-# see the TODO in .github/workflows/README.md.
-if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/enum_traits.h)
-  add_library(enum_traits INTERFACE)
-  target_sources(enum_traits INTERFACE enum_traits.h)
-else()
-  add_custom_command(
-    OUTPUT enum_traits.h
-    COMMAND ${CMAKE_COMMAND} -E env PYTHONPATH=${mujoco_SOURCE_DIR}/mujoco/python/mujoco ${Python3_EXECUTABLE}
-            ${CMAKE_CURRENT_SOURCE_DIR}/codegen/generate_enum_traits.py > enum_traits.h
-    DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/codegen/generate_enum_traits.py
-  )
-  add_library(enum_traits INTERFACE)
-  target_sources(enum_traits INTERFACE enum_traits.h)
-  target_include_directories(
-    enum_traits INTERFACE ${CMAKE_CURRENT_BINARY_DIR} ${CMAKE_CURRENT_SOURCE_DIR}
-  )
-endif()
-target_link_libraries(enum_traits INTERFACE mujoco absl::core_headers)
-
-if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/function_traits.h)
-  add_library(function_traits INTERFACE)
-  target_sources(function_traits INTERFACE function_traits.h)
-else()
-  add_custom_command(
-    OUTPUT function_traits.h
-    COMMAND ${CMAKE_COMMAND} -E env PYTHONPATH=${mujoco_SOURCE_DIR}/mujoco/python/mujoco ${Python3_EXECUTABLE}
-            ${CMAKE_CURRENT_SOURCE_DIR}/codegen/generate_function_traits.py > function_traits.h
-    DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/codegen/generate_function_traits.py
-  )
-  add_library(function_traits INTERFACE)
-  target_sources(function_traits INTERFACE function_traits.h)
-  target_include_directories(
-    function_traits INTERFACE ${CMAKE_CURRENT_BINARY_DIR} ${CMAKE_CURRENT_SOURCE_DIR}
-  )
-endif()
-target_link_libraries(function_traits INTERFACE mujoco absl::core_headers)
-
-add_library(errors_header INTERFACE)
-target_sources(errors_header INTERFACE errors.h)
-set_target_properties(errors_header PROPERTIES PUBLIC_HEADER errors.h)
-target_link_libraries(
-  errors_header
-  INTERFACE crossplatform
-            func_wrap
-            mujoco
-            mujoco_private_api_header
-)
 
 add_library(raw INTERFACE)
 target_sources(raw INTERFACE raw.h)
@@ -408,39 +348,6 @@ target_link_libraries(
             crossplatform
             mujoco
             raw
-)
-
-add_library(structs_wrappers STATIC
-  structs_wrappers.cc
-  serialization.h
-  indexers.cc
-)
-target_include_directories(structs_wrappers PRIVATE ${Python3_INCLUDE_DIRS})
-target_link_libraries(
-  structs_wrappers
-  PRIVATE absl::flat_hash_map
-          absl::span
-          crossplatform
-          mujoco
-          raw
-          structs_header
-          pybind11::headers
-          Eigen3::Eigen
-)
-
-
-add_library(functions_header INTERFACE)
-target_sources(functions_header INTERFACE functions.h)
-set_target_properties(functions_header PROPERTIES PUBLIC_HEADER functions.h)
-target_link_libraries(
-  functions_header
-  INTERFACE array_traits
-            crossplatform
-            Eigen3::Eigen
-            errors_header
-            func_wrap
-            structs_header
-            tuple_tools
 )
 
 include(CheckAvxSupport)
@@ -484,66 +391,226 @@ macro(mujoco_pybind11_module name)
   endif()
 endmacro()
 
-mujoco_pybind11_module(_callbacks callbacks.cc)
-target_link_libraries(
-  _callbacks
-  PRIVATE errors_header
-          mujoco
-          raw
-          structs_header
-)
+if(MUJOCO_PYTHON_BUILD_CORE)
+  set(SIMULATE_BUILD_EXECUTABLE OFF)
+  set(SIMULATE_GLFW_DYNAMIC_SYMBOLS ON)
+  add_subdirectory(simulate)
 
-mujoco_pybind11_module(_constants constants.cc)
-target_link_libraries(_constants PRIVATE mujoco)
+  # enum_traits.h, function_traits.h, specs.cc.inc and
+  # render_filament_generated.cc.inc are pre-generated into the sdist by
+  # make_sdist.sh, so only the EXISTS branches below are taken by any build we
+  # run: CI and Kokoro both build the wheel from an sdist.
+  #
+  # The else() branches are stale and are not known to work. The generators do
+  # `from mujoco.introspect import ...`, which needs the *parent* of the mujoco
+  # package on PYTHONPATH, not the package itself as set below; and importing
+  # mujoco.introspect executes mujoco/__init__.py, which imports the native
+  # _specs and _structs extensions that do not exist yet at codegen time. Making
+  # these branches usable therefore needs more than a corrected PYTHONPATH --
+  # see the TODO in .github/workflows/README.md.
+  if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/enum_traits.h)
+    add_library(enum_traits INTERFACE)
+    target_sources(enum_traits INTERFACE enum_traits.h)
+  else()
+    add_custom_command(
+      OUTPUT enum_traits.h
+      COMMAND ${CMAKE_COMMAND} -E env PYTHONPATH=${mujoco_SOURCE_DIR}/mujoco/python/mujoco ${Python3_EXECUTABLE}
+              ${CMAKE_CURRENT_SOURCE_DIR}/codegen/generate_enum_traits.py > enum_traits.h
+      DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/codegen/generate_enum_traits.py
+    )
+    add_library(enum_traits INTERFACE)
+    target_sources(enum_traits INTERFACE enum_traits.h)
+    target_include_directories(
+      enum_traits INTERFACE ${CMAKE_CURRENT_BINARY_DIR} ${CMAKE_CURRENT_SOURCE_DIR}
+    )
+  endif()
+  target_link_libraries(enum_traits INTERFACE mujoco absl::core_headers)
 
-mujoco_pybind11_module(_enums enums.cc)
-target_link_libraries(
-  _enums
-  PRIVATE crossplatform
-          enum_traits
-          mujoco
-          tuple_tools
-)
+  if(EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/function_traits.h)
+    add_library(function_traits INTERFACE)
+    target_sources(function_traits INTERFACE function_traits.h)
+  else()
+    add_custom_command(
+      OUTPUT function_traits.h
+      COMMAND ${CMAKE_COMMAND} -E env PYTHONPATH=${mujoco_SOURCE_DIR}/mujoco/python/mujoco ${Python3_EXECUTABLE}
+              ${CMAKE_CURRENT_SOURCE_DIR}/codegen/generate_function_traits.py > function_traits.h
+      DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/codegen/generate_function_traits.py
+    )
+    add_library(function_traits INTERFACE)
+    target_sources(function_traits INTERFACE function_traits.h)
+    target_include_directories(
+      function_traits INTERFACE ${CMAKE_CURRENT_BINARY_DIR} ${CMAKE_CURRENT_SOURCE_DIR}
+    )
+  endif()
+  target_link_libraries(function_traits INTERFACE mujoco absl::core_headers)
 
-mujoco_pybind11_module(_errors errors.cc)
-target_link_libraries(_errors PRIVATE errors_header)
+  add_library(errors_header INTERFACE)
+  target_sources(errors_header INTERFACE errors.h)
+  set_target_properties(errors_header PROPERTIES PUBLIC_HEADER errors.h)
+  target_link_libraries(
+    errors_header
+    INTERFACE crossplatform
+              func_wrap
+              mujoco
+              mujoco_private_api_header
+  )
 
-mujoco_pybind11_module(_functions functions.cc)
-target_link_libraries(
-  _functions
-  PRIVATE Eigen3::Eigen
-          functions_header
-          function_traits
-          mujoco
-          raw
-)
-if(APPLE)
-  # C++17 aligned allocation is not available until macOS 10.14.
-  target_compile_options(_functions PRIVATE -fno-aligned-allocation)
+  add_library(structs_wrappers STATIC
+    structs_wrappers.cc
+    serialization.h
+    indexers.cc
+  )
+  target_include_directories(structs_wrappers PRIVATE ${Python3_INCLUDE_DIRS})
+  target_link_libraries(
+    structs_wrappers
+    PRIVATE absl::flat_hash_map
+            absl::span
+            crossplatform
+            mujoco
+            raw
+            structs_header
+            pybind11::headers
+            Eigen3::Eigen
+  )
+
+  add_library(functions_header INTERFACE)
+  target_sources(functions_header INTERFACE functions.h)
+  set_target_properties(functions_header PROPERTIES PUBLIC_HEADER functions.h)
+  target_link_libraries(
+    functions_header
+    INTERFACE array_traits
+              crossplatform
+              Eigen3::Eigen
+              errors_header
+              func_wrap
+              structs_header
+              tuple_tools
+  )
+
+  mujoco_pybind11_module(_callbacks callbacks.cc)
+  target_link_libraries(
+    _callbacks
+    PRIVATE errors_header
+            mujoco
+            raw
+            structs_header
+  )
+
+  mujoco_pybind11_module(_constants constants.cc)
+  target_link_libraries(_constants PRIVATE mujoco)
+
+  mujoco_pybind11_module(_enums enums.cc)
+  target_link_libraries(
+    _enums
+    PRIVATE crossplatform
+            enum_traits
+            mujoco
+            tuple_tools
+  )
+
+  mujoco_pybind11_module(_errors errors.cc)
+  target_link_libraries(_errors PRIVATE errors_header)
+
+  mujoco_pybind11_module(_functions functions.cc)
+  target_link_libraries(
+    _functions
+    PRIVATE Eigen3::Eigen
+            functions_header
+            function_traits
+            mujoco
+            raw
+  )
+  if(APPLE)
+    # C++17 aligned allocation is not available until macOS 10.14.
+    target_compile_options(_functions PRIVATE -fno-aligned-allocation)
+  endif()
+
+  mujoco_pybind11_module(_render render.cc)
+  target_link_libraries(
+    _render
+    PRIVATE Eigen3::Eigen
+            errors_header
+            functions_header
+            function_traits
+            mujoco
+            raw
+            structs_header
+  )
+
+  mujoco_pybind11_module(_batch batch.cc)
+
+  mujoco_pybind11_module(_rollout rollout.cc threadpool.cc)
+
+  target_link_libraries(_batch PRIVATE functions_header mujoco raw)
+  target_link_libraries(_rollout PRIVATE functions_header mujoco raw)
+
+  mujoco_pybind11_module(
+    _structs
+    indexers.cc
+    serialization.h
+    structs.cc
+  )
+  target_link_libraries(
+    _structs
+    PRIVATE absl::flat_hash_map
+            crossplatform
+            mujoco
+            mujoco_private_api_header
+            raw
+            errors_header
+            func_wrap
+            function_traits
+            structs_header
+            structs_wrappers
+  )
+
+  if(APPLE)
+    set_target_properties(_structs PROPERTIES INTERPROCEDURAL_OPTIMIZATION FALSE)
+  endif()
+
+  if(NOT EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/specs.cc.inc)
+    add_custom_command(
+      OUTPUT specs.cc.inc
+      COMMAND ${CMAKE_COMMAND} -E env PYTHONPATH=${mujoco_SOURCE_DIR}/mujoco/python ${Python3_EXECUTABLE}
+              ${CMAKE_CURRENT_SOURCE_DIR}/codegen/generate_spec_bindings.py > specs.cc.inc
+      DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/codegen/generate_spec_bindings.py
+    )
+  endif()
+
+  mujoco_pybind11_module(
+    _specs
+    specs.cc
+    specs_wrapper.h
+    specs_wrapper.cc
+    specs.cc.inc
+  )
+  target_link_libraries(
+    _specs
+    PRIVATE mujoco
+            Eigen3::Eigen
+            errors_header
+            raw
+            structs_header
+  )
+
+  mujoco_pybind11_module(_simulate simulate.cc)
+  target_link_libraries(
+    _simulate
+    PRIVATE mujoco
+            mujoco::libmujoco_simulate
+            glfw
+            errors_header
+            raw
+            structs_header
+  )
 endif()
-
-mujoco_pybind11_module(_render render.cc)
-target_link_libraries(
-  _render
-  PRIVATE Eigen3::Eigen
-          errors_header
-          functions_header
-          function_traits
-          mujoco
-          raw
-          structs_header
-)
-
-mujoco_pybind11_module(_batch batch.cc)
-
-mujoco_pybind11_module(_rollout rollout.cc threadpool.cc)
 
 # The Filament rendering API binding. It needs the Filament C API library, the
 # Filament engine archives and the source-tree headers under
 # MUJOCO_INCLUDE/mujoco, all of which the Studio platform target carries in its
 # interface (includes, C++20, dependency archives); a Studio SDK is what makes
 # the binding buildable, so key on that target.
-if(TARGET mujoco::platform)
+if(MUJOCO_PYTHON_BUILD_STUDIO AND TARGET mujoco::platform)
   add_library(_render_filament_header INTERFACE)
   target_sources(
     _render_filament_header
@@ -583,94 +650,39 @@ if(TARGET mujoco::platform)
   )
 endif()
 
-target_link_libraries(_batch PRIVATE functions_header mujoco raw)
-target_link_libraries(_rollout PRIVATE functions_header mujoco raw)
-
-mujoco_pybind11_module(
-  _structs
-  indexers.cc
-  serialization.h
-  structs.cc
-)
-target_link_libraries(
-  _structs
-  PRIVATE absl::flat_hash_map
-          crossplatform
-          mujoco
-          mujoco_private_api_header
-          raw
-          errors_header
-          func_wrap
-          function_traits
-          structs_header
-          structs_wrappers
-)
-
-if(APPLE)
-  set_target_properties(_structs PROPERTIES INTERPROCEDURAL_OPTIMIZATION FALSE)
+if(MUJOCO_PYTHON_BUILD_STUDIO)
+  add_subdirectory(studio)
 endif()
 
-if(NOT EXISTS ${CMAKE_CURRENT_SOURCE_DIR}/specs.cc.inc)
-  add_custom_command(
-    OUTPUT specs.cc.inc
-    COMMAND ${CMAKE_COMMAND} -E env PYTHONPATH=${mujoco_SOURCE_DIR}/mujoco/python ${Python3_EXECUTABLE}
-            ${CMAKE_CURRENT_SOURCE_DIR}/codegen/generate_spec_bindings.py > specs.cc.inc
-    DEPENDS ${CMAKE_CURRENT_SOURCE_DIR}/codegen/generate_spec_bindings.py
+set(MUJOCO_CORE_WHEEL_TARGETS)
+if(MUJOCO_PYTHON_BUILD_CORE)
+  list(APPEND MUJOCO_CORE_WHEEL_TARGETS
+      _batch
+      _callbacks
+      _constants
+      _enums
+      _errors
+      _functions
+      _render
+      _rollout
+      _simulate
+      _specs
+      _structs
   )
 endif()
-
-mujoco_pybind11_module(
-  _specs
-  specs.cc
-  specs_wrapper.h
-  specs_wrapper.cc
-  specs.cc.inc
-)
-target_link_libraries(
-  _specs
-  PRIVATE mujoco
-          Eigen3::Eigen
-          errors_header
-          raw
-          structs_header
-)
-
-mujoco_pybind11_module(_simulate simulate.cc)
-target_link_libraries(
-  _simulate
-  PRIVATE mujoco
-          mujoco::libmujoco_simulate
-          glfw
-          errors_header
-          raw
-          structs_header
-)
-
-add_subdirectory(studio)
-
-set(MUJOCO_CORE_WHEEL_TARGETS
-    _batch
-    _callbacks
-    _constants
-    _enums
-    _errors
-    _functions
-    _render
-    _rollout
-    _simulate
-    _specs
-    _structs
-)
 if(TARGET _render_filament)
   list(APPEND MUJOCO_CORE_WHEEL_TARGETS _render_filament)
 endif()
 
-set(LIBRARIES_FOR_WHEEL "$<TARGET_FILE:mujoco>")
+set(LIBRARIES_FOR_WHEEL)
+if(MUJOCO_PYTHON_BUILD_CORE)
+  list(APPEND LIBRARIES_FOR_WHEEL "$<TARGET_FILE:mujoco>")
+endif()
 foreach(target IN LISTS MUJOCO_CORE_WHEEL_TARGETS MUJOCO_STUDIO_TARGETS)
   list(APPEND LIBRARIES_FOR_WHEEL "$<TARGET_FILE:${target}>")
 endforeach()
 
-if(APPLE)
+if(MUJOCO_PYTHON_BUILD_CORE AND APPLE)
   add_executable(mjpython mjpython/mjpython.mm)
   target_include_directories(mjpython PRIVATE "${Python3_INCLUDE_DIRS}")
   target_link_libraries(mjpython PRIVATE "-framework Cocoa")
@@ -691,13 +703,16 @@ if(MUJOCO_PYTHON_MAKE_WHEEL)
             "${CMAKE_CURRENT_BINARY_DIR}/dist"
   )
 
-  add_dependencies(
-    wheel
-    mujoco
-    ${MUJOCO_CORE_WHEEL_TARGETS}
-    ${MUJOCO_STUDIO_TARGETS}
-  )
-  if(APPLE)
-    add_dependencies(wheel mjpython)
+  if(MUJOCO_PYTHON_BUILD_CORE)
+    add_dependencies(wheel mujoco)
+    if(APPLE)
+      add_dependencies(wheel mjpython)
+    endif()
+  endif()
+  if(MUJOCO_CORE_WHEEL_TARGETS)
+    add_dependencies(wheel ${MUJOCO_CORE_WHEEL_TARGETS})
+  endif()
+  if(MUJOCO_STUDIO_TARGETS)
+    add_dependencies(wheel ${MUJOCO_STUDIO_TARGETS})
   endif()
 endif()
