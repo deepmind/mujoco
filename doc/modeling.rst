@@ -1865,11 +1865,12 @@ Before tuning parameters, load the model paused in :ref:`MuJoCo Studio <StudioAp
 and rule out modeling bugs that masquerade as bad contacts: intersecting geoms at ``t = 0`` (toggle contact
 points/forces), visual/collision geom mismatches (toggle geom groups), concave collision meshes replaced by their
 :ref:`convex hulls <coChecking>` (toggle convex hulls; see :ref:`convex decomposition <coDecomposition>`), implausible
-CAD/URDF inertias (toggle equivalent inertia boxes), degree/radian mismatches (:ref:`compiler/angle <compiler-angle>`
-defaults to ``"degree"``), and position targets driving past joint limits or into surfaces. Stiffening contacts to mask
-these issues can cause chatter or divergence. Once the model is clean, tune interactively using the viewer's
-contact-force and profiler overlays, and measure headless throughput with :ref:`testspeed <saTestspeed>` so changes
-target the stage dominating step time.
+CAD/URDF inertias (toggle equivalent inertia boxes), millimeter/meter :ref:`unit or scale <Units>` mismatches (check
+:ref:`mesh/scale <asset-mesh-scale>` and total mass), degree/radian or joint-axis mismatches (toggle joint axes;
+:ref:`compiler/angle <compiler-angle>` defaults to ``"degree"``), and position targets driving past joint limits or
+into surfaces. Stiffening contacts to mask these issues can cause chatter or divergence. Once the model is clean, tune
+interactively using the viewer's contact-force and profiler overlays, and measure headless throughput with
+:ref:`testspeed <saTestspeed>` so changes target the stage dominating step time.
 
 .. _CTuningDefaults:
 
@@ -1900,7 +1901,7 @@ Overriding these defaults at the start of a project, typically once in :ref:`opt
      - Why?
    * - :ref:`integrator <option-integrator>`
      - ``"Euler"``
-     - ``"implicitfast"`` (``"discrete"`` with flex elasticity; see note below)
+     - ``"implicitfast"`` (``"discrete"`` for flex elasticity or stiff springs/servos; see note below)
      - Cheap implicit integration of velocity-dependent forces.
    * - :ref:`cone <option-cone>`, :ref:`impratio <option-impratio>`
      - ``"pyramidal"``, ``"1"``
@@ -1920,8 +1921,8 @@ Overriding these defaults at the start of a project, typically once in :ref:`opt
      - Keeps detailed visual meshes out of collision detection.
    * - :ref:`condim <body-geom-condim>`
      - ``"3"``
-     - ``"4"`` or ``"6"`` on grasp pads
-     - Adds torsional (and rolling) friction needed for stable pinch grasps.
+     - ``"4"`` or ``"6"`` on grasp pads and rolling props
+     - Adds torsional (and rolling) friction for stable pinch grasps and settling on flat surfaces.
    * - :ref:`joint/armature <body-joint-armature>`, :ref:`damping <body-joint-damping>`
      - ``"0"``, ``"0"``
      - Nonzero rotor inertia & light damping
@@ -1943,10 +1944,11 @@ Global options
    throughput scales linearly with :at:`timestep` up to the stability limit where simulation diverges. ``2 ms`` is
    usually reasonable, or slightly high, for contact-rich manipulation (stiff grippers, high gains, or thin objects
    often prefer ``0.5–2 ms``), whereas ``5–15 ms`` can work well for locomotion. When
-   :ref:`refsafe <option-flag-refsafe>` is enabled (for all integrators besides ``discrete``, which ignores
-   :at:`refsafe`), effective ``solref[0]`` is clamped to at least ``2 * timestep``, so raising :at:`timestep` past half
-   of ``solref[0]`` also softens contacts. If thin or fast-moving geoms start tunneling through each other at the larger
-   timestep, enable :ref:`speculative contacts <CTunneling>` rather than shrinking it.
+   :ref:`refsafe <option-flag-refsafe>` is enabled, standard integrators clamp effective ``solref[0]`` to at least
+   ``2 * timestep`` (under ``discrete``, equality and friction rows stay unclamped while contact and limit springs that
+   the step cannot resolve are clamped to the stiffest zero-restitution spring for :at:`timestep`), so raising
+   :at:`timestep` past the clamp threshold also softens contacts. If thin or fast-moving geoms start tunneling through
+   each other at the larger timestep, enable :ref:`speculative contacts <CTunneling>` rather than shrinking it.
 
 **Integrator** (:ref:`integrator <option-integrator>`: ``"Euler"``):
    See note under :ref:`Numerical Integration <geChoosingTimestepIntegrator>`. Use ``implicitfast`` for most models: it
@@ -2023,9 +2025,11 @@ Model parameters
 
 **Collision detection and filtering** (:ref:`contype <body-geom-contype>`: ``"1"``, :ref:`conaffinity <body-geom-conaffinity>`: ``"1"``):
    See :ref:`Collision detection <Collision>`. Every geom both renders and collides by default; put visual meshes in a
-   :ref:`default <CDefault>` class with ``contype="0" conaffinity="0"`` to keep them out of collision detection.
-   Replacing collision meshes with primitives (``sphere``, ``capsule``, ``box``, ``cylinder``) improves *both* speed
-   and contact normals: dedicated pair functions (see `engine_collision_driver.c
+   :ref:`default <CDefault>` class with ``contype="0" conaffinity="0"`` to keep them out of collision detection, and
+   when inferring inertia from geoms, use :ref:`inertiagrouprange <compiler-inertiagrouprange>` or ``density="0"`` to
+   compute inertia from either the visual mesh or the collision geoms rather than counting both. Replacing collision
+   meshes with primitives (``sphere``, ``capsule``, ``box``, ``cylinder``) improves *both* speed and contact normals:
+   dedicated pair functions (see `engine_collision_driver.c
    <https://github.com/google-deepmind/mujoco/blob/main/src/engine/engine_collision_driver.c>`__) are much cheaper
    than generic convex ``mjc_Convex`` CCD and far cheaper than ``sdf`` collisions. Where meshes are unavoidable,
    decimate or :ref:`convex-decompose <coDecomposition>` them, cap :ref:`maxhullvert <asset-mesh-maxhullvert>`, prune
@@ -2036,13 +2040,15 @@ Model parameters
 
 **Contact dimension, friction, and mixing** (:ref:`Contact parameters <CContact>`):
    - :ref:`condim <body-geom-condim>` (``"3"``): ``"3"`` models sliding friction only. Set ``"4"`` (torsional) or
-     ``"6"`` (torsional + rolling) on fingertips and grasp pads, keeping ``"3"`` elsewhere; note ``friction[1]`` and
-     ``friction[2]`` have units of *length* (contact-patch radii). For frictionless contacts use ``condim="1"`` rather
-     than near-zero ``friction`` (under ``pyramidal`` cones, facet regularization scales as :math:`\mu^2`, severely
-     ill-conditioning tiny-friction contacts; use ``cone="elliptic"`` if very low friction is needed).
+     ``"6"`` (torsional + rolling) on fingertips, grasp pads, and curved objects that should settle on flat surfaces
+     rather than roll indefinitely (raising rolling ``friction[2]`` from its ``0.0001`` default when needed), keeping
+     ``"3"`` elsewhere; note ``friction[1]`` and ``friction[2]`` have units of *length* (contact-patch radii). For
+     frictionless contacts use ``condim="1"`` rather than near-zero ``friction`` (under ``pyramidal`` cones, facet
+     regularization scales as :math:`\mu^2`, severely ill-conditioning tiny-friction contacts; use ``cone="elliptic"``
+     if very low friction is needed).
    - :ref:`priority <body-geom-priority>` (``"0"``) and mixing: equal-priority geoms average :at:`solref`/:at:`solimp`
-     and take the element-wise **maximum** :at:`friction` (so a low-friction object on a ``friction="1"`` floor gets
-     ``"1"``). Set ``priority="1"`` on the geom whose parameters should govern.
+     and take the **maximum** :at:`condim` and element-wise :at:`friction` (so a low-friction object on a
+     ``friction="1"`` floor gets ``"1"``). Set ``priority="1"`` on the geom whose parameters should govern.
    - :ref:`margin <body-geom-margin>` and :ref:`gap <body-geom-gap>` (``"0"``): leave ``margin="0"`` unless paired with
      matching ``gap``, otherwise contact forces activate at a distance and objects hover by ``margin - gap``.
 
@@ -2055,21 +2061,24 @@ Model parameters
 
 **Actuator gains and force limits** (:ref:`position <actuator-position>`, :ref:`forcerange <actuator-general-forcerange>`):
    See :ref:`Shortcuts <CActShortcuts>`. A :el:`position` actuator defaults to ``kv="0"`` and unlimited force. Pair
-   ``dampratio="1"`` (or :at:`kv`) with ``implicitfast`` and bound output via :at:`forcerange` so large setpoint steps
-   do not inject excessive contact impulses; for combined position, velocity or feedforward commands, use a single
-   :ref:`pid <actuator-pid>` rather than stacking actuators and clamping their sum at the joint (see
-   :ref:`Force limits <CForceRange>`). While :at:`forcerange` is saturated the actuator adds no implicit damping, so a
-   single step can accelerate a light link by up to ``h * forcerange / M``; give such joints some :at:`armature` or use
-   a smaller timestep. Keep :at:`ctrlrange` within joint :at:`range` so servos do not fight joint limits, except on
-   grippers where extending slightly past pad contact lets a closed command generate grip force on thin objects.
+   ``dampratio="1"`` (computed at ``qpos0`` from reflected inertia including :at:`armature`, or set :at:`kv` directly)
+   with ``implicitfast`` and bound output via :at:`forcerange` so large setpoint steps do not inject excessive contact
+   impulses; for combined position, velocity or feedforward commands, use a single :ref:`pid <actuator-pid>` rather than
+   stacking actuators and clamping their sum at the joint (see :ref:`Force limits <CForceRange>`). While
+   :at:`forcerange` (or joint :ref:`actuatorfrcrange <body-joint-actuatorfrcrange>`) is saturated the actuator adds no
+   implicit damping, so a single step can accelerate a light link by up to ``h * forcerange / M``; give such joints
+   some :at:`armature` and passive joint :at:`damping` (which stays implicit during saturation), or use a smaller
+   timestep. Keep :at:`ctrlrange` within joint :at:`range` so servos do not fight joint limits, except on grippers where
+   extending slightly past pad contact lets a closed command generate grip force on thin objects.
 
 **Masses and inertias** (:ref:`inertial <body-inertial>`, :ref:`mass <body-geom-mass>`, :ref:`density <body-geom-density>`: ``"1000"``):
    When :el:`inertial` and geom :at:`mass` are omitted, MuJoCo infers mass and inertia from geom volume assuming water
-   :at:`density` (``1000 kg/m^3``), which can badly misestimate hollow shells or dense metal links. Mass or inertia
-   ratios ``> 1000:1`` across contacts or joints (a heavy robot grasping a gram-scale object, or URDF dummy links with
-   ``1e-6`` inertia) also degrade solver conditioning and accuracy; fix implausible CAD/URDF inertias at the source, or
-   clamp messy imports at compile time with :ref:`boundmass <compiler-boundmass>` and
-   :ref:`boundinertia <compiler-boundinertia>`.
+   :at:`density` (``1000 kg/m^3``), which can badly misestimate hollow shells or dense metal links (for thin 2D or
+   non-watertight meshes, set :ref:`inertia <asset-mesh-inertia>` ``="shell"`` on :el:`mesh` so compile-time volume
+   calculation does not fail). Mass or inertia ratios ``> 1000:1`` across contacts or joints (a heavy robot grasping a
+   gram-scale object, or URDF dummy links with ``1e-6`` inertia) also degrade solver conditioning and accuracy; fix
+   implausible CAD/URDF inertias at the source, or clamp messy imports at compile time with
+   :ref:`boundmass <compiler-boundmass>` and :ref:`boundinertia <compiler-boundinertia>`.
 
 .. _CTuningDeformable:
 
