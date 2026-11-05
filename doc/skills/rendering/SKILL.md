@@ -315,8 +315,7 @@ OpenGL, Vulkan, Metal, and WebGL support, arbitrary `mjrfRenderTarget` sizes
 -   [C Rendering API Functions](../../APIreference/functions.rst)
     (`.. _Visualization-api:`, `.. _OpenGLrendering:`,
     `.. _FilamentRenderingApi:`) and
-    [C++ Render/Record Samples](../../programming/samples.rst) (`.. _saRender:`,
-    `.. _saRecord:`)
+    [C++ Render Sample](../../programming/samples.rst) (`.. _saRender:`)
 
 ### Source Code & Model Examples
 

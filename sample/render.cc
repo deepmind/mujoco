@@ -12,15 +12,28 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#if defined(__APPLE__)
+  #include <mach-o/dyld.h>
+  #include <unistd.h>
+#elif defined(_WIN32)
+  #include <fcntl.h>
+  #include <io.h>
+  #include <windows.h>
+#else
+  #include <unistd.h>
+#endif
+
 #include <algorithm>
 #include <array>
 #include <cctype>
 #include <charconv>
+#include <cstdint>
 #include <cstdio>
 #include <cstdlib>
 #include <cstring>
 #include <filesystem>  // NOLINT
 #include <fstream>
+#include <functional>
 #include <ios>
 #include <memory>
 #include <optional>
@@ -28,15 +41,6 @@
 #include <string_view>
 #include <system_error>
 #include <vector>
-
-#if defined(__APPLE__)
-  #include <mach-o/dyld.h>
-  #include <cstdint>
-#elif defined(_WIN32)
-  #include <windows.h>
-#else
-  #include <unistd.h>
-#endif
 
 #include "lodepng.h"
 #include <mujoco/mjrfilament.h>
@@ -72,10 +76,12 @@ static const char* help_msg =
     "  argument/option       default       semantic\n"
     "  ---------------       -------       --------\n"
     "  model                               path to model (required, positional)\n"
-    "  output                <model>.png   path to output PNG image file (positional)\n"
+    "  output                <model>.png   output path (.png, .rgb, or '-' for stdout)\n"
     "  --backend=B           filament      rendering backend (filament, classic)\n"
     "  --width=N             640           image width in pixels\n"
     "  --height=N            480           image height in pixels\n"
+    "  --duration=T          0             recording duration in seconds (0: single frame)\n"
+    "  --fps=F               60            frames per second when --duration > 0\n"
     "  --camera=C            (free)        camera name or integer index\n"
     "  --lookat=X,Y,Z        (center)      free camera lookat position\n"
     "  --distance=D          (fit)         free camera distance\n"
@@ -96,9 +102,11 @@ static const char* help_msg =
 struct Options {
   string model_path;
   string output_path;
-  string backend = "filament";
-  int    width   = 640;
-  int    height  = 480;
+  string backend  = "filament";
+  int    width    = 640;
+  int    height   = 480;
+  mjtNum duration = 0;
+  mjtNum fps      = 60;
   string camera;
   string key;
   string geomgroup;
@@ -265,6 +273,8 @@ static bool ParseFlag(string_view name, string_view val, Options& opt) {
   if (name == "backend")   { opt.backend = val; return true; }
   if (name == "width")     { return ParseInt(val, &opt.width, 1); }
   if (name == "height")    { return ParseInt(val, &opt.height, 1); }
+  if (name == "duration")  { return ParseNum(val, &opt.duration, 0); }
+  if (name == "fps")       { return ParseNum(val, &opt.fps, 1e-6); }
   if (name == "camera")    { opt.camera = val; return true; }
   if (name == "lookat")    { return ParseVec3(val, opt.lookat); }
   if (name == "distance")  { return ParseNum(val, opt.distance, 0); }
@@ -320,9 +330,43 @@ static bool ParseCommandLine(int& argc, char** argv, Options& opt) {
 }
 
 
-// helper: derive output filename <model_basename>.png from model path
-static string DefaultOutputFilename(string_view model_path) {
-  return std::filesystem::path(model_path).stem().string() + ".png";
+// helper: derive output filename <model_basename>.{png|rgb} from model path
+static string DefaultOutputFilename(string_view model_path, bool multi_frame) {
+  return std::filesystem::path(model_path).stem().string() + (multi_frame ? ".rgb" : ".png");
+}
+
+
+// step simulation and invoke render_and_emit for a single frame (duration == 0) or a recording
+using FrameSink = std::function<bool(const vector<unsigned char>&)>;
+
+static int RunFrameLoop(const mjModel*               m,
+                        mjData*                      d,
+                        const Options&               cli_opt,
+                        const std::function<bool()>& render_and_emit) {
+  if (cli_opt.duration == 0) { return render_and_emit() ? 1 : -1; }
+
+  const mjtNum start_time = d->time;
+  int          frames     = 0;
+  for (int i = 0; i == 0 || i / cli_opt.fps < cli_opt.duration - 1e-9; i++) {
+    const mjtNum target_time = start_time + i / cli_opt.fps;
+    while (d->time + 0.5 * m->opt.timestep < target_time) {
+      const mjtNum prev_time = d->time;
+      mj_step(m, d);
+      if (d->warning[mjWARN_BADQPOS].number ||
+          d->warning[mjWARN_BADQVEL].number ||
+          d->warning[mjWARN_BADQACC].number ||
+          d->time <= prev_time) {
+        std::fprintf(stderr,
+                     "Simulation diverged or time did not advance at t=%g\n",
+                     static_cast<double>(prev_time));
+        return -1;
+      }
+    }
+    if (i > 0) { mj_forward(m, d); }
+    if (!render_and_emit()) { return -1; }
+    frames++;
+  }
+  return frames;
 }
 
 
@@ -471,13 +515,17 @@ static void RegisterFilamentAssetProvider() {
 //-------------------------------- filament backend (rendering) ------------------------------------
 
 // render scene with Filament backend
-static vector<unsigned char> RenderFilament(const mjModel*   m,
-                                            mjData*          d,
-                                            const mjvCamera& cam,
-                                            const mjvOption& opt,
-                                            const int        rnd_flags[mjNRNDFLAG],
-                                            int              width,
-                                            int              height) {
+static int RenderFilament(const mjModel*   m,
+                          mjData*          d,
+                          const mjvCamera& cam,
+                          const mjvOption& opt,
+                          const Options&   cli_opt,
+                          const FrameSink& emit_frame) {
+  const int    width       = cli_opt.width;
+  const int    height      = cli_opt.height;
+  const size_t frame_bytes = static_cast<size_t>(width) * height * 3;
+  const int*   rnd_flags   = cli_opt.rnd_flags;
+
   RegisterFilamentAssetProvider();
 
   mjrfContextConfig context_cfg;
@@ -508,13 +556,8 @@ static vector<unsigned char> RenderFilament(const mjModel*   m,
     }
   };
 
-  // update scene components
   model_renderables->SetOptions(opt);
-  model_lights->Update(d);
-  model_renderables->Update(d);
-  mjrRect   viewport = {0, 0, width, height};
-  mjvCamera cam_copy = cam;
-  model_decorations->Update(d, &opt, nullptr, &cam_copy, viewport, draw_text);
+  mjrRect viewport = {0, 0, width, height};
 
   // create render target
   mjrfRenderTargetConfig target_cfg;
@@ -529,7 +572,6 @@ static vector<unsigned char> RenderFilament(const mjModel*   m,
   mjrfRenderRequest request;
   mjrf_defaultRenderRequest(&request);
   request.scene               = scene.get();
-  request.camera              = mjv_camera2GLCamera(m, d, &cam);
   request.viewport            = viewport;
   request.target              = render_target.get();
   request.headlight           = m->vis.headlight.active;
@@ -560,41 +602,54 @@ static vector<unsigned char> RenderFilament(const mjModel*   m,
     request.post_processing = rnd_flags[mjRND_POST_PROCESSING];
   }
 
-  // prepare output buffer
-  vector<unsigned char> rgb(width * height * 3);
-
-  // prepare read pixels request
-  mjrfReadRequest read_request;
+  // prepare output buffer and read pixels request
+  vector<unsigned char> rgb(frame_bytes);
+  mjrfReadRequest       read_request;
   mjrf_defaultReadRequest(&read_request);
   read_request.target    = render_target.get();
   read_request.output    = rgb.data();
-  read_request.num_bytes = width * height * 3;
+  read_request.num_bytes = frame_bytes;
 
-  // render and wait for frame
-  const mjrfFrameHandle frame = mjrf_render(ctx.get(), &request, 1, &read_request, 1);
-  mjrf_waitForFrame(ctx.get(), frame);
+  // step simulation and render frames
+  int frames = RunFrameLoop(m, d, cli_opt, [&]() {
+    labels.clear();
+    model_lights->Update(d);
+    model_renderables->Update(d);
+    mjvCamera cam_copy = cam;
+    model_decorations->Update(d, &opt, nullptr, &cam_copy, viewport, draw_text);
+    request.camera = mjv_camera2GLCamera(m, d, &cam);
 
-  // draw text labels
-  DrawBitmapText(rgb, width, height, labels);
+    // render and wait for frame
+    const mjrfFrameHandle frame = mjrf_render(ctx.get(), &request, 1, &read_request, 1);
+    mjrf_waitForFrame(ctx.get(), frame);
+
+    // draw text labels
+    DrawBitmapText(rgb, width, height, labels);
+    return emit_frame(rgb);
+  });
 
   // clear decorations before destroying scene
   model_decorations->Clear();
 
-  // return pixels
-  return rgb;
+  // return frame count
+  return frames;
 }
 
 
 //-------------------------------- classic backend -------------------------------------------------
 
 // render scene with classic OpenGL backend
-static vector<unsigned char> RenderClassic(mjModel*         m,
-                                           mjData*          d,
-                                           const mjvCamera& cam,
-                                           const mjvOption& opt,
-                                           const int        rnd_flags[mjNRNDFLAG],
-                                           int              width,
-                                           int              height) {
+static int RenderClassic(mjModel*         m,
+                         mjData*          d,
+                         const mjvCamera& cam,
+                         const mjvOption& opt,
+                         const Options&   cli_opt,
+                         const FrameSink& emit_frame) {
+  const int    width       = cli_opt.width;
+  const int    height      = cli_opt.height;
+  const size_t frame_bytes = static_cast<size_t>(width) * height * 3;
+  const int*   rnd_flags   = cli_opt.rnd_flags;
+
   // create scene
   static constexpr int kMaxGeom = 50000;
   mjvScene             scn;
@@ -614,31 +669,37 @@ static vector<unsigned char> RenderClassic(mjModel*         m,
   mjrContext con;
   mjr_defaultContext(&con);
   mjr_makeContext(m, &con, mjFONTSCALE_150);
-
-  // update scene and render
-  mjvCamera cam_copy = cam;
-  mjv_updateScene(m, d, &opt, nullptr, &cam_copy, mjCAT_ALL, &scn);
-  mjrRect viewport = {0, 0, width, height};
   mjr_setBuffer(mjFB_OFFSCREEN, &con);
-  mjr_render(viewport, &scn, &con);
 
-  // read pixels from offscreen buffer
-  vector<unsigned char> rgb(3 * width * height);
-  mjr_readPixels(rgb.data(), nullptr, viewport, &con);
+  mjrRect               viewport = {0, 0, width, height};
+  vector<unsigned char> rgb(frame_bytes);
+  const size_t          row_bytes = static_cast<size_t>(width) * 3;
+
+  // step simulation and render frames
+  int frames = RunFrameLoop(m, d, cli_opt, [&]() {
+    // update scene and render
+    mjvCamera cam_copy = cam;
+    mjv_updateScene(m, d, &opt, nullptr, &cam_copy, mjCAT_ALL, &scn);
+    mjr_render(viewport, &scn, &con);
+
+    // read pixels from offscreen buffer
+    mjr_readPixels(rgb.data(), nullptr, viewport, &con);
+
+    // flip image vertically in-place
+    for (int r = 0; r < height / 2; r++) {
+      std::swap_ranges(rgb.begin() + r * row_bytes,
+                       rgb.begin() + (r + 1) * row_bytes,
+                       rgb.begin() + (height - 1 - r) * row_bytes);
+    }
+    return emit_frame(rgb);
+  });
 
   // free resources
   mjv_freeScene(&scn);
   mjr_freeContext(&con);
 
-  // flip image vertically in-place
-  for (int r = 0; r < height / 2; r++) {
-    std::swap_ranges(rgb.begin() + r * 3 * width,
-                     rgb.begin() + (r + 1) * 3 * width,
-                     rgb.begin() + (height - 1 - r) * 3 * width);
-  }
-
-  // return pixels
-  return rgb;
+  // return frame count
+  return frames;
 }
 
 
@@ -666,9 +727,55 @@ int main(int argc, char** argv) {
     return EXIT_FAILURE;
   }
 
-  // determine output filename if not provided
-  string output_file =
-      opt.output_path.empty() ? DefaultOutputFilename(opt.model_path) : opt.output_path;
+  // determine output filename and format
+  string output_file = opt.output_path.empty()
+                           ? DefaultOutputFilename(opt.model_path, opt.duration > 0)
+                           : opt.output_path;
+  bool   to_stdout   = (output_file == "-");
+  bool   raw_output  = (to_stdout || output_file.ends_with(".rgb"));
+  FILE*  log_out     = to_stdout ? stderr : stdout;
+
+  if (opt.duration > 0 && !raw_output) {
+    std::fprintf(log_out,
+                 "Multi-frame recording (--duration > 0) requires a .rgb output file or '-' for "
+                 "stdout (got '%s')\n",
+                 output_file.c_str());
+    return EXIT_FAILURE;
+  }
+
+  if (opt.backend != "filament" && opt.backend != "classic") {
+    std::fprintf(log_out,
+                 "Unknown backend: %s (expected 'filament' or 'classic')\n",
+                 opt.backend.c_str());
+    return EXIT_FAILURE;
+  }
+
+  // when streaming binary frames to stdout, duplicate FD 1 for frame output and redirect stdout
+  // to stderr so library/driver messages cannot corrupt the RGB stream
+  std::unique_ptr<FILE, int (*)(FILE*)> raw_stream(nullptr, std::fclose);
+  if (to_stdout) {
+    std::fflush(stdout);
+#if defined(_WIN32)
+    int raw_fd = _dup(_fileno(stdout));
+    if (raw_fd >= 0 &&
+        (_setmode(raw_fd, _O_BINARY) == -1 || _dup2(_fileno(stderr), _fileno(stdout)) < 0)) {
+      _close(raw_fd);
+      raw_fd = -1;
+    }
+    if (raw_fd >= 0) { raw_stream.reset(_fdopen(raw_fd, "wb")); }
+#else
+    int raw_fd = dup(STDOUT_FILENO);
+    if (raw_fd >= 0 && dup2(STDERR_FILENO, STDOUT_FILENO) < 0) {
+      close(raw_fd);
+      raw_fd = -1;
+    }
+    if (raw_fd >= 0) { raw_stream.reset(fdopen(raw_fd, "wb")); }
+#endif
+    if (!raw_stream) {
+      std::fprintf(stderr, "Could not redirect stdout for binary output\n");
+      return EXIT_FAILURE;
+    }
+  }
 
   // load model
   char error[1000] = "Could not load binary model";
@@ -679,13 +786,18 @@ int main(int argc, char** argv) {
           : mj_loadXML(opt.model_path.c_str(), nullptr, error, sizeof(error)),
       mj_deleteModel);
   if (!m) {
-    printf("Load model error: %s\n", error);
+    std::fprintf(log_out, "Load model error: %s\n", error);
+    return EXIT_FAILURE;
+  }
+
+  if (opt.duration > 0 && m->opt.timestep <= 0) {
+    std::fprintf(log_out, "Invalid model timestep: %g\n", static_cast<double>(m->opt.timestep));
     return EXIT_FAILURE;
   }
 
   std::unique_ptr<mjData, decltype(&mj_deleteData)> d(mj_makeData(m.get()), mj_deleteData);
   if (!d) {
-    printf("Could not allocate mjData\n");
+    std::fprintf(log_out, "Could not allocate mjData\n");
     return EXIT_FAILURE;
   }
 
@@ -698,7 +810,7 @@ int main(int argc, char** argv) {
       if (ParseInt(opt.key, &parsed, 0, m->nkey - 1)) {
         key_id = parsed;
       } else {
-        printf("Keyframe not found: %s\n", opt.key.c_str());
+        std::fprintf(log_out, "Keyframe not found: %s\n", opt.key.c_str());
         return EXIT_FAILURE;
       }
     }
@@ -725,7 +837,7 @@ int main(int argc, char** argv) {
       if (ParseInt(opt.camera, &parsed, 0, m->ncam - 1)) {
         cam_id = parsed;
       } else if (opt.camera != "free" && opt.camera != "default") {
-        printf("Camera not found: %s\n", opt.camera.c_str());
+        std::fprintf(log_out, "Camera not found: %s\n", opt.camera.c_str());
         return EXIT_FAILURE;
       }
     }
@@ -748,10 +860,10 @@ int main(int argc, char** argv) {
   mjv_defaultOption(&vopt);
 
   // geom and site groups
-  auto set_group = [](string_view opt_val, const char* name, unsigned char* group) {
+  auto set_group = [log_out](string_view opt_val, const char* name, unsigned char* group) {
     if (opt_val.empty()) return true;
     if (opt_val.size() != mjNGROUP) {
-      printf("Invalid --%s argument, expected %d digits (0 or 1)\n", name, mjNGROUP);
+      std::fprintf(log_out, "Invalid --%s argument, expected %d digits (0 or 1)\n", name, mjNGROUP);
       return false;
     }
     for (int i = 0; i < mjNGROUP; i++) group[i] = (opt_val[i] == '1');
@@ -772,25 +884,56 @@ int main(int argc, char** argv) {
   if (opt.label >= 0) { vopt.label = opt.label; }
   if (opt.frame >= 0) { vopt.frame = opt.frame; }
 
-  // render image
-  vector<unsigned char> rgb;
-  if (opt.backend == "filament") {
-    rgb = RenderFilament(m.get(), d.get(), cam, vopt, opt.rnd_flags, opt.width, opt.height);
-  } else if (opt.backend == "classic") {
-    rgb = RenderClassic(m.get(), d.get(), cam, vopt, opt.rnd_flags, opt.width, opt.height);
+  // open .rgb output file if requested ('-' was already opened above)
+  if (raw_output && !to_stdout) {
+    raw_stream.reset(std::fopen(output_file.c_str(), "wb"));
+    if (!raw_stream) {
+      std::fprintf(log_out, "Could not open %s for writing\n", output_file.c_str());
+      return EXIT_FAILURE;
+    }
+  }
+
+  FrameSink emit_frame = [&](const vector<unsigned char>& rgb) {
+    if (raw_output) {
+      if (std::fwrite(rgb.data(), 1, rgb.size(), raw_stream.get()) != rgb.size()) {
+        std::fprintf(log_out, "Error writing raw RGB frame to %s\n", output_file.c_str());
+        return false;
+      }
+      return true;
+    }
+    unsigned error_code =
+        lodepng_encode24_file(output_file.c_str(), rgb.data(), opt.width, opt.height);
+    if (error_code) {
+      std::fprintf(log_out,
+                   "Error saving PNG %s: %s\n",
+                   output_file.c_str(),
+                   lodepng_error_text(error_code));
+      return false;
+    }
+    return true;
+  };
+
+  // render frames
+  int frames = (opt.backend == "filament")
+                   ? RenderFilament(m.get(), d.get(), cam, vopt, opt, emit_frame)
+                   : RenderClassic(m.get(), d.get(), cam, vopt, opt, emit_frame);
+
+  if (raw_stream && std::fclose(raw_stream.release()) != 0) {
+    std::fprintf(log_out, "Error closing %s\n", to_stdout ? "stdout" : output_file.c_str());
+    return EXIT_FAILURE;
+  }
+  if (frames < 0) { return EXIT_FAILURE; }
+
+  if (raw_output) {
+    std::fprintf(log_out,
+                 "Saved %d frame%s (%dx%d RGB24) to %s\n",
+                 frames,
+                 frames == 1 ? "" : "s",
+                 opt.width,
+                 opt.height,
+                 to_stdout ? "stdout" : output_file.c_str());
   } else {
-    printf("Unknown backend: %s (expected 'filament' or 'classic')\n", opt.backend.c_str());
-    return EXIT_FAILURE;
+    std::fprintf(log_out, "Saved %dx%d image to %s\n", opt.width, opt.height, output_file.c_str());
   }
-
-  // encode and write PNG
-  unsigned error_code =
-      lodepng_encode24_file(output_file.c_str(), rgb.data(), opt.width, opt.height);
-  if (error_code) {
-    printf("Error saving PNG %s: %s\n", output_file.c_str(), lodepng_error_text(error_code));
-    return EXIT_FAILURE;
-  }
-
-  printf("Saved %dx%d image to %s\n", opt.width, opt.height, output_file.c_str());
   return EXIT_SUCCESS;
 }

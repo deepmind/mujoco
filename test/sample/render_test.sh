@@ -87,6 +87,24 @@ if [ $? -eq 0 ]; then
   die "Expected failure for invalid frame"
 fi
 
+# Test negative duration (expect failure)
+"$TARGET_BINARY" "$MODEL" --duration=-1 > /dev/null 2>&1
+if [ $? -eq 0 ]; then
+  die "Expected failure for negative duration"
+fi
+
+# Test zero fps (expect failure)
+"$TARGET_BINARY" "$MODEL" --fps=0 > /dev/null 2>&1
+if [ $? -eq 0 ]; then
+  die "Expected failure for zero fps"
+fi
+
+# Test multi-frame recording with .png output (expect failure)
+"$TARGET_BINARY" "$MODEL" "${TEST_TMPDIR}/bad.png" --duration=0.1 > /dev/null 2>&1
+if [ $? -eq 0 ]; then
+  die "Expected failure for multi-frame recording to .png"
+fi
+
 # Test that the Filament backend actually renders. A headless environment
 # without a render context (e.g. CI without a GPU) fails to initialize, which is
 # tolerated here; only a missing-asset failure -- which passing arg validation
@@ -98,6 +116,14 @@ if echo "$RENDER_LOG" | grep -q "Failed to open filament asset"; then
 fi
 if [ -f "$OUT_PNG" ]; then
   echo "Filament render produced an output image"
+  OUT_RGB="${TEST_TMPDIR}/render_out.rgb"
+  "$TARGET_BINARY" "$MODEL" "$OUT_RGB" --width=64 --height=48 --duration=0.1 --fps=20 > /dev/null 2>&1 \
+    || die "Filament multi-frame recording failed"
+  RGB_BYTES=$(wc -c < "$OUT_RGB" | tr -d ' ')
+  EXPECTED_BYTES=$((64 * 48 * 3 * 2))
+  if [ "$RGB_BYTES" -ne "$EXPECTED_BYTES" ]; then
+    die "Expected $EXPECTED_BYTES RGB bytes, got $RGB_BYTES"
+  fi
 else
   echo "Skipping render output check (no render context available)"
 fi

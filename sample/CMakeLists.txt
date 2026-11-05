@@ -104,16 +104,6 @@ target_link_libraries(
 )
 target_link_options(basic PRIVATE ${MUJOCO_SAMPLE_LINK_OPTIONS})
 
-add_executable(record record.cc array_safety.h)
-target_compile_options(record PUBLIC ${MUJOCO_SAMPLE_COMPILE_OPTIONS})
-target_link_libraries(
-  record
-  mujoco::mujoco
-  glfw
-  Threads::Threads
-)
-target_link_options(record PRIVATE ${MUJOCO_SAMPLE_LINK_OPTIONS})
-
 if(MUJOCO_USE_FILAMENT AND NOT SAMPLE_STANDALONE)
   add_executable(render render.cc)
   target_compile_options(render PUBLIC ${MUJOCO_SAMPLE_COMPILE_OPTIONS})
@@ -144,7 +134,6 @@ if(APPLE AND MUJOCO_BUILD_MACOS_FRAMEWORKS)
   embed_in_bundle(basic simulate)
   embed_in_bundle(compile simulate)
   embed_in_bundle(dependencies simulate)
-  embed_in_bundle(record simulate)
   embed_in_bundle(testspeed simulate)
   if(MUJOCO_USE_FILAMENT AND NOT SAMPLE_STANDALONE)
     embed_in_bundle(render simulate)
@@ -165,7 +154,6 @@ if(_INSTALL_SAMPLES)
       basic
       compile
       dependencies
-      record
       testspeed
   )
   if(MUJOCO_USE_FILAMENT AND NOT SAMPLE_STANDALONE)

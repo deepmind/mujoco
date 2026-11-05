@@ -423,91 +423,15 @@ horizontal plane, scroll or middle drag to zoom.
 The :ref:`Visualization` programming guide below explains how visualization works. This code sample is a minimal
 illustration of the concepts in that guide.
 
-.. _saRecord:
-
-`record <https://github.com/google-deepmind/mujoco/blob/main/sample/record.cc>`_
-~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
-
-This code sample simulates the passive dynamics of a given model, renders it offscreen, reads the color and depth pixel
-values, and saves them into a raw data file that can then be converted into a movie file with tools such as ffmpeg. The
-rendering is simplified compared to :ref:`simulate.cc <saSimulate>` because there is no user interaction, visualization
-options or timing; instead we simply render with the default settings as fast as possible. The dimensions and number of
-multi-samples for the offscreen buffer are specified in the MuJoCo model with the visual/global/{`offwidth
-<https://mujoco.readthedocs.io/en/stable/XMLreference.html#visual-global-offwidth>`__, `offheight
-<https://mujoco.readthedocs.io/en/stable/XMLreference.html#visual-global-offheight>`__} and visual/quality/`offsamples
-<https://mujoco.readthedocs.io/en/stable/XMLreference.html#visual-quality-offsamples>`_ attributes, while the simulation
-duration, frames-per-second to be rendered (usually much less than the physics simulation rate), and output file name
-are specified as command-line arguments.
-
-.. code-block:: Shell
-
-   record modelfile duration fps rgbfile [adddepth]
-
-Where the command line arguments are
-
-.. list-table::
-   :width: 95%
-   :align: left
-   :widths: 1 1 5
-   :header-rows: 1
-
-   * - Argument
-     - Default
-     - Meaning
-   * - ``modelfile``
-     - (required)
-     - path to model
-   * - ``duration``
-     - (required)
-     - duration of the recording in seconds
-   * - ``fps``
-     - (required)
-     - number of frames per second
-   * - ``rgbfile``
-     - (required)
-     - path to raw recording file
-   * - ``adddepth``
-     - 1
-     - overlay depth image in the lower left corner (0: none)
-
-For example, a 5 second animation at 60 frames per second is created with:
-
-.. code-block:: Shell
-
-   record humanoid.xml 5 60 rgb.out
-
-The default `humanoid.xml <https://github.com/google-deepmind/mujoco/blob/main/model/humanoid/humanoid.xml>`__ model
-specifies offscreen rendering with 2560x1440 resolution. With this information in hand, we can compress the (large) raw
-data file into a playable movie file:
-
-.. code-block:: Shell
-
-   ffmpeg -f rawvideo -pixel_format rgb24 -video_size 2560x1440
-          -framerate 60 -i rgb.out -vf "vflip,format=yuv420p" video.mp4
-
-Note that the offscreen rendering resolution of the model and ffmpeg's video_size must be identical.
-
-This sample can be compiled in three ways which differ in how the OpenGL context is created: using GLFW with an
-invisible window, using OSMesa, or using EGL. The latter two options are only available on Linux and are invoked by
-defining the symbols MJ_OSMESA or MJ_EGL when compiling record.cc. The functions ``initOpenGL`` and ``closeOpenGL``
-create and close the OpenGL context in three different ways depending on which of the above symbols is defined.
-
-Note that the MuJoCo rendering code does not depend on how the OpenGL context was created. This is the beauty of
-OpenGL: it leaves context creation to the platform, and the actual rendering is then standard and works in the same
-way on all platforms. In retrospect, the decision to leave context creation out of the standard has led to unnecessary
-proliferation of overlapping technologies, which differ not only between platforms but also within a platform in the
-case of Linux. The addition of a couple of extra functions (such as those provided by OSMesa for example) could have
-avoided a lot of confusion. EGL is a newer standard from Khronos which aims to do this, and it is gaining popularity.
-But we cannot yet assume that all users have it installed.
-
 .. _saRender:
 
 `render <https://github.com/google-deepmind/mujoco/blob/main/sample/render.cc>`_
 ~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
 
-This code sample renders a model configuration offscreen and saves the result directly to a PNG image file. It supports
-both the modern Filament rendering backend (:ref:`mjrf <FilamentRenderingApi>`) with physically-based rendering (PBR),
-and the classic OpenGL renderer (:ref:`mjrContext`). The rendering runs headless without creating an interactive window.
+This code sample renders a model offscreen into either a single PNG image or a multi-frame stream of raw RGB24 frames
+that can be saved to a ``.rgb`` file or piped directly to tools such as ``ffmpeg``. It supports both the modern
+Filament rendering backend (:ref:`mjrf <FilamentRenderingApi>`) with physically-based rendering (PBR) and the classic
+OpenGL renderer (:ref:`mjrContext`), running headless without creating an interactive window.
 
 .. code-block:: Shell
 
@@ -529,7 +453,8 @@ Where the command-line arguments and options are
      - path to model (positional argument)
    * - ``output``
      - (default)
-     - path to output image file (positional argument, default: ``<model>.png``)
+     - output path (positional argument: ``.png``, ``.rgb``, or ``-`` for stdout; defaults to ``<model>.png``, or
+       ``<model>.rgb`` when ``--duration > 0``)
    * - ``--backend=B``
      - ``filament``
      - rendering backend (``filament``, ``classic``)
@@ -539,6 +464,12 @@ Where the command-line arguments and options are
    * - ``--height=N``
      - 480
      - image height in pixels
+   * - ``--duration=T``
+     - 0
+     - recording duration in seconds (``0`` renders a single frame)
+   * - ``--fps=F``
+     - 60
+     - frames per second when ``--duration > 0``
    * - ``--camera=C``
      - (free)
      - camera name or integer index (default: free camera)
@@ -579,23 +510,35 @@ Where the command-line arguments and options are
      - (default)
      - toggle rendering flag declared in :ref:`mjRNDSTRING` (e.g. ``--shadow=0``, ``--wireframe=1``)
 
+For example, a 5-second video at 60 frames per second can be piped directly into ``ffmpeg`` without writing raw frames
+to disk:
+
+.. code-block:: Shell
+
+   render humanoid.xml - --duration=5 --fps=60 --width=1280 --height=720 | \
+     ffmpeg -f rawvideo -pixel_format rgb24 -video_size 1280x720 -framerate 60 \
+            -i - -pix_fmt yuv420p video.mp4
+
 **Notes:**
 
 - Running ``render`` with no arguments (or with ``--help`` / ``-h``) prints the help message.
-- The non-optional ``model`` path and optional ``output`` path are positional arguments. If ``output`` is
-  omitted, the output filename is derived from the model filename with the ``.png`` extension (e.g.
-  ``humanoid.xml`` becomes ``humanoid.png``).
+- The non-optional ``model`` path and optional ``output`` path are positional arguments. If ``output`` is omitted, the
+  output filename is derived from the model filename with ``.png`` for single-frame renders (``--duration=0``) or
+  ``.rgb`` for multi-frame recordings (``--duration > 0``). Passing ``-`` as ``output`` streams raw RGB24 frames to
+  standard output and sends status messages to standard error.
+- Both ``--backend=filament`` and ``--backend=classic`` emit top-down RGB24 frames (row 0 at the top), so ``ffmpeg``
+  does not require a ``vflip`` filter.
 - ``--backend=filament`` uses MuJoCo's Filament C API to configure a scene from the model, setting up lighting,
   materials, and textures, and rendering via Filament's offscreen pipeline. ``--backend=classic`` uses standard OpenGL
-  offscreen rendering with an EGL context.
+  offscreen rendering.
 - The default camera is the model's free camera looking at the center of the scene. Specifying ``--camera=name`` selects
   a named camera defined in the model XML, while integer indices ``0, 1, ...`` select fixed cameras in order of definition.
   When using the free camera, its viewpoint can be adjusted via ``--lookat=x,y,z``, ``--distance=d``, ``--azimuth=a``,
   and ``--elevation=e``.
 - If a keyframe is specified via ``--key``, the model state is reset to that keyframe before evaluating kinematics and
   rendering. If no keyframe is specified and a keyframe named ``test`` exists in the model, it is used by default.
-- ``--steps=N`` advances the simulation by ``N`` steps (after any keyframe reset) before rendering, so a state reached by
-  simulating can be captured rather than only the initial or keyframe pose.
+- ``--steps=N`` advances the simulation by ``N`` steps (after any keyframe reset) before rendering or starting a
+  ``--duration`` recording, so a state or segment reached by simulating can be captured directly.
 - Visualization and rendering flags can be individually toggled using normalized flag names from :ref:`mjVISSTRING`
   and :ref:`mjRNDSTRING`.
 - Labels can be enabled using ``--label=L`` where ``L`` is a label type name from :ref:`mjLABELSTRING` (e.g. ``geom``,

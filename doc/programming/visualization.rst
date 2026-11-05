@@ -9,8 +9,7 @@ control, object picking via raycasting, mouse-driven force and pose perturbation
 generation of decorative and diagnostic geometry such as contact points and forces, equivalent inertia boxes, convex
 hulls, kinematic trees, constraint violations, spatial frames, and text labels. These elements provide insight into the
 physics simulation and help fine-tune models across both interactive viewers (:ref:`MuJoCo Studio <Studio>`,
-:ref:`simulate.cc <saSimulate>`) and offscreen rendering pipelines (:ref:`render.cc <saRender>`,
-:ref:`record.cc <saRecord>`).
+:ref:`simulate.cc <saSimulate>`) and offscreen rendering pipelines (:ref:`render.cc <saRender>`).
 
 All data structures and functions in the abstract visualization layer have the prefix ``mjv`` and are declared in
 ``mjvisualize.h``:

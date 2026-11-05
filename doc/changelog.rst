@@ -321,6 +321,19 @@ Python bindings
 ^^^^^^^^^^^^^^^
 - Removed support for Python 3.10, now that it's `deprecated upstream <https://devguide.python.org/versions>`__.
 
+Samples
+^^^^^^^
+.. admonition:: Breaking changes
+   :class: attention
+
+   - Removed ``sample/record.cc``; multi-frame raw RGB24 video recording is now supported by
+     :ref:`sample/render.cc<saRender>` across both the Filament and classic OpenGL backends via ``--duration`` and
+     ``--fps``.
+
+     **Migration:** Replace ``record model.xml T F out.rgb 0`` with
+     ``render model.xml out.rgb --duration=T --fps=F`` (or pass ``-`` as the output path to pipe top-down RGB24 frames
+     directly to ``ffmpeg``; ``vflip`` is no longer needed).
+
 Bug fixes
 ^^^^^^^^^
 - :ref:`accelerometer<sensor-accelerometer>` and :ref:`framelinacc<sensor-framelinacc>` sensors and
