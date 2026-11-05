@@ -258,8 +258,15 @@ static void ipc_mergeActiveSet(mjData* d, ipcCon** aset, int* naset, const mjcFl
   if (bound) {
     amerge = (ipcCon*)mj_arenaAllocByte(d, bound * sizeof(ipcCon), _Alignof(ipcCon));
     if (!amerge) {
-      mjERROR("arena too small for the IPC active set (%d pairs): increase the model's memory",
-              bound);
+      ipcCon* old = *aset;
+      int nm = 0;
+      for (int c=0; c < *naset; c++) {
+        if ((old[c].lam <= 0 && old[c].cnt < -IPC_EVICT) || old[c].cnt > IPC_ASET_AGE) continue;
+        old[nm++] = old[c];
+      }
+      *naset = nm;
+      mj_warning(d, mjWARN_CONTACTFULL, bound);
+      return;
     }
   }
   const ipcCon* old = *aset;

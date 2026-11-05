@@ -1587,5 +1587,81 @@ TEST_F(MjCollisionTest, NarrowphaseCCDBuffer) {
   EXPECT_LT(custom - prim, 10 * ccd_buf);
 }
 
+TEST_F(MjCollisionTest, ArenaExhaustionPrefixContactsAndUnclampedDemand) {
+  auto make_xml = [](const std::string& size_tag) {
+    return R"(
+    <mujoco>
+      )" + size_tag +
+           R"(
+      <option ccd_iterations="0">
+        <flag multiccd="disable"/>
+      </option>
+      <worldbody>
+        <geom name="floor" type="plane" size="5 5 0.1"/>
+        <body name="boxes" pos="0 0 0.5">
+          <joint name="z" type="slide" axis="0 0 1"/>
+          <geom type="box" size="0.1 0.1 0.1" pos="-2.0 0 0"/>
+          <geom type="box" size="0.1 0.1 0.1" pos="-1.5 0 0"/>
+          <geom type="box" size="0.1 0.1 0.1" pos="-1.0 0 0"/>
+          <geom type="box" size="0.1 0.1 0.1" pos="-0.5 0 0"/>
+          <geom type="box" size="0.1 0.1 0.1" pos="0.0 0 0"/>
+          <geom type="box" size="0.1 0.1 0.1" pos="0.5 0 0"/>
+          <geom type="box" size="0.1 0.1 0.1" pos="1.0 0 0"/>
+          <geom type="box" size="0.1 0.1 0.1" pos="1.5 0 0"/>
+          <geom type="box" size="0.1 0.1 0.1" pos="2.0 0 0"/>
+          <geom type="box" size="0.1 0.1 0.1" pos="2.5 0 0"/>
+        </body>
+      </worldbody>
+    </mujoco>
+    )";
+  };
+
+  char error[1024];
+  std::string full_xml = make_xml("");
+  MjModelPtr m_full = LoadModelFromString(full_xml, error, sizeof(error));
+  ASSERT_THAT(m_full.get(), NotNull()) << error;
+  MjDataPtr d_full = MakeData(m_full);
+  ASSERT_THAT(d_full, NotNull());
+
+  d_full->qpos[0] = -0.41;
+  mj_kinematics(m_full.get(), d_full.get());
+  mj_comPos(m_full.get(), d_full.get());
+  mj_collision(m_full.get(), d_full.get());
+
+  // 10 box-plane pairs * 4 contacts each = 40 contacts
+  int full_ncon = d_full->ncon;
+  ASSERT_EQ(full_ncon, 40);
+  EXPECT_EQ(d_full->warning[mjWARN_CONTACTFULL].number, 0);
+
+  // size memory via XML so stack allocations succeed, but only a prefix of
+  // contacts fits on the arena during addPairContacts
+  size_t mem = d_full->maxuse_arena - (full_ncon / 2) * sizeof(mjContact);
+  ASSERT_GT(mem, d_full->maxuse_stack);
+  std::string tight_xml =
+      make_xml("<size memory=\"" + std::to_string(mem) + "\"/>");
+  MjModelPtr m = LoadModelFromString(tight_xml, error, sizeof(error));
+  ASSERT_THAT(m.get(), NotNull()) << error;
+  MjDataPtr d = MakeData(m);
+  ASSERT_THAT(d, NotNull());
+
+  mock_warning_handler.ExpectWarnings("Too many contacts");
+  d->qpos[0] = -0.41;
+  mj_kinematics(m.get(), d.get());
+  mj_comPos(m.get(), d.get());
+  mj_collision(m.get(), d.get());
+
+  EXPECT_EQ(d->warning[mjWARN_CONTACTFULL].number, 1);
+  EXPECT_EQ(d->warning[mjWARN_CONTACTFULL].lastinfo, full_ncon);
+  ASSERT_GT(d->ncon, 0);
+  ASSERT_LT(d->ncon, full_ncon);
+  for (int i = 0; i < d->ncon; i++) {
+    EXPECT_EQ(d->contact[i].geom[0], d_full->contact[i].geom[0]);
+    EXPECT_EQ(d->contact[i].geom[1], d_full->contact[i].geom[1]);
+    EXPECT_MJTNUM_EQ(d->contact[i].dist, d_full->contact[i].dist);
+    EXPECT_MJTNUM_EQ(d->contact[i].pos[0], d_full->contact[i].pos[0]);
+    EXPECT_MJTNUM_EQ(d->contact[i].pos[1], d_full->contact[i].pos[1]);
+    EXPECT_MJTNUM_EQ(d->contact[i].pos[2], d_full->contact[i].pos[2]);
+  }
+}
 }  // namespace
 }  // namespace mujoco

@@ -1338,6 +1338,7 @@ int mjc_candidates(const mjModel* m, mjData* d, const mjtNum* x, const mjtNum* g
   if (arena.full) full = 1;
   mj_freeStack(d);
   if (full) {
+    mj_warning(d, mjWARN_CONTACTFULL, nc + 1);
     mju_warning("IPC: arena full after %d candidate pairs; the rest were dropped, so geometry "
                 "there can pass through. Increase the model's memory attribute. Time = %.4f",
                 nc, d->time);

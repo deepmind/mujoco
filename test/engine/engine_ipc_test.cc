@@ -2173,6 +2173,7 @@ TEST_F(IpcTest, SingleAndMultiThreadedMatch) {
   // Block-pool overflow in threaded mjc_candidates still merges the collected
   // blocks onto the arena instead of discarding all candidates.
   mock_warning_handler.ExpectWarnings("IPC: arena full");
+  mock_warning_handler.ExpectWarnings("Too many contacts");
   int nfv = mt->nflexvert;
   std::vector<mjtNum> radii(nfv, mt->flex_radius[0]);
   std::vector<int> fidx(nfv), pt2flex(nfv);

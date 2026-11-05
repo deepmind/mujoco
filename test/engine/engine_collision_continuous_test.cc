@@ -22,6 +22,7 @@
 
 #include <cmath>
 #include <cstdio>
+#include <string>
 #include <vector>
 
 #include <gmock/gmock.h>
@@ -1239,5 +1240,127 @@ TEST_F(ContinuousCollisionTest,
   mj_deleteData(d);
   mj_deleteModel(m);
 }
+
+TEST_F(ContinuousCollisionTest, ArenaExhaustionIPC) {
+  auto make_xml = [](const std::string& size_tag) {
+    return R"(
+    <mujoco>
+      )" + size_tag +
+           R"(
+      <option timestep="0.01">
+        <flag multiccd="enable"/>
+      </option>
+      <worldbody>
+        <flexcomp name="f1" type="grid" count="5 5 1" spacing="0.05 0.05 0.05"
+                  dim="2" mass="1" pos="0 0 0.05"/>
+        <flexcomp name="f2" type="grid" count="5 5 1" spacing="0.05 0.05 0.05"
+                  dim="2" mass="1" pos="0 0 0.06"/>
+      </worldbody>
+    </mujoco>
+    )";
+  };
+
+  char error[1024];
+  std::string full_xml = make_xml("");
+  MjModelPtr m_full = LoadModelFromString(full_xml, error, sizeof(error));
+  ASSERT_THAT(m_full.get(), NotNull()) << error;
+  MjDataPtr d_full = MakeData(m_full);
+  ASSERT_THAT(d_full, NotNull());
+  mj_kinematics(m_full.get(), d_full.get());
+  mj_flex(m_full.get(), d_full.get());
+
+  std::string tight_xml = make_xml("<size memory=\"16K\"/>");
+  MjModelPtr m = LoadModelFromString(tight_xml, error, sizeof(error));
+  ASSERT_THAT(m.get(), NotNull()) << error;
+  MjDataPtr d = MakeData(m);
+  ASSERT_THAT(d, NotNull());
+  mj_kinematics(m.get(), d.get());
+  mj_flex(m.get(), d.get());
+
+  int nfd = m->nflex;
+  int flist[2], fxadr[2], nfv = 0;
+  for (int k = 0; k < nfd; k++) {
+    flist[k] = k;
+    fxadr[k] = nfv;
+    nfv += m->flex_vertnum[k];
+  }
+  std::vector<mjtNum> x(3 * nfv), radii(nfv);
+  std::vector<int> fidx(nfv), pt2flex(nfv);
+  for (int k = 0; k < nfd; k++) {
+    for (int v = 0; v < m->flex_vertnum[k]; v++) {
+      int pt = fxadr[k] + v, vg = m->flex_vertadr[k] + v;
+      for (int c = 0; c < 3; c++) x[3 * pt + c] = d->flexvert_xpos[3 * vg + c];
+      radii[pt] = m->flex_radius[k];
+      fidx[pt] = pt;
+      pt2flex[pt] = k;
+    }
+  }
+
+  mjcFlexPair* cand_full = nullptr;
+  int nfull = mjc_candidates(
+      m_full.get(), d_full.get(), x.data(), nullptr, nullptr, nullptr, nullptr,
+      0, 0, radii.data(), 0.2, 0.2, x.data(), x.data(), 0.1, nfv, nfv,
+      fidx.data(), nullptr, flist, fxadr, nfd, pt2flex.data(), &cand_full);
+  ASSERT_GT(nfull, 100);
+  EXPECT_EQ(d_full->warning[mjWARN_CONTACTFULL].number, 0);
+
+  mock_warning_handler.ExpectWarnings("IPC: arena full after");
+  mock_warning_handler.ExpectWarnings("Too many contacts");
+  mjcFlexPair* cand = nullptr;
+  int npart = mjc_candidates(m.get(), d.get(), x.data(), nullptr, nullptr,
+                             nullptr, nullptr, 0, 0, radii.data(), 0.2, 0.2,
+                             x.data(), x.data(), 0.1, nfv, nfv, fidx.data(),
+                             nullptr, flist, fxadr, nfd, pt2flex.data(), &cand);
+
+  EXPECT_GT(npart, 0);
+  EXPECT_LT(npart, nfull);
+  EXPECT_EQ(d->warning[mjWARN_CONTACTFULL].number, 1);
+  EXPECT_EQ(d->warning[mjWARN_CONTACTFULL].lastinfo, npart + 1);
+}
+
+TEST_F(ContinuousCollisionTest, ArenaExhaustionIPCMergeActiveSet) {
+  constexpr char kXml[] = R"(
+  <mujoco>
+    <option timestep="0.002" integrator="discrete" solver="CG"
+            iterations="5" gravity="0 0 0">
+      <flag ipc="enable"/>
+    </option>
+    <size memory="220K"/>
+    <worldbody>
+      <geom type="plane" pos="0 0 0.08" size="1 1 0.01"/>
+      <flexcomp name="s1" type="grid" dim="2" count="6 6 1"
+                spacing="0.02 0.02 0.02" pos="0 0 0.05"
+                radius="0.004" mass="0.1">
+        <contact selfcollide="none"/>
+      </flexcomp>
+      <flexcomp name="s2" type="grid" dim="2" count="6 6 1"
+                spacing="0.02 0.02 0.02" pos="0 0 0.085"
+                radius="0.004" mass="0.1">
+        <contact selfcollide="none"/>
+      </flexcomp>
+    </worldbody>
+  </mujoco>
+  )";
+
+  char error[1024];
+  MjModelPtr m = LoadModelFromString(kXml, error, sizeof(error));
+  ASSERT_THAT(m.get(), NotNull()) << error;
+  MjDataPtr d = MakeData(m);
+  ASSERT_THAT(d, NotNull());
+
+  // mark s2 vertices at the active-set age limit so ipc_mergeActiveSet evicts
+  // their initial plane pairs in place when amerge allocation fails
+  for (int v = m->flex_vertadr[1]; v < m->nflexvert; v++) {
+    d->flexvert_conage[v] = 25;
+  }
+
+  mock_warning_handler.ExpectWarnings("Too many contacts");
+  mj_step(m.get(), d.get());
+
+  EXPECT_GE(d->warning[mjWARN_CONTACTFULL].number, 1);
+  EXPECT_GT(d->warning[mjWARN_CONTACTFULL].lastinfo, 1000);
+  EXPECT_GT(d->flexvert_conage[m->nflexvert - 1], 25);
+}
+
 }  // namespace
 }  // namespace mujoco
