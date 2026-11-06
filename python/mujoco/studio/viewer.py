@@ -57,7 +57,7 @@ def main() -> None:
       '--plugins',
       type=_parse_plugins,
       default=[],
-      help='Comma-separated list of Python plugin files (.py) to load.',
+      help='Comma-separated list of plugin files (.py) or modules to load.',
   )
   parser.add_argument(
       '--gfx',
@@ -98,7 +98,9 @@ def main() -> None:
 
   # Resolve model path, if provided.
   model_path = args.model or args.pos_model
-  user_plugins = plugin.load_plugins(map(_resolve, args.plugins))
+  user_plugins = plugin.load_plugins(
+      _resolve(p) if p.endswith('.py') else p for p in args.plugins
+  )
 
   launch_passive.run(
       config,

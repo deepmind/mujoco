@@ -35,8 +35,9 @@ Plugins can be wired up in two ways:
   ``StepControl``, and ``SimHistory``. Plugins can then take constructor
   arguments and use any dependency of the entry point.
 * **From files:** ``viewer.py --plugins=a.py,b.py`` calls ``load_plugins``,
-  which imports each file and instantiates every ``ViewerPlugin`` and
-  ``SimPlugin`` subclass defined in it with ``cls()``.
+  which imports each file (or installed module, ``--plugins=pkg.module``) and
+  instantiates every ``ViewerPlugin`` and ``SimPlugin`` subclass defined in it
+  with ``cls()``.
 """
 
 from collections.abc import Iterable
@@ -170,14 +171,16 @@ def load_plugins(
 
   A file ``dir/name.py`` is imported as ``studio_plugins.name``, and ``dir`` is
   appended to ``sys.path`` so the file can import helper files next to it
-  (``import helper``). Every ``ViewerPlugin`` or ``SimPlugin`` subclass defined
-  in the file (not merely imported into it) is instantiated with ``cls()``, in
-  definition order. The file runs inside the current process, so it can only
-  import packages present in the running binary's environment.
+  (``import helper``). Any other entry is imported as a module name, such as
+  ``pkg.module`` from an installed package. Every ``ViewerPlugin`` or
+  ``SimPlugin`` subclass defined in the file (not merely imported into it) is
+  instantiated with ``cls()``, in definition order. The file runs inside the
+  current process, so it can only import packages present in the running
+  binary's environment.
 
   Args:
-    paths: Paths to ``.py`` files defining plugin classes. Empty entries are
-      skipped.
+    paths: Paths to ``.py`` files, or module names, defining plugin classes.
+      Empty entries are skipped.
 
   Returns:
     The plugin instances, in file order then definition order.
@@ -194,22 +197,27 @@ def load_plugins(
     package.__path__ = []
   plugins: list[Plugin] = []
   for raw in paths or ():
-    if not os.fspath(raw).strip():
+    path = os.fspath(raw).strip()
+    if not path:
       continue
-    path = os.path.abspath(os.fspath(raw).strip())
-    if not os.path.isfile(path):
-      raise FileNotFoundError(f'Plugin file not found: {path}')
-    directory, filename = os.path.split(path)
-    for entries in (package.__path__, sys.path):
-      if directory not in entries:
-        entries.append(directory)
-    name = f'{PLUGIN_PACKAGE}.{os.path.splitext(filename)[0]}'
-    module = importlib.import_module(name)
-    if os.path.realpath(module.__file__ or '') != os.path.realpath(path):
-      raise ImportError(
-          f'Cannot load {path}: {filename} was already loaded from'
-          f' {module.__file__}; rename one of the files.'
-      )
+    if not path.endswith('.py'):
+      name = path
+      module = importlib.import_module(name)
+    else:
+      path = os.path.abspath(path)
+      if not os.path.isfile(path):
+        raise FileNotFoundError(f'Plugin file not found: {path}')
+      directory, filename = os.path.split(path)
+      for entries in (package.__path__, sys.path):
+        if directory not in entries:
+          entries.append(directory)
+      name = f'{PLUGIN_PACKAGE}.{os.path.splitext(filename)[0]}'
+      module = importlib.import_module(name)
+      if os.path.realpath(module.__file__ or '') != os.path.realpath(path):
+        raise ImportError(
+            f'Cannot load {path}: {filename} was already loaded from'
+            f' {module.__file__}; rename one of the files.'
+        )
     classes: list[type[Plugin]] = []
     for obj in vars(module).values():
       if (
