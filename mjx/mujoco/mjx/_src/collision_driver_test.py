@@ -363,6 +363,57 @@ class CapsuleCollisionTest(parameterized.TestCase):
     for field in dataclasses.fields(Contact):
       _assert_attr_eq(dx._impl.contact, d.contact, field.name, name, 1e-4)
 
+  _CAP_TILTED_PLANE = """
+    <mujoco>
+      <worldbody>
+        <geom type="plane" size="5 5 .1" euler="20 -15 0"/>
+        <body>
+          <freejoint/>
+          <geom type="capsule" size=".02 .05"/>
+        </body>
+      </worldbody>
+    </mujoco>
+  """
+
+  def test_plane_capsule_frame(self):
+    """Tests the plane capsule contact frame at all tilts against C."""
+    # C projects the capsule axis onto the plane for the first tangent however
+    # short the projection, which steers a pyramidal cone's friction directions
+    m = mujoco.MjModel.from_xml_string(self._CAP_TILTED_PLANE)
+    d = mujoco.MjData(m)
+    mx = mjx.put_model(m)
+    collide = jax.jit(lambda m, d: mjx.collision(m, mjx.kinematics(m, d)))
+    normal = d.geom_xmat[0].reshape(3, 3)[:, 2]
+    rng = np.random.default_rng(0)
+
+    def frames(axis):
+      quat = np.zeros(4)
+      mujoco.mju_quatZ2Vec(quat, axis)
+      # the lower end 1 mm into the plane
+      height = 0.05 * abs(axis @ normal) + 0.02 - 0.001
+      d.qpos[:7] = [*(normal * height), *quat]
+      mujoco.mj_forward(m, d)
+      contact = collide(mx, mjx.put_data(m, d))._impl.contact
+      active = np.asarray(contact.dist) < 0
+      self.assertEqual(active.sum(), d.ncon)
+      return np.asarray(contact.frame[active])
+
+    for axis in rng.normal(size=(30, 3)):
+      frame = frames(axis / np.linalg.norm(axis))
+      np.testing.assert_allclose(
+          frame.reshape(-1, 9), d.contact.frame[: d.ncon], atol=1e-6
+      )
+
+    # along the normal and within rounding of it, C's tangent is (1, 0, 0),
+    # unprojected, or the direction of a rounding error; the frame stays
+    # orthonormal in single precision
+    tangent = np.cross(normal, rng.normal(size=3))
+    tangent /= np.linalg.norm(tangent)
+    for angle in (0, 1e-7, 1e-5):
+      axis = np.cos(angle) * normal + np.sin(angle) * tangent
+      for frame in frames(axis):
+        np.testing.assert_allclose(frame @ frame.T, np.eye(3), atol=1e-6)
+
   _PARALLEL_CAP = """
     <mujoco>
       <worldbody>

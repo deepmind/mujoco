@@ -70,10 +70,11 @@ def plane_sphere(plane: GeomInfo, sphere: GeomInfo) -> Collision:
 def plane_capsule(plane: GeomInfo, cap: GeomInfo) -> Collision:
   """Calculates two contacts between a capsule and a plane."""
   n, axis = plane.mat[:, 2], cap.mat[:, 2]
-  # align contact frames with capsule axis
+  # align contact frames with capsule axis projected onto the plane, as in C;
+  # below sqrt(eps) the projection is rounding error, so use make_frame's
   b, b_norm = math.normalize_with_norm(axis - n * jp.dot(n, axis))
-  y, z = jp.array([0.0, 1.0, 0.0]), jp.array([0.0, 0.0, 1.0])
-  b = jp.where(b_norm < 0.5, jp.where((-0.5 < n[1]) & (n[1] < 0.5), y, z), b)
+  degenerate = b_norm < jp.sqrt(jp.finfo(b_norm.dtype).eps)
+  b = jp.where(degenerate, math.orthogonals(n)[0], b)
   frame = jp.array([[n, b, jp.cross(n, b)]])
   segment = axis * cap.size[1]
   collisions = []
