@@ -18,6 +18,7 @@ from typing import Optional, Tuple, Union
 
 import jax
 from jax import numpy as jp
+
 import mujoco
 
 
@@ -68,11 +69,11 @@ def norm(
     Norm of the array x.
   """
 
-  is_zero = jp.allclose(x, 0.0)
+  is_zero = jp.all(jp.isclose(x, 0.0), axis=axis, keepdims=True)
   # temporarily swap x with ones if is_zero, then swap back
   x = jp.where(is_zero, jp.ones_like(x), x)
   n = jp.linalg.norm(x, axis=axis)
-  n = jp.where(is_zero, 0.0, n)
+  n = jp.where(jp.squeeze(is_zero, axis=axis), 0.0, n)
   return n
 
 
@@ -89,7 +90,10 @@ def normalize_with_norm(
     A tuple of (normalized array x, the norm).
   """
   n = norm(x, axis=axis)
-  x = x / (n + 1e-6 * (n == 0.0))
+  denominator = n + 1e-6 * (n == 0.0)
+  if axis is not None:
+    denominator = jp.expand_dims(denominator, axis)
+  x = x / denominator
   return x, n
 
 
