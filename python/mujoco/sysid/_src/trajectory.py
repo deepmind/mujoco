@@ -68,18 +68,12 @@ class SystemTrajectory:
       sensor_type = mujoco.mjtSensor.mjSENS_JOINTACTFRC
     else:
       raise ValueError(f"Unsupported sensor type: {sensor}")
-    adr = []
-    dims = []
+    columns = []
     for i in range(self.model.nsensor):
-      if self.model.sensor(i).type == sensor_type:
-        sensor_id = self.model.sensor(i).id
-        adr.append(self.model.sensor_adr[sensor_id])
-        dims.append(self.model.sensor_dim[sensor_id])
-    sensors = sorted(zip(adr, dims, strict=True), key=lambda x: x[0])
-    start = sensors[0][0]
-    total_dim = sum(d for _, d in sensors)
-    end = start + total_dim
-    return self.sensordata.data[:, start:end]
+      if self.model.sensor_type[i] == sensor_type:
+        start = self.model.sensor_adr[i]
+        columns.extend(range(start, start + self.model.sensor_dim[i]))
+    return self.sensordata.data[:, columns]
 
   @property
   def sensordim(self) -> int:
