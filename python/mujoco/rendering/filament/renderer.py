@@ -14,13 +14,13 @@
 # ==============================================================================
 """Class for coordinating the rendering of scenes to render targets."""
 
-from collections.abc import Buffer
 import dataclasses
 from typing import Any, Protocol
 
 import mujoco
 from mujoco import mjrf
 import numpy as np
+from typing_extensions import Buffer
 
 
 class SupportsDLPack(Protocol):
