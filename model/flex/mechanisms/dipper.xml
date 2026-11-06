@@ -76,8 +76,12 @@
   <equality>
     <connect name="eccentric_pin" site1="piston_pin" site2="piston"/>
     <connect name="cylinder_pin" site1="rod_tip" site2="cylinder_tip"/>
+    <!-- A second point along y makes the cylinder pin a hinge, so the rear fitting cannot roll. -->
+    <connect name="cylinder_pin_axis" body1="rear_fitting" body2="cylinder_rod" anchor="0 .05 0"/>
     <connect name="arm_flex_4_attach" body1="arm_flex_4" body2="fulcrum" anchor="0 0 0"/>
     <connect name="arm_flex_6_attach" body1="arm_flex_6" body2="fulcrum" anchor="0 0 0"/>
+    <!-- Point attachments leave the arm free to roll about its axis; bolt it at the fulcrum. -->
+    <joint name="arm_flex_roll_lock" joint1="arm_flex_twist_4"/>
     <connect name="arm_flex_0_attach" body1="arm_flex_0" body2="rear_fitting" anchor="0 0 0"/>
     <connect name="arm_flex_1_attach" body1="arm_flex_1" body2="rear_fitting" anchor="0 0 0"/>
     <connect name="arm_flex_19_attach" body1="arm_flex_19" body2="tip_fitting" anchor="0 0 0"/>

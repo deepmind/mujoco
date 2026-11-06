@@ -1512,6 +1512,49 @@ TEST_F(UserFlexTest, MechanismRods) {
   }
 }
 
+// the dipper arm is attached by points on its axis, so only the twist joint
+// equality at the fulcrum keeps its box section from rolling about the axis
+TEST_F(UserFlexTest, DipperArmDoesNotRoll) {
+  const std::string xml_path = GetModelPath("flex/mechanisms/dipper.xml");
+  std::array<char, 1024> error;
+  mjModel* m = mj_loadXML(xml_path.c_str(), 0, error.data(), error.size());
+  ASSERT_THAT(m, NotNull()) << error.data();
+  int f = mj_name2id(m, mjOBJ_FLEX, "arm_flex");
+  ASSERT_GE(f, 0);
+  int nelem = m->flex_elemnum[f];
+  std::vector<mjtNum> elem_mat(9 * nelem);
+  mjData* d = mj_makeData(m);
+  mj_forward(m, d);
+  ASSERT_EQ(mj_rodBoxEdge(m, d, f, elem_mat.data(), nullptr), 1);
+
+  // material director (m1 or m2) that starts along the fulcrum axis (world y)
+  int col = std::abs(elem_mat[3]) > std::abs(elem_mat[4]) ? 0 : 1;
+  for (int e = 0; e < nelem; e++) {
+    ASSERT_GT(std::abs(elem_mat[9 * e + 3 + col]), 1 - 1e-6) << "elem " << e;
+  }
+
+  // the director stays along the projection of y normal to the edge tangent, so
+  // lateral bending of the arm (which tilts the director with the tangent) is
+  // not counted as roll: |cos(roll)| > cos(0.1)
+  mjtNum min_cos = 1;
+  for (int i = 0; i < 5000; i++) {
+    mj_step(m, d);
+    mj_rodBoxEdge(m, d, f, elem_mat.data(), nullptr);
+    for (int e = 0; e < nelem; e++) {
+      const mjtNum* mat = elem_mat.data() + 9 * e;
+      mjtNum t[3] = {mat[2], mat[5], mat[8]};
+      mjtNum dir[3] = {mat[col], mat[3 + col], mat[6 + col]};
+      mjtNum yperp[3] = {-t[1] * t[0], 1 - t[1] * t[1], -t[1] * t[2]};
+      mjtNum norm = mju_norm3(yperp);
+      ASSERT_GT(norm, 0.5) << "elem " << e;
+      min_cos = std::min(min_cos, std::abs(mju_dot3(dir, yperp)) / norm);
+    }
+  }
+  EXPECT_GT(min_cos, std::cos(0.1));
+  mj_deleteData(d);
+  mj_deleteModel(m);
+}
+
 TEST_F(UserFlexTest, EmptyCellNodePinningMesh) {
   // Load bunny_multicell.xml which has a 3x3x3 grid.
   // The bunny mesh only occupies some cells, so many nodes should be pinned.
