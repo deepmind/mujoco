@@ -183,7 +183,11 @@ def _joint_or_body_width(
 
   # Free body
   bid = mujoco.mj_name2id(model, mujoco.mjtObj.mjOBJ_BODY.value, name)
-  if bid >= 0 and model.body_dofnum[bid] == 6:
+  if (
+      bid >= 0
+      and model.body_jntnum[bid] == 1
+      and model.jnt_type[model.body_jntadr[bid]] == mujoco.mjtJoint.mjJNT_FREE
+  ):
     return 7 if sig_type == SignalType.MjStateQPos else 6
 
   return 0
@@ -244,15 +248,17 @@ class TimeSeries:
 
     # Bodies with free joints, named by body rather than joint.
     for body_id in range(model.nbody):
-      b = model.body(body_id)
-      body_name = b.name
+      body_name = model.body(body_id).name
       dof_adr = model.body_dofadr[body_id]
 
-      if dof_adr >= 0 and b.dofnum[0] == 6:
+      first_jnt = model.body_jntadr[body_id]
+      if (
+          first_jnt >= 0
+          and model.jnt_type[first_jnt] == mujoco.mjtJoint.mjJNT_FREE
+      ):
         # Use the body's first joint qposadr for qpos. Free joints have
         # 7 qpos elements but only 6 dofs, so dofadr and qposadr diverge
         # for subsequent entries.
-        first_jnt = model.body_jntadr[body_id]
         qpos_adr = model.jnt_qposadr[first_jnt]
         qpos_indices = np.arange(qpos_adr, qpos_adr + 7)
         qpos_map[f"{body_name}_qpos"] = (SignalType.MjStateQPos, qpos_indices)
