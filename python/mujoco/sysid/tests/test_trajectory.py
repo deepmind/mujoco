@@ -202,3 +202,17 @@ def test_check_compatible_sensor_mismatch(box_model):
   )
   with pytest.raises(ValueError, match="Sensor data dimension"):
     traj.check_compatible()
+
+
+@pytest.mark.parametrize("width", [1, 8])
+def test_named_initial_state_rejects_wrong_width(box_model, width):
+  with pytest.raises(ValueError, match="values"):
+    create_initial_state(box_model, np.ones(width), qpos_names=["box_qpos"])
+
+
+def test_named_initial_state_accepts_free_joint_coordinates(box_model):
+  qpos = np.array([1., 2., 3., 1., 0., 0., 0.])
+  state = create_initial_state(box_model, qpos, qpos_names=["box_qpos"])
+  data = mujoco.MjData(box_model)
+  mujoco.mj_setState(box_model, data, state, mujoco.mjtState.mjSTATE_FULLPHYSICS)
+  np.testing.assert_array_equal(data.qpos, qpos)
