@@ -11,13 +11,13 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-r"""Minimal interactive slideshow plugins showcasing MuJoCo 4.0 features.
+r"""Interactive slideshow plugins for MuJoCo 4.0 features.
 
-Primary standalone mode (minimal chrome-free Web Viewer)::
+Standalone web viewer::
 
   python -m mujoco.sample.studio.overview.slideshow
 
-Can also be loaded as hot-reloadable plugins inside the Studio viewer::
+Inside the Studio viewer::
 
   python -m mujoco.studio.viewer \
       --gfx=web \
@@ -485,30 +485,23 @@ SLIDES: tuple[SlideSpec, ...] = (
     SlideSpec(
         slug='pbr',
         category='Rendering',
-        title='Filament PBR, Soft Shadows & Atmosphere',
+        title='Physically Based Rendering',
         caption=(
-            'MuJoCo 4.0 renders with Google Filament, on the desktop and in'
-            ' the browser through WebAssembly. Materials use a physically based'
-            ' metallic-roughness model with layered textures, lit by'
-            ' image-based environment lighting and directional lights with'
-            ' percentage-closer soft shadows. Post-processing adds height fog,'
-            ' bloom, and a vignette, and the same scene renders identically in'
-            ' MuJoCo Studio and here.'
+            'MuJoCo 4.0 renders with Google Filament on desktop and in the'
+            ' browser. Scenes combine metallic-roughness materials,'
+            ' image-based lighting, soft shadows, fog, and bloom.'
         ),
         model_relpath='welcome/welcome.xml',
     ),
     SlideSpec(
         slug='ipc',
         category='Deformables',
-        title='Penetration-Free Cloth & Ribbon Contact (IPC)',
+        title='Penetration-Free Cloth Contact',
         caption=(
-            'Incremental Potential Contact (<flag ipc="enable"/>) resolves'
-            ' contact between thin shells, rods, and rigid bodies with barrier'
-            ' potentials instead of penetration-based springs, so cloth never'
-            ' passes through itself or the objects it wraps. Here a ribbon'
-            ' drawstring slides through the hem of a flexible liner and cinches'
-            ' its mouth shut; every fold, pinch, and sliding contact stays'
-            ' penetration-free at interactive rates.'
+            'Incremental Potential Contact uses barrier potentials so thin'
+            ' shells, rods, and rigid bodies never pass through one another.'
+            ' Here a ribbon drawstring slides inside a bin liner hem and'
+            ' cinches it shut by contact alone.'
         ),
         model_relpath='flex/bag.xml',
         pre_step_fn=_step_ipc_bag,
@@ -522,29 +515,24 @@ SLIDES: tuple[SlideSpec, ...] = (
     SlideSpec(
         slug='dipper',
         category='Deformables',
-        title='Discrete Elastic Rods in Mechanisms',
+        title='Elastic Rods in Mechanisms',
         caption=(
-            'One-dimensional discrete elastic rods model beams and cables that'
-            ' bend and twist, with curved rest shapes and rectangular cross'
-            ' sections, and they couple to rigid mechanisms through ordinary'
-            ' joints and constraints. In this crank-piston linkage a compliant'
-            ' dipper beam flexes and twists under load while the rigid crank'
-            ' keeps turning, all solved together in one system.'
+            'Discrete elastic rods model beams and cables that bend and twist,'
+            ' coupled to rigid bodies through ordinary joints and constraints.'
+            ' Here a crank-driven piston rocks a flexible dipper arm carrying'
+            ' a suspended weight.'
         ),
         model_relpath='flex/mechanisms/dipper.xml',
     ),
     SlideSpec(
         slug='wire',
         category='Plasticity',
-        title='Joint & Tendon Plastic Yielding',
+        title='Plastic Joints & Tendons',
         caption=(
-            'Joints and tendons gain plasticity through springyield: when a'
-            ' joint spring or a tendon is loaded past its yield threshold, its'
-            ' rest configuration moves permanently. Identical drop weights load'
-            ' an elastic steel cantilever next to brass and annealed copper'
-            ' ones, plus cables of the same three materials. Steel rebounds'
-            ' completely, brass keeps a slight set, and copper stays bent and'
-            ' stretched.'
+            'Joint springs and tendons permanently shift their rest positions'
+            ' once loaded past their yield threshold. Identical weights drop'
+            ' onto steel, brass, and copper beams and cables: steel rebounds,'
+            ' brass bends slightly, and copper stays deformed.'
         ),
         model_relpath='plastic/wire.xml',
         camera=CameraPreset(
@@ -557,42 +545,36 @@ SLIDES: tuple[SlideSpec, ...] = (
     SlideSpec(
         slug='paper',
         category='Plasticity',
-        title='Creased Paper: Bend-Only Shell Plasticity',
+        title='Creased Paper',
         caption=(
-            'Thin shells can yield in bending alone: with inextensible edges'
-            ' (<edge equality="true"/>) and a bending yield threshold, a sheet'
-            ' creases permanently wherever it folds. Two napkins are pulled by'
-            ' their centres down through brass rings; the elastic cloth on the'
-            ' left unfolds flat once it clears the ring, while the paper on the'
-            ' right keeps its radial creases.'
+            'Thin shells with inextensible edges and a bending yield threshold'
+            ' crease permanently wherever they fold. Pulled through brass'
+            ' rings, the elastic cloth on the left unfolds flat while the'
+            ' paper on the right keeps its radial creases.'
         ),
         model_relpath='plastic/paper.xml',
     ),
     SlideSpec(
         slug='foil',
         category='Plasticity',
-        title='Foil Hailstorm: Separate Stretch & Bend Yield',
+        title='Foil Hailstorm',
         caption=(
-            'Shell plasticity takes separate yield strains for membrane'
-            ' stretching and bending (yield="0.00016 0.0016"), so impacts'
-            ' leave crisp craters without the sheet sagging. Three steel balls'
-            ' drop onto a spring-steel sheet and a metallic foil: the steel'
-            ' springs back flat while the foil keeps every dent, and a'
-            ' spotlight behind the camera shows the glints warping around them.'
+            'Shell plasticity uses separate yield thresholds for stretching'
+            ' and bending, so impacts leave crisp dents without sagging.'
+            ' Falling steel balls bounce off spring steel on the left while'
+            ' permanently denting metallic foil on the right.'
         ),
         model_relpath='plastic/foil.xml',
     ),
     SlideSpec(
         slug='clay',
         category='Plasticity',
-        title='3D Continuum Elasto-Plasticity',
+        title='Stamped Clay',
         caption=(
-            'Volumetric flexes can now yield plastically: a von Mises J2'
-            ' return mapping (<elasticity yield=.../>) caps the elastic stress'
-            ' and turns the excess into permanent deformation. A spring-loaded'
-            ' press stamps a cross die into a soft clay block and rebounds,'
-            ' leaving a lasting impression where an elastic-only material would'
-            ' simply spring back.'
+            'Volumetric bodies deform permanently once stress exceeds their'
+            ' yield limit. A weighted press stamps a cross die into soft clay'
+            ' and retracts, leaving a crisp impression instead of springing'
+            ' back.'
         ),
         model_relpath='plastic/clay.xml',
         camera=CameraPreset(
@@ -605,43 +587,36 @@ SLIDES: tuple[SlideSpec, ...] = (
     SlideSpec(
         slug='roller',
         category='Plasticity',
-        title='Cogged Stamping Roller: Trilinear Plastic Cells',
+        title='Stamped Plastic Slab',
         caption=(
-            'Interpolated trilinear flexes (dof="trilinear") simulate a coarse'
-            ' grid of cells under a finer visual and collision skin, so a'
-            ' detailed surface costs few degrees of freedom. A rolling axle'
-            ' with two toothed wheels crosses an elastic slab and a plastic'
-            ' one: the elastic slab rebounds flat behind it while the plastic'
-            ' slab keeps a row of evenly spaced dents.'
+            'Trilinear flexes deform a coarse grid of cells beneath a finer'
+            ' surface mesh to keep simulation fast. As toothed wheels roll'
+            ' across both slabs, the elastic slab rebounds flat while the'
+            ' plastic one keeps each dent.'
         ),
         model_relpath='plastic/roller.xml',
     ),
     SlideSpec(
         slug='torsion',
         category='Plasticity',
-        title='Torsion Twist & Release',
+        title='Plastic Torsion',
         caption=(
-            'Volumetric plasticity captures shear as well as compression. An'
-            ' eccentric escapement wrench twists two square bars past 180'
-            ' degrees before slipping off its drive pin: the elastic bar'
-            ' unwinds back to straight, while the plastic bar springs back'
-            ' only partway and keeps a permanent twist of about 80 degrees.'
-            ' Plastic state lives in mjData, so a reset restores the'
-            ' undeformed bar.'
+            'Volumetric plasticity captures shear as well as compression. Two'
+            ' wrenches twist square bars past a half turn and release: the'
+            ' elastic bar unwinds straight, while the plastic bar keeps about'
+            ' eighty degrees of twist.'
         ),
         model_relpath='plastic/torsion.xml',
     ),
     SlideSpec(
         slug='ccd',
         category='Speculative Contacts',
-        title='Speculative Contacts: Whipping Bat',
+        title='Speculative Contacts: Baseball Bat',
         caption=(
-            'Speculative contacts (<flag speculative="enable"/>) sweep'
-            ' fast-moving geoms through the step and add contacts before thin'
-            ' or rapid bodies can tunnel through each other, at near-zero cost'
-            ' when motion is slow. A 4 cm baseball is launched into a 1.2 cm'
-            ' whipping bat at a 10 ms timestep, far coarser than discrete'
-            ' collision would allow, and the bat still connects every time.'
+            'Speculative contacts sweep fast-moving geometry across each step'
+            ' to stop thin objects from tunneling through one another. Even at'
+            ' a coarse 10 ms timestep, a thin bat cleanly hits a'
+            ' fast-pitched baseball.'
         ),
         model_relpath='speculative/flipper.xml',
     ),
@@ -650,41 +625,34 @@ SLIDES: tuple[SlideSpec, ...] = (
         category='Speculative Contacts',
         title="Speculative Contacts: Newton's Cradle",
         caption=(
-            'Five 3 mm thick steel plates hang on twin wires in a'
-            " Newton's cradle. Released from 58 degrees, the first plate"
-            ' reaches 3 m/s at the bottom of its swing, travelling four times'
-            ' its own thickness in a single 4 ms step. Without speculative'
-            ' contacts it passes straight through its neighbours; with them, up'
-            ' to four contact points per face transfer momentum cleanly across'
-            ' the stack.'
+            "Five 3 mm steel plates swing in a Newton's cradle, moving four"
+            ' times their thickness per step at impact. Speculative contacts'
+            ' prevent tunneling and transfer momentum cleanly across the'
+            ' stack.'
         ),
         model_relpath='speculative/newton.xml',
     ),
     SlideSpec(
         slug='chain',
         category='Speculative Contacts',
-        title='Speculative Contacts: Interlocking Chain',
+        title='Speculative Contacts: Falling Chain',
         caption=(
-            'Four free-jointed rectangular links built from 6 mm radius'
-            ' capsules drop 28 cm onto a fixed horizontal catch bar at a 6 ms'
-            ' timestep. At impact the falling links move more than a capsule'
-            ' radius per step, yet speculative contacts catch both the top link'
-            ' against the bar and each thin capsule bar against the next link'
-            ' down as the shock wave travels through the chain.'
+            'Four free-falling chain links built from thin 6 mm capsules drop'
+            ' onto a fixed catch bar at a 6 ms timestep. Speculative contacts'
+            ' catch every link-to-link impact even when links move more than a'
+            ' capsule radius per step.'
         ),
         model_relpath='speculative/chain.xml',
     ),
     SlideSpec(
         slug='cards',
         category='Contact & Integration',
-        title='Frictional Stability: House of Cards',
+        title='House of Cards',
         caption=(
-            'Twenty-six playing cards, each 0.7 mm thick, stand four storeys'
-            ' tall on friction alone. Elliptic friction cones, a large'
-            " impratio, and the noslip solver's final polish keep the leaning"
-            ' pairs from creeping apart, a classic stress test for contact'
-            ' solvers that explicit penalty methods fail within seconds. Drag a'
-            ' card to see how far you can push the structure before it topples.'
+            'Twenty-six playing cards stand four stories tall on friction'
+            ' alone, held steady by elliptic friction cones and the noslip'
+            ' solver. Drag a card with the mouse to test how much the'
+            ' structure can take before toppling.'
         ),
         model_relpath='cards/house_of_cards.xml',
         camera=CameraPreset(
@@ -697,15 +665,12 @@ SLIDES: tuple[SlideSpec, ...] = (
     SlideSpec(
         slug='arch',
         category='Contact & Integration',
-        title='Discrete Integrator: Dry-Stone Gothic Arch',
+        title='Dry-Stone Gothic Arch',
         caption=(
-            'The discrete integrator (integrator="discrete") treats contact'
-            ' and constraint forces implicitly within each step, which holds'
-            ' structures that rely on static friction and compression without'
-            ' drift. An unmortared Gothic arch of stone voussoirs and a'
-            ' keystone stands under gravity at an 8 ms timestep and stays'
-            ' rock-steady, where a large explicit step would slowly let the'
-            ' stones slide apart.'
+            'The discrete integrator solves contact forces implicitly within'
+            ' each step to hold compression and static-friction structures'
+            ' without drift. Unmortared stone wedges and a keystone stand'
+            ' rock-steady under gravity at an 8 ms timestep.'
         ),
         model_relpath='arch/gothic.xml',
         camera=CameraPreset(
@@ -718,15 +683,12 @@ SLIDES: tuple[SlideSpec, ...] = (
     SlideSpec(
         slug='surfacevel',
         category='Contact & Actuation',
-        title='Zero-DOF Conveyors & Carousel (surfacevel)',
+        title='Surface Velocity: Luggage Carousel',
         caption=(
-            'Geoms can specify a surface velocity (surfacevel): a tangential'
-            ' or rotational velocity applied through frictional contact without'
-            ' adding any degrees of freedom. A three-belt conveyor cascade'
-            ' carries parcels along and a spinning supertorus luggage carousel'
-            ' sweeps them around, all driven by contact alone, so belts and'
-            ' turntables cost nothing to simulate beyond the contacts'
-            ' themselves.'
+            'Static geometry can apply tangential or rotational surface'
+            ' velocity through friction without adding moving joints. Three'
+            ' conveyor belts feed bags onto a spinning carousel using contact'
+            ' alone.'
         ),
         model_relpath='surfacevel/carousel.xml',
         camera=CameraPreset(
@@ -739,14 +701,12 @@ SLIDES: tuple[SlideSpec, ...] = (
     SlideSpec(
         slug='adhesion',
         category='Contact & Actuation',
-        title='Contact-Driven Magnetic Adhesion',
+        title='Magnetic Adhesion',
         caption=(
-            'Contacts can carry attractive normal stress, modelling magnets,'
-            ' suction cups, and sticky surfaces directly in the contact solver.'
-            ' A swinging refrigerator door is pulled shut across a 3 mm gap by'
-            ' its magnetic gasket and latches; the hold is finite, so dragging'
-            ' the door hard enough breaks the seal, just as it would in your'
-            ' kitchen.'
+            'Contacts can apply attractive normal forces to model magnets,'
+            ' suction cups, and sticky surfaces in the solver. A swinging'
+            ' fridge door snaps shut across a 3 mm gap, and pulling hard'
+            ' enough breaks the seal.'
         ),
         model_relpath='adhesion/fridge_door.xml',
         init_fn=_init_fridge_door,
@@ -760,14 +720,11 @@ SLIDES: tuple[SlideSpec, ...] = (
     SlideSpec(
         slug='sleep',
         category='Performance',
-        title='Constraint Island Sleeping & Wake Cascade',
+        title='Island Sleeping',
         caption=(
-            'Island sleeping (<flag sleep="enable"/>) puts constraint islands'
-            ' that have come to rest to sleep, removing them from the solver'
-            ' until something touches them. The 105 dominoes start asleep at'
-            ' near-zero cost; the toppling wavefront wakes each row only as it'
-            ' arrives, and islands are coloured so you can watch the sleeping'
-            ' and awake sets evolve.'
+            'Island sleeping removes resting groups of bodies from the solver'
+            ' until an impact wakes them. Ninety-six dominoes start asleep at'
+            ' near-zero cost, waking row by row as the toppling wave arrives.'
         ),
         model_relpath='sleep/dominos.xml',
         vis_island=True,
@@ -780,16 +737,13 @@ SLIDES: tuple[SlideSpec, ...] = (
     ),
     SlideSpec(
         slug='scaling',
-        category='Modeling (MjSpec)',
-        title='Uniform <frame scale> & Froude Scaling',
+        category='Modeling',
+        title='Uniform Model Scaling',
         caption=(
-            'MjSpec can attach a sub-model at a uniform scale (<frame'
-            ' scale=.../>), rescaling lengths, masses, and inertias'
-            ' consistently in one place. One double pendulum is attached at'
-            ' scale 0.5, 1.0, and 1.8: lengths scale by s, masses by s^3,'
-            ' inertias by s^5, and released from identical angles the three'
-            ' swing with periods in the ratio sqrt(s), exactly as Froude'
-            ' scaling predicts.'
+            'Attaching a model at a uniform scale automatically rescales its'
+            ' lengths, masses, and inertias together. Released from the same'
+            ' angle at 0.5x, 1x, and 1.8x size, larger double pendulums swing'
+            ' more slowly just as physics predicts.'
         ),
         build_model_fn=_build_froude_scaling_model,
         init_fn=_init_froude_scaling,
@@ -1192,8 +1146,8 @@ class SlideshowSim(plugin.SimPlugin):
             category='Custom Scene',
             title=label,
             caption=(
-                'External model loaded. Orbit, pan, zoom, or perturb freely;'
-                ' press Left or Right to return to the MuJoCo 4.0 slideshow.'
+                'Custom model loaded. Drag to orbit or pull bodies, or press'
+                ' Left or Right to return to the slideshow.'
             ),
             camera=None,
             vis_island=False,
@@ -1249,19 +1203,18 @@ class SlideshowSim(plugin.SimPlugin):
 
 _SHORTCUT_ROWS: tuple[tuple[str, str], ...] = (
     ('Left / Right', 'Previous / next slide'),
-    ('C / F / I', 'Toggle contacts / forces / islands'),
-    ('F1', 'Toggle release notes & help'),
-    ('Space', 'Toggle play / pause'),
-    ('Backspace', 'Reset the scene'),
-    ('Drag a body', 'Pull it (Shift: horizontally)'),
+    ('C / F / I', 'Show contacts / forces / islands'),
+    ('F1 / H', 'Show or hide help'),
+    ('Space', 'Play / pause'),
+    ('Backspace', 'Reset scene'),
+    ('Drag body', 'Pull body (Shift: horizontal)'),
 )
 
-_RELEASE_NOTES_TITLE = 'MuJoCo 4.0.0 Interactive Release Notes'
+_RELEASE_NOTES_TITLE = 'MuJoCo 4.0 Interactive Tour'
 _RELEASE_NOTES_INTRO = (
-    'Welcome to the interactive tour of MuJoCo 4.0.0. Each slide runs a live'
-    ' physics scene in your browser: orbit the camera, pull dynamic bodies with'
-    ' the mouse, scrub the simulation history timeline, or jump between'
-    ' features below.'
+    'Each slide runs a live MuJoCo 4.0 scene. Orbit the camera, drag bodies'
+    ' with the mouse, scrub the timeline, or switch slides with the dots or'
+    ' arrow keys.'
 )
 
 # The simulation speed selector: percent of real time, in 5% steps.
@@ -2367,9 +2320,8 @@ class SlideshowOverlay(plugin.ViewerPlugin):
         self._tooltip(
             pal,
             text=(
-                f'Simulation history for time range [{oldest_text},'
-                f' {current_text}]\n'
-                'Drag to rewind; play continues from there'
+                f'History [{oldest_text}, {current_text}]\n'
+                'Drag to rewind; press play to resume'
             ),
         )
         if imgui.IsItemHovered():
@@ -2482,8 +2434,8 @@ class SlideshowOverlay(plugin.ViewerPlugin):
     self._tooltip(
         pal,
         text=(
-            f'Desired speed ({desired_pct:.0f}% realtime)\n'
-            f'Achieved speed ({achieved_pct:.0f}% realtime)'
+            f'Target speed: {desired_pct:.0f}%\n'
+            f'Actual speed: {achieved_pct:.0f}%'
         ),
     )
     if hovered:
@@ -2511,7 +2463,7 @@ class SlideshowOverlay(plugin.ViewerPlugin):
         'play_pause',
         pal,
         shape,
-        keys=(('Space', 'Toggle play / pause'),),
+        keys=(('Space', 'Play / pause'),),
         primary=True,
     ):
       self._toggle_pause()
@@ -2526,7 +2478,7 @@ class SlideshowOverlay(plugin.ViewerPlugin):
         'reset',
         pal,
         shape,
-        keys=(('Backspace', 'Reset the scene'),),
+        keys=(('Backspace', 'Reset scene'),),
     ):
       self._reset_current_scene()
 
@@ -2544,7 +2496,7 @@ class SlideshowOverlay(plugin.ViewerPlugin):
         'help',
         pal,
         shape,
-        keys=(('F1', 'Toggle release notes & help'),),
+        keys=(('F1', 'Show or hide help'),),
         primary=self._show_help,
     ):
       self.toggle_help()

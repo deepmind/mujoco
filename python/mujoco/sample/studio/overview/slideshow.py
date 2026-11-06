@@ -11,20 +11,19 @@
 # WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 # See the License for the specific language governing permissions and
 # limitations under the License.
-r"""Minimal chrome-free web viewer for the MuJoCo 4.0 feature slideshow.
+r"""Minimal web viewer for the MuJoCo 4.0 feature slideshow.
 
-Launches the interactive MuJoCo 4.0 feature slideshow in the browser with only
-mouse camera/perturbation controls and a minimal caption card (no Studio menu
-bar, inspector, options panel, or status bar)::
+Runs the interactive slideshow in the browser with mouse controls and a
+floating caption card::
 
   python -m mujoco.sample.studio.overview.slideshow
 
-Optional flags support kiosk playback or recording clean hero-video clips::
+For hands-free playback or recording::
 
   python -m mujoco.sample.studio.overview.slideshow \
       --autoplay=8 --orbit=10 --hide_card
 
-To edit the slideshow live, pass ``--hot_reload=all``::
+For live editing, pass ``--hot_reload=all``::
 
   python -m mujoco.sample.studio.overview.slideshow --hot_reload=all
 """
@@ -43,49 +42,49 @@ def main() -> None:
       f'{i + 1}:{s.slug}' for i, s in enumerate(slideshow_plugins.SLIDES)
   )
   parser = argparse.ArgumentParser(
-      description='Minimal interactive MuJoCo 4.0 feature slideshow viewer.'
+      description='Interactive MuJoCo 4.0 feature slideshow viewer.'
   )
   parser.add_argument(
       '--slide',
       type=str,
       default='1',
-      help=f'Initial slide number or slug ({slide_slugs}).',
+      help=f'First slide number or name ({slide_slugs}).',
   )
   parser.add_argument(
       '--gfx',
       choices=viewer_protocol.GFX_MODES,
       default='web',
-      help='Graphics backend ("web" launches the minimal Web Viewer).',
+      help='Graphics backend ("web" opens the web viewer).',
   )
   parser.add_argument(
       '--port',
       type=int,
       default=0,
-      help='Web Viewer HTTP port (0 picks the first free port >= 8080).',
+      help='Web viewer HTTP port (0 picks a free port >= 8080).',
   )
   parser.add_argument(
       '--open_browser',
       action='store_true',
-      help='Open a local browser tab automatically when a display is present.',
+      help='Open a browser tab automatically when a display is available.',
   )
   parser.add_argument(
       '--autoplay',
       type=float,
       default=0.0,
-      help='Seconds per slide for automatic cycling (0 disables autoplay).',
+      help='Seconds per slide before advancing (0 disables autoplay).',
   )
   parser.add_argument(
       '--orbit',
       type=float,
       default=0.0,
-      help='Slow camera azimuth orbit rate in deg/s when idle (hero video).',
+      help='Camera orbit speed in deg/s when idle.',
   )
   parser.add_argument(
       '--hide_card',
       action='store_true',
       help=(
-          'Start with the card hidden (press H to cycle, or move mouse to '
-          'bottom edge to reveal controls).'
+          'Start with the card hidden; move the mouse to the bottom edge to'
+          ' show controls.'
       ),
   )
   parser.add_argument(
@@ -93,15 +92,15 @@ def main() -> None:
       action=argparse.BooleanOptionalAction,
       default=True,
       help=(
-          'Compile the whole deck up front and let the browser download every'
-          ' slide in the background, so switching slides is instant.'
+          'Compile and download all slides in the background for instant'
+          ' switching.'
       ),
   )
   parser.add_argument(
       '--model_dir',
       type=str,
       default='',
-      help='Optional MuJoCo model directory to load scenes from.',
+      help='Directory containing the MuJoCo XML scenes.',
   )
   parser.add_argument(
       '--width',
