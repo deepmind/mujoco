@@ -42,10 +42,16 @@ class Msh:
       raise FileNotFoundError(f"{file} does not exist.")
 
     with open(file, "rb") as f:
-      nvertex = np.fromfile(f, dtype=np.int32, count=1)[0]
-      nnormal = np.fromfile(f, dtype=np.int32, count=1)[0]
-      ntexcoord = np.fromfile(f, dtype=np.int32, count=1)[0]
-      nface = np.fromfile(f, dtype=np.int32, count=1)[0]
+      header = np.fromfile(f, dtype=np.int32, count=4)
+      if header.size != 4:
+        raise ValueError(
+            f"Invalid MSH header: expected 4 counts, got {header.size}."
+        )
+      if np.any(header < 0):
+        raise ValueError(
+            f"Invalid MSH header: counts must be nonnegative, got {header}."
+        )
+      nvertex, nnormal, ntexcoord, nface = header
       vertex_positions = np.fromfile(f, dtype=np.float32, count=3 * nvertex)
       vertex_normals = np.fromfile(f, dtype=np.float32, count=3 * nnormal)
       vertex_texcoords = np.fromfile(f, dtype=np.float32, count=2 * ntexcoord)

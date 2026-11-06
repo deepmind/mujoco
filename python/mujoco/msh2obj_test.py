@@ -114,6 +114,41 @@ class MshTest(parameterized.TestCase):
       self.assertEqual(model.mesh_vertnum[0], 4)
       self.assertEqual(model.mesh_facenum[0], 4)
 
+  @parameterized.parameters(0, 1, 2, 3)
+  def test_rejects_truncated_header(self, count) -> None:
+    with tempfile.TemporaryDirectory() as tmpdir:
+      msh_path = epath.Path(tmpdir) / "truncated.msh"
+      np.zeros(count, dtype=np.int32).tofile(msh_path)
+
+      with self.assertRaisesRegex(
+          ValueError,
+          rf"Invalid MSH header: expected 4 counts, got {count}\.",
+      ):
+        msh2obj.Msh.create(msh_path)
+
+  @parameterized.parameters(0, 1, 2, 3)
+  def test_rejects_negative_count(self, count_index) -> None:
+    with tempfile.TemporaryDirectory() as tmpdir:
+      msh_path = epath.Path(tmpdir) / "negative.msh"
+      header = np.zeros(4, dtype=np.int32)
+      header[count_index] = -1
+      header.tofile(msh_path)
+
+      with self.assertRaisesRegex(
+          ValueError, "Invalid MSH header: counts must be nonnegative"
+      ):
+        msh2obj.Msh.create(msh_path)
+
+  def test_reports_texcoord_count(self) -> None:
+    with tempfile.TemporaryDirectory() as tmpdir:
+      msh_path = epath.Path(tmpdir) / "texcoords.msh"
+      np.asarray([0, 0, 1, 0], dtype=np.int32).tofile(msh_path)
+
+      with self.assertRaisesRegex(
+          ValueError, r"Invalid number of texcoords: 0 != 2\*1\."
+      ):
+        msh2obj.Msh.create(msh_path)
+
   def test_obj_model_matches_msh_model(self) -> None:
     test_path = epath.resource_path("mujoco") / "testdata"
 
