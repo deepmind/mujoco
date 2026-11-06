@@ -209,6 +209,7 @@ void mjrf_defaultReflectionOpts(mjrfReflectionOpts* opts);
 typedef struct mjrfDepthOfFieldOpts_ {
   mjtBool enable;                       // enables depth of field
   float blur_strength;                  // strength of blurring [0, 1]; defaults to 1.0
+  float focus_distance;                 // distance from camera to focal plane; defaults to 1.0
   float aspect_ratio;                   // aspect ratio of the circle of confusion; defaults to 1.0
   float max_aperture_diameter;          // maximum aperture diameter; defaults to 0.01
 } mjrfDepthOfFieldOpts;
@@ -295,6 +296,7 @@ typedef struct mjrfRenderOpts_ {
   mjrfShadowOpts shadow;
   mjrfSkyboxOpts skybox;
   mjrfVignetteOpts vignette;
+  mjtBool post_processing;        // all post-processing effects; enabled by default
 } mjrfRenderOpts;
 
 // Initializes the mjrfRenderOpts to default values.

@@ -204,6 +204,7 @@ void mjrf_defaultDepthOfFieldOpts(mjrfDepthOfFieldOpts* opts) {
   std::memset(opts, 0, sizeof(mjrfDepthOfFieldOpts));
   opts->enable = false;
   opts->blur_strength = 1.0f;
+  opts->focus_distance = 1.0f;
   opts->aspect_ratio = 1.0f;
   opts->max_aperture_diameter = 0.01f;
 }
@@ -274,6 +275,7 @@ void mjrf_defaultRenderOpts(mjrfRenderOpts* opts) {
   mjrf_defaultShadowOpts(&opts->shadow);
   mjrf_defaultSkyboxOpts(&opts->skybox);
   mjrf_defaultVignetteOpts(&opts->vignette);
+  opts->post_processing = true;
 }
 
 mjrfContext* mjrf_createContext(const mjrfContextConfig* config) {
