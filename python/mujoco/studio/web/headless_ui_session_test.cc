@@ -26,6 +26,7 @@
 
 #include <gtest/gtest.h>
 #include <imgui.h>
+#include <NetImgui_Api.h>
 #include <NetImgui_CmdPackets.h>
 
 namespace mujoco::studio {
@@ -63,6 +64,21 @@ CmdHeader::eCommands TypeOf(const std::string& message) {
   CmdHeader header(CmdHeader::eCommands::Count, 0);
   std::memcpy(static_cast<void*>(&header), message.data(), sizeof(header));
   return header.mType;
+}
+
+// Whether a received texture command holds the pixels it describes, as the
+// browser checks (CmdTexture::ToPointers() needs NetImgui's client runtime).
+// Turns its pixel offset into a pointer.
+bool HoldsItsPixels(CmdTexture* texture) {
+  const uint64_t bytes_per_pixel =
+      texture->mFormat == NetImgui::eTexFormat::kTexFmtA8 ? 1 : 4;
+  const uint64_t pixels_size =
+      texture->mStatus == CmdTexture::eType::Destroy
+          ? 0
+          : bytes_per_pixel * texture->mWidth * texture->mHeight;
+  return texture->mpTextureData.ToPointer(
+      texture, reinterpret_cast<const uint8_t*>(texture) + texture->mSize,
+      pixels_size);
 }
 
 // A received message, copied into 8-byte aligned memory like the browser does.
@@ -267,7 +283,7 @@ TEST_F(HeadlessUiSessionTest, FirstFrameSendsTexturesThenAFullFrame) {
     CmdTexture* texture = received.As<CmdTexture>();
     EXPECT_EQ(texture->mSize, messages[i].size());
     EXPECT_EQ(texture->mStatus, CmdTexture::eType::Create);
-    EXPECT_TRUE(texture->ToPointers());
+    EXPECT_TRUE(HoldsItsPixels(texture));
     texture_ids.push_back(texture->mTextureClientID);
   }
 
@@ -508,7 +524,7 @@ TEST_F(HeadlessUiSessionTest, CreatesUpdatesAndDestroysUserTextures) {
   EXPECT_EQ(created->mStatus, CmdTexture::eType::Create);
   EXPECT_EQ(created->mWidth, 2u);
   EXPECT_EQ(created->mHeight, 2u);
-  ASSERT_TRUE(created->ToPointers());
+  ASSERT_TRUE(HoldsItsPixels(created));
   EXPECT_EQ(created->mpTextureData.Get()[0], 0x40);
   const uint64_t image_id = created->mTextureClientID;
 
@@ -526,7 +542,7 @@ TEST_F(HeadlessUiSessionTest, CreatesUpdatesAndDestroysUserTextures) {
   EXPECT_EQ(updated->mOffsetX, 1u);
   EXPECT_EQ(updated->mOffsetY, 1u);
   EXPECT_EQ(updated->mWidth, 1u);
-  ASSERT_TRUE(updated->ToPointers());
+  ASSERT_TRUE(HoldsItsPixels(updated));
   EXPECT_EQ(updated->mpTextureData.Get()[0], 0x80);
 
   // A texture that disappears is destroyed in the browser too.
@@ -537,7 +553,7 @@ TEST_F(HeadlessUiSessionTest, CreatesUpdatesAndDestroysUserTextures) {
   Received destroy(messages[0]);
   EXPECT_EQ(destroy.As<CmdTexture>()->mStatus, CmdTexture::eType::Destroy);
   EXPECT_EQ(destroy.As<CmdTexture>()->mTextureClientID, image_id);
-  EXPECT_TRUE(destroy.As<CmdTexture>()->ToPointers());
+  EXPECT_TRUE(HoldsItsPixels(destroy.As<CmdTexture>()));
 }
 
 TEST_F(HeadlessUiSessionTest, SendsOnlyTheNewestCopyOfATexture) {
@@ -565,7 +581,7 @@ TEST_F(HeadlessUiSessionTest, SendsOnlyTheNewestCopyOfATexture) {
   EXPECT_EQ(uploaded->mStatus, CmdTexture::eType::Create);
   EXPECT_EQ(uploaded->mWidth, 2u);
   EXPECT_EQ(uploaded->mHeight, 2u);
-  ASSERT_TRUE(uploaded->ToPointers());
+  ASSERT_TRUE(HoldsItsPixels(uploaded));
   EXPECT_EQ(uploaded->mpTextureData.Get()[0], 0x70);
   const uint64_t image_id = uploaded->mTextureClientID;
   EXPECT_EQ(TypeOf(messages[1]), CmdHeader::eCommands::DrawFrame);

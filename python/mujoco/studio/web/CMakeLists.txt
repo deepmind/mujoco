@@ -15,7 +15,10 @@
 set(NETIMGUI_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../netimgui)
 
 if(EMSCRIPTEN)
-  add_subdirectory(${NETIMGUI_DIR} ${CMAKE_CURRENT_BINARY_DIR}/netimgui)
+  # Only netimgui_protocol is linked; EXCLUDE_FROM_ALL skips NetImgui's client
+  # runtime, which nothing here uses.
+  add_subdirectory(${NETIMGUI_DIR} ${CMAKE_CURRENT_BINARY_DIR}/netimgui
+                   EXCLUDE_FROM_ALL)
 
   # Browser WASM client for the Web Viewer
   add_executable(web_client
@@ -45,7 +48,7 @@ if(EMSCRIPTEN)
     PRIVATE
       dear_imgui
       implot
-      netimgui
+      netimgui_protocol
       mujoco_filament
       mujoco::mujoco
       mujoco::platform
@@ -67,6 +70,8 @@ if(EMSCRIPTEN)
   # Filament's OpenGL backend requires WebGL2 / full ES3 bindings.
   target_link_options(web_client PRIVATE
     --bind
+    # The browser WebSockets (emscripten/websocket.h) for /ui and /state.
+    -lwebsocket.js
     -sASSERTIONS=0
     -sGL_ASSERTIONS=0
     -sFETCH=1
@@ -140,12 +145,12 @@ if(EMSCRIPTEN)
   )
 else()
   if(WIN32)
-    # TODO(matijak) netimgui does not build on Windows yet: its client sources
-    # include <sys/time.h> and its logging header calls localtime_r, neither of
-    # which Windows provides. Windows has no web viewer in any case; its Kokoro
-    # jobs have no WASM toolchain so its wheels ship without the browser client.
+    # TODO(matijak) The web viewer modules do not build on Windows yet: the
+    # NetImgui logging header they use calls localtime_r, which Windows does
+    # not provide. Windows has no web viewer in any case; its Kokoro jobs have
+    # no WASM toolchain so its wheels ship without the browser client.
     message(STATUS "Windows: skipping the Web Viewer Python modules "
-                   "(netimgui is POSIX-only).")
+                   "(NetImgui's logging header is POSIX-only).")
     return()
   endif()
 
@@ -155,8 +160,11 @@ else()
     return()
   endif()
 
-  add_subdirectory(${NETIMGUI_DIR} ${CMAKE_CURRENT_BINARY_DIR}/netimgui)
-  if(NOT TARGET netimgui)
+  # Only netimgui_protocol is linked; EXCLUDE_FROM_ALL skips NetImgui's client
+  # runtime, which nothing here uses.
+  add_subdirectory(${NETIMGUI_DIR} ${CMAKE_CURRENT_BINARY_DIR}/netimgui
+                   EXCLUDE_FROM_ALL)
+  if(NOT TARGET netimgui_protocol)
     return()
   endif()
 
@@ -171,7 +179,7 @@ else()
   target_link_libraries(_studio PRIVATE
     mujoco::dep::dear_imgui
     mujoco::dep::implot
-    netimgui
+    netimgui_protocol
   )
   target_compile_definitions(_studio PRIVATE MUJOCO_STUDIO_WITH_WEB)
 endif()

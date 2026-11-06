@@ -20,7 +20,7 @@
 #  2. The Python bindings build (for the headless_ui pybind module), where Dear
 #     ImGui is an imported archive named `mujoco::dep::dear_imgui`.
 
-if(TARGET netimgui)
+if(TARGET netimgui_protocol)
   return()
 endif()
 
@@ -37,10 +37,29 @@ else()
   return()
 endif()
 
+# NetImgui's protocol: its messages and draw frame codec, without the client
+# runtime and its connection thread and sockets. The MuJoCo web viewer carries
+# the messages itself, so it uses only this.
+add_library(netimgui_protocol STATIC
+  Code/Client/Private/NetImgui_CmdPackets_DrawFrame.cpp
+)
+
+target_include_directories(netimgui_protocol
+  PUBLIC
+    ${CMAKE_CURRENT_SOURCE_DIR}                      # google/logging.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/Code/Client          # NetImgui_Api.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/Code/Client/Private  # NetImgui_CmdPackets.h etc.
+)
+
+target_link_libraries(netimgui_protocol PUBLIC ${NETIMGUI_IMGUI_TARGET})
+
+set_target_properties(netimgui_protocol PROPERTIES POSITION_INDEPENDENT_CODE ON)
+
+# The NetImgui client: the protocol plus the runtime that connects to a NetImgui
+# server and streams the Dear ImGui frames to it.
 add_library(netimgui STATIC
   Code/Client/Private/NetImgui_Api.cpp
   Code/Client/Private/NetImgui_Client.cpp
-  Code/Client/Private/NetImgui_CmdPackets_DrawFrame.cpp
 )
 
 if(EMSCRIPTEN)
@@ -70,6 +89,6 @@ target_include_directories(netimgui
     ${CMAKE_CURRENT_SOURCE_DIR}/Code/Client/Private  # NetImgui_CmdPackets.h etc.
 )
 
-target_link_libraries(netimgui PUBLIC ${NETIMGUI_IMGUI_TARGET})
+target_link_libraries(netimgui PUBLIC netimgui_protocol)
 
 set_target_properties(netimgui PROPERTIES POSITION_INDEPENDENT_CODE ON)
