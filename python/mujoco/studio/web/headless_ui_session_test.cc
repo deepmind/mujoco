@@ -19,104 +19,78 @@
 #include <cstdint>
 #include <cstring>
 #include <memory>
-#include <span>
 #include <string>
-#include <string_view>
 #include <vector>
 
 #include <gtest/gtest.h>
 #include <imgui.h>
-#include <NetImgui_Api.h>
-#include <NetImgui_CmdPackets.h>
+#include <imgui_internal.h>
+#include "ui_codec.h"
 
 namespace mujoco::studio {
 namespace {
 
-using ::NetImgui::Internal::CmdClipboard;
-using ::NetImgui::Internal::CmdDrawFrame;
-using ::NetImgui::Internal::CmdHeader;
-using ::NetImgui::Internal::CmdInput;
-using ::NetImgui::Internal::CmdTexture;
-using ::NetImgui::Internal::CmdVersion;
-using ::NetImgui::Internal::ConvertToCmdDrawFrame;
-using ::NetImgui::Internal::DecompressCmdDrawFrame;
-using ::NetImgui::Internal::DivUp;
-using ::NetImgui::Internal::ImguiDraw;
-using ::NetImgui::Internal::ImguiDrawGroup;
-using ::NetImgui::Internal::ImguiVert;
-using ::NetImgui::Internal::netImguiDelete;
-
-struct FrameDeleter {
-  void operator()(CmdDrawFrame* frame) const { netImguiDelete(frame); }
-};
-using FramePtr = std::unique_ptr<CmdDrawFrame, FrameDeleter>;
+template <typename T>
+netui::Bytes WireBytes(const T& command) {
+  const auto* raw = reinterpret_cast<const std::byte*>(&command);
+  return netui::Bytes(raw, raw + sizeof(command));
+}
 
 template <typename T>
-std::string Bytes(const T& command) {
-  return std::string(reinterpret_cast<const char*>(&command), sizeof(command));
+T HeaderOf(netui::BytesView message) {
+  T header;
+  std::memcpy(&header, message.data(), sizeof(header));
+  return header;
 }
 
-std::span<const std::byte> AsBytes(std::string_view message) {
-  return std::as_bytes(std::span(message));
+netui::MessageKind KindOf(netui::BytesView message) {
+  return HeaderOf<netui::MessageHeader>(message).kind;
 }
 
-CmdHeader::eCommands TypeOf(const std::string& message) {
-  CmdHeader header(CmdHeader::eCommands::Count, 0);
-  std::memcpy(static_cast<void*>(&header), message.data(), sizeof(header));
-  return header.mType;
+bool HoldsItsPixels(netui::BytesView message) {
+  if (message.size() < sizeof(netui::Texture)) return false;
+  const netui::Texture tex = HeaderOf<netui::Texture>(message);
+  if (tex.header.size != message.size()) return false;
+  const size_t bpp = tex.format == netui::Texture::Format::kAlpha8 ? 1 : 4;
+  const size_t pixels_size = tex.action == netui::Texture::Action::kDestroy
+                                 ? 0
+                                 : bpp * tex.width * tex.height;
+  return message.size() == sizeof(netui::Texture) + pixels_size;
 }
 
-// Whether a received texture command holds the pixels it describes, as the
-// browser checks (CmdTexture::ToPointers() needs NetImgui's client runtime).
-// Turns its pixel offset into a pointer.
-bool HoldsItsPixels(CmdTexture* texture) {
-  const uint64_t bytes_per_pixel =
-      texture->mFormat == NetImgui::eTexFormat::kTexFmtA8 ? 1 : 4;
-  const uint64_t pixels_size =
-      texture->mStatus == CmdTexture::eType::Destroy
-          ? 0
-          : bytes_per_pixel * texture->mWidth * texture->mHeight;
-  return texture->mpTextureData.ToPointer(
-      texture, reinterpret_cast<const uint8_t*>(texture) + texture->mSize,
-      pixels_size);
+const uint8_t* TexturePixels(netui::BytesView message) {
+  return reinterpret_cast<const uint8_t*>(message.data() +
+                                          sizeof(netui::Texture));
 }
 
-// A received message, copied into 8-byte aligned memory like the browser does.
-class Received {
- public:
-  explicit Received(const std::string& message)
-      : storage_(DivUp<size_t>(message.size(), sizeof(uint64_t))) {
-    std::memcpy(storage_.data(), message.data(), message.size());
-  }
-  template <typename T>
-  T* As() {
-    return reinterpret_cast<T*>(storage_.data());
-  }
-
- private:
-  std::vector<uint64_t> storage_;
-};
-
-// Expects two (uncompressed, pointer form) frames to hold the same draw data.
-void ExpectSameDrawData(const CmdDrawFrame& actual,
-                        const CmdDrawFrame& expected) {
-  ASSERT_EQ(actual.mDrawGroupCount, expected.mDrawGroupCount);
-  for (uint32_t g = 0; g < expected.mDrawGroupCount; ++g) {
-    const ImguiDrawGroup& a = actual.mpDrawGroups[g];
-    const ImguiDrawGroup& e = expected.mpDrawGroups[g];
-    ASSERT_EQ(a.mVerticeCount, e.mVerticeCount);
-    ASSERT_EQ(a.mIndiceCount, e.mIndiceCount);
-    ASSERT_EQ(a.mDrawCount, e.mDrawCount);
-    ASSERT_EQ(a.mBytePerIndex, e.mBytePerIndex);
-    EXPECT_EQ(std::memcmp(a.mpVertices.Get(), e.mpVertices.Get(),
-                          e.mVerticeCount * sizeof(ImguiVert)),
+void ExpectSameDrawData(const netui::DecodedFrame& actual,
+                        const netui::SerializedFrame& expected_serialized) {
+  netui::SerializedFrame dummy_prev;
+  uint64_t dummy_idx = 0;
+  netui::DecodedFrame expected;
+  bool request_keyframe = false;
+  ASSERT_TRUE(netui::DecodeDrawFrame(
+      netui::EncodeDrawFrame(expected_serialized, 1), &dummy_prev, &dummy_idx,
+      &expected, &request_keyframe));
+  ASSERT_EQ(actual.lists.size(), expected.lists.size());
+  for (size_t g = 0; g < expected.lists.size(); ++g) {
+    const netui::DrawList& a = actual.lists[g];
+    const netui::DrawList& e = expected.lists[g];
+    ASSERT_EQ(a.verts.size(), e.verts.size());
+    ASSERT_EQ(a.indices, e.indices);
+    ASSERT_EQ(a.commands.size(), e.commands.size());
+    EXPECT_EQ(std::memcmp(a.verts.data(), e.verts.data(),
+                          e.verts.size() * sizeof(netui::Vert)),
               0);
-    EXPECT_EQ(std::memcmp(a.mpIndices.Get(), e.mpIndices.Get(),
-                          e.mIndiceCount * e.mBytePerIndex),
-              0);
-    EXPECT_EQ(std::memcmp(a.mpDraws.Get(), e.mpDraws.Get(),
-                          e.mDrawCount * sizeof(ImguiDraw)),
-              0);
+    for (size_t c = 0; c < e.commands.size(); ++c) {
+      EXPECT_EQ(a.commands[c].tex_id, e.commands[c].tex_id);
+      EXPECT_EQ(a.commands[c].vtx_offset, e.commands[c].vtx_offset);
+      EXPECT_EQ(a.commands[c].idx_offset, e.commands[c].idx_offset);
+      EXPECT_EQ(a.commands[c].elem_count, e.commands[c].elem_count);
+      EXPECT_EQ(std::memcmp(a.commands[c].clip_rect, e.commands[c].clip_rect,
+                            sizeof(e.commands[c].clip_rect)),
+                0);
+    }
   }
 }
 
@@ -148,21 +122,19 @@ class HeadlessUiSessionTest : public ::testing::Test {
   ~HeadlessUiSessionTest() override { ImGui::DestroyContext(context_); }
 
   void StartSession() {
-    const std::string handshake = Bytes(CmdVersion());
-    std::string reply;
+    const netui::Bytes handshake = WireBytes(netui::Hello());
+    netui::Bytes reply;
     std::string error;
-    ASSERT_TRUE(session_.StartSession(AsBytes(handshake), &reply, &error))
-        << error;
+    ASSERT_TRUE(session_.StartSession(handshake, &reply, &error)) << error;
   }
 
   // Starts a session and sends the browser's first input, as the browser does
   // right after its handshake: frames are captured for its screen from then on.
   void Connect() {
     StartSession();
-    CmdInput input;
-    input.mScreenSize[0] = 640;
-    input.mScreenSize[1] = 480;
-    input.mCompressionUse = true;
+    netui::Input input;
+    input.screen_size[0] = 640;
+    input.screen_size[1] = 480;
     ASSERT_TRUE(PushInput(input));
   }
 
@@ -193,75 +165,54 @@ class HeadlessUiSessionTest : public ::testing::Test {
     session_.CaptureFrame(ImGuiMouseCursor_Arrow);
   }
 
-  // The draw data of the frame just run, as an uncompressed frame.
-  static FramePtr CurrentDrawData() {
-    return FramePtr(
-        ConvertToCmdDrawFrame(ImGui::GetDrawData(), ImGuiMouseCursor_Arrow));
+  static netui::SerializedFrame CurrentDrawData() {
+    netui::SerializedFrame frame;
+    netui::SerializeDrawData(ImGui::GetDrawData(), ImGuiMouseCursor_Arrow,
+                             &frame);
+    return frame;
   }
 
-  bool PushInput(const CmdInput& input) {
-    const std::string message = Bytes(input);
-    return session_.PushInput(AsBytes(message));
+  bool PushInput(const netui::Input& input) {
+    const netui::Bytes message = WireBytes(input);
+    return session_.PushInput(message);
   }
 
   ImGuiContext* context_ = nullptr;
-  HeadlessUiSession session_{"Test UI"};
+  HeadlessUiSession session_;
 };
 
 TEST_F(HeadlessUiSessionTest, StartSessionChecksTheHandshake) {
-  std::string reply;
+  netui::Bytes reply;
   std::string error;
 
-  const std::string short_handshake = Bytes(CmdVersion()).substr(0, 8);
-  EXPECT_FALSE(
-      session_.StartSession(AsBytes(short_handshake), &reply, &error));
+  const netui::Bytes full_handshake = WireBytes(netui::Hello());
+  EXPECT_FALSE(session_.StartSession(netui::BytesView(full_handshake).first(4),
+                                     &reply, &error));
 
-  CmdVersion other_version;
-  other_version.mVersion = static_cast<CmdVersion::eVersion>(
-      static_cast<int>(other_version.mVersion) + 1);
-  const std::string other = Bytes(other_version);
-  EXPECT_FALSE(session_.StartSession(AsBytes(other), &reply, &error));
+  netui::Hello other_version;
+  other_version.header.version = netui::kCodecVersion + 1;
+  const netui::Bytes other = WireBytes(other_version);
+  EXPECT_FALSE(session_.StartSession(other, &reply, &error));
   EXPECT_NE(error.find("protocol"), std::string::npos);
   EXPECT_FALSE(session_.IsActive());
 
-  const std::string handshake = Bytes(CmdVersion());
-  ASSERT_TRUE(session_.StartSession(AsBytes(handshake), &reply, &error));
+  ASSERT_TRUE(session_.StartSession(full_handshake, &reply, &error));
   EXPECT_TRUE(session_.IsActive());
-  ASSERT_EQ(reply.size(), sizeof(CmdVersion));
-  Received received(reply);
-  EXPECT_EQ(received.As<CmdVersion>()->mType, CmdHeader::eCommands::Version);
-  EXPECT_STREQ(received.As<CmdVersion>()->mClientName, "Test UI");
-}
-
-TEST_F(HeadlessUiSessionTest, TruncatesLongClientNameOnUtf8Boundary) {
-  auto reply_name = [](const std::string& name) {
-    HeadlessUiSession session(name);
-    const std::string handshake = Bytes(CmdVersion());
-    std::string reply;
-    std::string error;
-    if (!session.StartSession(AsBytes(handshake), &reply, &error)) {
-      return "StartSession failed: " + error;
-    }
-    Received received(reply);
-    return std::string(received.As<CmdVersion>()->mClientName);
-  };
-  // The name field holds 63 bytes; "\xC3\x9C" is one 2-byte character.
-  const std::string fits = std::string(61, 'a') + "\xC3\x9C";
-  EXPECT_EQ(reply_name(fits), fits);
-  const std::string too_long = std::string(62, 'a') + "\xC3\x9C";
-  EXPECT_EQ(reply_name(too_long), std::string(62, 'a'));
+  ASSERT_EQ(reply.size(), sizeof(netui::Hello));
+  const netui::Hello hello = HeaderOf<netui::Hello>(reply);
+  EXPECT_EQ(hello.header.kind, netui::MessageKind::kHello);
 }
 
 TEST_F(HeadlessUiSessionTest, SendsNothingWithoutASession) {
   RunFrame("Hello");
   EXPECT_TRUE(session_.TakeMessages().empty());
-  EXPECT_FALSE(PushInput(CmdInput()));
+  EXPECT_FALSE(PushInput(netui::Input()));
 }
 
 TEST_F(HeadlessUiSessionTest, HasInputOnceTheSessionsBrowserSendsInput) {
   StartSession();
   EXPECT_FALSE(session_.HasInput());
-  ASSERT_TRUE(PushInput(CmdInput()));
+  ASSERT_TRUE(PushInput(netui::Input()));
   EXPECT_TRUE(session_.HasInput());
 
   session_.EndSession();
@@ -274,33 +225,35 @@ TEST_F(HeadlessUiSessionTest, FirstFrameSendsTexturesThenAFullFrame) {
   Connect();
   RunFrame("Hello");
 
-  std::vector<std::string> messages = session_.TakeMessages();
+  std::vector<netui::Bytes> messages = session_.TakeMessages();
   ASSERT_GE(messages.size(), 2u);
   std::vector<uint64_t> texture_ids;
   for (size_t i = 0; i + 1 < messages.size(); ++i) {
-    ASSERT_EQ(TypeOf(messages[i]), CmdHeader::eCommands::Texture);
-    Received received(messages[i]);
-    CmdTexture* texture = received.As<CmdTexture>();
-    EXPECT_EQ(texture->mSize, messages[i].size());
-    EXPECT_EQ(texture->mStatus, CmdTexture::eType::Create);
-    EXPECT_TRUE(HoldsItsPixels(texture));
-    texture_ids.push_back(texture->mTextureClientID);
+    ASSERT_EQ(KindOf(messages[i]), netui::MessageKind::kTexture);
+    const netui::Texture texture = HeaderOf<netui::Texture>(messages[i]);
+    EXPECT_EQ(texture.header.size, messages[i].size());
+    EXPECT_EQ(texture.action, netui::Texture::Action::kCreate);
+    EXPECT_TRUE(HoldsItsPixels(messages[i]));
+    texture_ids.push_back(texture.tex_id);
   }
 
-  ASSERT_EQ(TypeOf(messages.back()), CmdHeader::eCommands::DrawFrame);
-  Received received(messages.back());
-  CmdDrawFrame* frame = received.As<CmdDrawFrame>();
-  EXPECT_EQ(frame->mSize, messages.back().size());
-  EXPECT_FALSE(frame->mCompressed);
-  EXPECT_EQ(frame->mFrameIndex, 1u);
-  ASSERT_TRUE(frame->ToPointers());
-  ExpectSameDrawData(*frame, *CurrentDrawData());
+  ASSERT_EQ(KindOf(messages.back()), netui::MessageKind::kDrawFrame);
+  const netui::DrawFrame hdr = HeaderOf<netui::DrawFrame>(messages.back());
+  EXPECT_EQ(hdr.header.size, messages.back().size());
+  EXPECT_EQ(hdr.header.flags & netui::DrawFrame::kCompressed, 0u);
+  EXPECT_EQ(hdr.frame_index, 1u);
+
+  netui::SerializedFrame decoder_prev;
+  uint64_t decoder_idx = 0;
+  netui::DecodedFrame frame;
+  bool request_keyframe = false;
+  ASSERT_TRUE(netui::DecodeDrawFrame(messages.back(), &decoder_prev,
+                                     &decoder_idx, &frame, &request_keyframe));
+  ExpectSameDrawData(frame, CurrentDrawData());
   // The draw calls use the textures sent before the frame.
-  for (uint32_t g = 0; g < frame->mDrawGroupCount; ++g) {
-    const ImguiDrawGroup& group = frame->mpDrawGroups[g];
-    for (uint32_t d = 0; d < group.mDrawCount; ++d) {
-      EXPECT_NE(std::find(texture_ids.begin(), texture_ids.end(),
-                          group.mpDraws[d].mClientTexId),
+  for (const netui::DrawList& list : frame.lists) {
+    for (const netui::DrawCommand& cmd : list.commands) {
+      EXPECT_NE(std::find(texture_ids.begin(), texture_ids.end(), cmd.tex_id),
                 texture_ids.end());
     }
   }
@@ -312,26 +265,27 @@ TEST_F(HeadlessUiSessionTest, FirstFrameSendsTexturesThenAFullFrame) {
 TEST_F(HeadlessUiSessionTest, CompressesAgainstTheLastFrameTaken) {
   Connect();
   RunFrame("First");
-  std::vector<std::string> first = session_.TakeMessages();
-  Received first_frame(first.back());
-  ASSERT_TRUE(first_frame.As<CmdDrawFrame>()->ToPointers());
+  std::vector<netui::Bytes> first = session_.TakeMessages();
+  netui::SerializedFrame decoder_prev;
+  uint64_t decoder_idx = 0;
+  netui::DecodedFrame decoded;
+  bool request_keyframe = false;
+  ASSERT_TRUE(netui::DecodeDrawFrame(first.back(), &decoder_prev, &decoder_idx,
+                                     &decoded, &request_keyframe));
 
   // A frame captured but replaced before being taken is never sent.
   RunFrame("Frist");
   RunFrame("Fisrt");
-  FramePtr expected = CurrentDrawData();
-  std::vector<std::string> second = session_.TakeMessages();
+  const netui::SerializedFrame expected = CurrentDrawData();
+  std::vector<netui::Bytes> second = session_.TakeMessages();
   ASSERT_EQ(second.size(), 1u);
-  Received second_frame(second.back());
-  CmdDrawFrame* packed = second_frame.As<CmdDrawFrame>();
-  EXPECT_TRUE(packed->mCompressed);
-  EXPECT_EQ(packed->mFrameIndex, 2u);
-  ASSERT_TRUE(packed->ToPointers());
+  const netui::DrawFrame packed_hdr = HeaderOf<netui::DrawFrame>(second.back());
+  EXPECT_NE(packed_hdr.header.flags & netui::DrawFrame::kCompressed, 0u);
+  EXPECT_EQ(packed_hdr.frame_index, 2u);
 
-  FramePtr unpacked(
-      DecompressCmdDrawFrame(first_frame.As<CmdDrawFrame>(), packed));
-  ASSERT_NE(unpacked, nullptr);
-  ExpectSameDrawData(*unpacked, *expected);
+  ASSERT_TRUE(netui::DecodeDrawFrame(second.back(), &decoder_prev, &decoder_idx,
+                                     &decoded, &request_keyframe));
+  ExpectSameDrawData(decoded, expected);
 }
 
 // The browser acks a frame by echoing its index.
@@ -340,15 +294,13 @@ TEST_F(HeadlessUiSessionTest, LastFrameIndexIsThatOfTheLastFrameTaken) {
   Connect();
   RunFrame("First");
   EXPECT_EQ(session_.LastFrameIndex(), 0u);  // Not taken yet.
-  std::vector<std::string> messages = session_.TakeMessages();
-  Received first(messages.back());
-  EXPECT_EQ(first.As<CmdDrawFrame>()->mFrameIndex, 1u);
+  std::vector<netui::Bytes> messages = session_.TakeMessages();
+  EXPECT_EQ(HeaderOf<netui::DrawFrame>(messages.back()).frame_index, 1u);
   EXPECT_EQ(session_.LastFrameIndex(), 1u);
 
   RunFrame("Frist");
   messages = session_.TakeMessages();
-  Received second(messages.back());
-  EXPECT_EQ(second.As<CmdDrawFrame>()->mFrameIndex, 2u);
+  EXPECT_EQ(HeaderOf<netui::DrawFrame>(messages.back()).frame_index, 2u);
   EXPECT_EQ(session_.LastFrameIndex(), 2u);
   EXPECT_TRUE(session_.TakeMessages().empty());  // Nothing new, no change.
   EXPECT_EQ(session_.LastFrameIndex(), 2u);
@@ -359,41 +311,40 @@ TEST_F(HeadlessUiSessionTest, SendsAFullFrameWhenTheBrowserAsks) {
   RunFrame("First");
   session_.TakeMessages();
 
-  CmdInput input;
-  input.mCompressionUse = true;
-  input.mCompressionSkip = true;
+  netui::Input input;
+  input.header.flags = netui::Input::kRequestKeyframe;
   ASSERT_TRUE(PushInput(input));
   RunFrame("Frist");
-  std::vector<std::string> messages = session_.TakeMessages();
-  Received frame(messages.back());
-  EXPECT_FALSE(frame.As<CmdDrawFrame>()->mCompressed);
+  std::vector<netui::Bytes> messages = session_.TakeMessages();
+  EXPECT_EQ(HeaderOf<netui::DrawFrame>(messages.back()).header.flags &
+                netui::DrawFrame::kCompressed,
+            0u);
 
-  input.mCompressionSkip = false;
+  input.header.flags = 0;
   ASSERT_TRUE(PushInput(input));
   RunFrame("Fisrt");
   messages = session_.TakeMessages();
-  Received next(messages.back());
-  EXPECT_TRUE(next.As<CmdDrawFrame>()->mCompressed);
+  EXPECT_NE(HeaderOf<netui::DrawFrame>(messages.back()).header.flags &
+                netui::DrawFrame::kCompressed,
+            0u);
 }
 
 TEST_F(HeadlessUiSessionTest, AppliesBrowserInput) {
   StartSession();
   RunFrame("Hello");
 
-  CmdInput input;
-  input.mScreenSize[0] = 800;
-  input.mScreenSize[1] = 600;
-  input.mMousePos[0] = 50;
-  input.mMousePos[1] = 60;
-  input.mMouseDownMask = 1 << CmdInput::ImGuiMouseButton_Left;
-  input.mInputDownMask[CmdInput::ImGuiKey_A / 64] |=
-      uint64_t{1} << (CmdInput::ImGuiKey_A % 64);
-  input.mInputDownMask[CmdInput::ImGuiKey_ReservedForModCtrl / 64] |=
-      uint64_t{1} << (CmdInput::ImGuiKey_ReservedForModCtrl % 64);
-  input.mKeyChars[0] = 'h';
-  input.mKeyChars[1] = 'i';
-  input.mKeyCharCount = 2;
-  input.mMouseWheelVert = 5.0f;  // A running total: no scroll yet.
+  netui::Input input;
+  input.screen_size[0] = 800;
+  input.screen_size[1] = 600;
+  input.mouse_pos[0] = 50.0f;
+  input.mouse_pos[1] = 60.0f;
+  input.mouse_down_mask = 1u << ImGuiMouseButton_Left;
+  input.SetImGuiKeyDown(ImGuiKey_A);
+  input.SetImGuiKeyDown(ImGuiKey_ReservedForModCtrl);
+  input.chars[0] = 'h';
+  input.chars[1] = 'i';
+  input.char_count = 2;
+  input.mouse_wheel[0] = 5.0f;  // A running total: no scroll yet.
   ASSERT_TRUE(PushInput(input));
 
   BeginFrame();
@@ -412,10 +363,10 @@ TEST_F(HeadlessUiSessionTest, AppliesBrowserInput) {
   EndFrame("Hello");
 
   // The wheel total grows by 2: a scroll of 2. Releases are events too.
-  input.mMouseDownMask = 0;
-  input.mInputDownMask[CmdInput::ImGuiKey_A / 64] = 0;
-  input.mKeyCharCount = 0;
-  input.mMouseWheelVert = 7.0f;
+  input.mouse_down_mask = 0;
+  input.SetImGuiKeyDown(ImGuiKey_A, false);
+  input.char_count = 0;
+  input.mouse_wheel[0] = 7.0f;
   ASSERT_TRUE(PushInput(input));
   BeginFrame();
   EXPECT_EQ(io.MouseWheel, 2.0f);
@@ -426,14 +377,13 @@ TEST_F(HeadlessUiSessionTest, AppliesBrowserInput) {
 
 TEST_F(HeadlessUiSessionTest, ANewSessionReleasesInputAndResendsTextures) {
   StartSession();
-  CmdInput input;
-  input.mMouseDownMask = 1 << CmdInput::ImGuiMouseButton_Left;
-  input.mInputDownMask[CmdInput::ImGuiKey_A / 64] |=
-      uint64_t{1} << (CmdInput::ImGuiKey_A % 64);
+  netui::Input input;
+  input.mouse_down_mask = 1u << ImGuiMouseButton_Left;
+  input.SetImGuiKeyDown(ImGuiKey_A);
   ASSERT_TRUE(PushInput(input));
   RunFrame("Hello");
   EXPECT_TRUE(ImGui::IsKeyDown(ImGuiKey_A));
-  std::vector<std::string> first = session_.TakeMessages();
+  std::vector<netui::Bytes> first = session_.TakeMessages();
   const size_t first_texture_count = first.size() - 1;
   ASSERT_GT(first_texture_count, 0u);
 
@@ -448,13 +398,14 @@ TEST_F(HeadlessUiSessionTest, ANewSessionReleasesInputAndResendsTextures) {
   EXPECT_FALSE(ImGui::IsMouseDown(ImGuiMouseButton_Left));
   EndFrame("Hello");
 
-  std::vector<std::string> again = session_.TakeMessages();
+  std::vector<netui::Bytes> again = session_.TakeMessages();
   ASSERT_EQ(again.size(), first_texture_count + 1);
   for (size_t i = 0; i < first_texture_count; ++i) {
     EXPECT_EQ(again[i], first[i]);  // The same textures, created again.
   }
-  Received frame(again.back());
-  EXPECT_FALSE(frame.As<CmdDrawFrame>()->mCompressed);
+  EXPECT_EQ(HeaderOf<netui::DrawFrame>(again.back()).header.flags &
+                netui::DrawFrame::kCompressed,
+            0u);
 }
 
 TEST_F(HeadlessUiSessionTest, SendsNoFrameBeforeTheBrowsersFirstInput) {
@@ -462,21 +413,20 @@ TEST_F(HeadlessUiSessionTest, SendsNoFrameBeforeTheBrowsersFirstInput) {
   RunFrame("Hello");  // Not laid out for the browser's screen.
   EXPECT_TRUE(session_.TakeMessages().empty());
 
-  CmdInput input;
-  input.mScreenSize[0] = 800;
-  input.mScreenSize[1] = 600;
+  netui::Input input;
+  input.screen_size[0] = 800;
+  input.screen_size[1] = 600;
   ASSERT_TRUE(PushInput(input));
   RunFrame("Hello");
-  std::vector<std::string> messages = session_.TakeMessages();
+  std::vector<netui::Bytes> messages = session_.TakeMessages();
   ASSERT_GE(messages.size(), 2u);
-  EXPECT_EQ(TypeOf(messages.front()), CmdHeader::eCommands::Texture);
-  ASSERT_EQ(TypeOf(messages.back()), CmdHeader::eCommands::DrawFrame);
-  Received frame(messages.back());
-  const CmdDrawFrame* first = frame.As<CmdDrawFrame>();
-  EXPECT_FALSE(first->mCompressed);
-  EXPECT_EQ(first->mFrameIndex, 1u);
-  EXPECT_EQ(first->mDisplayArea[2] - first->mDisplayArea[0], 800.0f);
-  EXPECT_EQ(first->mDisplayArea[3] - first->mDisplayArea[1], 600.0f);
+  EXPECT_EQ(KindOf(messages.front()), netui::MessageKind::kTexture);
+  ASSERT_EQ(KindOf(messages.back()), netui::MessageKind::kDrawFrame);
+  const netui::DrawFrame first = HeaderOf<netui::DrawFrame>(messages.back());
+  EXPECT_EQ(first.header.flags & netui::DrawFrame::kCompressed, 0u);
+  EXPECT_EQ(first.frame_index, 1u);
+  EXPECT_EQ(first.display_size[0], 800.0f);
+  EXPECT_EQ(first.display_size[1], 600.0f);
 }
 
 TEST_F(HeadlessUiSessionTest, DropsAFrameLaidOutForThePreviousBrowser) {
@@ -491,19 +441,18 @@ TEST_F(HeadlessUiSessionTest, DropsAFrameLaidOutForThePreviousBrowser) {
   EXPECT_TRUE(session_.TakeMessages().empty());
 
   // Its first frame waits for its input, so it is laid out for its screen.
-  CmdInput input;
-  input.mScreenSize[0] = 800;
-  input.mScreenSize[1] = 600;
+  netui::Input input;
+  input.screen_size[0] = 800;
+  input.screen_size[1] = 600;
   ASSERT_TRUE(PushInput(input));
   RunFrame("Hello");
-  std::vector<std::string> messages = session_.TakeMessages();
+  std::vector<netui::Bytes> messages = session_.TakeMessages();
   ASSERT_EQ(messages.size(), texture_count + 1);  // The textures again.
-  ASSERT_EQ(TypeOf(messages.back()), CmdHeader::eCommands::DrawFrame);
-  Received frame(messages.back());
-  const CmdDrawFrame* first = frame.As<CmdDrawFrame>();
-  EXPECT_FALSE(first->mCompressed);
-  EXPECT_EQ(first->mDisplayArea[2] - first->mDisplayArea[0], 800.0f);
-  EXPECT_EQ(first->mDisplayArea[3] - first->mDisplayArea[1], 600.0f);
+  ASSERT_EQ(KindOf(messages.back()), netui::MessageKind::kDrawFrame);
+  const netui::DrawFrame first = HeaderOf<netui::DrawFrame>(messages.back());
+  EXPECT_EQ(first.header.flags & netui::DrawFrame::kCompressed, 0u);
+  EXPECT_EQ(first.display_size[0], 800.0f);
+  EXPECT_EQ(first.display_size[1], 600.0f);
 }
 
 TEST_F(HeadlessUiSessionTest, CreatesUpdatesAndDestroysUserTextures) {
@@ -517,16 +466,15 @@ TEST_F(HeadlessUiSessionTest, CreatesUpdatesAndDestroysUserTextures) {
   ImGui::RegisterUserTexture(image.get());
   RunFrame("Hello", image.get());
 
-  std::vector<std::string> messages = session_.TakeMessages();
+  std::vector<netui::Bytes> messages = session_.TakeMessages();
   ASSERT_EQ(messages.size(), 2u);
-  Received create(messages[0]);
-  CmdTexture* created = create.As<CmdTexture>();
-  EXPECT_EQ(created->mStatus, CmdTexture::eType::Create);
-  EXPECT_EQ(created->mWidth, 2u);
-  EXPECT_EQ(created->mHeight, 2u);
-  ASSERT_TRUE(HoldsItsPixels(created));
-  EXPECT_EQ(created->mpTextureData.Get()[0], 0x40);
-  const uint64_t image_id = created->mTextureClientID;
+  const netui::Texture created = HeaderOf<netui::Texture>(messages[0]);
+  EXPECT_EQ(created.action, netui::Texture::Action::kCreate);
+  EXPECT_EQ(created.width, 2u);
+  EXPECT_EQ(created.height, 2u);
+  ASSERT_TRUE(HoldsItsPixels(messages[0]));
+  EXPECT_EQ(TexturePixels(messages[0])[0], 0x40);
+  const uint64_t image_id = created.tex_id;
 
   // Change one pixel: only that rectangle is sent.
   static_cast<uint8_t*>(image->GetPixelsAt(1, 1))[0] = 0x80;
@@ -535,25 +483,24 @@ TEST_F(HeadlessUiSessionTest, CreatesUpdatesAndDestroysUserTextures) {
   RunFrame("Hello", image.get());
   messages = session_.TakeMessages();
   ASSERT_EQ(messages.size(), 2u);
-  Received update(messages[0]);
-  CmdTexture* updated = update.As<CmdTexture>();
-  EXPECT_EQ(updated->mStatus, CmdTexture::eType::Update);
-  EXPECT_EQ(updated->mTextureClientID, image_id);
-  EXPECT_EQ(updated->mOffsetX, 1u);
-  EXPECT_EQ(updated->mOffsetY, 1u);
-  EXPECT_EQ(updated->mWidth, 1u);
-  ASSERT_TRUE(HoldsItsPixels(updated));
-  EXPECT_EQ(updated->mpTextureData.Get()[0], 0x80);
+  const netui::Texture updated = HeaderOf<netui::Texture>(messages[0]);
+  EXPECT_EQ(updated.action, netui::Texture::Action::kUpdate);
+  EXPECT_EQ(updated.tex_id, image_id);
+  EXPECT_EQ(updated.x, 1u);
+  EXPECT_EQ(updated.y, 1u);
+  EXPECT_EQ(updated.width, 1u);
+  ASSERT_TRUE(HoldsItsPixels(messages[0]));
+  EXPECT_EQ(TexturePixels(messages[0])[0], 0x80);
 
   // A texture that disappears is destroyed in the browser too.
   ImGui::UnregisterUserTexture(image.get());
   RunFrame("Hello");
   messages = session_.TakeMessages();
   ASSERT_EQ(messages.size(), 2u);
-  Received destroy(messages[0]);
-  EXPECT_EQ(destroy.As<CmdTexture>()->mStatus, CmdTexture::eType::Destroy);
-  EXPECT_EQ(destroy.As<CmdTexture>()->mTextureClientID, image_id);
-  EXPECT_TRUE(HoldsItsPixels(destroy.As<CmdTexture>()));
+  const netui::Texture destroyed = HeaderOf<netui::Texture>(messages[0]);
+  EXPECT_EQ(destroyed.action, netui::Texture::Action::kDestroy);
+  EXPECT_EQ(destroyed.tex_id, image_id);
+  EXPECT_TRUE(HoldsItsPixels(messages[0]));
 }
 
 TEST_F(HeadlessUiSessionTest, SendsOnlyTheNewestCopyOfATexture) {
@@ -574,17 +521,16 @@ TEST_F(HeadlessUiSessionTest, SendsOnlyTheNewestCopyOfATexture) {
     image->SetStatus(ImTextureStatus_WantUpdates);
     RunFrame("Hello", image.get());
   }
-  std::vector<std::string> messages = session_.TakeMessages();
+  std::vector<netui::Bytes> messages = session_.TakeMessages();
   ASSERT_EQ(messages.size(), 2u);
-  Received upload(messages[0]);
-  CmdTexture* uploaded = upload.As<CmdTexture>();
-  EXPECT_EQ(uploaded->mStatus, CmdTexture::eType::Create);
-  EXPECT_EQ(uploaded->mWidth, 2u);
-  EXPECT_EQ(uploaded->mHeight, 2u);
-  ASSERT_TRUE(HoldsItsPixels(uploaded));
-  EXPECT_EQ(uploaded->mpTextureData.Get()[0], 0x70);
-  const uint64_t image_id = uploaded->mTextureClientID;
-  EXPECT_EQ(TypeOf(messages[1]), CmdHeader::eCommands::DrawFrame);
+  const netui::Texture uploaded = HeaderOf<netui::Texture>(messages[0]);
+  EXPECT_EQ(uploaded.action, netui::Texture::Action::kCreate);
+  EXPECT_EQ(uploaded.width, 2u);
+  EXPECT_EQ(uploaded.height, 2u);
+  ASSERT_TRUE(HoldsItsPixels(messages[0]));
+  EXPECT_EQ(TexturePixels(messages[0])[0], 0x70);
+  const uint64_t image_id = uploaded.tex_id;
+  EXPECT_EQ(KindOf(messages[1]), netui::MessageKind::kDrawFrame);
 
   // Destroyed before its last upload is sent: only the Destroy is.
   std::memset(image->GetPixels(), 0x80, image->GetSizeInBytes());
@@ -595,29 +541,29 @@ TEST_F(HeadlessUiSessionTest, SendsOnlyTheNewestCopyOfATexture) {
   RunFrame("Hello");
   messages = session_.TakeMessages();
   ASSERT_EQ(messages.size(), 2u);
-  Received destroy(messages[0]);
-  EXPECT_EQ(destroy.As<CmdTexture>()->mStatus, CmdTexture::eType::Destroy);
-  EXPECT_EQ(destroy.As<CmdTexture>()->mTextureClientID, image_id);
+  const netui::Texture destroyed = HeaderOf<netui::Texture>(messages[0]);
+  EXPECT_EQ(destroyed.action, netui::Texture::Action::kDestroy);
+  EXPECT_EQ(destroyed.tex_id, image_id);
 }
 
 TEST_F(HeadlessUiSessionTest, RejectsMalformedInput) {
   StartSession();
-  const std::string input = Bytes(CmdInput());
+  const netui::Bytes input = WireBytes(netui::Input());
   EXPECT_FALSE(
-      session_.PushInput(AsBytes(input).first(input.size() - 1)));
-  EXPECT_FALSE(session_.PushInput(std::span<const std::byte>()));
+      session_.PushInput(netui::BytesView(input).first(input.size() - 1)));
+  EXPECT_FALSE(session_.PushInput(netui::BytesView()));
 
-  CmdInput not_input;
-  not_input.mType = CmdHeader::eCommands::DrawFrame;
-  const std::string wrong_type = Bytes(not_input);
-  EXPECT_FALSE(session_.PushInput(AsBytes(wrong_type)));
+  netui::Input not_input;
+  not_input.header.kind = netui::MessageKind::kDrawFrame;
+  const netui::Bytes wrong_type = WireBytes(not_input);
+  EXPECT_FALSE(session_.PushInput(wrong_type));
 
-  CmdInput too_many_chars;
-  too_many_chars.mKeyCharCount = 257;
-  const std::string overflow = Bytes(too_many_chars);
-  EXPECT_FALSE(session_.PushInput(AsBytes(overflow)));
+  netui::Input too_many_chars;
+  too_many_chars.char_count = netui::Input::kMaxChars + 1;
+  const netui::Bytes overflow = WireBytes(too_many_chars);
+  EXPECT_FALSE(session_.PushInput(overflow));
 
-  EXPECT_TRUE(session_.PushInput(AsBytes(input)));
+  EXPECT_TRUE(session_.PushInput(input));
 }
 
 TEST_F(HeadlessUiSessionTest, ForwardsClipboardTextWithNextFrame) {
@@ -625,21 +571,33 @@ TEST_F(HeadlessUiSessionTest, ForwardsClipboardTextWithNextFrame) {
   RunFrame("Hello");
   session_.TakeMessages();
 
-  // SetClipboardText during a frame queues a CmdClipboard sent before the
+  // SetClipboardText during a frame queues a Clipboard message sent before the
   // frame, and survives if another frame is captured before TakeMessages().
   BeginFrame();
   ImGui::SetClipboardText("copied camera");
   EndFrame("Hello");
   RunFrame("Hello");
 
-  std::vector<std::string> messages = session_.TakeMessages();
+  std::vector<netui::Bytes> messages = session_.TakeMessages();
   ASSERT_EQ(messages.size(), 2u);
-  ASSERT_EQ(TypeOf(messages[0]), CmdHeader::eCommands::Clipboard);
-  Received clip(messages[0]);
-  CmdClipboard* cmd = clip.As<CmdClipboard>();
-  ASSERT_TRUE(cmd->ToPointers());
-  EXPECT_STREQ(cmd->mContentUTF8.Get(), "copied camera");
-  EXPECT_EQ(TypeOf(messages[1]), CmdHeader::eCommands::DrawFrame);
+  ASSERT_EQ(KindOf(messages[0]), netui::MessageKind::kClipboard);
+  std::string copied;
+  bool open_url = true;
+  ASSERT_TRUE(netui::DecodeClipboard(messages[0], &copied, &open_url));
+  EXPECT_EQ(copied, "copied camera");
+  EXPECT_FALSE(open_url);
+  EXPECT_EQ(KindOf(messages[1]), netui::MessageKind::kDrawFrame);
+
+  // Text with the open-URL prefix goes out as a URL to open, without the
+  // prefix.
+  BeginFrame();
+  ImGui::SetClipboardText("\x01OPEN_URL:https://mujoco.org");
+  EndFrame("Hello");
+  messages = session_.TakeMessages();
+  ASSERT_EQ(messages.size(), 2u);
+  ASSERT_TRUE(netui::DecodeClipboard(messages[0], &copied, &open_url));
+  EXPECT_EQ(copied, "https://mujoco.org");
+  EXPECT_TRUE(open_url);
 
   // If control changes hands mid-frame, clipboard text from the old session's
   // frame is dropped instead of leaking to the new browser.
@@ -649,8 +607,8 @@ TEST_F(HeadlessUiSessionTest, ForwardsClipboardTextWithNextFrame) {
   EndFrame("Hello");
   RunFrame("Hello");
   messages = session_.TakeMessages();
-  for (const std::string& msg : messages) {
-    EXPECT_NE(TypeOf(msg), CmdHeader::eCommands::Clipboard);
+  for (const netui::Bytes& msg : messages) {
+    EXPECT_NE(KindOf(msg), netui::MessageKind::kClipboard);
   }
 }
 

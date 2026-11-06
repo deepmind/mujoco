@@ -1,3 +1,0 @@
-# Disable clang-format for third-party code to keep diffs minimal during Copybara updates.
-DisableFormat: true
-SortIncludes: Never

@@ -22,7 +22,7 @@
 #include <string>
 #include <vector>
 
-#include "google/logging.h"
+#include "logging.h"
 
 #if !defined(__EMSCRIPTEN__)
 #error "web_client_websocket.cc is only supported for Emscripten builds"

@@ -20,9 +20,9 @@ public port:
                      and cached model bundles by content hash
                      (/model?crc32=...), which browsers prefetch and cache.
   * WebSocket /ui    streams the headless Studio UI to the controlling browser
-                     and its input back, one NetImgui command per WebSocket
-                     message and one frame in flight (see UiSession and
-                     _UI_ACK_PREFIX).
+                     and its input back, one Studio UI wire command per
+                     WebSocket message and one frame in flight (see UiSession
+                     and _UI_ACK_PREFIX).
   * WebSocket /state serves the latest-wins state payload broadcast at ~60Hz
                      (see state_payload.h) as binary frames, and session roster
                      and model prefetch updates as text frames.
@@ -178,7 +178,7 @@ class UiSession(Protocol):
   The UI streams to one browser at a time, the controller. A session lasts while
   that browser is connected: it starts with the browser's handshake, and its
   first messages re-send everything the browser needs to draw the UI. Every
-  message is one NetImgui command, sent as one binary WebSocket message.
+  message is one Studio UI wire command, sent as one binary WebSocket message.
 
   The server thread calls these; the viewer thread runs the UI frames.
   """
@@ -187,7 +187,7 @@ class UiSession(Protocol):
     """Starts a session and returns the reply to the browser's handshake.
 
     Args:
-      handshake: The browser's first /ui message (NetImgui Version command).
+      handshake: The browser's first /ui message (Hello handshake).
 
     Raises:
       ValueError: The browser cannot talk to this viewer.
@@ -785,8 +785,8 @@ def _run_server(
       await broadcast_roster()
 
       try:
-        # Handshake: the browser's NetImgui Version command, answered with the
-        # UI's. A new session then re-sends everything the browser needs.
+        # Handshake: the browser's Hello message, answered with the UI's. A
+        # new session then re-sends everything the browser needs.
         handshake = await ws.recv()
         if not isinstance(handshake, bytes):
           await ws.close(CloseCode.POLICY_VIOLATION, "expected a handshake")
@@ -1157,8 +1157,8 @@ def _run_server(
       await stopped.wait()
       logger.debug("[Http] Stop event received; shutting down.")
 
-    # NetImgui does its own delta compression and the state payload is small;
-    # permessage-deflate would only add latency at 60Hz.
+    # The UI codec does its own delta compression and the state payload is
+    # small; permessage-deflate would only add latency at 60Hz.
     ws_server = await serve(
         ws_handler,
         sock=http_sock,

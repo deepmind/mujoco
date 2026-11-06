@@ -12,9 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// This file implements the Web Viewer Browser Client. NetImgui is used to
-// transmit remote ImGui draw data in a browser and the filament renderer is
-// used to render the UI and the 3D scene.
+// This file implements the Web Viewer Browser Client. The Studio UI wire codec
+// streams remote ImGui draw data over /ui, and the Filament renderer draws
+// both the UI and the 3D scene.
 
 #include <emscripten.h>
 #include <emscripten/bind.h>
@@ -54,7 +54,7 @@
 #include "studio/ux/imgui_widgets.h"
 #include "studio/ux/interaction.h"
 #include "studio/ux/theme.h"
-#include "google/logging.h"
+#include "logging.h"
 #include "state_payload.h"
 #include "web_client_local_ui.h"
 #include "web_client_remote_ui.h"
@@ -713,10 +713,9 @@ void MainLoopImpl() {
   // For the controller, the camera moves here (HandleControllerCameraInput) and
   // is sent to the headless viewer, while all other scene interaction
   // (perturbation, picking) is handled by the viewer: CaptureAndSendInput()
-  // forwards this frame's input over NetImgui, and the resulting state streams
-  // back over the state WebSocket (see ApplyStatePayload). Spectators have no
-  // input channel; in a free camera mode they drive their local camera
-  // directly.
+  // forwards this frame's input over /ui, and the resulting state streams back
+  // over the state WebSocket (see ApplyStatePayload). Spectators have no input
+  // channel; in a free camera mode they drive their local camera directly.
   g_app.remote_ui.CaptureAndSendInput();
   if (g_app.session.Role() == SessionRole::kControlling) {
     HandleControllerCameraInput();
@@ -879,8 +878,7 @@ void SetupScene(mjModel* m) {
         });
   }
 
-  // Invalidate all texture caches (ImGui font atlas + NetImgui streamed
-  // textures) and re-upload them on the new Filament context.
+  // Upload any CPU-buffered streamed UI textures without GPU handles yet.
   g_app.remote_ui.UpdateTextures();
 
   // Only initialize default camera/perturb/vis_options before the state

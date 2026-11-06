@@ -57,7 +57,7 @@ ImGui code does not render pixels to the screen directly. Instead, calling ImGui
 functions builds and records **draw command lists** (vertex buffers, index
 buffers, clip rects, and texture references) that are processed, rasterized,
 and rendered later in the frame pipeline (via OpenGL, Vulkan, or
-WebGL/NetImgui).
+WebGL/WebViewer).
 
 -   **Use `build_gui()` or `build_xxx_gui()`** (in Python) or `BuildGui()` /
     `BuildXxxGui()` (in C++) for all functions and methods that submit ImGui
@@ -148,8 +148,8 @@ When rendering lists, tables, or log views that may contain many items (e.g.,
 
 -   **Always Virtualize with `ImGuiListClipper` / `imgui.ListClipper`**:
     Without clipping, ImGui generates vertices and text layouts for every item
-    in the list even when offscreen. In remote streaming backends (NetImgui /
-    WebViewer), unclipped tables saturate the WebSocket stream. In C++, use
+    in the list even when offscreen. In remote streaming backends
+    (`WebViewer`), unclipped tables saturate the WebSocket stream. In C++, use
     `ImGuiListClipper clipper; clipper.Begin(...)`; in Python, use
     `clipper = imgui.ListClipper(); clipper.Begin(...)`.
 -   **Clipper Usage**: The clipper calculates the visible range and only submits

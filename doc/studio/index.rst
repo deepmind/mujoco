@@ -118,7 +118,7 @@ Legacy Visualizers
      - :ref:`Filament <FilamentRendering>` (OpenGL, Vulkan, WebGL, headless/software)
    * - **Web Support**
      - None (requires local display or X11/VNC)
-     - :ref:`MuJoCo Live <StudioLive>` (standalone WASM) & Python :ref:`WebViewer <StudioWebViewer>` (NetImgui + WASM)
+     - :ref:`MuJoCo Live <StudioLive>` (standalone WASM) & Python :ref:`WebViewer <StudioWebViewer>` (streamed ImGui + WASM)
    * - **Architecture**
      - Monolithic loop with coupled UI and physics
      - Composable :ref:`ViewerPlugin / SimPlugin <StudioPythonPlugins>` classes (Python) and :ref:`callback plugins

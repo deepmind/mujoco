@@ -19,7 +19,7 @@
 #include <cstdio>
 #include <cstring>
 
-#include "google/logging.h"
+#include "logging.h"
 #include "state_payload.h"
 
 namespace mujoco::studio {

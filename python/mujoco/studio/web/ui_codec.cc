@@ -60,11 +60,11 @@ constexpr size_t kListHeaderBytes = AlignUp8(sizeof(SerializedListHeader));
 
 // Fixed 36-byte wire representation of a DrawCommand (with no tail padding).
 struct WireDrawCommand {
-  uint64_t tex_id = 0;
-  uint32_t vtx_offset = 0;
-  uint32_t idx_offset = 0;
-  uint32_t elem_count = 0;
-  float clip_rect[4] = {};
+  uint64_t tex_id;
+  uint32_t vtx_offset;
+  uint32_t idx_offset;
+  uint32_t elem_count;
+  float clip_rect[4];
 };
 constexpr size_t kWireDrawCommandBytes = 36;
 
@@ -338,7 +338,7 @@ bool UnpackSerializedList(const SerializedList& src, DrawList* dst) {
   }
   cursor += idx_aligned;
   for (uint32_t i = 0; i < prefix.command_count; ++i) {
-    WireDrawCommand wire_cmd;
+    WireDrawCommand wire_cmd = {};
     const size_t offset = static_cast<size_t>(i) * kWireDrawCommandBytes;
     std::memcpy(&wire_cmd, cursor + offset, kWireDrawCommandBytes);
 
@@ -523,7 +523,7 @@ void SerializeDrawData(const ImDrawData* draw_data, int mouse_cursor,
     for (int c = 0; c < cmd_list->CmdBuffer.Size; ++c) {
       const ImDrawCmd& src_c = cmd_list->CmdBuffer[c];
       if (src_c.UserCallback != nullptr) continue;
-      WireDrawCommand wire_cmd;
+      WireDrawCommand wire_cmd = {};
       wire_cmd.tex_id = static_cast<uint64_t>(src_c.GetTexID());
       wire_cmd.vtx_offset = src_c.VtxOffset;
       wire_cmd.idx_offset = src_c.IdxOffset;

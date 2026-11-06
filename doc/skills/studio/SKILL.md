@@ -9,7 +9,7 @@ description: >-
   (mjPLUGIN_LIB_INIT) extensions, synchronizing sim and viewer state
   (ViewerHandle.sync, @messages.handler), hot-reloading Python plugins or models
   (HotReloadEvent), iterating on a live hot-reload Studio session, configuring
-  graphics modes or WebViewer NetImgui/WASM streaming, or debugging Studio and
+  graphics modes or WebViewer WASM streaming, or debugging Studio and
   browser console logs. Don't use for Dear ImGui/ImPlot widget layout or styling
   (use mujoco-gui), core physics stepping (use mujoco-python), or headless
   offscreen rendering (use mujoco-rendering).
@@ -21,7 +21,7 @@ Studio replaces the legacy `simulate` tools with a modular interactive
 visualization stack built on [Dear ImGui](https://github.com/ocornut/imgui) and
 ImPlot for UI, Google Filament (PBR with Vulkan, OpenGL, Metal, and WebGL
 backends) for rendering, and out-of-the-box browser streaming via `WebViewer`
-(NetImgui WASM). Its default interface, the **Studio Viewer App**, is designed
+(WASM). Its default interface, the **Studio Viewer App**, is designed
 around composable **Studio Plugins** that teams can share across environment
 authoring (e.g., Gymnasium or robotics suites), asset inspection/loading tools,
 and agent monitoring/control workflows.
@@ -101,7 +101,7 @@ when your task touches these areas:
 | :--- | :--- | :--- |
 | **GUI & Plotting** | Fixed `mjui` panels & `mjr_figure` | **Dear ImGui** & **ImPlot** |
 | **Render Backend** | Classic OpenGL (`mjrContext`) | **Filament** PBR (Vulkan, OpenGL, Metal, WebGL) |
-| **Web & Remote** | None | **WebViewer** (NetImgui UI + state over HTTP/WS) & **MuJoCo Live** (WASM) |
+| **Web & Remote** | None | **WebViewer** (streamed ImGui UI + state over HTTP/WS) & **MuJoCo Live** (WASM) |
 | **Extensibility** | Hardcoded panels and keybinds | **Plugin Architecture** in Python and C++ |
 | **Threading & Sync** | Shared `model`/`data` with locking | Python & desktop C++: decoupled sim/viewer threads; WASM (`MuJoCo Live`): single-threaded |
 
@@ -167,7 +167,7 @@ Studio provides three runner modules sharing the same `.run(...)` and
     **Recommended default.** Spawns `WebViewer` in a background daemon thread
     with **zero host graphics dependencies** (no X11/Wayland display server or
     host Filament libraries required): physics and headless Dear ImGui layout
-    run on the host while draw commands (NetImgui) and state stream over
+    run on the host while UI draw commands and state stream over
     WebSockets to a browser WASM client. Ideal for remote workstations,
     containers, and headless servers.
 2.  **`launch_native.run`**
@@ -467,5 +467,5 @@ time-to-visual-feedback** rather than upfront batch verification:
     [studio/web_viewers.rst](../../studio/web_viewers.rst),
     `.. _StudioBrowserSandboxing:`).
 5.  **Build and Run with `-c opt`**: Always compile and run Studio targets with
-    `-c opt` so physics stepping, Filament rendering, and NetImgui/WebSocket
+    `-c opt` so physics stepping, Filament rendering, and WebViewer WebSocket
     streaming execute with compiler optimizations enabled.

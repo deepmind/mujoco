@@ -23,7 +23,7 @@
 
 #include <imgui.h>
 #include "studio/ux/imgui_widgets.h"
-#include "google/logging.h"
+#include "logging.h"
 #include "web_client_session.h"
 
 namespace mujoco::studio {

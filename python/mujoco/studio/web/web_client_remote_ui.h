@@ -12,9 +12,9 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// The NetImgui client side of the web viewer. Receives the headless Studio UI
-// (draw frames/textures) over the /ui WebSocket and replies with browser input.
-// Every WebSocket message carries one NetImgui command.
+// The browser side of the web viewer's UI stream. Receives the headless Studio
+// UI (draw frames and textures) over the /ui WebSocket and replies with browser
+// input. Every binary WebSocket message carries one Studio UI wire command.
 
 #ifndef MUJOCO_PYTHON_STUDIO_WEB_WEB_CLIENT_REMOTE_UI_H_
 #define MUJOCO_PYTHON_STUDIO_WEB_WEB_CLIENT_REMOTE_UI_H_
@@ -24,30 +24,23 @@
 #include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <unordered_map>
 #include <vector>
 
 #include <imgui.h>
-#include <NetImgui_CmdPackets.h>
+#include "ui_codec.h"
 #include "web_client_websocket.h"
 
 namespace mujoco::studio {
 
-// Deleter for objects allocated by NetImgui.
-struct NetImguiDeleter {
-  template <typename T>
-  void operator()(T* ptr) const {
-    NetImgui::Internal::netImguiDelete(ptr);
-  }
-};
-
-// The browser side of the streamed ImGui UI: talks to the Python side over the
-// UI WebSocket, assembles the NetImgui draw frames and textures it receives
-// into ImGui draw data for rendering, and sends the browser's input back.
+// Talks to the Python side over the /ui WebSocket, assembles incoming draw
+// frames and textures into Dear ImGui draw data for rendering, and sends the
+// browser's input back.
 class RemoteUi {
  public:
   using ReadyState = WebSocket::ReadyState;
-  using ClientTextureID = NetImgui::Internal::ClientTextureID;
+  using TextureId = uint64_t;
 
   // The renderer-facing callbacks of the link; the app implements them once.
   // The link reaches the GPU only through it, so the protocol logic stays
@@ -91,17 +84,17 @@ class RemoteUi {
     screen_area_[1] = height;
   }
 
-  // Sends the CmdVersion handshake when the socket is newly open, then
-  // processes all the commands (draw frames, textures, clipboard) received
-  // since the last call.
+  // Sends the Hello handshake when the socket is newly open, then processes
+  // all commands (draw frames, textures, clipboard) received since the last
+  // call.
   void ReceiveAndProcessCommands(int frame);
 
   // Captures ImGui input and sends it to the remote client. Call before
   // ImGui::EndFrame() or ImGui::Render().
   void CaptureAndSendInput();
 
-  // Invalidates cached GPU texture IDs and re-uploads all CPU-buffered
-  // textures (font atlas, streamed UI images) after a Filament context reset.
+  // Uploads any CPU-buffered textures without GPU handles yet once the GPU
+  // context becomes ready.
   void UpdateTextures();
 
   void Shutdown();
@@ -118,16 +111,16 @@ class RemoteUi {
     return bytes;
   }
 
-  // Processes one received command; the draw frame one takes ownership of it.
-  void ProcessCmdDrawFrame(NetImgui::Internal::CmdDrawFrame* cmd);
-  void ProcessCmdTexture(NetImgui::Internal::CmdTexture* cmd);
+  // Processes one wire DrawFrame, Texture, or Clipboard message directly.
+  void ProcessDrawFrameMessage(netui::BytesView message);
+  void ProcessTextureMessage(netui::BytesView message);
   // Puts text the remote client copied on this browser's clipboard, or opens
   // it in a new tab if it is a URL marked as one to open.
-  void ProcessCmdClipboard(NetImgui::Internal::CmdClipboard* cmd);
+  void ProcessClipboardMessage(netui::BytesView message);
 
  private:
-  // Processes one received WebSocket message: one NetImgui command.
-  void ProcessMessage(WebSocket::BytesView message);
+  // Processes one received WebSocket binary message.
+  void ProcessMessage(netui::BytesView message);
 
   void RebuildDrawData();
 
@@ -137,32 +130,33 @@ class RemoteUi {
 
   // --- Connection-scoped state, reset on every (re)connect. ----------------
 
-  std::unique_ptr<NetImgui::Internal::CmdDrawFrame, NetImguiDeleter>
-      last_uncompressed_frame_;
+  netui::SerializedFrame last_serialized_frame_;
+  std::optional<netui::DecodedFrame> last_decoded_frame_;
   // The index of the newest draw frame received since the last ack.
   std::optional<uint64_t> frame_to_ack_;
+  uint64_t last_frame_index_ = 0;
   std::unique_ptr<WebSocket> socket_;
   ReadyState last_state_ = ReadyState::kDisconnected;
   bool handshake_sent_ = false;
-  // When true, the next CmdInput requests an uncompressed keyframe.
+  // When true, the next Input requests an uncompressed keyframe.
   bool request_keyframe_ = true;
 
   // --- Session state. -------------------------------------------------------
 
   ImDrawData remote_draw_data_;
   std::vector<std::unique_ptr<ImDrawList>> remote_draw_lists_;
-  std::unordered_map<ClientTextureID, uintptr_t> texture_map_;
+  std::unordered_map<TextureId, uintptr_t> texture_map_;
 
   // CPU-side RGBA mirror of each remote texture for applying sub-rect updates.
   struct TextureEntry {
-    WebSocket::Bytes pixels;
+    netui::Bytes pixels;
     uint32_t width = 0;
     uint32_t height = 0;
   };
-  std::unordered_map<ClientTextureID, TextureEntry> texture_cpu_;
+  std::unordered_map<TextureId, TextureEntry> texture_cpu_;
 
   // Persistent input state for character accumulation across frames.
-  std::vector<ImWchar> pending_input_chars_;
+  std::vector<uint32_t> pending_input_chars_;
   float mouse_wheel_pos_[2] = {0.0f, 0.0f};
   uint16_t last_screen_size_[2] = {0, 0};
 

@@ -12,15 +12,16 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-set(NETIMGUI_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../netimgui)
-
 if(EMSCRIPTEN)
-  add_subdirectory(${NETIMGUI_DIR} ${CMAKE_CURRENT_BINARY_DIR}/netimgui)
-
   # Browser WASM client for the Web Viewer
   add_executable(web_client
+    logging.h
     role_transitions.cc
     role_transitions.h
+    state_payload.cc
+    state_payload.h
+    ui_codec.cc
+    ui_codec.h
     web_client.cc
     web_client_local_ui.cc
     web_client_local_ui.h
@@ -30,8 +31,6 @@ if(EMSCRIPTEN)
     web_client_session.h
     web_client_websocket.cc
     web_client_websocket.h
-    state_payload.cc
-    state_payload.h
   )
 
   target_include_directories(web_client
@@ -45,7 +44,6 @@ if(EMSCRIPTEN)
     PRIVATE
       dear_imgui
       implot
-      netimgui_protocol
       mujoco_filament
       mujoco::mujoco
       mujoco::platform
@@ -142,12 +140,9 @@ if(EMSCRIPTEN)
   )
 else()
   if(WIN32)
-    # TODO(matijak) The web viewer modules do not build on Windows yet: the
-    # NetImgui logging header they use calls localtime_r, which Windows does
-    # not provide. Windows has no web viewer in any case; its Kokoro jobs have
-    # no WASM toolchain so its wheels ship without the browser client.
-    message(STATUS "Windows: skipping the Web Viewer Python modules "
-                   "(NetImgui's logging header is POSIX-only).")
+    # Windows wheels ship without the browser WASM client (Kokoro Windows jobs
+    # have no Emscripten toolchain).
+    message(STATUS "Windows: skipping the Web Viewer Python modules.")
     return()
   endif()
 
@@ -157,23 +152,20 @@ else()
     return()
   endif()
 
-  add_subdirectory(${NETIMGUI_DIR} ${CMAKE_CURRENT_BINARY_DIR}/netimgui)
-  if(NOT TARGET netimgui_protocol)
-    return()
-  endif()
-
   target_sources(_studio PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/headless_ui.cc
     ${CMAKE_CURRENT_SOURCE_DIR}/headless_ui_session.cc
     ${CMAKE_CURRENT_SOURCE_DIR}/headless_ui_session.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/logging.h
     ${CMAKE_CURRENT_SOURCE_DIR}/state_payload_py.cc
     ${CMAKE_CURRENT_SOURCE_DIR}/state_payload.cc
     ${CMAKE_CURRENT_SOURCE_DIR}/state_payload.h
+    ${CMAKE_CURRENT_SOURCE_DIR}/ui_codec.cc
+    ${CMAKE_CURRENT_SOURCE_DIR}/ui_codec.h
   )
   target_link_libraries(_studio PRIVATE
     mujoco::dep::dear_imgui
     mujoco::dep::implot
-    netimgui_protocol
   )
   target_compile_definitions(_studio PRIVATE MUJOCO_STUDIO_WITH_WEB)
 endif()

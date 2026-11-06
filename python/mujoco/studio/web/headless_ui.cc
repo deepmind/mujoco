@@ -16,8 +16,8 @@
 //
 // This pybind11 module provides a HeadlessUi class that:
 // 1. Creates a headless ImGui context (no window, no renderer).
-// 2. Turns each frame into NetImgui messages for the browser's web_client,
-//    which web_server.py sends over the /ui WebSocket (see
+// 2. Turns each frame into Studio UI wire messages for the browser's
+//    web_client, which web_server.py sends over the /ui WebSocket (see
 //    headless_ui_session.h).
 // 3. Applies the input the browser sends back to the ImGui context.
 
@@ -38,8 +38,8 @@
 #include <imgui_internal.h>
 #include <implot.h>
 #include <mujoco/studio/ux/fonts.h>
-#include "google/logging.h"
 #include "headless_ui_session.h"
+#include "logging.h"
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
 
@@ -56,8 +56,7 @@ namespace {
 // mujoco::studio::HeadlessUiSession.
 class HeadlessUi {
  public:
-  HeadlessUi(const std::string& title, const std::string& assets_dir)
-      : session_(title) {
+  HeadlessUi(const std::string& title, const std::string& assets_dir) {
     IMGUI_CHECKVERSION();
     context_ = ImGui::CreateContext();
     ImGui::SetCurrentContext(context_);
@@ -287,7 +286,7 @@ class HeadlessUi {
 
   py::bytes StartSession(const py::bytes& handshake) {
     const std::string data = handshake;
-    std::string reply;
+    mujoco::studio::netui::Bytes reply;
     std::string error;
     bool started = false;
     {
@@ -298,7 +297,7 @@ class HeadlessUi {
     if (!started) {
       throw py::value_error(error);
     }
-    return py::bytes(reply);
+    return py::bytes(reinterpret_cast<const char*>(reply.data()), reply.size());
   }
 
   void EndSession() {
@@ -313,14 +312,15 @@ class HeadlessUi {
   }
 
   py::list TakeMessages() {
-    std::vector<std::string> messages;
+    std::vector<mujoco::studio::netui::Bytes> messages;
     {
       py::gil_scoped_release no_gil;
       messages = session_.TakeMessages();
     }
     py::list result;
-    for (const std::string& message : messages) {
-      result.append(py::bytes(message));
+    for (const mujoco::studio::netui::Bytes& message : messages) {
+      result.append(py::bytes(reinterpret_cast<const char*>(message.data()),
+                              message.size()));
     }
     return result;
   }
@@ -371,20 +371,20 @@ void InitHeadlessUi(py::module_& m) {
       .def("upload_image", &HeadlessUi::UploadImage)
       .def("start_session", &HeadlessUi::StartSession, py::arg("handshake"),
            "Starts streaming to a newly connected browser. Takes the browser's "
-           "first /ui message (its NetImgui Version command) and returns the "
+           "first /ui message (its Hello handshake) and returns the "
            "reply to send back. Raises ValueError for an incompatible "
            "browser. The first frame of a session re-sends everything.")
       .def("end_session", &HeadlessUi::EndSession,
            "Stops streaming; new_frame() returns False until the next "
            "start_session().")
       .def("push_input", &HeadlessUi::PushInput, py::arg("message"),
-           "Queues a NetImgui Input command from the browser for the next "
+           "Queues an Input message from the browser for the next "
            "frame. Returns False, ignoring the message, if it is not one.")
       .def("take_messages", &HeadlessUi::TakeMessages,
-           "Returns the messages to send to the browser now, one NetImgui "
-           "command each: none until a new frame is ready, then the texture "
-           "changes since the last frame returned followed by the newest "
-           "frame, compressed against that last frame.")
+           "Returns the messages to send to the browser now, one Studio UI "
+           "wire command each: none until a new frame is ready, then the "
+           "texture changes since the last frame returned followed by the "
+           "newest frame, compressed against that last frame.")
       .def("last_frame_index", &HeadlessUi::LastFrameIndex,
            "Returns the index of the last frame take_messages() returned (0 "
            "before the first). The browser acks a frame by echoing its index.");

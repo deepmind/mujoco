@@ -30,30 +30,16 @@
 #include "absl/log/check.h"
 #include <imgui.h>
 #include <mujoco/mujoco.h>
-#include <NetImgui_Api.h>
-#include <NetImgui_CmdPackets.h>
 #include "state_payload.h"
+#include "ui_codec.h"
 #include "web_client_websocket.h"
 
 namespace mujoco::studio {
 namespace {
 
-using ::NetImgui::eTexFormat;
-using ::NetImgui::Internal::ClientTextureID;
-using ::NetImgui::Internal::CmdDrawFrame;
-using ::NetImgui::Internal::CmdHeader;
-using ::NetImgui::Internal::CmdInput;
-using ::NetImgui::Internal::CmdTexture;
-using ::NetImgui::Internal::CmdVersion;
-using ::NetImgui::Internal::CompressCmdDrawFrame;
-using ::NetImgui::Internal::ConvertToCmdDrawFrame;
-using ::NetImgui::Internal::ImguiDraw;
-using ::NetImgui::Internal::netImguiDelete;
-using ::NetImgui::Internal::netImguiSizedNew;
 using ReadyState = WebSocket::ReadyState;
+using TextureId = RemoteUi::TextureId;
 
-// A WebSocket the test drives: it records the messages RemoteUi sends, and
-// hands RemoteUi the messages the test queues.
 class FakeWebSocket : public WebSocket {
  public:
   ReadyState GetReadyState() const override { return state; }
@@ -81,19 +67,11 @@ class FakeWebSocket : public WebSocket {
   int close_code = 0;
 };
 
-// A command as the one WebSocket message carrying it.
 template <typename T>
-WebSocket::Bytes MessageOf(const T* command) {
-  const auto* raw = reinterpret_cast<const std::byte*>(command);
-  return WebSocket::Bytes(raw, raw + command->mSize);
-}
-
-// Reads a sent message back as a command of type T.
-template <typename T>
-T CommandIn(WebSocket::BytesView message) {
+T CommandIn(netui::BytesView message) {
   T command;
   CHECK_EQ(message.size(), sizeof(command));
-  std::memcpy(static_cast<void*>(&command), message.data(), sizeof(command));
+  std::memcpy(&command, message.data(), sizeof(command));
   return command;
 }
 
@@ -146,7 +124,6 @@ class RemoteUiTest : public ::testing::Test {
     ImGui::DestroyContext(context_);
   }
 
-  // Connects RemoteUi to a new fake socket, which RemoteUi owns.
   FakeWebSocket* ConnectFakeSocket() {
     auto socket = std::make_unique<FakeWebSocket>();
     FakeWebSocket* fake = socket.get();
@@ -154,34 +131,32 @@ class RemoteUiTest : public ::testing::Test {
     return fake;
   }
 
-  static CmdTexture* MakeTextureCmd(ClientTextureID tex_id,
-                                    CmdTexture::eType status, eTexFormat format,
-                                    uint16_t width, uint16_t height,
-                                    const std::vector<uint8_t>& pixels,
-                                    uint16_t offset_x = 0,
-                                    uint16_t offset_y = 0) {
-    const size_t total_size = sizeof(CmdTexture) + pixels.size();
-    auto* cmd = netImguiSizedNew<CmdTexture>(total_size);
-    cmd->mSize = static_cast<uint32_t>(total_size);
-    cmd->mTextureClientID = tex_id;
-    cmd->mStatus = status;
-    cmd->mFormat = static_cast<uint8_t>(format);
-    cmd->mWidth = width;
-    cmd->mHeight = height;
-    cmd->mOffsetX = offset_x;
-    cmd->mOffsetY = offset_y;
-    uint8_t* dst = reinterpret_cast<uint8_t*>(&cmd[1]);
+  static netui::Bytes MakeTextureMsg(TextureId tex_id,
+                                     netui::Texture::Action action,
+                                     netui::Texture::Format format,
+                                     uint16_t width, uint16_t height,
+                                     const std::vector<uint8_t>& pixels,
+                                     uint16_t offset_x = 0,
+                                     uint16_t offset_y = 0) {
+    netui::Bytes msg(sizeof(netui::Texture) + pixels.size());
+    netui::Texture hdr;
+    hdr.header.size = static_cast<uint32_t>(msg.size());
+    hdr.tex_id = tex_id;
+    hdr.action = action;
+    hdr.format = format;
+    hdr.x = offset_x;
+    hdr.y = offset_y;
+    hdr.width = width;
+    hdr.height = height;
+    std::memcpy(msg.data(), &hdr, sizeof(hdr));
     if (!pixels.empty()) {
-      std::memcpy(dst, pixels.data(), pixels.size());
+      std::memcpy(msg.data() + sizeof(hdr), pixels.data(), pixels.size());
     }
-    cmd->mpTextureData.SetPtr(dst);
-    cmd->mpTextureData.ToOffset();
-    return cmd;
+    return msg;
   }
 
-  static CmdDrawFrame* MakeDrawFrame(const char* text, uint64_t frame_index,
-                                     ClientTextureID tex_id = 1,
-                                     bool second_window = false) {
+  static netui::SerializedFrame RenderSerializedFrame(
+      const char* text, TextureId tex_id = 1, bool second_window = false) {
     ImGuiIO& io = ImGui::GetIO();
     io.DisplaySize = ImVec2(640, 480);
     unsigned char* font_pixels = nullptr;
@@ -206,27 +181,18 @@ class RemoteUiTest : public ::testing::Test {
     }
 
     ImGui::Render();
-    CmdDrawFrame* frame =
-        ConvertToCmdDrawFrame(ImGui::GetDrawData(), ImGuiMouseCursor_Arrow);
-    CHECK_NE(frame, nullptr);
-    CHECK_GT(frame->mDrawGroupCount, 0u);
-    CHECK_GT(frame->mTotalVerticeCount, 0u);
-    frame->mFrameIndex = frame_index;
-    for (uint32_t g = 0; g < frame->mDrawGroupCount; ++g) {
-      ImguiDraw* draws = frame->mpDrawGroups[g].mpDraws.Get();
-      for (uint32_t d = 0; d < frame->mpDrawGroups[g].mDrawCount; ++d) {
-        draws[d].mClientTexId = tex_id;
-      }
-    }
-    return frame;
+    netui::SerializedFrame serialized;
+    netui::SerializeDrawData(ImGui::GetDrawData(), ImGuiMouseCursor_Arrow,
+                             &serialized);
+    CHECK(!serialized.lists.empty());
+    return serialized;
   }
 
-  void RegisterDummyTexture(ClientTextureID tex_id) {
+  void RegisterDummyTexture(TextureId tex_id) {
     std::vector<uint8_t> pixels(4 * 4 * 4, 255);
-    CmdTexture* cmd = MakeTextureCmd(tex_id, CmdTexture::eType::Create,
-                                     eTexFormat::kTexFmtRGBA8, 4, 4, pixels);
-    remote_ui_.ProcessCmdTexture(cmd);
-    netImguiDelete(cmd);
+    remote_ui_.ProcessTextureMessage(
+        MakeTextureMsg(tex_id, netui::Texture::Action::kCreate,
+                       netui::Texture::Format::kRgba8, 4, 4, pixels));
   }
 
   ImGuiContext* context_ = nullptr;
@@ -242,11 +208,9 @@ TEST_F(RemoteUiTest, CreatesUpdatesAndDestroysRgba8Texture) {
     initial_pixels[i * 4 + 2] = 30;
     initial_pixels[i * 4 + 3] = 255;
   }
-  CmdTexture* create_cmd =
-      MakeTextureCmd(42, CmdTexture::eType::Create, eTexFormat::kTexFmtRGBA8, 4,
-                     4, initial_pixels);
-  remote_ui_.ProcessCmdTexture(create_cmd);
-  netImguiDelete(create_cmd);
+  remote_ui_.ProcessTextureMessage(
+      MakeTextureMsg(42, netui::Texture::Action::kCreate,
+                     netui::Texture::Format::kRgba8, 4, 4, initial_pixels));
 
   ASSERT_EQ(callbacks_.upload_calls, 1);
   ASSERT_TRUE(callbacks_.textures.count(100));
@@ -262,11 +226,10 @@ TEST_F(RemoteUiTest, CreatesUpdatesAndDestroysRgba8Texture) {
     patch_pixels[i * 4 + 2] = 50;
     patch_pixels[i * 4 + 3] = 128;
   }
-  CmdTexture* update_cmd =
-      MakeTextureCmd(42, CmdTexture::eType::Update, eTexFormat::kTexFmtRGBA8, 2,
-                     2, patch_pixels, /*offset_x=*/1, /*offset_y=*/2);
-  remote_ui_.ProcessCmdTexture(update_cmd);
-  netImguiDelete(update_cmd);
+  remote_ui_.ProcessTextureMessage(
+      MakeTextureMsg(42, netui::Texture::Action::kUpdate,
+                     netui::Texture::Format::kRgba8, 2, 2, patch_pixels,
+                     /*offset_x=*/1, /*offset_y=*/2));
 
   ASSERT_EQ(callbacks_.upload_calls, 2);
   const auto& updated = callbacks_.textures[100].rgba;
@@ -282,11 +245,9 @@ TEST_F(RemoteUiTest, CreatesUpdatesAndDestroysRgba8Texture) {
   }
 
   // Destroy the texture.
-  CmdTexture* destroy_cmd =
-      MakeTextureCmd(42, CmdTexture::eType::Destroy, eTexFormat::kTexFmtRGBA8,
-                     0, 0, /*pixels=*/{});
-  remote_ui_.ProcessCmdTexture(destroy_cmd);
-  netImguiDelete(destroy_cmd);
+  remote_ui_.ProcessTextureMessage(
+      MakeTextureMsg(42, netui::Texture::Action::kDestroy,
+                     netui::Texture::Format::kRgba8, 0, 0, /*pixels=*/{}));
 
   EXPECT_EQ(callbacks_.upload_calls, 3);
   EXPECT_TRUE(callbacks_.textures[100].destroyed);
@@ -294,10 +255,9 @@ TEST_F(RemoteUiTest, CreatesUpdatesAndDestroysRgba8Texture) {
 
 TEST_F(RemoteUiTest, ExpandsA8FontTextureToRgba8) {
   std::vector<uint8_t> a8_pixels = {0, 64, 128, 255};
-  CmdTexture* cmd = MakeTextureCmd(7, CmdTexture::eType::Create,
-                                   eTexFormat::kTexFmtA8, 2, 2, a8_pixels);
-  remote_ui_.ProcessCmdTexture(cmd);
-  netImguiDelete(cmd);
+  remote_ui_.ProcessTextureMessage(
+      MakeTextureMsg(7, netui::Texture::Action::kCreate,
+                     netui::Texture::Format::kAlpha8, 2, 2, a8_pixels));
 
   ASSERT_EQ(callbacks_.upload_calls, 1);
   const auto& rgba = callbacks_.textures[100].rgba;
@@ -313,19 +273,18 @@ TEST_F(RemoteUiTest, ExpandsA8FontTextureToRgba8) {
 TEST_F(RemoteUiTest, DefersTextureUploadUntilGpuReady) {
   callbacks_.gpu_ready = false;
   std::vector<uint8_t> pixels(2 * 2 * 4, 99);
-  CmdTexture* cmd = MakeTextureCmd(11, CmdTexture::eType::Create,
-                                   eTexFormat::kTexFmtRGBA8, 2, 2, pixels);
-  remote_ui_.ProcessCmdTexture(cmd);
-  netImguiDelete(cmd);
+  remote_ui_.ProcessTextureMessage(
+      MakeTextureMsg(11, netui::Texture::Action::kCreate,
+                     netui::Texture::Format::kRgba8, 2, 2, pixels));
 
   EXPECT_EQ(callbacks_.upload_calls, 0);
 
   // A draw frame arriving before GpuReady() omits draws whose textures are not
   // uploaded yet (never leaving ElemCount=0 / TexID=0 commands in CmdBuffer).
-  CmdDrawFrame* frame =
-      MakeDrawFrame("DeferredFrame", /*frame_index=*/1, /*tex_id=*/11);
-  frame->ToOffsets();
-  remote_ui_.ProcessCmdDrawFrame(frame);
+  const netui::SerializedFrame frame =
+      RenderSerializedFrame("DeferredFrame", /*tex_id=*/11);
+  remote_ui_.ProcessDrawFrameMessage(
+      netui::EncodeDrawFrame(frame, /*frame_index=*/1));
   ImDrawData* draw_data = remote_ui_.RemoteDrawData();
   ASSERT_NE(draw_data, nullptr);
   ASSERT_EQ(draw_data->CmdLists.Size, 1);
@@ -353,37 +312,30 @@ TEST_F(RemoteUiTest, DefersTextureUploadUntilGpuReady) {
 
 TEST_F(RemoteUiTest, RejectsTruncatedPixelsAndOutOfBoundsTexturePatch) {
   std::vector<uint8_t> valid_pixels(4 * 4 * 4, 42);
-  CmdTexture* create_cmd =
-      MakeTextureCmd(9, CmdTexture::eType::Create, eTexFormat::kTexFmtRGBA8, 4,
-                     4, valid_pixels);
-  remote_ui_.ProcessCmdTexture(create_cmd);
-  netImguiDelete(create_cmd);
+  remote_ui_.ProcessTextureMessage(
+      MakeTextureMsg(9, netui::Texture::Action::kCreate,
+                     netui::Texture::Format::kRgba8, 4, 4, valid_pixels));
   ASSERT_EQ(callbacks_.upload_calls, 1);
 
   // Truncated pixel buffer: declares 4x4 RGBA8 (64 bytes) but only carries 8.
   std::vector<uint8_t> short_pixels(8, 1);
-  CmdTexture* short_cmd =
-      MakeTextureCmd(10, CmdTexture::eType::Create, eTexFormat::kTexFmtRGBA8, 4,
-                     4, short_pixels);
-  remote_ui_.ProcessCmdTexture(short_cmd);
-  netImguiDelete(short_cmd);
+  remote_ui_.ProcessTextureMessage(
+      MakeTextureMsg(10, netui::Texture::Action::kCreate,
+                     netui::Texture::Format::kRgba8, 4, 4, short_pixels));
   EXPECT_EQ(callbacks_.upload_calls, 1);
 
   // A pixel format this viewer does not know.
-  CmdTexture* custom_cmd =
-      MakeTextureCmd(11, CmdTexture::eType::Create, eTexFormat::kTexFmtCustom,
-                     4, 4, valid_pixels);
-  remote_ui_.ProcessCmdTexture(custom_cmd);
-  netImguiDelete(custom_cmd);
+  remote_ui_.ProcessTextureMessage(MakeTextureMsg(
+      11, netui::Texture::Action::kCreate,
+      static_cast<netui::Texture::Format>(99), 4, 4, valid_pixels));
   EXPECT_EQ(callbacks_.upload_calls, 1);
 
   // Out-of-bounds patch rectangle: 2x2 at offset (3, 3) exceeds 4x4 mirror.
   std::vector<uint8_t> patch_pixels(2 * 2 * 4, 99);
-  CmdTexture* oob_patch =
-      MakeTextureCmd(9, CmdTexture::eType::Update, eTexFormat::kTexFmtRGBA8, 2,
-                     2, patch_pixels, /*offset_x=*/3, /*offset_y=*/3);
-  remote_ui_.ProcessCmdTexture(oob_patch);
-  netImguiDelete(oob_patch);
+  remote_ui_.ProcessTextureMessage(
+      MakeTextureMsg(9, netui::Texture::Action::kUpdate,
+                     netui::Texture::Format::kRgba8, 2, 2, patch_pixels,
+                     /*offset_x=*/3, /*offset_y=*/3));
   EXPECT_EQ(callbacks_.upload_calls, 1);
   EXPECT_EQ(callbacks_.textures[100].rgba, valid_pixels);
 }
@@ -391,17 +343,22 @@ TEST_F(RemoteUiTest, RejectsTruncatedPixelsAndOutOfBoundsTexturePatch) {
 TEST_F(RemoteUiTest, ProcessesUncompressedAndDeltaCompressedDrawFrames) {
   RegisterDummyTexture(/*tex_id=*/1);
 
-  CmdDrawFrame* frame1 = MakeDrawFrame("Hello Frame 1", /*frame_index=*/1);
-  CmdDrawFrame* frame2 = MakeDrawFrame("Hello Frame 2", /*frame_index=*/2);
-  CmdDrawFrame* compressed_frame2 = CompressCmdDrawFrame(frame1, frame2);
-  compressed_frame2->mFrameIndex = 2;
-  compressed_frame2->ToOffsets();
-  const uint32_t expected_vtx_count = frame2->mTotalVerticeCount;
-  const uint32_t expected_idx_count = frame2->mTotalIndiceCount;
-  netImguiDelete(frame2);
+  const netui::SerializedFrame frame1 = RenderSerializedFrame("Hello Frame 1");
+  const netui::SerializedFrame frame2 = RenderSerializedFrame("Hello Frame 2");
+  const netui::Bytes msg1 = netui::EncodeDrawFrame(frame1, /*frame_index=*/1);
+  const netui::Bytes msg2 =
+      netui::EncodeDrawFrame(frame2, /*frame_index=*/2, &frame1);
 
-  frame1->ToOffsets();
-  remote_ui_.ProcessCmdDrawFrame(frame1);
+  netui::SerializedFrame tmp_prev;
+  uint64_t tmp_idx = 0;
+  netui::DecodedFrame decoded2;
+  bool req = false;
+  ASSERT_TRUE(netui::DecodeDrawFrame(netui::EncodeDrawFrame(frame2, 1),
+                                     &tmp_prev, &tmp_idx, &decoded2, &req));
+  const size_t expected_vtx_count = decoded2.lists[0].verts.size();
+  const size_t expected_idx_count = decoded2.lists[0].indices.size();
+
+  remote_ui_.ProcessDrawFrameMessage(msg1);
 
   ImDrawData* draw_data = remote_ui_.RemoteDrawData();
   ASSERT_NE(draw_data, nullptr);
@@ -413,13 +370,11 @@ TEST_F(RemoteUiTest, ProcessesUncompressedAndDeltaCompressedDrawFrames) {
             static_cast<ImTextureID>(100));
 
   // Delta-compressed frame 2 decompresses against frame 1.
-  remote_ui_.ProcessCmdDrawFrame(compressed_frame2);
+  remote_ui_.ProcessDrawFrameMessage(msg2);
   draw_data = remote_ui_.RemoteDrawData();
   ASSERT_NE(draw_data, nullptr);
-  EXPECT_EQ(static_cast<uint32_t>(draw_data->TotalVtxCount),
-            expected_vtx_count);
-  EXPECT_EQ(static_cast<uint32_t>(draw_data->TotalIdxCount),
-            expected_idx_count);
+  EXPECT_EQ(static_cast<size_t>(draw_data->TotalVtxCount), expected_vtx_count);
+  EXPECT_EQ(static_cast<size_t>(draw_data->TotalIdxCount), expected_idx_count);
 }
 
 TEST_F(RemoteUiTest, ProcessesADrawFrameWithoutDraws) {
@@ -431,14 +386,14 @@ TEST_F(RemoteUiTest, ProcessesADrawFrameWithoutDraws) {
   io.Fonts->SetTexID(static_cast<ImTextureID>(1));
   ImGui::NewFrame();  // Draws nothing.
   ImGui::Render();
-  CmdDrawFrame* frame =
-      ConvertToCmdDrawFrame(ImGui::GetDrawData(), ImGuiMouseCursor_Arrow);
-  ASSERT_NE(frame, nullptr);
-  ASSERT_EQ(frame->mTotalDrawCount, 0u);
-  frame->mFrameIndex = 1;
-  frame->ToOffsets();
 
-  remote_ui_.ProcessCmdDrawFrame(frame);
+  netui::SerializedFrame empty;
+  netui::SerializeDrawData(ImGui::GetDrawData(), ImGuiMouseCursor_Arrow,
+                           &empty);
+  ASSERT_TRUE(empty.lists.empty());
+
+  remote_ui_.ProcessDrawFrameMessage(
+      netui::EncodeDrawFrame(empty, /*frame_index=*/1));
   ImDrawData* draw_data = remote_ui_.RemoteDrawData();
   ASSERT_NE(draw_data, nullptr);
   EXPECT_EQ(draw_data->CmdLists.Size, 0);
@@ -449,32 +404,34 @@ TEST_F(RemoteUiTest,
   RegisterDummyTexture(/*tex_id=*/1);
   remote_ui_.SetScreenArea(120.0f, 80.0f);
 
-  // Two windows produce two draw groups; each gets its own ImDrawList with its
-  // 0-based indices copied unchanged.
-  CmdDrawFrame* frame = MakeDrawFrame("First", /*frame_index=*/1,
-                                      /*tex_id=*/1, /*second_window=*/true);
-  ASSERT_GE(frame->mDrawGroupCount, 2u);
-  const uint32_t group_count = frame->mDrawGroupCount;
-  const uint32_t group0_vtx = frame->mpDrawGroups[0].mVerticeCount;
-  const uint32_t group1_vtx = frame->mpDrawGroups[1].mVerticeCount;
-  const uint32_t group1_idx = frame->mpDrawGroups[1].mIndiceCount;
-  ASSERT_GT(group0_vtx, 0u);
-  ASSERT_GT(group1_idx, 0u);
-  const uint16_t raw_first_idx_group1 = reinterpret_cast<const uint16_t*>(
-      frame->mpDrawGroups[1].mpIndices.Get())[0];
+  const netui::SerializedFrame frame =
+      RenderSerializedFrame("First", /*tex_id=*/1, /*second_window=*/true);
+  ASSERT_GE(frame.lists.size(), 2u);
+  const netui::Bytes wire = netui::EncodeDrawFrame(frame, /*frame_index=*/1);
 
-  frame->ToOffsets();
-  remote_ui_.ProcessCmdDrawFrame(frame);
+  netui::SerializedFrame tmp_prev;
+  uint64_t tmp_idx = 0;
+  netui::DecodedFrame expected;
+  bool req = false;
+  ASSERT_TRUE(
+      netui::DecodeDrawFrame(wire, &tmp_prev, &tmp_idx, &expected, &req));
+
+  remote_ui_.ProcessDrawFrameMessage(wire);
 
   ImDrawData* draw_data = remote_ui_.RemoteDrawData();
   ASSERT_NE(draw_data, nullptr);
-  ASSERT_EQ(draw_data->CmdLists.Size, static_cast<int>(group_count));
+  ASSERT_EQ(static_cast<size_t>(draw_data->CmdLists.Size),
+            expected.lists.size());
   ImDrawList* list0 = draw_data->CmdLists[0];
   ImDrawList* list1 = draw_data->CmdLists[1];
-  EXPECT_EQ(static_cast<uint32_t>(list0->VtxBuffer.Size), group0_vtx);
-  EXPECT_EQ(static_cast<uint32_t>(list1->VtxBuffer.Size), group1_vtx);
-  EXPECT_EQ(static_cast<uint32_t>(list1->IdxBuffer.Size), group1_idx);
-  EXPECT_EQ(list1->IdxBuffer[0], static_cast<ImDrawIdx>(raw_first_idx_group1));
+  EXPECT_EQ(static_cast<size_t>(list0->VtxBuffer.Size),
+            expected.lists[0].verts.size());
+  EXPECT_EQ(static_cast<size_t>(list1->VtxBuffer.Size),
+            expected.lists[1].verts.size());
+  EXPECT_EQ(static_cast<size_t>(list1->IdxBuffer.Size),
+            expected.lists[1].indices.size());
+  EXPECT_EQ(list1->IdxBuffer[0],
+            static_cast<ImDrawIdx>(expected.lists[1].indices[0]));
   for (int i = 0; i < draw_data->CmdLists.Size; ++i) {
     for (const ImDrawCmd& cmd : draw_data->CmdLists[i]->CmdBuffer) {
       EXPECT_EQ(cmd.VtxOffset, 0u);
@@ -487,10 +444,10 @@ TEST_F(RemoteUiTest,
   // CmdBuffer (rather than leaving an ImDrawCmd with ElemCount=0 and _TexID=0,
   // which Filament's Renderable::SetMesh treats as "draw the entire index
   // buffer" with ObjectManager::kDecor), and reuses the existing ImDrawList.
-  CmdDrawFrame* unmapped =
-      MakeDrawFrame("Unmapped", /*frame_index=*/2, /*tex_id=*/999);
-  unmapped->ToOffsets();
-  remote_ui_.ProcessCmdDrawFrame(unmapped);
+  const netui::SerializedFrame unmapped =
+      RenderSerializedFrame("Unmapped", /*tex_id=*/999);
+  remote_ui_.ProcessDrawFrameMessage(
+      netui::EncodeDrawFrame(unmapped, /*frame_index=*/2));
   draw_data = remote_ui_.RemoteDrawData();
   ASSERT_NE(draw_data, nullptr);
   ASSERT_EQ(draw_data->CmdLists.Size, 1);
@@ -508,25 +465,23 @@ TEST_F(RemoteUiTest, SocketHandshakeReceiveAndInputRoundTrip) {
   remote_ui_.CaptureAndSendInput();
   EXPECT_TRUE(socket->sent.empty());
 
-  // Then RemoteUi sends its CmdVersion handshake, as one message.
+  // Then RemoteUi sends its Hello handshake, as one message.
   socket->state = ReadyState::kOpen;
   remote_ui_.ReceiveAndProcessCommands(/*frame=*/2);
   ASSERT_EQ(socket->sent.size(), 1u);
-  const CmdVersion handshake = CommandIn<CmdVersion>(socket->sent[0]);
-  EXPECT_EQ(handshake.mType, CmdHeader::eCommands::Version);
-  EXPECT_STREQ(handshake.mClientName, "MuJoCo Web Viewer");
+  const netui::Hello handshake = CommandIn<netui::Hello>(socket->sent[0]);
+  EXPECT_EQ(handshake.header.kind, netui::MessageKind::kHello);
 
   // A texture and a draw frame arrive, one command per message.
   std::vector<uint8_t> pixels(4 * 4 * 4, 200);
-  CmdTexture* tex_cmd = MakeTextureCmd(1, CmdTexture::eType::Create,
-                                       eTexFormat::kTexFmtRGBA8, 4, 4, pixels);
-  CmdDrawFrame* draw_cmd = MakeDrawFrame("Streamed over socket", 1, 1);
-  draw_cmd->ToOffsets();
-  const uint64_t expected_bytes = tex_cmd->mSize + draw_cmd->mSize;
-  socket->received.push_back(MessageOf(tex_cmd));
-  socket->received.push_back(MessageOf(draw_cmd));
-  netImguiDelete(tex_cmd);
-  netImguiDelete(draw_cmd);
+  const netui::Bytes tex_msg =
+      MakeTextureMsg(1, netui::Texture::Action::kCreate,
+                     netui::Texture::Format::kRgba8, 4, 4, pixels);
+  const netui::Bytes draw_msg = netui::EncodeDrawFrame(
+      RenderSerializedFrame("Streamed over socket", 1), 1);
+  const uint64_t expected_bytes = tex_msg.size() + draw_msg.size();
+  socket->received.push_back(tex_msg);
+  socket->received.push_back(draw_msg);
 
   remote_ui_.ReceiveAndProcessCommands(/*frame=*/3);
   ASSERT_NE(remote_ui_.RemoteDrawData(), nullptr);
@@ -534,60 +489,62 @@ TEST_F(RemoteUiTest, SocketHandshakeReceiveAndInputRoundTrip) {
   EXPECT_EQ(remote_ui_.ConsumeByteCount(), expected_bytes);
   EXPECT_EQ(remote_ui_.ConsumeByteCount(), 0u);
 
-  // CaptureAndSendInput sends a CmdInput message back. The screen size it
+  // CaptureAndSendInput sends an Input message back. The screen size it
   // reports is the screen area (the canvas minus the local role bar), not the
   // display size.
   ImGuiIO& io = ImGui::GetIO();
   io.DisplaySize = ImVec2(1280, 720);
   remote_ui_.SetScreenArea(1280.0f, 688.0f);
-  io.MousePos = ImVec2(100, 200);
+  io.MousePos = ImVec2(100.5f, 200.25f);
   io.WantCaptureMouse = false;
   io.WantCaptureKeyboard = false;
   io.InputQueueCharacters.push_back('a');
 
   remote_ui_.CaptureAndSendInput();
   ASSERT_EQ(socket->sent.size(), 2u);
-  CmdInput input_cmd = CommandIn<CmdInput>(socket->sent[1]);
-  EXPECT_EQ(input_cmd.mType, CmdHeader::eCommands::Input);
-  EXPECT_EQ(input_cmd.mScreenSize[0], 1280u);
-  EXPECT_EQ(input_cmd.mScreenSize[1], 688u);
-  EXPECT_EQ(input_cmd.mMousePos[0], 100);
-  EXPECT_EQ(input_cmd.mMousePos[1], 200);
-  EXPECT_TRUE(input_cmd.mCompressionUse);
-  EXPECT_TRUE(input_cmd.mCompressionSkip);
-  EXPECT_EQ(input_cmd.mKeyCharCount, 1u);
-  EXPECT_EQ(input_cmd.mKeyChars[0], static_cast<uint16_t>('a'));
+  const netui::Input input_cmd = CommandIn<netui::Input>(socket->sent[1]);
+  EXPECT_EQ(input_cmd.header.kind, netui::MessageKind::kInput);
+  EXPECT_EQ(input_cmd.screen_size[0], 1280u);
+  EXPECT_EQ(input_cmd.screen_size[1], 688u);
+  EXPECT_EQ(input_cmd.mouse_pos[0], 100.5f);
+  EXPECT_EQ(input_cmd.mouse_pos[1], 200.25f);
+  EXPECT_NE(input_cmd.header.flags & netui::Input::kRequestKeyframe, 0u);
+  EXPECT_EQ(input_cmd.char_count, 1u);
+  EXPECT_EQ(input_cmd.chars[0], static_cast<uint32_t>('a'));
 
   // Once the keyframe request has been sent, subsequent inputs clear
-  // mCompressionSkip unless a delta frame is missing its reference frame.
+  // Input::kRequestKeyframe unless a delta frame is missing its reference.
   io.InputQueueCharacters.resize(0);
   remote_ui_.CaptureAndSendInput();
   ASSERT_EQ(socket->sent.size(), 3u);
-  EXPECT_FALSE(CommandIn<CmdInput>(socket->sent[2]).mCompressionSkip);
+  EXPECT_EQ(CommandIn<netui::Input>(socket->sent[2]).header.flags &
+                netui::Input::kRequestKeyframe,
+            0u);
 
   // Receiving a delta frame with a missing reference frame re-arms
-  // mCompressionSkip on the next CmdInput.
-  CmdDrawFrame* gap_frame = MakeDrawFrame("Gap", /*frame_index=*/99);
-  gap_frame->mCompressed = true;
-  gap_frame->ToOffsets();
-  remote_ui_.ProcessCmdDrawFrame(gap_frame);
+  // Input::kRequestKeyframe on the next Input.
+  const netui::SerializedFrame prev_ref = RenderSerializedFrame("Prev", 1);
+  const netui::SerializedFrame gap_frame = RenderSerializedFrame("Gap", 1);
+  remote_ui_.ProcessDrawFrameMessage(
+      netui::EncodeDrawFrame(gap_frame, /*frame_index=*/99, &prev_ref));
   remote_ui_.CaptureAndSendInput();
   ASSERT_EQ(socket->sent.size(), 4u);
-  EXPECT_TRUE(CommandIn<CmdInput>(socket->sent[3]).mCompressionSkip);
+  EXPECT_NE(CommandIn<netui::Input>(socket->sent[3]).header.flags &
+                netui::Input::kRequestKeyframe,
+            0u);
 }
 
 TEST_F(RemoteUiTest, DropsMessagesThatAreNotOneCommand) {
   FakeWebSocket* socket = ConnectFakeSocket();
   std::vector<uint8_t> pixels(2 * 2 * 4, 7);
-  CmdTexture* tex_cmd = MakeTextureCmd(5, CmdTexture::eType::Create,
-                                       eTexFormat::kTexFmtRGBA8, 2, 2, pixels);
-  const WebSocket::Bytes message = MessageOf(tex_cmd);
-  netImguiDelete(tex_cmd);
+  const netui::Bytes message =
+      MakeTextureMsg(5, netui::Texture::Action::kCreate,
+                     netui::Texture::Format::kRgba8, 2, 2, pixels);
 
   socket->received.emplace_back(message.begin(),
                                 message.begin() + 4);  // Shorter than a header.
   socket->received.emplace_back(message.begin(), message.end() - 1);
-  WebSocket::Bytes doubled = message;
+  netui::Bytes doubled = message;
   doubled.insert(doubled.end(), message.begin(), message.end());
   socket->received.push_back(std::move(doubled));  // Two commands.
   remote_ui_.ReceiveAndProcessCommands(/*frame=*/1);
@@ -604,7 +561,9 @@ TEST_F(RemoteUiTest, StartsOverOnEachConnection) {
   remote_ui_.CaptureAndSendInput();
   remote_ui_.CaptureAndSendInput();
   ASSERT_EQ(first->sent.size(), 3u);
-  EXPECT_FALSE(CommandIn<CmdInput>(first->sent[2]).mCompressionSkip);
+  EXPECT_EQ(CommandIn<netui::Input>(first->sent[2]).header.flags &
+                netui::Input::kRequestKeyframe,
+            0u);
 
   // The server closes the connection, e.g. as another page took control.
   first->state = ReadyState::kClosed;
@@ -619,9 +578,11 @@ TEST_F(RemoteUiTest, StartsOverOnEachConnection) {
   remote_ui_.ReceiveAndProcessCommands(/*frame=*/2);
   remote_ui_.CaptureAndSendInput();
   ASSERT_EQ(second->sent.size(), 2u);
-  EXPECT_EQ(CommandIn<CmdVersion>(second->sent[0]).mType,
-            CmdHeader::eCommands::Version);
-  EXPECT_TRUE(CommandIn<CmdInput>(second->sent[1]).mCompressionSkip);
+  EXPECT_EQ(CommandIn<netui::Hello>(second->sent[0]).header.kind,
+            netui::MessageKind::kHello);
+  EXPECT_NE(CommandIn<netui::Input>(second->sent[1]).header.flags &
+                netui::Input::kRequestKeyframe,
+            0u);
 
   remote_ui_.Shutdown();
   EXPECT_FALSE(remote_ui_.HasSocket());
@@ -635,17 +596,15 @@ TEST_F(RemoteUiTest, AcksEachBatchOfMessagesHoldingADrawFrame) {
 
   // Textures alone are not acked: the server waits for the frame's ack.
   std::vector<uint8_t> pixels(4 * 4 * 4, 200);
-  CmdTexture* tex_cmd = MakeTextureCmd(1, CmdTexture::eType::Create,
-                                       eTexFormat::kTexFmtRGBA8, 4, 4, pixels);
-  socket->received.push_back(MessageOf(tex_cmd));
-  netImguiDelete(tex_cmd);
+  socket->received.push_back(MakeTextureMsg(1, netui::Texture::Action::kCreate,
+                                            netui::Texture::Format::kRgba8, 4,
+                                            4, pixels));
   remote_ui_.ReceiveAndProcessCommands(/*frame=*/2);
   EXPECT_TRUE(socket->sent_text.empty());
 
-  CmdDrawFrame* draw_cmd = MakeDrawFrame("Acked", /*frame_index=*/1);
-  draw_cmd->ToOffsets();
-  socket->received.push_back(MessageOf(draw_cmd));
-  netImguiDelete(draw_cmd);
+  const netui::SerializedFrame serialized = RenderSerializedFrame("Acked", 1);
+  socket->received.push_back(
+      netui::EncodeDrawFrame(serialized, /*frame_index=*/1));
   remote_ui_.ReceiveAndProcessCommands(/*frame=*/3);
   EXPECT_EQ(socket->sent_text, std::vector<std::string>{"ui_ack=1"});
 
@@ -656,17 +615,14 @@ TEST_F(RemoteUiTest, AcksEachBatchOfMessagesHoldingADrawFrame) {
   // Frames received together get one ack, for the newest: the server only
   // waits for that one.
   for (uint64_t frame_index : {2, 3}) {
-    draw_cmd = MakeDrawFrame("Acked", frame_index);
-    draw_cmd->ToOffsets();
-    socket->received.push_back(MessageOf(draw_cmd));
-    netImguiDelete(draw_cmd);
+    socket->received.push_back(netui::EncodeDrawFrame(serialized, frame_index));
   }
   remote_ui_.ReceiveAndProcessCommands(/*frame=*/5);
   EXPECT_EQ(socket->sent_text,
             (std::vector<std::string>{"ui_ack=1", "ui_ack=3"}));
 }
 
-TEST_F(RemoteUiTest, ClampsTheScreenSizeAndMousePositionItSends) {
+TEST_F(RemoteUiTest, ClampsScreenSizeAndPreservesFloatMousePosition) {
   FakeWebSocket* socket = ConnectFakeSocket();
   remote_ui_.ReceiveAndProcessCommands(/*frame=*/1);
 
@@ -678,11 +634,30 @@ TEST_F(RemoteUiTest, ClampsTheScreenSizeAndMousePositionItSends) {
   remote_ui_.CaptureAndSendInput();
 
   ASSERT_EQ(socket->sent.size(), 2u);
-  const CmdInput input = CommandIn<CmdInput>(socket->sent[1]);
-  EXPECT_EQ(input.mScreenSize[0], 0u);
-  EXPECT_EQ(input.mScreenSize[1], 65535u);
-  EXPECT_EQ(input.mMousePos[0], -32768);
-  EXPECT_EQ(input.mMousePos[1], 32767);
+  const netui::Input input = CommandIn<netui::Input>(socket->sent[1]);
+  EXPECT_EQ(input.screen_size[0], 0u);
+  EXPECT_EQ(input.screen_size[1], 65535u);
+  EXPECT_EQ(input.mouse_pos[0], -FLT_MAX);
+  EXPECT_EQ(input.mouse_pos[1], FLT_MAX);
+}
+
+TEST_F(RemoteUiTest, CopiesClipboardMessagesAndInterceptsOpenUrls) {
+  FakeWebSocket* socket = ConnectFakeSocket();
+  ImGui::SetClipboardText("");
+
+  socket->received.push_back(netui::EncodeClipboard("camera_xml"));
+  remote_ui_.ReceiveAndProcessCommands(/*frame=*/1);
+  EXPECT_STREQ(ImGui::GetClipboardText(), "camera_xml");
+  EXPECT_TRUE(socket->sent_text.empty());  // Clipboard messages are not acked.
+
+  // URLs marked with Clipboard::kOpenUrl open in the browser (or, for other
+  // schemes, are refused) instead of overwriting the clipboard.
+  socket->received.push_back(
+      netui::EncodeClipboard("https://mujoco.org", /*open_url=*/true));
+  socket->received.push_back(
+      netui::EncodeClipboard("javascript:alert(1)", /*open_url=*/true));
+  remote_ui_.ReceiveAndProcessCommands(/*frame=*/2);
+  EXPECT_STREQ(ImGui::GetClipboardText(), "camera_xml");
 }
 
 TEST_F(RemoteUiTest, StateQueueSynchronizesFullPayloadAndBoundsLatency) {

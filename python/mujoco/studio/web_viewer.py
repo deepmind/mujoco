@@ -19,8 +19,8 @@ separating the viewer and simulation.
 The WebViewer streams UI and simulation state to a browser:
 
   * The ImGui UI is built into a headless ImGui context, whose frames are
-    streamed to the browser as NetImgui messages over a WebSocket. Input
-    captured in the browser flows back over the same connection and is
+    streamed to the browser over a WebSocket using the Studio UI wire codec.
+    Input captured in the browser flows back over the same connection and is
     injected into the headless context, so all viewer-side plugins work
     unmodified.
   * Physics state and render function state are streamed to the browser over
