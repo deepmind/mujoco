@@ -12,12 +12,12 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-# NetImgui client library (vendored, MIT licensed — see LICENSE).
+# NetImgui protocol library (vendored, MIT licensed — see LICENSE).
 #
 # This CMakeLists is included from two different build contexts:
 #  1. The main MuJoCo tree under Emscripten (for the web viewer WASM client),
 #     where the `dear_imgui` target exists.
-#  2. The Python bindings build (for the headless_ui pybind module), where Dear
+#  2. The Python bindings build (for the _studio pybind module), where Dear
 #     ImGui is an imported archive named `mujoco::dep::dear_imgui`.
 
 if(TARGET netimgui_protocol)
@@ -33,7 +33,7 @@ if(TARGET mujoco::dep::dear_imgui)
 elseif(TARGET dear_imgui)
   set(NETIMGUI_IMGUI_TARGET dear_imgui)
 else()
-  message(WARNING "No Dear ImGui target found. netimgui will not be built.")
+  message(WARNING "No Dear ImGui target found. netimgui_protocol will not be built.")
   return()
 endif()
 
@@ -54,41 +54,3 @@ target_include_directories(netimgui_protocol
 target_link_libraries(netimgui_protocol PUBLIC ${NETIMGUI_IMGUI_TARGET})
 
 set_target_properties(netimgui_protocol PROPERTIES POSITION_INDEPENDENT_CODE ON)
-
-# The NetImgui client: the protocol plus the runtime that connects to a NetImgui
-# server and streams the Dear ImGui frames to it.
-add_library(netimgui STATIC
-  Code/Client/Private/NetImgui_Api.cpp
-  Code/Client/Private/NetImgui_Client.cpp
-)
-
-if(EMSCRIPTEN)
-  # WebSocket-based networking for the browser (WASM) build.
-  target_sources(netimgui PRIVATE google/NetImgui_NetworkWASM.cpp)
-  # emscripten_websocket_* requires the JS websocket library.
-  target_link_options(netimgui PUBLIC -lwebsocket.js)
-elseif(WIN32)
-  # Winsock2 networking for Windows.
-  target_sources(netimgui PRIVATE Code/Client/Private/NetImgui_NetworkWin32.cpp)
-  # The source self-links ws2_32 via `#pragma comment(lib, ...)` under MSVC;
-  # link it explicitly so non-MSVC toolchains (e.g. clang-cl) resolve it too.
-  target_link_libraries(netimgui PUBLIC ws2_32)
-elseif(UNIX)
-  # BSD-socket networking for Linux and macOS (both are UNIX).
-  target_sources(netimgui PRIVATE Code/Client/Private/NetImgui_NetworkPosix.cpp)
-else()
-  message(WARNING "NetImgui networking is not available on this platform. "
-                  "netimgui will not be built.")
-  return()
-endif()
-
-target_include_directories(netimgui
-  PUBLIC
-    ${CMAKE_CURRENT_SOURCE_DIR}                      # google/logging.h
-    ${CMAKE_CURRENT_SOURCE_DIR}/Code/Client          # NetImgui_Api.h
-    ${CMAKE_CURRENT_SOURCE_DIR}/Code/Client/Private  # NetImgui_CmdPackets.h etc.
-)
-
-target_link_libraries(netimgui PUBLIC netimgui_protocol)
-
-set_target_properties(netimgui PROPERTIES POSITION_INDEPENDENT_CODE ON)

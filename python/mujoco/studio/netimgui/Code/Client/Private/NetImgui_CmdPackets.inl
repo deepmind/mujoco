@@ -1,21 +1,11 @@
 // Google modifications:
 //  - ToPointers() of commands received from the network return false when
-//    their offsets or sizes are invalid (added CmdTexture::ToPointers()). The
-//    draw frame arrays must be ComDataType aligned and own their last element.
+//    their offsets or sizes are invalid. The draw frame arrays must be
+//    ComDataType aligned and own their last element.
 #include "NetImgui_CmdPackets.h"
 
 namespace NetImgui { namespace Internal
 {
-
-bool CmdTexture::ToPointers()
-{
-	if( mSize < sizeof(CmdTexture) ){
-		return false;
-	}
-	// Data must hold the pixels described by the command (none when destroying)
-	const uint64_t pixelsSize = mStatus == eType::Destroy ? 0 : static_cast<uint64_t>(GetTexture_BytePerLine(static_cast<eTexFormat>(mFormat), mWidth)) * mHeight;
-	return mpTextureData.ToPointer(this, reinterpret_cast<const uint8_t*>(this) + mSize, pixelsSize);
-}
 
 // The draw frame data is laid out in ComDataType elements (see
 // SetAndIncreaseDataPointer() and CompressData()), and the delta codec reads it

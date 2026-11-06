@@ -15,10 +15,7 @@
 set(NETIMGUI_DIR ${CMAKE_CURRENT_SOURCE_DIR}/../netimgui)
 
 if(EMSCRIPTEN)
-  # Only netimgui_protocol is linked; EXCLUDE_FROM_ALL skips NetImgui's client
-  # runtime, which nothing here uses.
-  add_subdirectory(${NETIMGUI_DIR} ${CMAKE_CURRENT_BINARY_DIR}/netimgui
-                   EXCLUDE_FROM_ALL)
+  add_subdirectory(${NETIMGUI_DIR} ${CMAKE_CURRENT_BINARY_DIR}/netimgui)
 
   # Browser WASM client for the Web Viewer
   add_executable(web_client
@@ -160,10 +157,7 @@ else()
     return()
   endif()
 
-  # Only netimgui_protocol is linked; EXCLUDE_FROM_ALL skips NetImgui's client
-  # runtime, which nothing here uses.
-  add_subdirectory(${NETIMGUI_DIR} ${CMAKE_CURRENT_BINARY_DIR}/netimgui
-                   EXCLUDE_FROM_ALL)
+  add_subdirectory(${NETIMGUI_DIR} ${CMAKE_CURRENT_BINARY_DIR}/netimgui)
   if(NOT TARGET netimgui_protocol)
     return()
   endif()
