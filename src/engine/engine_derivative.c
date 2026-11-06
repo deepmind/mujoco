@@ -2085,9 +2085,9 @@ mjtNum mjd_flexContactStiffness(const mjModel* m, const mjData* d, const mjConta
       continue;
     }
     if (m->flex_interp[f]) {
-      // 1 cell has at most 27 nodes (quadratic), projected to at most 27 boundary nodes in TFI
-      int body[27];
-      mjtNum weight[27];
+      // TFI spreads interior cell nodes of shell-mode flexes over many boundary nodes
+      int body[mjMAXFLEXINTERPW];
+      mjtNum weight[mjMAXFLEXINTERPW];
       int nb = mj_contactBodyWeight(m, d, con, side, body, weight);
       mjtNum inv_m = 0;
       for (int j = 0; j < nb; j++) {

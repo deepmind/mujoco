@@ -574,50 +574,18 @@ void mj_flexSkip(const mjModel* m, mjData* d, int skiprigid) {
       }
     }
 
-    // trilinear/quadratic interpolation
+    // trilinear/quadratic interpolation (interior nodes of shell-mode flexes via TFI)
     else {
       int nodenum = nend - nstart;
-      mj_markStack(d);
-      mjtNum* nodexpos = mjSTACKALLOC(d, 3*nodenum, mjtNum);
-      for (int i=nstart; i < nend; i++) {
-        int j = i - nstart;
-        if (m->flex_centered[f] ||
-            (m->flex_node[3*i+0] == 0 &&
-             m->flex_node[3*i+1] == 0 &&
-             m->flex_node[3*i+2] == 0)) {
-          mji_copy3(nodexpos + 3*j, d->xpos + 3*m->flex_nodebodyid[i]);
-        } else {
-          mji_mulMatVec3(nodexpos + 3*j, d->xmat + 9*m->flex_nodebodyid[i], m->flex_node + 3*i);
-          mji_addTo3(nodexpos + 3*j, d->xpos + 3*m->flex_nodebodyid[i]);
-        }
-      }
-
-      int interp = m->flex_interp[f];
-      int order = interp < 0 ? -interp : interp;
-      int cx = m->flex_cellnum[3*f+0];
-      int cy = m->flex_cellnum[3*f+1];
-      int cz = m->flex_cellnum[3*f+2];
-      int nx_g = cx * order + 1;
-      int ny_g = cy * order + 1;
-      int nz_g = cz * order + 1;
-      if (nend - nstart != nx_g * ny_g * nz_g) {
+      int order = m->flex_interp[f] < 0 ? -m->flex_interp[f] : m->flex_interp[f];
+      const int* cn = m->flex_cellnum + 3*f;
+      if (nodenum != (cn[0]*order + 1) * (cn[1]*order + 1) * (cn[2]*order + 1)) {
         mjERROR("flex_interp_order mismatch");
       }
-
-      // shell mode: reconstruct interior node positions from boundary via TFI
-      if (interp < 0) {
-        mju_shellTrackInterior(nodexpos, nx_g, ny_g, nz_g);
-      }
-
-      for (int i=vstart; i < vend; i++) {
-        mju_zero3(d->flexvert_xpos+3*i);
-
-        // cell lookup: get local coords and node indices
-        mjtNum local[3];
-        int nodeindices[27];  // max npc for quadratic: 3^3 = 27
-        mju_cellLookup(m->flex_vert0 + 3*i, m->flex_cellnum+3*f, order, m->flex_vertcell[i], local, nodeindices);
-        mju_interpolate3D(d->flexvert_xpos+3*i, local, nodexpos, order, nodeindices);
-      }
+      mj_markStack(d);
+      mjtNum* nodexpos = mjSTACKALLOC(d, 3*nodenum, mjtNum);
+      mju_flexGatherState(m, d, f, nodexpos, NULL);
+      mj_flexInterpVert(m, f, nodexpos, d->flexvert_xpos + 3*vstart);
       mj_freeStack(d);
     }
   }

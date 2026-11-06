@@ -13,3 +13,8 @@
 # limitations under the License.
 
 build --incompatible_strict_action_env
+
+# Retry transient HTTP/CDN errors (e.g. GitHub Releases 504s) when fetching
+# external repositories.
+common --experimental_repository_downloader_retries=10
+common --http_timeout_scaling=3.0

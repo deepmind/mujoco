@@ -33,6 +33,9 @@ set(MUJOCO_SDF_SRCS
 )
 
 add_library(sdf_plugin SHARED)
+set_target_properties(
+  sdf_plugin PROPERTIES LIBRARY_OUTPUT_DIRECTORY "${CMAKE_LIBRARY_OUTPUT_DIRECTORY}/mujoco_plugin"
+)
 target_sources(sdf_plugin PRIVATE ${MUJOCO_SDF_SRCS})
 target_include_directories(sdf_plugin PRIVATE ${MUJOCO_SDF_INCLUDE})
 target_link_libraries(sdf_plugin PRIVATE mujoco)

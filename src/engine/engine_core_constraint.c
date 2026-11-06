@@ -1509,8 +1509,8 @@ int mj_contactJacobian(const mjModel* m, mjData* d, const mjContact* con, int di
   // general case: flex elements involved
   else {
     // get bodies and weights, negative sign for first side of contact
-    int bid[729];  // 729 = 27*27
-    mjtNum bweight[729];
+    int bid[2*mjMAXFLEXINTERPW];
+    mjtNum bweight[2*mjMAXFLEXINTERPW];
     int nb = mj_contactBodyWeight(m, d, con, 0, bid, bweight);
     mju_scl(bweight, bweight, -1, nb);
     nb += mj_contactBodyWeight(m, d, con, 1, bid+nb, bweight+nb);
@@ -1802,8 +1802,8 @@ void mj_diagApprox(const mjModel* m, mjData* d) {
       tran = rot = 0;
       for (int side=0; side < 2; side++) {
         // get bodies and weights
-        int bid[729];
-        mjtNum bweight[729];
+        int bid[mjMAXFLEXINTERPW];
+        mjtNum bweight[mjMAXFLEXINTERPW];
         int nb = mj_contactBodyWeight(m, d, con, side, bid, bweight);
 
         // add weighted average over bodies
@@ -2585,7 +2585,7 @@ static int mj_nc(const mjModel* m, mjData* d, int* nnz) {
       // general case: flex elements involved
       else {
         // get bodies
-        int bid[729];
+        int bid[2*mjMAXFLEXINTERPW];
         int nb = mj_contactBodyWeight(m, d, con, 0, bid, NULL);
         nb += mj_contactBodyWeight(m, d, con, 1, bid+nb, NULL);
 
@@ -2930,7 +2930,7 @@ static void mj_makeYNumeric(const mjModel* m, mjData* d, int flg_diagexact) {
   // (mj_effCouplings) so the backbone IS the metric; flex is rejected (mj_checkDiscrete);
   // under a primal solver the noslip post-pass consumes this AR as an approximation
   const mjtNum* factor = d->qLD;
-  if (mj_isMetric(m) && d->efm_diag) {
+  if (mj_effUseQH(d)) {
     factor = d->qH;
   }
 

@@ -324,6 +324,7 @@ bash .github/workflows/build_steps.sh build_studio_python
 
 python python/mujoco/studio/viewer.py --model=model/humanoid/humanoid.xml --plugins=python/mujoco/sample/studio/ghost.py
 python python/mujoco/studio/viewer.py --model=model/humanoid/humanoid.xml --plugins=python/mujoco/sample/studio/implot.py
+python python/mujoco/studio/viewer.py --plugins=python/mujoco/sample/studio/python_scene.py --hot_reload=all
 python python/mujoco/sample/studio/custom_sim_loop.py
 python python/mujoco/sample/studio/filament_render.py model/humanoid/humanoid.xml
 python python/mujoco/sample/studio/filament_camera.py model/humanoid/humanoid.xml
@@ -332,7 +333,8 @@ python python/mujoco/sample/studio/filament_multimodel.py model/humanoid/humanoi
 ```
 
 The samples under `python/mujoco/sample/studio/` show ghost
-overlays, ImPlot integration, driving `launch_web.launch` from a custom
+overlays, ImPlot integration, a hot-reloading Python-generated scene example,
+driving `launch_web.launch` from a custom
 simulation loop, and the Filament Python rendering API
 (`mujoco.rendering.filament`, backed by `_render_filament` and `_studio`'s
 `window` submodule that `build_studio_python` installs).

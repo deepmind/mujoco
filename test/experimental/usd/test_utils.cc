@@ -18,6 +18,7 @@
 
 #include <gmock/gmock.h>
 #include <gtest/gtest.h>
+#include <mujoco/experimental/usd/utils.h>
 #include <pxr/base/gf/math.h>
 #include <pxr/base/gf/quatf.h>
 #include <pxr/base/tf/token.h>
@@ -41,6 +42,10 @@ using pxr::SdfPath;
 pxr::SdfLayerRefPtr LoadLayer(
     const std::string& xml,
     const pxr::SdfFileFormat::FileFormatArguments& args) {
+  // Ensure mujoco_usd is not dead-stripped by the linker so its static
+  // initializer registers USD plugins (mjcPhysics, newton, usdMjcf) at load
+  // time.
+  (void)mujoco::usd::GetUsdPrimPathUserValue(nullptr);
   auto layer = pxr::SdfLayer::CreateAnonymous(
       "test_layer", pxr::SdfFileFormat::FindByExtension("xml"), args);
   layer->ImportFromString(xml);

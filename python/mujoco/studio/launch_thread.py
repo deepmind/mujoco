@@ -41,6 +41,13 @@ class ThreadSnapshotChannel(messages.SnapshotChannel):
       self._pending_snapshots[type(snapshot)] = snapshot
     self._wakeup.set()
 
+  def reclaim_unconsumed(
+      self, snapshot_type: type[messages.Snapshot]
+  ) -> messages.Snapshot | None:
+    """Pops and returns an unconsumed pending snapshot of ``snapshot_type``."""
+    with self._lock:
+      return self._pending_snapshots.pop(snapshot_type, None)
+
   def get(self) -> list[messages.Snapshot]:
     self._wakeup.clear()
     with self._lock:

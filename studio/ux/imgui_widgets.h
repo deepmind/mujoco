@@ -96,6 +96,7 @@ static constexpr const char ICON_FA_FAST_FORWARD[] = "\xEF\x81\x90";
 static constexpr const char ICON_FA_FLASK[] = "\xEF\x83\x83";
 static constexpr const char ICON_FA_MAGIC[] = "\xEF\x83\x90";
 static constexpr const char ICON_FA_MOON[] = "\xEF\x86\x86";
+static constexpr const char ICON_FA_PAINT_BRUSH[] = "\xEF\x87\xBC";
 static constexpr const char ICON_FA_PAUSE[] = "\xEF\x81\x8C";
 static constexpr const char ICON_FA_PLAY[] = "\xEF\x81\x8B";
 static constexpr const char ICON_FA_PLUS[] = "\xEF\x81\xA7";

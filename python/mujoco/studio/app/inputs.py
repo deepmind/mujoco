@@ -312,6 +312,9 @@ def handle_freecam_wasd_keyboard_events(
 ) -> tuple[bool, float]:
   """Handles keyboard shortcuts for free camera movement.
 
+  Flies the camera with W/S, A/D and Q/E using the camera controls shared with
+  the C++ Studio app and the web viewer (ux.move_camera_with_keys).
+
   Args:
     model: The MuJoCo model.
     data: The MuJoCo data.
@@ -324,93 +327,8 @@ def handle_freecam_wasd_keyboard_events(
   if imgui.GetIO().WantCaptureKeyboard:
     return False, cam_speed
 
-  if (
-      imgui.IsKeyDown(imgui.Key.W)
-      or imgui.IsKeyDown(imgui.Key.S)
-      or imgui.IsKeyDown(imgui.Key.A)
-      or imgui.IsKeyDown(imgui.Key.D)
-      or imgui.IsKeyDown(imgui.Key.Q)
-      or imgui.IsKeyDown(imgui.Key.E)
-  ):
-    moved = False
-
-    # Move (dolly) forward/backward using W and S keys.
-    if imgui.IsKeyDown(imgui.Key.W):
-      ux.MoveCamera(
-          model,
-          data,
-          camera,
-          ux.CameraMotion.TRUCK_DOLLY,
-          0,
-          cam_speed,
-      )
-      moved = True
-    elif imgui.IsKeyDown(imgui.Key.S):
-      ux.MoveCamera(
-          model,
-          data,
-          camera,
-          ux.CameraMotion.TRUCK_DOLLY,
-          0,
-          -cam_speed,
-      )
-      moved = True
-
-    # Strafe (truck) left/right using A and D keys.
-    if imgui.IsKeyDown(imgui.Key.A):
-      ux.MoveCamera(
-          model,
-          data,
-          camera,
-          ux.CameraMotion.TRUCK_DOLLY,
-          -cam_speed,
-          0,
-      )
-      moved = True
-    elif imgui.IsKeyDown(imgui.Key.D):
-      ux.MoveCamera(
-          model,
-          data,
-          camera,
-          ux.CameraMotion.TRUCK_DOLLY,
-          cam_speed,
-          0,
-      )
-      moved = True
-
-    # Move (pedestal) up/down using Q and E keys.
-    if imgui.IsKeyDown(imgui.Key.Q):
-      ux.MoveCamera(
-          model,
-          data,
-          camera,
-          ux.CameraMotion.TRUCK_PEDESTAL,
-          0,
-          cam_speed,
-      )
-      moved = True
-    elif imgui.IsKeyDown(imgui.Key.E):
-      ux.MoveCamera(
-          model,
-          data,
-          camera,
-          ux.CameraMotion.TRUCK_PEDESTAL,
-          0,
-          -cam_speed,
-      )
-      moved = True
-
-    if moved:
-      cam_speed += 0.001
-      max_speed = 0.1 if imgui.GetIO().KeyShift else 0.01
-      if cam_speed > max_speed:
-        cam_speed = max_speed
-    else:
-      cam_speed = 0.001
-
-    return True, cam_speed
-
-  return False, cam_speed
+  del data  # Unused.
+  return ux.move_camera_with_keys(model, camera, cam_speed)
 
 
 def handle_keyboard_events(
@@ -508,8 +426,21 @@ def handle_mouse_events(
     vis_options: mujoco.MjvOption,
     perturb: mujoco.MjvPerturb,
     ux_state: ux.UxState,
+    move_camera: bool = True,
 ) -> None:
-  """Handles mouse events."""
+  """Handles mouse events.
+
+  Args:
+    model: The MuJoCo model.
+    data: The MuJoCo data.
+    camera: The MuJoCo camera object.
+    vis_options: The MuJoCo visualization options.
+    perturb: The MuJoCo perturbation object.
+    ux_state: The UX state object.
+    move_camera: Whether drags and scrolls move the camera. False when the
+      viewer's client moves it itself (Viewer.client_camera); picking and
+      perturbation are handled either way.
+  """
   io = imgui.GetIO()
   if io.WantCaptureMouse:
     return
@@ -521,7 +452,6 @@ def handle_mouse_events(
   mouse_y = io.MousePos.y / io.DisplaySize.y
   mouse_dx = io.MouseDelta.x / io.DisplaySize.x
   mouse_dy = io.MouseDelta.y / io.DisplaySize.y
-  mouse_scroll = io.MouseWheel / 50.0
 
   is_mouse_moving = mouse_dx != 0.0 or mouse_dy != 0.0
   is_any_mouse_down = (
@@ -581,66 +511,14 @@ def handle_mouse_events(
           mouse_dx,
           mouse_dy,
       )
-  elif is_mouse_dragging:
-    if ux_state.camera_index == ux.FREE_CAMERA_IDX:
-      if imgui.IsMouseDown(imgui.MouseButton.Left):
-        ux.MoveCamera(
-            model,
-            data,
-            camera,
-            ux.CameraMotion.PAN_TILT,
-            mouse_dx,
-            mouse_dy,
-        )
-    else:
-      if imgui.IsMouseDown(imgui.MouseButton.Left):
-        ux.MoveCamera(
-            model,
-            data,
-            camera,
-            ux.CameraMotion.ORBIT,
-            mouse_dx,
-            mouse_dy,
-        )
-      elif imgui.IsMouseDown(imgui.MouseButton.Middle):
-        ux.MoveCamera(
-            model,
-            data,
-            camera,
-            ux.CameraMotion.ZOOM,
-            mouse_dx,
-            mouse_dy,
-        )
 
-    # Right mouse movement is relative to the horizontal and vertical planes.
-    if imgui.IsMouseDown(imgui.MouseButton.Right) and io.KeyShift:
-      ux.MoveCamera(
-          model,
-          data,
-          camera,
-          ux.CameraMotion.PLANAR_MOVE_H,
-          mouse_dx,
-          mouse_dy,
-      )
-    elif imgui.IsMouseDown(imgui.MouseButton.Right):
-      ux.MoveCamera(
-          model,
-          data,
-          camera,
-          ux.CameraMotion.PLANAR_MOVE_V,
-          mouse_dx,
-          mouse_dy,
-      )
-
-  # Mouse scroll.
-  if mouse_scroll != 0.0 and ux_state.camera_index != ux.FREE_CAMERA_IDX:
-    ux.MoveCamera(
+  # Camera drags and wheel, with the camera controls shared with the C++ Studio
+  # app and the web viewer (which leave Ctrl drags to the perturbation above).
+  if move_camera:
+    ux.move_camera_with_mouse(
         model,
-        data,
         camera,
-        ux.CameraMotion.ZOOM,
-        0,
-        -mouse_scroll,
+        fly_camera=ux_state.camera_index == ux.FREE_CAMERA_IDX,
     )
 
   aspect_ratio = io.DisplaySize.x / io.DisplaySize.y

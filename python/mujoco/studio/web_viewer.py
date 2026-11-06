@@ -33,6 +33,9 @@ The WebViewer streams UI and simulation state to a browser:
     model over HTTP, the UI stream at path /ui and the state stream at /state.
     Exposing or tunneling that single port exposes the whole viewer; the other
     ports are loopback-internal.
+  * Models the sim announces ahead of time (``PreloadModelEvent``) are served
+    by content hash as well, so browsers download them in the background and
+    switch to them instantly when they become the current model.
 """
 
 import os
@@ -51,6 +54,7 @@ from mujoco.studio import endpoints
 from mujoco.studio import messages
 from mujoco.studio import ux
 from mujoco.studio import viewer_protocol
+from mujoco.studio.web import client_camera
 from mujoco.studio.web import headless_ui
 from mujoco.studio.web import state_payload
 from mujoco.studio.web import web_server
@@ -61,6 +65,12 @@ from mujoco.studio.implot import implot
 
 # File extensions a dropped file may load as a model.
 _MODEL_EXTENSIONS = ('.xml', '.urdf', '.mjb', '.mjz', '.zip')
+
+_THEMES = {
+    'light': ux.GuiTheme.LIGHT,
+    'dark': ux.GuiTheme.DARK,
+    'classic': ux.GuiTheme.CLASSIC,
+}
 
 
 def _find_assets_dir() -> str:
@@ -242,6 +252,11 @@ class WebViewer(viewer_protocol.Viewer):
     # The persistent single-port server (HTTP + /ui + /state + /drop).
     self._model_crc32 = 0
 
+    # The browser moves the camera locally at the browser's frame rate rather
+    # than once per network round trip.
+    self._client_camera = client_camera.ClientCameraSync()
+    self.client_camera = self._client_camera
+
     # Files dropped onto the browser page arrive here from the server thread as
     # a dict of relative path -> bytes.
     self._drop_queue: queue.Queue[Any] = queue.Queue()
@@ -291,7 +306,7 @@ class WebViewer(viewer_protocol.Viewer):
     mjb_data = self._serialize_model()
     self._model_crc32 = zlib.crc32(mjb_data)
     if self._web_server is not None:
-      self._web_server.update_model(mjb_data)
+      self._web_server.update_model(mjb_data, self._model_crc32)
 
   def _serialize_model(self) -> bytes:
     """Returns the bytes served at /model: the MJB plus by-reference textures.
@@ -322,13 +337,41 @@ class WebViewer(viewer_protocol.Viewer):
     self._update_model()
     print('Model changed: the browser page reloads automatically.', flush=True)
 
+  @messages.handler(priority=messages.Priority.INTERNAL)
+  def _on_preload_model(self, event: messages.PreloadModelEvent) -> None:
+    """Serves a model the sim may show soon, so browsers can fetch it early.
+
+    The bundle is served by its crc32 and announced on the state stream; the
+    browser downloads it in the background and, when the model's ModelEvent
+    arrives with the same crc32, switches to it without a download.
+    """
+    if self._web_server is None:
+      return
+    mjb_data = state_payload.serialize_model_bundle(event.model)
+    self._web_server.add_model(mjb_data)
+
+  @messages.handler(priority=messages.Priority.CRITICAL)
+  def _on_update(self, _: messages.UpdateEvent) -> None:
+    """Applies any UI theme picked by the controller browser."""
+    if self._web_server is None:
+      return
+    theme = _THEMES.get(self._web_server.pop_theme() or '')
+    if theme is not None:
+      ux.setup_theme(theme)
+      self.dispatch(viewer_protocol.ThemeEvent(theme=theme))
+
   # ---------------------------------------------------------------------------
   # Viewer interface.
   # ---------------------------------------------------------------------------
 
   def prepare_next_frame(self) -> bool:
     """Advances to the next headless frame; returns False when disconnected."""
-    return self._headless_ui.new_frame()
+    frame = self._headless_ui.new_frame()
+    if self._web_server is not None:
+      camera = self._web_server.take_client_camera()
+      if camera is not None:
+        self._client_camera.apply(self.camera, camera)
+    return frame
 
   def sync(self) -> None:
     """Streams state to the browser and ends the headless ImGui frame."""
@@ -347,6 +390,14 @@ class WebViewer(viewer_protocol.Viewer):
           self.model,
           list(self.render_flags.flags),
           self.extra_geoms[: state_payload.MAX_EXTRA_GEOMS],
+          state_payload.ViewerInputState(
+              mouse_focus=not imgui.GetIO().WantCaptureMouse,
+              camera_index=self.camera_index,
+              keyboard_focus=not imgui.GetIO().WantCaptureKeyboard,
+              camera_generation=self._client_camera.update_generation(
+                  self.camera
+              ),
+          ),
       )
       self._web_server.update_state(payload)
 

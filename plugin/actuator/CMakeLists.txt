@@ -23,6 +23,9 @@ set(MUJOCO_ACTUATOR_SRCS
 )
 
 add_library(actuator SHARED)
+set_target_properties(
+  actuator PROPERTIES LIBRARY_OUTPUT_DIRECTORY "${CMAKE_LIBRARY_OUTPUT_DIRECTORY}/mujoco_plugin"
+)
 target_sources(actuator PRIVATE ${MUJOCO_ACTUATOR_SRCS})
 target_include_directories(actuator PRIVATE ${MUJOCO_ACTUATOR_INCLUDE})
 target_link_libraries(actuator PRIVATE mujoco)

@@ -1412,7 +1412,8 @@ static inline void advanceGeomPose(mjCCDObj* obj, const mjtNum dx[3], const mjtN
 }
 
 
-// evaluate distance and witnesses (x1, x2, normal from g1 to g2) at current obj1/obj2 poses
+// evaluate distance and witnesses (in/out x1, x2 seeded by caller; normal from g1 to g2)
+// at current obj1/obj2 poses
 static inline mjtNum evalGeomPairDist(const mjModel* m, mjCCDObj* obj1, mjCCDObj* obj2,
                                       mjtNum distmax, mjtNum x1[3], mjtNum x2[3],
                                       mjtNum normal[3]) {
@@ -1448,11 +1449,8 @@ static inline mjtNum evalGeomPairDist(const mjModel* m, mjCCDObj* obj1, mjCCDObj
     return dist;
   }
 
-  mji_copy3(x1, obj1->pos);
-  mji_copy3(x2, obj2->pos);
   normal[0] = 0, normal[1] = 0, normal[2] = 1;
 
-  // TODO(kylebayes): support warmstarting in GJK
   dist = mjc_gjk(obj1, obj2, x1, x2, cutoff, m->opt.ccd_tolerance, m->opt.ccd_iterations);
   if (dist <= cutoff) {
     mjtNum diff[3] = {x2[0] - x1[0], x2[1] - x1[1], x2[2] - x1[2]};
@@ -1589,6 +1587,8 @@ static inline int isGeomPairWithinMargin(const mjModel* m, const mjData* d,
 
   mjtNum tol = margin + m->opt.ccd_tolerance;
   mjtNum x1[3], x2[3], normal[3];
+  mji_copy3(x1, obj1.pos);
+  mji_copy3(x2, obj2.pos);
   return evalGeomPairDist(m, &obj1, &obj2, tol, x1, x2, normal) <= tol;
 }
 
@@ -1716,9 +1716,13 @@ int mjc_advanceGeomPair(const mjModel* m, const mjData* d, int g1, int g2,
   if (type2 == mjGEOM_SPHERE) obj2.support = mjc_pointSupport;
   if (type2 == mjGEOM_CAPSULE) obj2.support = mjc_lineSupport;
 
+  mjtNum r1 = (type1 == mjGEOM_SPHERE || type1 == mjGEOM_CAPSULE) ? obj1.size[0] : 0;
+  mjtNum r2 = (type2 == mjGEOM_SPHERE || type2 == mjGEOM_CAPSULE) ? obj2.size[0] : 0;
   mjtNum distmax = sweep + margin;
 
   mjtNum x1[3], x2[3], normal[3];
+  mji_copy3(x1, obj1.pos);
+  mji_copy3(x2, obj2.pos);
   mjtNum dist0 = evalGeomPairDist(m, &obj1, &obj2, distmax, x1, x2, normal);
 
   // already in contact or too far apart (no extra collision needed)
@@ -1752,9 +1756,30 @@ int mjc_advanceGeomPair(const mjModel* m, const mjData* d, int g1, int g2,
       return 0;
     }
 
+    // transport un-inflated core witness points into advanced geom frames
+    mjtNum core1[3], core2[3], diff1[3], diff2[3], local1[3], local2[3];
+    mji_addScl3(core1, x1, normal, -r1);
+    mji_addScl3(core2, x2, normal, r2);
+    mji_sub3(diff1, core1, obj1.pos);
+    mji_sub3(diff2, core2, obj2.pos);
+    mju_mulMatTVec3(local1, obj1.mat, diff1);
+    mju_mulMatTVec3(local2, obj2.mat, diff2);
+
     advanceGeomPose(&obj1, dx1, dw1, step);
     advanceGeomPose(&obj2, dx2, dw2, step);
+
+    mjtNum tmp1[3], tmp2[3];
+    mji_mulMatVec3(tmp1, obj1.mat, local1);
+    mju_add3(x1, obj1.pos, tmp1);
+    mji_mulMatVec3(tmp2, obj2.mat, local2);
+    mju_add3(x2, obj2.pos, tmp2);
+
     dist = evalGeomPairDist(m, &obj1, &obj2, distmax, x1, x2, normal);
+
+    // remaining motion cannot reach margin (also guarantees dist <= distmax, valid normal)
+    if (dist - margin > (1.0 - t) * sweep) {
+      return 0;
+    }
   }
 
   // full-step displacements of witness points x1, x2: dp = dx + dw x (x - pos)

@@ -22,7 +22,8 @@ Significant new features
 
 - Added the :ref:`speculative<option-flag-speculative>` enable flag for :doc:`speculative contacts
   <computation/speculative>` to prevent fast-moving convex geoms from tunneling through thin obstacles within a single
-  timestep. On the right, one step of conservative advancement between two rotating boxes.
+  timestep. On the right, one step of conservative advancement between two rotating boxes. See
+  `model/speculative/ <https://github.com/google-deepmind/mujoco/tree/main/model/speculative/>`__ for examples.
 
   .. container:: custom-clear
 
@@ -37,22 +38,30 @@ Significant new features
   - Continuum elasto-plasticity (:ref:`yield<flex-elasticity-yield>`) for 2D and 3D :ref:`flexes<deformable-flex>`,
     with separate stretching and bending yield strains for 2D shells, volumetric-deviatoric (von Mises :math:`J_2`)
     stretching and 2D shell bending return mapping (right).
+  - See `model/plastic/ <https://github.com/google-deepmind/mujoco/tree/main/model/plastic/>`__ for examples.
 
-  .. image:: https://www.gstatic.com/mujoco/doc/images/changelog/wire.gif
+  .. image:: https://www.gstatic.com/mujoco/model/plastic/wire.webp
      :align: left
-     :width: 48%
+     :width: 45%
      :target: https://github.com/google-deepmind/mujoco/blob/main/model/plastic/wire.xml
 
-  .. image:: https://www.gstatic.com/mujoco/doc/images/changelog/clay.gif
+  .. image:: https://www.gstatic.com/mujoco/model/plastic/clay.webp
      :align: right
-     :width: 42%
-     :target: https://github.com/google-deepmind/mujoco/blob/main/model/flex/clay.xml
+     :width: 45%
+     :target: https://github.com/google-deepmind/mujoco/blob/main/model/plastic/clay.xml
 
 .. container:: custom-clear
 
    .. raw:: html
 
       <div style="clear: both;"></div>
+
+- Split the Python distribution into ``mujoco-core`` (minimal bindings and C library depending only on ``numpy``),
+  ``mujoco-studio`` (Studio and Filament renderer bindings), and ``mujoco`` (default package installing both). When
+  upgrading from a pre-split ``mujoco`` installation with ``pip``, uninstall first (``pip uninstall -y mujoco && pip
+  install mujoco``) or run ``pip install --force-reinstall --no-deps mujoco mujoco-core mujoco-studio`` after
+  upgrading so ``pip`` does not remove files moved to ``mujoco-core``. To switch an existing ``mujoco`` installation
+  to core-only, run ``pip uninstall -y mujoco mujoco-studio && pip install --force-reinstall --no-deps mujoco-core``.
 
 Engine
 ^^^^^^
@@ -314,10 +323,27 @@ Rendering
 - Added :ref:`mjrf_flush` (``mjrf.Context.flush`` in Python) to flush pending operations to the rendering backend and
   invoke any completed callbacks.
 - Added :ref:`mjRND_POST_PROCESSING<mjtRndFlag>` rendering flag.
+- Allow :ref:`headlight.active <visual-headlight-active>` to be set to "false", "true", or "auto" while continuing to
+  support integer values (0=false, 1=true, 2=auto). Change the default to "auto" instead of "true".
 
 Python bindings
 ^^^^^^^^^^^^^^^
 - Removed support for Python 3.10, now that it's `deprecated upstream <https://devguide.python.org/versions>`__.
+- Bundled the MuJoCo Sphinx manual (``doc/**/*.rst``) and agent skills (``doc/skills/**/*.md``) inside the ``mujoco``
+  package under ``mujoco/doc/``.
+
+Samples
+^^^^^^^
+.. admonition:: Breaking changes
+   :class: attention
+
+   - Removed ``sample/record.cc``; multi-frame raw RGB24 video recording is now supported by
+     :ref:`sample/render.cc<saRender>` across both the Filament and classic OpenGL backends via ``--duration`` and
+     ``--fps``.
+
+     **Migration:** Replace ``record model.xml T F out.rgb 0`` with
+     ``render model.xml out.rgb --duration=T --fps=F`` (or pass ``-`` as the output path to pipe top-down RGB24 frames
+     directly to ``ffmpeg``; ``vflip`` is no longer needed).
 
 Bug fixes
 ^^^^^^^^^
@@ -394,6 +420,14 @@ Bug fixes
 - Legacy ``.msh`` meshes with mirrored :ref:`scale<asset-mesh-scale>` no longer double-flip face winding (which
   inverted faces), and ``.msh`` files without vertex normals no longer populate empty face normals or reject custom
   normals on recompilation.
+
+Models
+^^^^^^
+- Added six `elasto-plasticity <https://github.com/google-deepmind/mujoco/tree/main/model/plastic/>`__ example
+  models, each placing an elastic reference next to a plastic counterpart: joint and tendon springs, 2D shells and 3D
+  continua.
+- Added `speculative contacts <https://github.com/google-deepmind/mujoco/tree/main/model/speculative/>`__ example
+  models: a Newton's cradle of thin plates, an interlocking chain, and a ball struck by a hinged flipper.
 
 Documentation
 ^^^^^^^^^^^^^

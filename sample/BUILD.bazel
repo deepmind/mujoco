@@ -52,25 +52,6 @@ cc_binary(
 )
 
 cc_binary(
-    name = "record",
-    srcs = [
-        "array_safety.h",
-        "record.cc",
-    ],
-    conlyopts = ["-std=c11"],
-    cxxopts = ["-std=c++20"],
-    deps = [
-        "@glfw",
-        "@mujoco",
-        "@mujoco//:graphics_native",  # buildcleaner: keep
-        "@mujoco//plugin/actuator:register",
-        "@mujoco//plugin/sdf:register",
-        "@mujoco//plugin/sensor:register",
-        "@mujoco//src/cc:array_safety",
-    ],
-)
-
-cc_binary(
     name = "testspeed",
     srcs = ["testspeed.cc"],
     conlyopts = ["-std=c11"],

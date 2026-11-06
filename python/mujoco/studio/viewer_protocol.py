@@ -26,6 +26,7 @@ from mujoco.studio import hot_reload
 from mujoco.studio import messages
 from mujoco.studio import plugin_registry
 from mujoco.studio import ux
+from mujoco.studio.web import client_camera
 
 logger = logging.getLogger(__name__)
 
@@ -75,6 +76,13 @@ class ViewerInitEvent(messages.Event):
   """
 
   viewer: 'Viewer'
+
+
+@dataclasses.dataclass(frozen=True)
+class ThemeEvent(messages.Event):
+  """Dispatched on the viewer when the host changes the UI theme."""
+
+  theme: ux.GuiTheme
 
 
 # -----------------------------------------------------------------------------
@@ -132,7 +140,11 @@ class Viewer(abc.ABC):
 
     # Visual state.
     self.camera = camera or mujoco.MjvCamera()
-    self.cam_speed = 0.001
+    self.cam_speed = ux.MIN_FLY_SPEED
+    self.client_camera: client_camera.ClientCameraSync | None = None
+    # The app's camera mode (a ux camera index, e.g. ux.FREE_CAMERA_IDX), for
+    # viewers whose client moves the camera.
+    self.camera_index = ux.TUMBLE_CAMERA_IDX
     self.perturb = perturb or mujoco.MjvPerturb()
     self.vis_options = vis_options or mujoco.MjvOption()
     self.extra_geoms = extra_geoms or []

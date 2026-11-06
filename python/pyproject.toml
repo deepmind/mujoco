@@ -3,12 +3,12 @@ requires = ["setuptools"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "mujoco"
+name = "mujoco-core"
 version = "4.0.0"
 authors = [
     {name = "Google DeepMind", email = "mujoco@deepmind.com"},
 ]
-description = "MuJoCo Physics Simulator"
+description = "MuJoCo Physics Simulator (Core Bindings)"
 requires-python = ">=3.11"
 license = "Apache-2.0"
 classifiers = [
@@ -25,10 +25,7 @@ classifiers = [
     "Topic :: Scientific/Engineering",
 ]
 dependencies = [
-    "glfw",
     "numpy",
-    "pyopengl",
-    "websockets>=13",
 ]
 dynamic = ["readme", "scripts"]
 
@@ -42,12 +39,19 @@ Changelog = "https://mujoco.readthedocs.io/en/4.0.0/changelog.html"
 include-package-data = false
 
 [tool.setuptools.packages.find]
-include = ["mujoco*"]
+include = ["mujoco", "mujoco.*"]
 exclude = [
+    "mujoco_full*",
+    "mujoco._usd*",
     "mujoco.cmake*",
     "mujoco.codegen",
+    "mujoco.doc*",
     "mujoco.mjpython",
+    "mujoco.mujoco_full*",
+    "mujoco.sample.studio*",
     "mujoco.simulate*",
+    "mujoco.studio*",
+    "mujoco.usd.MjcPhysics*",
 ]
 
 [tool.setuptools.package-data]
@@ -56,17 +60,23 @@ mujoco = [
     "libmujoco*.so.*",
     "mujoco.dll",
     "include/mujoco/*.h",
+    "doc/*.rst",
+    "doc/*/*.rst",
+    "doc/skills/*.md",
+    "doc/skills/*/*.md",
     "testdata/*.xml",
     "testdata/*.msh",
     "testdata/*.usda",
     "testdata/*.zip",
     "testdata/*.urdf",
     "sysid/report/templates/*.html",
-    "studio/web/*.html",
-    "studio/web/dist/*",
 ]
 
 [project.optional-dependencies]
+rendering = [
+    "glfw",
+    "pyopengl",
+]
 sysid = [
     "absl-py",
     "colorama",
@@ -80,8 +90,9 @@ sysid = [
     "typing_extensions",
 ]
 usd = [
+    "mujoco-usd==4.0.0; python_version<='3.13'",
+    "pillow",
     "usd-core",
-    "pillow"
 ]
 
 [tool.isort]

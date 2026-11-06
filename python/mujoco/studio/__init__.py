@@ -17,6 +17,19 @@ import importlib as _importlib
 import importlib.machinery as _machinery
 import sys as _sys
 
+from mujoco._version import __version__ as _core_version
+
+__version__ = '4.0.0'
+if _core_version != __version__:
+  raise ImportError(
+      f"Version mismatch between 'mujoco-studio' ({__version__}) and "
+      f"'mujoco-core' ({_core_version}). Please upgrade both packages "
+      'together:\n'
+      f"  pip install --upgrade 'mujoco-studio=={__version__}' "
+      f"'mujoco-core=={__version__}'"
+  )
+del _core_version
+
 try:
   _studio_ext = _importlib.import_module('mujoco.studio._studio')
 except ImportError:

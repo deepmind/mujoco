@@ -1,0 +1,60 @@
+[build-system]
+requires = [
+    "setuptools",
+]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mujoco-usd"
+version = "4.0.0"
+authors = [
+    {name = "Google DeepMind", email = "mujoco@deepmind.com"},
+]
+description = "MuJoCo OpenUSD C++ Importer, Exporter, and Schemas"
+requires-python = ">=3.11,<3.14"
+license = "Apache-2.0"
+classifiers = [
+    "Development Status :: 4 - Beta",
+    "Intended Audience :: Developers",
+    "Intended Audience :: Science/Research",
+    "Natural Language :: English",
+    "Programming Language :: C++",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Scientific/Engineering",
+]
+dependencies = [
+    "mujoco-core==4.0.0",
+    "newton-usd-schemas",
+    "numpy",
+    "usd-core==25.11",
+]
+dynamic = ["readme"]
+
+[project.urls]
+Homepage = "https://github.com/google-deepmind/mujoco"
+Documentation = "https://mujoco.readthedocs.io/en/4.0.0"
+Repository = "https://github.com/google-deepmind/mujoco"
+Changelog = "https://mujoco.readthedocs.io/en/4.0.0/changelog.html"
+
+[project.entry-points."mujoco.plugins"]
+usd = "mujoco._usd:register_plugins"
+
+[tool.setuptools]
+include-package-data = false
+
+[tool.setuptools.packages.find]
+include = [
+    "mujoco._usd*",
+    "mujoco.usd.MjcPhysics*",
+]
+
+[tool.setuptools.package-data]
+"mujoco._usd" = [
+    "*.so*",
+    "*.dylib",
+    "*.dll",
+    "mujoco-usd-resources/**/*",
+]

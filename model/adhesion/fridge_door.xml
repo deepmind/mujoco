@@ -9,23 +9,27 @@
 
   <visual>
     <global elevation="-20" azimuth="-120"/>
-    <headlight diffuse=".5 .5 .5"/>
+    <headlight ambient=".25 .25 .25" diffuse=".4 .4 .4" specular=".2 .2 .2"/>
     <map stiffness="30"/>
+    <quality shadowsize="4096"/>
+    <rgba haze=".12 .16 .20 1"/>
   </visual>
 
   <asset>
-    <texture name="ibl" type="cube" builtin="gradient" rgb1=".5 .6 .7" rgb2=".9 .9 .95" width="32" height="32"/>
-    <texture type="skybox" builtin="gradient" rgb1=".5 .6 .7" rgb2=".9 .9 .95" width="32" height="512"/>
+    <texture name="ibl" type="cube" builtin="gradient" rgb1=".25 .3 .45" rgb2=".55 .5 .45" width="32" height="32"/>
+    <texture type="skybox" builtin="gradient" rgb1=".12 .16 .28" rgb2=".5 .45 .4" width="32" height="512"/>
+    <texture name="floor" type="2d" builtin="checker" rgb1=".1 .2 .3" rgb2=".2 .3 .4" width="512" height="512"/>
+    <material name="floor" texture="floor" texrepeat="2 2" texuniform="true" reflectance=".08"/>
     <material name="body" rgba=".92 .92 .94 1"/>
     <material name="inside" rgba=".8 .8 .82 1"/>
     <material name="magnet" rgba=".2 .2 .22 1"/>
   </asset>
 
   <worldbody>
-    <light pos="1.5 -.5 2" dir="-.6 .2 -.75" diffuse=".7 .7 .7" intensity="200000"
-           softness="1"/>
-    <light type="image" texture="ibl" intensity="10000"/>
-    <geom name="floor" type="plane" size="2 2 .01" rgba=".7 .75 .7 1"/>
+    <light pos="1.5 -.5 2" dir="-.66 .22 -.7" cutoff="30" softness="1" range="10" diffuse=".9 .85 .75" intensity="360000"/>
+    <light pos="-1 1.2 1.6" dir=".55 -.65 -.65" cutoff="45" softness="1" range="10" diffuse=".5 .65 .8" intensity="150000" castshadow="false"/>
+    <light type="image" texture="ibl" intensity="3000"/>
+    <geom name="floor" type="plane" size="0 0 .01" material="floor"/>
 
     <!-- cabinet: interior x [-.35 0], y [-.25 .25], z [0 .8] -->
     <geom name="left"   type="box" size=".175 .015 .4"  pos="-.175 -.235 .4" material="body"/>

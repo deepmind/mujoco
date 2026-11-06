@@ -1225,7 +1225,7 @@
     <xs:attribute name="ambient" type="float3" default="0.1 0.1 0.1"/>
     <xs:attribute name="diffuse" type="float3" default="0.4 0.4 0.4"/>
     <xs:attribute name="specular" type="float3" default="0.5 0.5 0.5"/>
-    <xs:attribute name="active" type="xs:int" default="1"/>
+    <xs:attribute name="active" type="kw_FalseTrueAuto" default="auto"/>
   </xs:complexType>
 
   <xs:complexType name="map">

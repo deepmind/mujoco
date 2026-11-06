@@ -15,6 +15,7 @@
 #include "engine/engine_core_util.h"
 
 #include <stddef.h>
+#include <string.h>
 
 #include <mujoco/mjdata.h>
 #include <mujoco/mjmacro.h>
@@ -691,6 +692,244 @@ static void simplexWeights(mjtNum w[4], const mjtNum p[3], const mjtNum* x[4], i
 }
 
 
+// world position of (global) lattice node n of interpolated flex f
+void mj_flexNodePos(const mjModel* m, const mjData* d, int f, int n, mjtNum pos[3]) {
+  int b = m->flex_nodebodyid[n];
+  const mjtNum* off = m->flex_node + 3*n;
+  if (m->flex_centered[f] || (off[0] == 0 && off[1] == 0 && off[2] == 0)) {
+    mju_copy3(pos, d->xpos + 3*b);
+  } else {
+    mju_mulMatVec3(pos, d->xmat + 9*b, off);
+    mju_addTo3(pos, d->xpos + 3*b);
+  }
+}
+
+
+//---------------------------- flex interpolation -------------------------------------------------
+// The vertices of an interpolated flex (flex_interp != 0) are a fixed linear combination of its
+// lattice nodes: the Lagrange basis of order |flex_interp| of the vertex's cell, where for shell-mode
+// flexes (flex_interp < 0) the interior lattice nodes are in turn the Coons TFI of the boundary
+// nodes. Vertex positions, gather/scatter and contact weights all evaluate this map through the
+// functions in this section (flexVertBasis and flexTFINode), so they agree exactly.
+
+// lattice node counts of interpolated flex f, return interpolation order
+static int flexLattice(const mjModel* m, int f, int dims[3]) {
+  int interp = m->flex_interp[f];
+  int order = interp < 0 ? -interp : interp;
+  for (int i=0; i < 3; i++) {
+    dims[i] = m->flex_cellnum[3*f+i]*order + 1;
+  }
+  return order;
+}
+
+
+// Coons transfinite interpolation (TFI) of interior lattice node (i,j,k) of an nx*ny*nz lattice from
+// the boundary nodes on the lines through it: 6 face, 12 edge and 8 corner terms
+//   idx: flat node indices (i*ny*nz + j*nz + k) of the 26 boundary nodes, w: their weights
+//   returns the number of weights (26)
+static int flexTFINode(int nx, int ny, int nz, int i, int j, int k, int idx[26], mjtNum w[26]) {
+  mjtNum s = (mjtNum)i / (nx-1);
+  mjtNum t = (mjtNum)j / (ny-1);
+  mjtNum u = (mjtNum)k / (nz-1);
+  int I[2] = {0, nx-1}, J[2] = {0, ny-1}, K[2] = {0, nz-1};
+  mjtNum ws[2] = {1-s, s}, wt[2] = {1-t, t}, wu[2] = {1-u, u};
+  int n = 0;
+
+  // face terms: +1
+  for (int a=0; a < 2; a++) {
+    idx[n] = I[a]*ny*nz + j*nz + k;  w[n++] = ws[a];
+    idx[n] = i*ny*nz + J[a]*nz + k;  w[n++] = wt[a];
+    idx[n] = i*ny*nz + j*nz + K[a];  w[n++] = wu[a];
+  }
+
+  // edge terms: -1
+  for (int a=0; a < 2; a++) {
+    for (int b=0; b < 2; b++) {
+      idx[n] = i*ny*nz + J[a]*nz + K[b];  w[n++] = -wt[a]*wu[b];
+      idx[n] = I[a]*ny*nz + j*nz + K[b];  w[n++] = -ws[a]*wu[b];
+      idx[n] = I[a]*ny*nz + J[b]*nz + k;  w[n++] = -ws[a]*wt[b];
+    }
+  }
+
+  // corner terms: +1
+  for (int a=0; a < 2; a++) {
+    for (int b=0; b < 2; b++) {
+      for (int c=0; c < 2; c++) {
+        idx[n] = I[a]*ny*nz + J[b]*nz + K[c];  w[n++] = ws[a]*wt[b]*wu[c];
+      }
+    }
+  }
+  return n;
+}
+
+
+// Lagrange basis of a point at [0,1]^3 reference coordinates coord of interpolated flex f in its
+// cell (or precomputed cell >= 0), return number of nodes
+static int flexPointBasis(const mjModel* m, int f, const mjtNum coord[3], int cell,
+                          int nodeindices[27], mjtNum basis[27]) {
+  int interp = m->flex_interp[f];
+  int order = interp < 0 ? -interp : interp;
+  if (order < 1 || order > 2) {
+    mjERROR("unsupported interpolation order %d of flex %d", order, f);
+  }
+  mjtNum local[3];
+  int npc = mju_cellLookup(coord, m->flex_cellnum + 3*f, order, cell, local, nodeindices);
+  mju_evalBasisArray(basis, local, order);
+  return npc;
+}
+
+
+// complete a lattice node vector in place: interior nodes of shell-mode flexes follow the boundary
+static void flexInterpNodes(const mjModel* m, int f, mjtNum* nodevec) {
+  if (m->flex_interp[f] >= 0) {
+    return;
+  }
+  int dims[3], idx[26];
+  mjtNum w[26];
+  flexLattice(m, f, dims);
+  int nx = dims[0], ny = dims[1], nz = dims[2];
+  for (int i=1; i < nx-1; i++) {
+    for (int j=1; j < ny-1; j++) {
+      for (int k=1; k < nz-1; k++) {
+        // interior nodes only depend on boundary nodes, so the update can be done in place
+        int n = flexTFINode(nx, ny, nz, i, j, k, idx, w);
+        mjtNum* res = nodevec + 3*(i*ny*nz + j*nz + k);
+        mju_zero3(res);
+        for (int q=0; q < n; q++) {
+          mju_addToScl3(res, nodevec + 3*idx[q], w[q]);
+        }
+      }
+    }
+  }
+}
+
+
+// vertex vectors of interpolated flex f from a completed lattice node vector
+void mj_flexInterpVert(const mjModel* m, int f, const mjtNum* nodevec, mjtNum* vertvec) {
+  int vadr = m->flex_vertadr[f];
+  for (int v=0; v < m->flex_vertnum[f]; v++) {
+    int g = vadr + v;
+    int idx[27];
+    mjtNum basis[27];
+    int npc = flexPointBasis(m, f, m->flex_vert0 + 3*g, m->flex_vertcell[g], idx, basis);
+    mjtNum* res = vertvec + 3*v;
+    mju_zero3(res);
+    for (int j=0; j < npc; j++) {
+      mju_addToScl3(res, nodevec + 3*idx[j], basis[j]);
+    }
+  }
+}
+
+
+// transpose of flexInterpNodes followed by mj_flexInterpVert: accumulate vertex vectors onto the
+// lattice nodes, then fold interior nodes of shell-mode flexes onto the boundary
+static void flexInterpVertT(const mjModel* m, int f, const mjtNum* vertvec, mjtNum* nodevec) {
+  int vadr = m->flex_vertadr[f];
+  for (int v=0; v < m->flex_vertnum[f]; v++) {
+    const mjtNum* x = vertvec + 3*v;
+    if (!x[0] && !x[1] && !x[2]) {
+      continue;
+    }
+    int g = vadr + v;
+    int idx[27];
+    mjtNum basis[27];
+    int npc = flexPointBasis(m, f, m->flex_vert0 + 3*g, m->flex_vertcell[g], idx, basis);
+    for (int j=0; j < npc; j++) {
+      mju_addToScl3(nodevec + 3*idx[j], x, basis[j]);
+    }
+  }
+  if (m->flex_interp[f] >= 0) {
+    return;
+  }
+  int dims[3], idx[26];
+  mjtNum w[26];
+  flexLattice(m, f, dims);
+  int nx = dims[0], ny = dims[1], nz = dims[2];
+  for (int i=1; i < nx-1; i++) {
+    for (int j=1; j < ny-1; j++) {
+      for (int k=1; k < nz-1; k++) {
+        mjtNum* fi = nodevec + 3*(i*ny*nz + j*nz + k);
+        if (!fi[0] && !fi[1] && !fi[2]) {
+          continue;
+        }
+        mjtNum val[3] = {fi[0], fi[1], fi[2]};
+        mju_zero3(fi);
+        int n = flexTFINode(nx, ny, nz, i, j, k, idx, w);
+        for (int q=0; q < n; q++) {
+          mju_addToScl3(nodevec + 3*idx[q], val, w[q]);
+        }
+      }
+    }
+  }
+}
+
+
+// append (k, w) to (key, weight) or add w to existing key; return updated count
+static int flexAddWeight(int* key, mjtNum* weight, int n, int cap, int k, mjtNum w) {
+  for (int i=0; i < n; i++) {
+    if (key[i] == k) {
+      weight[i] += w;
+      return n;
+    }
+  }
+  if (n >= cap) {
+    mjERROR("too many interpolation weights (max %d)", cap);
+  }
+  key[n] = k;
+  weight[n] = w;
+  return n + 1;
+}
+
+
+// lattice node weights of a point at [0,1]^3 reference coordinates coord of interpolated flex f,
+// consistent with mj_flexInterpVert; node are local lattice node indices (only boundary nodes for
+// shell-mode flexes)
+//   returns the number of weights, at most mjMAXFLEXINTERPW
+int mj_flexInterpWeights(const mjModel* m, int f, const mjtNum coord[3],
+                         int* node, mjtNum* weight) {
+  int cnode[27];
+  mjtNum cweight[27];
+  int npc = flexPointBasis(m, f, coord, -1, cnode, cweight);
+
+  // volume mode: the cell nodes are distinct degrees of freedom
+  if (m->flex_interp[f] > 0) {
+    int nn = 0;
+    for (int j=0; j < npc; j++) {
+      if (cweight[j]) {
+        node[nn] = cnode[j];
+        weight[nn] = cweight[j];
+        nn++;
+      }
+    }
+    return nn;
+  }
+
+  // shell mode: replace interior nodes by their TFI weights on the boundary
+  int dims[3];
+  flexLattice(m, f, dims);
+  int nx = dims[0], ny = dims[1], nz = dims[2];
+  int nn = 0;
+  for (int q=0; q < npc; q++) {
+    if (!cweight[q]) {
+      continue;
+    }
+    int n = cnode[q];
+    int k = n % nz, j = (n / nz) % ny, i = n / (ny*nz);
+    if (i > 0 && i < nx-1 && j > 0 && j < ny-1 && k > 0 && k < nz-1) {
+      int tidx[26];
+      mjtNum tw[26];
+      int nt = flexTFINode(nx, ny, nz, i, j, k, tidx, tw);
+      for (int t=0; t < nt; t++) {
+        nn = flexAddWeight(node, weight, nn, mjMAXFLEXINTERPW, tidx[t], cweight[q]*tw[t]);
+      }
+    } else {
+      nn = flexAddWeight(node, weight, nn, mjMAXFLEXINTERPW, n, cweight[q]);
+    }
+  }
+  return nn;
+}
+
+
 // compute element vertices and weights for given contact point, return #vertices
 //   weights are the barycentric coordinates of the point on the element closest to the contact
 //   if v is one of the element vertices, reduce element to fragment
@@ -714,154 +953,6 @@ static int mj_elemVertWeight(const mjModel* m, const mjData* d, int f, int e, in
   // barycentric weights of the closest point on the element or fragment
   simplexWeights(weight, point, x, n);
   return n;
-}
-
-
-// compute body weights for a given contact vertex, return number of bodies
-static int mj_vertBodyWeight(const mjModel* m, const mjData* d, int f, int* v,
-                             int* body, mjtNum* bweight, const mjtNum* vweight, int nw) {
-  if (nw == 0) {
-    return 0;
-  }
-
-  // compute parametric coordinates
-  mjtNum coord[3] = {0, 0, 0};
-  for (int i = 0; i < nw; i++) {
-    mju_addToScl3(coord, m->flex_vert0 + 3*v[i], vweight[i]);
-  }
-
-  int interp = m->flex_interp[f];
-  int order = interp < 0 ? -interp : interp;
-  int npc = (order+1)*(order+1)*(order+1);  // number of nodes per cell
-
-  // grid dimensions for shell mode
-  int nx = 0, ny = 0, nz = 0;
-  if (interp < 0) {
-    nx = m->flex_cellnum[3*f+0] * order + 1;
-    ny = m->flex_cellnum[3*f+1] * order + 1;
-    nz = m->flex_cellnum[3*f+2] * order + 1;
-  }
-
-  // cell lookup: get local coords and node indices
-  const int* cellnum = m->flex_cellnum + 3*f;
-  int cell = -1;
-  if (nw == 1) {
-    cell = m->flex_vertcell[v[0]];
-  } else {
-    int cx = cellnum[0], cy = cellnum[1], cz = cellnum[2];
-    int ci = mjMAX(0, mjMIN(cx - 1, (int)mju_floor(coord[0] * cx)));
-    int cj = mjMAX(0, mjMIN(cy - 1, (int)mju_floor(coord[1] * cy)));
-    int ck = mjMAX(0, mjMIN(cz - 1, (int)mju_floor(coord[2] * cz)));
-    int nat_cell = ci * cy * cz + cj * cz + ck;
-    int best = 0;
-    for (int i = 0; i < nw; i++) {
-      if (m->flex_vertcell[v[i]] == nat_cell) {
-        cell = nat_cell;
-        break;
-      }
-      if (vweight[i] > vweight[best]) {
-        best = i;
-      }
-    }
-    if (cell < 0) {
-      cell = m->flex_vertcell[v[best]];
-    }
-  }
-  mjtNum local[3];
-  int nodeindices[27];  // max npc for quadratic: 3^3 = 27
-  mju_cellLookup(coord, cellnum, order, cell, local, nodeindices);
-
-  // evaluate basis functions for this cell's local nodes
-  int nstart = m->flex_nodeadr[f];
-  int nb = 0;
-
-  if (!m->flex_nodebodyid) {
-    return 0;
-  }
-
-  if (npc > 27) {
-    for (int j = 0; j < npc; j++) {
-      mjtNum w = mju_evalBasis(local, j, order);
-      if (mju_abs(w) < 1e-5) {
-        continue;
-      }
-
-      int idx = nodeindices[j];
-
-      // shell mode: map interior nodes to boundary
-      if (interp < 0) {
-        int k_idx = idx % nz;
-        int rest = idx / nz;
-        int j_idx = rest % ny;
-        int i_idx = rest / ny;
-
-        if (i_idx > 0 && i_idx < nx-1 && j_idx > 0 && j_idx < ny-1 && k_idx > 0 && k_idx < nz-1) {
-          mju_shellTFIWeights(nx, ny, nz, i_idx, j_idx, k_idx, w, &nb, body, bweight,
-                              m->flex_nodebodyid, nstart);
-          continue;
-        }
-      }
-
-      // add node, check for duplicates (especially needed when combining with TFI)
-      int b = m->flex_nodebodyid[nstart + idx];
-      int found = 0;
-      for (int k = 0; k < nb; k++) {
-        if (body[k] == b) {
-          if (bweight) bweight[k] += w;
-          found = 1;
-          break;
-        }
-      }
-      if (!found) {
-        if (bweight) bweight[nb] = w;
-        body[nb++] = b;
-      }
-    }
-  } else {
-    mjtNum basis[27];
-    mju_evalBasisArray(basis, local, order);
-
-    for (int j = 0; j < npc; j++) {
-      mjtNum w = basis[j];
-      if (mju_abs(w) < 1e-5) {
-        continue;
-      }
-
-      int idx = nodeindices[j];
-
-      // shell mode: map interior nodes to boundary
-      if (interp < 0) {
-        int k_idx = idx % nz;
-        int rest = idx / nz;
-        int j_idx = rest % ny;
-        int i_idx = rest / ny;
-
-        if (i_idx > 0 && i_idx < nx-1 && j_idx > 0 && j_idx < ny-1 && k_idx > 0 && k_idx < nz-1) {
-          mju_shellTFIWeights(nx, ny, nz, i_idx, j_idx, k_idx, w, &nb, body, bweight,
-                              m->flex_nodebodyid, nstart);
-          continue;
-        }
-      }
-
-      // add node, check for duplicates (especially needed when combining with TFI)
-      int b = m->flex_nodebodyid[nstart + idx];
-      int found = 0;
-      for (int k = 0; k < nb; k++) {
-        if (body[k] == b) {
-          if (bweight) bweight[k] += w;
-          found = 1;
-          break;
-        }
-      }
-      if (!found) {
-        if (bweight) bweight[nb] = w;
-        body[nb++] = b;
-      }
-    }
-  }
-
-
-  return nb;
 }
 
 
@@ -906,9 +997,30 @@ int mj_contactBodyWeight(const mjModel* m, const mjData* d, const mjContact* con
     nw = mj_elemVertWeight(m, d, f, con->elem[side], v, con->pos, vid, vweight);
   }
 
-  // interpolated flex: node bodies
+  // interpolated flex: node bodies weighted at the contact point's blended reference coordinates
   if (m->flex_interp[f]) {
-    return mj_vertBodyWeight(m, d, f, vid, body, weight, vweight, nw);
+    if (!m->flex_nodebodyid) {
+      return 0;
+    }
+    mjtNum coord[3] = {0, 0, 0};
+    for (int i=0; i < nw; i++) {
+      mju_addToScl3(coord, m->flex_vert0 + 3*vid[i], vweight[i]);
+    }
+    int node[mjMAXFLEXINTERPW];
+    mjtNum nweight[mjMAXFLEXINTERPW], wtmp[mjMAXFLEXINTERPW];
+    int nn = mj_flexInterpWeights(m, f, coord, node, nweight);
+
+    // map lattice nodes to their bodies, merging nodes that share a body
+    int nstart = m->flex_nodeadr[f];
+    mjtNum* bw = weight ? weight : wtmp;
+    int nb = 0;
+    for (int q=0; q < nn; q++) {
+      if (nweight[q]) {
+        nb = flexAddWeight(body, bw, nb, mjMAXFLEXINTERPW,
+                           m->flex_nodebodyid[nstart + node[q]], nweight[q]);
+      }
+    }
+    return nb;
   }
 
   // vertex bodies
@@ -1452,10 +1564,9 @@ static void flexPointMap(const mjModel* m, const mjData* d, int body, const mjtN
 // Apply the point Jacobian or its transpose without constructing a matrix. The general
 // path walks the same motion axes as mj_jac, including every ancestor and the vertex offset.
 // Gather overwrites 3*nvert world components; scatter adds to nv generalized components.
-// For an interpolated flex (flex_interp != 0), the map factors into two stages through the
-// lattice nodes: DOFs <-> boundary/lattice nodes (with interior nodes reconstructed from boundary
-// nodes via Coons TFI when flex_interp < 0) and lattice nodes <-> fine mesh vertices locally
-// within each cell.
+// For an interpolated flex (flex_interp != 0), the map factors through the lattice nodes: DOFs <->
+// lattice nodes, then lattice nodes <-> vertices via flexInterpNodes, mj_flexInterpVert and
+// flexInterpVertT.
 static void flexMap(const mjModel* m, mjData* d, int f, mjtNum* res,
                     const mjtNum* vec, mjtNum scale, int transpose) {
   int vadr = m->flex_vertadr[f];
@@ -1470,76 +1581,34 @@ static void flexMap(const mjModel* m, mjData* d, int f, mjtNum* res,
     return;
   }
 
-  int order = interp < 0 ? -interp : interp;
   int nadr = m->flex_nodeadr[f];
   int nodenum = m->flex_nodenum[f];
-  const int* cellnum = m->flex_cellnum + 3*f;
-  int nx = cellnum[0]*order + 1;
-  int ny = cellnum[1]*order + 1;
-  int nz = cellnum[2]*order + 1;
-
   mj_markStack(d);
   mjtNum* node_vec = mjSTACKALLOC(d, 3*nodenum, mjtNum);
-  mju_zero(node_vec, 3*nodenum);
 
-  // Stage 1 (gather): DOFs -> lattice nodes -> TFI interior nodes
+  // gather: DOFs -> lattice nodes -> vertices
   if (!transpose) {
+    mju_zero(node_vec, 3*nodenum);
     for (int i=0; i < nodenum; i++) {
-      int n = nadr + i;
-      int b = m->flex_nodebodyid[n];
       mjtNum point[3];
-      mji_copy3(point, d->xpos + 3*b);
-      if (!m->flex_centered[f]) {
-        mjtNum noff[3];
-        mji_mulMatVec3(noff, d->xmat + 9*b, m->flex_node + 3*n);
-        mji_addTo3(point, noff);
-      }
-      flexPointMap(m, d, b, point, node_vec + 3*i, vec, 1, 0);
+      mj_flexNodePos(m, d, f, nadr + i, point);
+      flexPointMap(m, d, m->flex_nodebodyid[nadr + i], point, node_vec + 3*i, vec, 1, 0);
     }
-    if (interp < 0) {
-      mju_shellTrackInterior(node_vec, nx, ny, nz);
-    }
+    flexInterpNodes(m, f, node_vec);
+    mj_flexInterpVert(m, f, node_vec, res);
   }
 
-  // Stage 2: lattice nodes <-> fine mesh vertices (local per cell)
-  for (int v=0; v < vertnum; v++) {
-    mjtNum local[3];
-    int nodeindices[27];
-    mjtNum basis[27];
-    int npc = mju_cellLookup(m->flex_vert0 + 3*(vadr+v), cellnum, order,
-                             m->flex_vertcell[vadr+v], local, nodeindices);
-    mju_evalBasisArray(basis, local, order);
-    if (!transpose) {
-      mji_zero3(res + 3*v);
-      for (int j=0; j < npc; j++) {
-        mji_addToScl3(res + 3*v, node_vec + 3*nodeindices[j], basis[j]);
-      }
-    } else {
-      for (int j=0; j < npc; j++) {
-        mji_addToScl3(node_vec + 3*nodeindices[j], vec + 3*v, basis[j]);
-      }
-    }
-  }
-
-  // Stage 1^T (scatter): TFI interior nodes -> boundary lattice nodes -> DOFs
-  if (transpose) {
-    if (interp < 0) {
-      mju_shellScatterInterior(node_vec, nx, ny, nz);
-    }
+  // scatter: vertices -> lattice nodes -> DOFs
+  else {
+    mju_zero(node_vec, 3*nodenum);
+    flexInterpVertT(m, f, vec, node_vec);
     for (int i=0; i < nodenum; i++) {
       if (!node_vec[3*i+0] && !node_vec[3*i+1] && !node_vec[3*i+2]) {
         continue;
       }
-      int n = nadr + i;
-      int b = m->flex_nodebodyid[n];
       mjtNum point[3];
-      mji_copy3(point, d->xpos + 3*b);
-      if (!m->flex_centered[f]) {
-        mjtNum noff[3];
-        mji_mulMatVec3(noff, d->xmat + 9*b, m->flex_node + 3*n);
-        mji_addTo3(point, noff);
-      }
-      flexPointMap(m, d, b, point, res, node_vec + 3*i, scale, 1);
+      mj_flexNodePos(m, d, f, nadr + i, point);
+      flexPointMap(m, d, m->flex_nodebodyid[nadr + i], point, res, node_vec + 3*i, scale, 1);
     }
   }
 
@@ -1564,20 +1633,11 @@ void mj_flexScatter(const mjModel* m, mjData* d, int f, mjtNum* res,
 void mju_flexGatherState(const mjModel* m, const mjData* d, int f, mjtNum* xpos, mjtNum* vel) {
   int nodenum = m->flex_nodenum[f];
   int nstart = m->flex_nodeadr[f];
-  int* bodyid = m->flex_nodebodyid + m->flex_nodeadr[f];
 
   // compute positions and velocities
   for (int i=0; i < nodenum; i++) {
-    int bid = bodyid[i];
-    if (m->flex_centered[f] ||
-        (m->flex_node[3*(i+nstart)+0] == 0 &&
-         m->flex_node[3*(i+nstart)+1] == 0 &&
-         m->flex_node[3*(i+nstart)+2] == 0)) {
-      mju_copy3(xpos + 3*i, d->xpos + 3*bid);
-    } else {
-      mju_mulMatVec3(xpos + 3*i, d->xmat + 9*bid, m->flex_node + 3*(i+nstart));
-      mju_addTo3(xpos + 3*i, d->xpos + 3*bid);
-    }
+    int bid = m->flex_nodebodyid[nstart + i];
+    mj_flexNodePos(m, d, f, nstart + i, xpos + 3*i);
 
     if (vel) {
       mjtNum body_vel[6];
@@ -1594,21 +1654,10 @@ void mju_flexGatherState(const mjModel* m, const mjData* d, int f, mjtNum* xpos,
     }
   }
 
-  // shell mode: reconstruct interior node positions and velocities via TFI
-  int interp = m->flex_interp[f];
-  if (interp < 0) {
-    int order = -interp;
-    int cx = m->flex_cellnum[3*f+0];
-    int cy = m->flex_cellnum[3*f+1];
-    int cz = m->flex_cellnum[3*f+2];
-    int nx_g = cx * order + 1;
-    int ny_g = cy * order + 1;
-    int nz_g = cz * order + 1;
-
-    mju_shellTrackInterior(xpos, nx_g, ny_g, nz_g);
-    if (vel) {
-      mju_shellTrackInterior(vel, nx_g, ny_g, nz_g);
-    }
+  // shell mode: interior nodes follow the boundary
+  flexInterpNodes(m, f, xpos);
+  if (vel) {
+    flexInterpNodes(m, f, vel);
   }
 }
 
@@ -1841,6 +1890,12 @@ void mj_warning(mjData* d, int warning, int info) {
 // The option-level gate decision; d->efm_active reports whether the per-step build ran
 int mj_isMetric(const mjModel* m) {
   return m->opt.integrator == mjINT_DISCRETE;
+}
+
+
+// does the active metric step populate the qH backbone factor (efm_diag or nefmK)
+int mj_effUseQH(const mjData* d) {
+  return d->efm_active && (d->efm_diag != NULL || d->nefmK > 0);
 }
 
 

@@ -119,7 +119,6 @@ def _forward_shim(
     body_simple: wp.array[int],
     body_subtreemass: wp.array2d[float],
     body_subtreenum: wp.array[int],
-    body_tree: tuple[wp.array[int], ...],
     body_treeid: wp.array[int],
     body_weldid: wp.array[int],
     cam_bodyid: wp.array[int],
@@ -159,7 +158,6 @@ def _forward_shim(
     efm_K_rowadr: wp.array[int],
     efm_K_rownnz: wp.array[int],
     efm_con_max_dof: int,
-    efm_dofblk: wp.array[int],
     efm_dofid: wp.array[int],
     eq_connect_adr: wp.array[int],
     eq_data: wp.array2d[mjwp_types.vec12],
@@ -194,6 +192,8 @@ def _forward_shim(
     flex_edgeflexid: wp.array[int],
     flex_edgenum: wp.array[int],
     flex_edgestiffness: wp.array[float],
+    flex_efcnnz: wp.array[int],
+    flex_efcnum: wp.array[int],
     flex_eff_possible: wp.array[bool],
     flex_elem: wp.array[int],
     flex_elem_rodedge: wp.array[wp.vec2i],
@@ -254,6 +254,8 @@ def _forward_shim(
     flexedge_J_colind: wp.array[int],
     flexedge_J_rowadr: wp.array[int],
     flexedge_J_rownnz: wp.array[int],
+    flexedge_efcadr: wp.array[int],
+    flexedge_efcnnzadr: wp.array[int],
     flexedge_invweight0: wp.array[float],
     flexedge_length0: wp.array[float],
     flexedge_rigid: wp.array[bool],
@@ -434,6 +436,7 @@ def _forward_shim(
     sensor_adr: wp.array[int],
     sensor_contact_acc_adr: wp.array[int],
     sensor_contact_pos_adr: wp.array[int],
+    sensor_contact_vel_adr: wp.array[int],
     sensor_cutoff: wp.array[float],
     sensor_datatype: wp.array[int],
     sensor_delay: wp.array2d[float],
@@ -532,6 +535,7 @@ def _forward_shim(
     opt__noslip_iterations: int,
     opt__noslip_tolerance: wp.array[float],
     opt__run_collision_detection: bool,
+    opt__run_qacc_smooth: bool,
     opt__run_rne_postconstraint: bool,
     opt__sdf_initpoints: int,
     opt__sdf_iterations: int,
@@ -584,11 +588,11 @@ def _forward_shim(
     cx: wp.array3d[float],
     dof_awake_ind: wp.array2d[int],
     dof_cdof: wp.array2d[int],
+    dof_frictionadr: wp.array2d[int],
     dof_island: wp.array2d[int],
     dof_islandid: wp.array2d[int],
     efc_islandid: wp.array2d[int],
     efm_K_val: wp.array2d[float],
-    efm_L: wp.array2d[float],
     efm_as: wp.array2d[float],
     efm_c: wp.array2d[float],
     efm_ca: wp.array2d[float],
@@ -821,7 +825,6 @@ def _forward_shim(
   _m.body_simple = body_simple
   _m.body_subtreemass = body_subtreemass
   _m.body_subtreenum = body_subtreenum
-  _m.body_tree = body_tree
   _m.body_treeid = body_treeid
   _m.body_weldid = body_weldid
   _m.cam_bodyid = cam_bodyid
@@ -861,7 +864,6 @@ def _forward_shim(
   _m.efm_K_rowadr = efm_K_rowadr
   _m.efm_K_rownnz = efm_K_rownnz
   _m.efm_con_max_dof = efm_con_max_dof
-  _m.efm_dofblk = efm_dofblk
   _m.efm_dofid = efm_dofid
   _m.eq_connect_adr = eq_connect_adr
   _m.eq_data = eq_data
@@ -896,6 +898,8 @@ def _forward_shim(
   _m.flex_edgeflexid = flex_edgeflexid
   _m.flex_edgenum = flex_edgenum
   _m.flex_edgestiffness = flex_edgestiffness
+  _m.flex_efcnnz = flex_efcnnz
+  _m.flex_efcnum = flex_efcnum
   _m.flex_eff_possible = flex_eff_possible
   _m.flex_elem = flex_elem
   _m.flex_elem_rodedge = flex_elem_rodedge
@@ -956,6 +960,8 @@ def _forward_shim(
   _m.flexedge_J_colind = flexedge_J_colind
   _m.flexedge_J_rowadr = flexedge_J_rowadr
   _m.flexedge_J_rownnz = flexedge_J_rownnz
+  _m.flexedge_efcadr = flexedge_efcadr
+  _m.flexedge_efcnnzadr = flexedge_efcnnzadr
   _m.flexedge_invweight0 = flexedge_invweight0
   _m.flexedge_length0 = flexedge_length0
   _m.flexedge_rigid = flexedge_rigid
@@ -1133,6 +1139,7 @@ def _forward_shim(
   _m.opt.noslip_iterations = opt__noslip_iterations
   _m.opt.noslip_tolerance = opt__noslip_tolerance
   _m.opt.run_collision_detection = opt__run_collision_detection
+  _m.opt.run_qacc_smooth = opt__run_qacc_smooth
   _m.opt.run_rne_postconstraint = opt__run_rne_postconstraint
   _m.opt.sdf_initpoints = opt__sdf_initpoints
   _m.opt.sdf_iterations = opt__sdf_iterations
@@ -1166,6 +1173,7 @@ def _forward_shim(
   _m.sensor_adr = sensor_adr
   _m.sensor_contact_acc_adr = sensor_contact_acc_adr
   _m.sensor_contact_pos_adr = sensor_contact_pos_adr
+  _m.sensor_contact_vel_adr = sensor_contact_vel_adr
   _m.sensor_cutoff = sensor_cutoff
   _m.sensor_datatype = sensor_datatype
   _m.sensor_delay = sensor_delay
@@ -1298,6 +1306,7 @@ def _forward_shim(
   _d.cx = cx
   _d.dof_awake_ind = dof_awake_ind
   _d.dof_cdof = dof_cdof
+  _d.dof_frictionadr = dof_frictionadr
   _d.dof_island = dof_island
   _d.dof_islandid = dof_islandid
   _d.efc.D = efc__D
@@ -1322,7 +1331,6 @@ def _forward_shim(
   _d.efc.vel = efc__vel
   _d.efc_islandid = efc_islandid
   _d.efm_K_val = efm_K_val
-  _d.efm_L = efm_L
   _d.efm_as = efm_as
   _d.efm_c = efm_c
   _d.efm_ca = efm_ca
@@ -1481,11 +1489,11 @@ def _forward_jax_impl(m: types.Model, d: types.Data):
       'cx': d._impl.cx.shape,
       'dof_awake_ind': d._impl.dof_awake_ind.shape,
       'dof_cdof': d._impl.dof_cdof.shape,
+      'dof_frictionadr': d._impl.dof_frictionadr.shape,
       'dof_island': d._impl.dof_island.shape,
       'dof_islandid': d._impl.dof_islandid.shape,
       'efc_islandid': d._impl.efc_islandid.shape,
       'efm_K_val': d._impl.efm_K_val.shape,
-      'efm_L': d._impl.efm_L.shape,
       'efm_as': d._impl.efm_as.shape,
       'efm_c': d._impl.efm_c.shape,
       'efm_ca': d._impl.efm_ca.shape,
@@ -1668,11 +1676,11 @@ def _forward_jax_impl(m: types.Model, d: types.Data):
           'cx',
           'dof_awake_ind',
           'dof_cdof',
+          'dof_frictionadr',
           'dof_island',
           'dof_islandid',
           'efc_islandid',
           'efm_K_val',
-          'efm_L',
           'efm_as',
           'efm_c',
           'efm_ca',
@@ -1911,6 +1919,7 @@ def _forward_jax_impl(m: types.Model, d: types.Data):
           'dof_cdof',
           'dof_damping',
           'dof_dampingpoly',
+          'dof_frictionadr',
           'dof_frictionloss',
           'dof_invweight0',
           'dof_island',
@@ -1939,7 +1948,6 @@ def _forward_jax_impl(m: types.Model, d: types.Data):
           'efc__vel',
           'efc_islandid',
           'efm_K_val',
-          'efm_L',
           'efm_as',
           'efm_c',
           'efm_ca',
@@ -2183,6 +2191,7 @@ def _forward_jax_impl(m: types.Model, d: types.Data):
           'cx',
           'dof_awake_ind',
           'dof_cdof',
+          'dof_frictionadr',
           'dof_island',
           'dof_islandid',
           'efc__D',
@@ -2207,7 +2216,6 @@ def _forward_jax_impl(m: types.Model, d: types.Data):
           'efc__vel',
           'efc_islandid',
           'efm_K_val',
-          'efm_L',
           'efm_as',
           'efm_c',
           'efm_ca',
@@ -2392,7 +2400,6 @@ def _forward_jax_impl(m: types.Model, d: types.Data):
       m.body_simple,
       m.body_subtreemass,
       m._impl.body_subtreenum,
-      m._impl.body_tree,
       m.body_treeid,
       m.body_weldid,
       m.cam_bodyid,
@@ -2432,7 +2439,6 @@ def _forward_jax_impl(m: types.Model, d: types.Data):
       m._impl.efm_K_rowadr,
       m._impl.efm_K_rownnz,
       m._impl.efm_con_max_dof,
-      m._impl.efm_dofblk,
       m._impl.efm_dofid,
       m._impl.eq_connect_adr,
       m.eq_data,
@@ -2467,6 +2473,8 @@ def _forward_jax_impl(m: types.Model, d: types.Data):
       m._impl.flex_edgeflexid,
       m._impl.flex_edgenum,
       m._impl.flex_edgestiffness,
+      m._impl.flex_efcnnz,
+      m._impl.flex_efcnum,
       m._impl.flex_eff_possible,
       m._impl.flex_elem,
       m._impl.flex_elem_rodedge,
@@ -2527,6 +2535,8 @@ def _forward_jax_impl(m: types.Model, d: types.Data):
       m._impl.flexedge_J_colind,
       m._impl.flexedge_J_rowadr,
       m._impl.flexedge_J_rownnz,
+      m._impl.flexedge_efcadr,
+      m._impl.flexedge_efcnnzadr,
       m._impl.flexedge_invweight0,
       m._impl.flexedge_length0,
       m._impl.flexedge_rigid,
@@ -2707,6 +2717,7 @@ def _forward_jax_impl(m: types.Model, d: types.Data):
       m.sensor_adr,
       m._impl.sensor_contact_acc_adr,
       m._impl.sensor_contact_pos_adr,
+      m._impl.sensor_contact_vel_adr,
       m.sensor_cutoff,
       m.sensor_datatype,
       m._impl.sensor_delay,
@@ -2805,6 +2816,7 @@ def _forward_jax_impl(m: types.Model, d: types.Data):
       m.opt._impl.noslip_iterations,
       m.opt._impl.noslip_tolerance,
       m.opt._impl.run_collision_detection,
+      m.opt._impl.run_qacc_smooth,
       m.opt._impl.run_rne_postconstraint,
       m.opt._impl.sdf_initpoints,
       m.opt._impl.sdf_iterations,
@@ -2856,11 +2868,11 @@ def _forward_jax_impl(m: types.Model, d: types.Data):
       d._impl.cx,
       d._impl.dof_awake_ind,
       d._impl.dof_cdof,
+      d._impl.dof_frictionadr,
       d._impl.dof_island,
       d._impl.dof_islandid,
       d._impl.efc_islandid,
       d._impl.efm_K_val,
-      d._impl.efm_L,
       d._impl.efm_as,
       d._impl.efm_c,
       d._impl.efm_ca,
@@ -3048,11 +3060,11 @@ def _forward_jax_impl(m: types.Model, d: types.Data):
       '_impl.cx': out[26],
       '_impl.dof_awake_ind': out[27],
       '_impl.dof_cdof': out[28],
-      '_impl.dof_island': out[29],
-      '_impl.dof_islandid': out[30],
-      '_impl.efc_islandid': out[31],
-      '_impl.efm_K_val': out[32],
-      '_impl.efm_L': out[33],
+      '_impl.dof_frictionadr': out[29],
+      '_impl.dof_island': out[30],
+      '_impl.dof_islandid': out[31],
+      '_impl.efc_islandid': out[32],
+      '_impl.efm_K_val': out[33],
       '_impl.efm_as': out[34],
       '_impl.efm_c': out[35],
       '_impl.efm_ca': out[36],
@@ -3336,7 +3348,6 @@ def _step_shim(
     efm_K_rowadr: wp.array[int],
     efm_K_rownnz: wp.array[int],
     efm_con_max_dof: int,
-    efm_dofblk: wp.array[int],
     efm_dofid: wp.array[int],
     eq_connect_adr: wp.array[int],
     eq_data: wp.array2d[mjwp_types.vec12],
@@ -3371,6 +3382,8 @@ def _step_shim(
     flex_edgeflexid: wp.array[int],
     flex_edgenum: wp.array[int],
     flex_edgestiffness: wp.array[float],
+    flex_efcnnz: wp.array[int],
+    flex_efcnum: wp.array[int],
     flex_eff_possible: wp.array[bool],
     flex_elem: wp.array[int],
     flex_elem_rodedge: wp.array[wp.vec2i],
@@ -3432,6 +3445,8 @@ def _step_shim(
     flexedge_J_colind: wp.array[int],
     flexedge_J_rowadr: wp.array[int],
     flexedge_J_rownnz: wp.array[int],
+    flexedge_efcadr: wp.array[int],
+    flexedge_efcnnzadr: wp.array[int],
     flexedge_invweight0: wp.array[float],
     flexedge_length0: wp.array[float],
     flexedge_rigid: wp.array[bool],
@@ -3621,6 +3636,7 @@ def _step_shim(
     sensor_adr: wp.array[int],
     sensor_contact_acc_adr: wp.array[int],
     sensor_contact_pos_adr: wp.array[int],
+    sensor_contact_vel_adr: wp.array[int],
     sensor_cutoff: wp.array[float],
     sensor_datatype: wp.array[int],
     sensor_delay: wp.array2d[float],
@@ -3720,6 +3736,7 @@ def _step_shim(
     opt__noslip_iterations: int,
     opt__noslip_tolerance: wp.array[float],
     opt__run_collision_detection: bool,
+    opt__run_qacc_smooth: bool,
     opt__run_rne_postconstraint: bool,
     opt__sdf_initpoints: int,
     opt__sdf_iterations: int,
@@ -3773,11 +3790,11 @@ def _step_shim(
     cx: wp.array3d[float],
     dof_awake_ind: wp.array2d[int],
     dof_cdof: wp.array2d[int],
+    dof_frictionadr: wp.array2d[int],
     dof_island: wp.array2d[int],
     dof_islandid: wp.array2d[int],
     efc_islandid: wp.array2d[int],
     efm_K_val: wp.array2d[float],
-    efm_L: wp.array2d[float],
     efm_as: wp.array2d[float],
     efm_c: wp.array2d[float],
     efm_ca: wp.array2d[float],
@@ -4055,7 +4072,6 @@ def _step_shim(
   _m.efm_K_rowadr = efm_K_rowadr
   _m.efm_K_rownnz = efm_K_rownnz
   _m.efm_con_max_dof = efm_con_max_dof
-  _m.efm_dofblk = efm_dofblk
   _m.efm_dofid = efm_dofid
   _m.eq_connect_adr = eq_connect_adr
   _m.eq_data = eq_data
@@ -4090,6 +4106,8 @@ def _step_shim(
   _m.flex_edgeflexid = flex_edgeflexid
   _m.flex_edgenum = flex_edgenum
   _m.flex_edgestiffness = flex_edgestiffness
+  _m.flex_efcnnz = flex_efcnnz
+  _m.flex_efcnum = flex_efcnum
   _m.flex_eff_possible = flex_eff_possible
   _m.flex_elem = flex_elem
   _m.flex_elem_rodedge = flex_elem_rodedge
@@ -4151,6 +4169,8 @@ def _step_shim(
   _m.flexedge_J_colind = flexedge_J_colind
   _m.flexedge_J_rowadr = flexedge_J_rowadr
   _m.flexedge_J_rownnz = flexedge_J_rownnz
+  _m.flexedge_efcadr = flexedge_efcadr
+  _m.flexedge_efcnnzadr = flexedge_efcnnzadr
   _m.flexedge_invweight0 = flexedge_invweight0
   _m.flexedge_length0 = flexedge_length0
   _m.flexedge_rigid = flexedge_rigid
@@ -4335,6 +4355,7 @@ def _step_shim(
   _m.opt.noslip_iterations = opt__noslip_iterations
   _m.opt.noslip_tolerance = opt__noslip_tolerance
   _m.opt.run_collision_detection = opt__run_collision_detection
+  _m.opt.run_qacc_smooth = opt__run_qacc_smooth
   _m.opt.run_rne_postconstraint = opt__run_rne_postconstraint
   _m.opt.sdf_initpoints = opt__sdf_initpoints
   _m.opt.sdf_iterations = opt__sdf_iterations
@@ -4371,6 +4392,7 @@ def _step_shim(
   _m.sensor_adr = sensor_adr
   _m.sensor_contact_acc_adr = sensor_contact_acc_adr
   _m.sensor_contact_pos_adr = sensor_contact_pos_adr
+  _m.sensor_contact_vel_adr = sensor_contact_vel_adr
   _m.sensor_cutoff = sensor_cutoff
   _m.sensor_datatype = sensor_datatype
   _m.sensor_delay = sensor_delay
@@ -4504,6 +4526,7 @@ def _step_shim(
   _d.cx = cx
   _d.dof_awake_ind = dof_awake_ind
   _d.dof_cdof = dof_cdof
+  _d.dof_frictionadr = dof_frictionadr
   _d.dof_island = dof_island
   _d.dof_islandid = dof_islandid
   _d.efc.D = efc__D
@@ -4528,7 +4551,6 @@ def _step_shim(
   _d.efc.vel = efc__vel
   _d.efc_islandid = efc_islandid
   _d.efm_K_val = efm_K_val
-  _d.efm_L = efm_L
   _d.efm_as = efm_as
   _d.efm_c = efm_c
   _d.efm_ca = efm_ca
@@ -4689,11 +4711,11 @@ def _step_jax_impl(m: types.Model, d: types.Data):
       'cx': d._impl.cx.shape,
       'dof_awake_ind': d._impl.dof_awake_ind.shape,
       'dof_cdof': d._impl.dof_cdof.shape,
+      'dof_frictionadr': d._impl.dof_frictionadr.shape,
       'dof_island': d._impl.dof_island.shape,
       'dof_islandid': d._impl.dof_islandid.shape,
       'efc_islandid': d._impl.efc_islandid.shape,
       'efm_K_val': d._impl.efm_K_val.shape,
-      'efm_L': d._impl.efm_L.shape,
       'efm_as': d._impl.efm_as.shape,
       'efm_c': d._impl.efm_c.shape,
       'efm_ca': d._impl.efm_ca.shape,
@@ -4883,11 +4905,11 @@ def _step_jax_impl(m: types.Model, d: types.Data):
           'cx',
           'dof_awake_ind',
           'dof_cdof',
+          'dof_frictionadr',
           'dof_island',
           'dof_islandid',
           'efc_islandid',
           'efm_K_val',
-          'efm_L',
           'efm_as',
           'efm_c',
           'efm_ca',
@@ -5132,6 +5154,7 @@ def _step_jax_impl(m: types.Model, d: types.Data):
           'dof_cdof',
           'dof_damping',
           'dof_dampingpoly',
+          'dof_frictionadr',
           'dof_frictionloss',
           'dof_invweight0',
           'dof_island',
@@ -5160,7 +5183,6 @@ def _step_jax_impl(m: types.Model, d: types.Data):
           'efc__vel',
           'efc_islandid',
           'efm_K_val',
-          'efm_L',
           'efm_as',
           'efm_c',
           'efm_ca',
@@ -5409,6 +5431,7 @@ def _step_jax_impl(m: types.Model, d: types.Data):
           'cx',
           'dof_awake_ind',
           'dof_cdof',
+          'dof_frictionadr',
           'dof_island',
           'dof_islandid',
           'efc__D',
@@ -5433,7 +5456,6 @@ def _step_jax_impl(m: types.Model, d: types.Data):
           'efc__vel',
           'efc_islandid',
           'efm_K_val',
-          'efm_L',
           'efm_as',
           'efm_c',
           'efm_ca',
@@ -5668,7 +5690,6 @@ def _step_jax_impl(m: types.Model, d: types.Data):
       m._impl.efm_K_rowadr,
       m._impl.efm_K_rownnz,
       m._impl.efm_con_max_dof,
-      m._impl.efm_dofblk,
       m._impl.efm_dofid,
       m._impl.eq_connect_adr,
       m.eq_data,
@@ -5703,6 +5724,8 @@ def _step_jax_impl(m: types.Model, d: types.Data):
       m._impl.flex_edgeflexid,
       m._impl.flex_edgenum,
       m._impl.flex_edgestiffness,
+      m._impl.flex_efcnnz,
+      m._impl.flex_efcnum,
       m._impl.flex_eff_possible,
       m._impl.flex_elem,
       m._impl.flex_elem_rodedge,
@@ -5764,6 +5787,8 @@ def _step_jax_impl(m: types.Model, d: types.Data):
       m._impl.flexedge_J_colind,
       m._impl.flexedge_J_rowadr,
       m._impl.flexedge_J_rownnz,
+      m._impl.flexedge_efcadr,
+      m._impl.flexedge_efcnnzadr,
       m._impl.flexedge_invweight0,
       m._impl.flexedge_length0,
       m._impl.flexedge_rigid,
@@ -5953,6 +5978,7 @@ def _step_jax_impl(m: types.Model, d: types.Data):
       m.sensor_adr,
       m._impl.sensor_contact_acc_adr,
       m._impl.sensor_contact_pos_adr,
+      m._impl.sensor_contact_vel_adr,
       m.sensor_cutoff,
       m.sensor_datatype,
       m._impl.sensor_delay,
@@ -6052,6 +6078,7 @@ def _step_jax_impl(m: types.Model, d: types.Data):
       m.opt._impl.noslip_iterations,
       m.opt._impl.noslip_tolerance,
       m.opt._impl.run_collision_detection,
+      m.opt._impl.run_qacc_smooth,
       m.opt._impl.run_rne_postconstraint,
       m.opt._impl.sdf_initpoints,
       m.opt._impl.sdf_iterations,
@@ -6104,11 +6131,11 @@ def _step_jax_impl(m: types.Model, d: types.Data):
       d._impl.cx,
       d._impl.dof_awake_ind,
       d._impl.dof_cdof,
+      d._impl.dof_frictionadr,
       d._impl.dof_island,
       d._impl.dof_islandid,
       d._impl.efc_islandid,
       d._impl.efm_K_val,
-      d._impl.efm_L,
       d._impl.efm_as,
       d._impl.efm_c,
       d._impl.efm_ca,
@@ -6298,11 +6325,11 @@ def _step_jax_impl(m: types.Model, d: types.Data):
       '_impl.cx': out[27],
       '_impl.dof_awake_ind': out[28],
       '_impl.dof_cdof': out[29],
-      '_impl.dof_island': out[30],
-      '_impl.dof_islandid': out[31],
-      '_impl.efc_islandid': out[32],
-      '_impl.efm_K_val': out[33],
-      '_impl.efm_L': out[34],
+      '_impl.dof_frictionadr': out[30],
+      '_impl.dof_island': out[31],
+      '_impl.dof_islandid': out[32],
+      '_impl.efc_islandid': out[33],
+      '_impl.efm_K_val': out[34],
       '_impl.efm_as': out[35],
       '_impl.efm_c': out[36],
       '_impl.efm_ca': out[37],

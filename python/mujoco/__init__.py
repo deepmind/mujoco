@@ -34,7 +34,9 @@ __path__ = __import__('pkgutil').extend_path(__path__, __name__)
 
 _SYSTEM = platform.system()
 if _SYSTEM == 'Windows':
-  ctypes.WinDLL(os.path.join(os.path.dirname(__file__), 'mujoco.dll'))
+  _dll_path = os.path.join(os.path.dirname(__file__), 'mujoco.dll')
+  if os.path.exists(_dll_path):
+    ctypes.WinDLL(_dll_path)
 elif _SYSTEM == 'Darwin':
   # sysctl is in /usr/sbin, which is not on minimal PATHs (e.g. the
   # environment Bazel runs tests in), so don't rely on PATH lookup.
@@ -50,6 +52,31 @@ elif _SYSTEM == 'Darwin':
         'You are running an x86_64 build of Python on an Apple Silicon '
         'machine. This is not supported by MuJoCo. Please install and run a '
         'native, arm64 build of Python.')
+
+_EXPECTED_VERSION = '4.0.0'
+try:
+  from mujoco._version import __version__ as _core_version
+  import mujoco._specs
+except ModuleNotFoundError as _e:
+  if not (_e.name or '').startswith('mujoco'):
+    raise
+  raise ImportError(
+      "The 'mujoco' package is installed, but its core bindings "
+      "('mujoco-core') are missing or corrupted (for example, after "
+      "uninstalling a previous monolithic 'mujoco' package). "
+      "Repair your environment with:\n"
+      '  pip install --force-reinstall --no-deps '
+      'mujoco mujoco-core mujoco-studio'
+  ) from _e
+if _core_version != _EXPECTED_VERSION:
+  raise ImportError(
+      f"Version mismatch between 'mujoco' ({_EXPECTED_VERSION}) and "
+      f"'mujoco-core' ({_core_version}). Please upgrade all packages "
+      'together:\n'
+      f"  pip install --upgrade 'mujoco=={_EXPECTED_VERSION}' "
+      f"'mujoco-core=={_EXPECTED_VERSION}' "
+      f"'mujoco-studio=={_EXPECTED_VERSION}'"
+  )
 
 from mujoco import _specs
 from mujoco import _structs
@@ -268,22 +295,36 @@ _specs.MjSpec.to_zip = to_zip
 _structs.MjData.bind = _bind_data  # pyrefly: ignore[bad-assignment]
 _structs.MjModel.bind = _bind_model  # pyrefly: ignore[bad-assignment]
 
+__version__ = mj_versionString()  # pylint: disable=undefined-variable
+
 HEADERS_DIR = os.path.join(os.path.dirname(__file__), 'include/mujoco')
 PLUGINS_DIR = os.path.join(os.path.dirname(__file__), 'plugin')
 
 PLUGIN_HANDLES = []
 
 def _load_all_bundled_plugins():
-  for directory, _, filenames in os.walk(PLUGINS_DIR):
-    for filename in filenames:
-      if os.path.splitext(filename)[-1] in [".dll", ".dylib", ".so"]:
-        PLUGIN_HANDLES.append(ctypes.CDLL(os.path.join(directory, filename)))
-      elif filename == "__init__.py":
-        pass
-      else:
-        warnings.warn('Ignoring non-library in plugin directory: '
-                      f'{os.path.join(directory, filename)}', ImportWarning)
+  if os.path.isdir(PLUGINS_DIR):
+    for directory, _, filenames in os.walk(PLUGINS_DIR):
+      for filename in filenames:
+        if os.path.splitext(filename)[-1] in [".dll", ".dylib", ".so"]:
+          lib_path = os.path.join(directory, filename)
+          PLUGIN_HANDLES.append(ctypes.CDLL(lib_path))
+        elif filename == "__init__.py":
+          pass
+        else:
+          warnings.warn('Ignoring non-library in plugin directory: '
+                        f'{os.path.join(directory, filename)}', ImportWarning)
+  try:
+    import importlib.metadata as _metadata
+    for _ep in _metadata.entry_points(group='mujoco.plugins'):
+      try:
+        _ep.load()()
+      except Exception as _ep_err:  # pylint: disable=broad-exception-caught
+        warnings.warn(
+            f'Failed to load mujoco plugin entry point {_ep.name}: {_ep_err}',
+            RuntimeWarning,
+        )
+  except Exception:  # pylint: disable=broad-exception-caught
+    pass
 
 _load_all_bundled_plugins()
-
-__version__ = mj_versionString()  # pylint: disable=undefined-variable

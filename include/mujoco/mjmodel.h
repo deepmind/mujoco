@@ -155,7 +155,7 @@ typedef struct mjVisual_ {        // visualization options
     float ambient[3];             // ambient rgb (alpha=1)
     float diffuse[3];             // diffuse rgb (alpha=1)
     float specular[3];            // specular rgb (alpha=1)
-    int   active;                 // is headlight active
+    int   active;                 // is headlight active (0: no, 1: yes, 2: auto)
   } headlight;
 
   struct {                        // mapping

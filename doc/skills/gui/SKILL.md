@@ -22,8 +22,9 @@ description: >-
 >     [`../../studio/architecture.rst`](../../studio/architecture.rst)
 >     (`.. _StudioCppComponents:`) — How Dear ImGui and ImPlot integrate into
 >     MuJoCo Studio, `UpdateEvent` vs `BuildGuiEvent`, and C++ (`ux/`) vs Python
->     widget trade-offs. Read these short `.rst` chapters directly when in a
->     MuJoCo checkout, or fetch
+>     widget trade-offs. Read these short `.rst` chapters directly when present
+>     locally or in `pip install mujoco` under
+>     `pathlib.Path(mujoco.__file__).parent / 'doc'`, or fetch
 >     `https://mujoco.readthedocs.io/en/latest/<path>.html` (or `/en/stable/`
 >     once released; Sphinx anchors lowercase the label, e.g.
 >     `#studioimguitips`).

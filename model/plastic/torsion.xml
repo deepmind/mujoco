@@ -1,0 +1,107 @@
+<!-- Copyright 2026 DeepMind Technologies Limited
+
+     Licensed under the Apache License, Version 2.0 (the "License");
+     you may not use this file except in compliance with the License.
+     You may obtain a copy of the License at
+
+         http://www.apache.org/licenses/LICENSE-2.0
+
+     Unless required by applicable law or agreed to in writing, software
+     distributed under the License is distributed on an "AS IS" BASIS,
+     WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+     See the License for the specific language governing permissions and
+     limitations under the License.
+-->
+
+<mujoco model="Torsion twist and release">
+  <compiler autolimits="true"/>
+
+  <option timestep="0.003" solver="CG" tolerance="1e-5" integrator="discrete"/>
+
+  <size memory="20M"/>
+
+  <visual>
+    <global elevation="-22" azimuth="90" realtime="0.3"/>
+    <rgba haze="0.15 0.25 0.35 1"/>
+    <quality shadowsize="4096"/>
+    <map stiffness="700" fogstart="1" fogend="15" zfar="40" haze="1"/>
+    <headlight ambient="0.08 0.08 0.08" diffuse="0.24 0.24 0.24" specular="0.08 0.08 0.08"/>
+  </visual>
+
+  <statistic meansize="0.025" center="0 0 0.17" extent="0.42"/>
+
+  <default>
+    <equality solref="0.002 1"/>
+    <default class="steel">
+      <geom material="steel_mat" contype="0" conaffinity="0"/>
+    </default>
+    <default class="wrench">
+      <geom material="wrench_mat" condim="1" solref="0.002 1" priority="1"/>
+    </default>
+  </default>
+
+  <asset>
+    <texture type="skybox" builtin="gradient" rgb1="0.3 0.5 0.7" rgb2="0 0 0" width="512" height="512"/>
+    <texture name="grid" type="2d" builtin="checker" rgb1=".1 .2 .3" rgb2=".2 .3 .4" width="100" height="100"/>
+    <material name="grid" texture="grid" texrepeat="8 8" texuniform="true" reflectance="0.06"/>
+    <material name="steel_mat" rgba="0.30 0.34 0.40 1" specular="0.75" shininess="0.7" metallic="0.6" roughness="0.25"/>
+    <material name="wrench_mat" rgba="0.52 0.56 0.62 1" specular="0.8" shininess="0.7" metallic="0.7" roughness="0.2"/>
+    <material name="elastic_bar_mat" rgba="0.22 0.58 0.82 1" specular="0.65" shininess="0.6" metallic="0.3" roughness="0.25"/>
+    <material name="plastic_bar_mat" rgba="0.88 0.52 0.20 1" specular="0.80" shininess="0.75" metallic="0.7" roughness="0.20"/>
+  </asset>
+
+  <worldbody>
+    <light name="key" pos="0.55 -0.70 0.85" dir="-0.55 0.70 -0.70" cutoff="32" softness="1" diffuse=".75 .70 .62"
+           ambient=".12 .12 .12" specular=".25 .24 .22"/>
+    <light name="rim" type="directional" pos="-0.4 0.9 0.9" dir="0.3 -0.8 -0.6" castshadow="false"
+           diffuse=".16 .20 .28" specular=".12 .14 .18"/>
+    <geom name="ground" type="plane" size="0 0 1" material="grid" condim="3" friction="1.0 0.005 0.0001"/>
+
+    <!-- Left: Elastic trilinear bar (2x2x8 cells, 5x5x17 skin, yield=0) -->
+    <flexcomp name="elastic_bar" type="grid" dim="3" dof="trilinear" count="5 5 17" cellcount="2 2 8"
+              spacing="0.018 0.018 0.017" pos="-0.16 0 0.166" radius="0.002" mass="0.24"
+              material="elastic_bar_mat">
+      <pin id="0 9 18 27 36 45 54 63 72"/>
+      <contact condim="1" selfcollide="none"/>
+      <elasticity young="1.2e5" poisson="0.3" damping="0.015"/>
+    </flexcomp>
+
+    <!-- Right: Elasto-plastic trilinear bar (2x2x8 cells, 5x5x17 skin, yield > 0) -->
+    <flexcomp name="plastic_bar" type="grid" dim="3" dof="trilinear" count="5 5 17" cellcount="2 2 8"
+              spacing="0.018 0.018 0.017" pos="0.16 0 0.166" radius="0.002" mass="0.24"
+              material="plastic_bar_mat">
+      <pin id="0 9 18 27 36 45 54 63 72"/>
+      <contact condim="1" selfcollide="none"/>
+      <elasticity young="1.2e5" poisson="0.3" damping="0.025" yield="0.025"/>
+    </flexcomp>
+
+    <!-- Two identical rigs, left (_0) for the elastic bar and right (_1) for the plastic bar: a base pedestal, a
+         rotating top cap with a drive pin at r = 0.052m, and an eccentric escapement wrench that twists the cap to
+         ~188 deg, then slips off the pin and parks behind -->
+    <replicate count="2" offset="0.32 0 0" sep="_">
+      <geom class="steel" type="cylinder" pos="-0.16 0 0.015" size="0.064 0.015"/>
+      <body name="cap" pos="-0.16 0 0.302">
+        <joint name="twist" type="hinge" axis="0 0 1" damping="0.008"/>
+        <joint name="axial" type="slide" axis="0 0 1" damping="0.2"/>
+        <geom class="steel" type="box" pos="0 0 0.008" size="0.044 0.044 0.006" mass="0.02"/>
+        <geom class="wrench" name="pin" type="cylinder" pos="0 0.052 0.022" size="0.007 0.014" mass="0.01"/>
+      </body>
+      <body name="wrench" pos="-0.178 0.026 0.324" euler="0 0 -55">
+        <joint name="drive" type="hinge" axis="0 0 1" range="-10 290" stiffness="12.0" springref="285" damping="0.8"/>
+        <geom class="wrench" type="capsule" fromto="0 0 0 0 0.068 0" size="0.007" mass="0.08"/>
+      </body>
+    </replicate>
+  </worldbody>
+
+  <equality>
+    <connect body1="elastic_bar_0_0_8" body2="cap_0" anchor="0 0 0"/>
+    <connect body1="elastic_bar_0_2_8" body2="cap_0" anchor="0 0 0"/>
+    <connect body1="elastic_bar_2_0_8" body2="cap_0" anchor="0 0 0"/>
+    <connect body1="elastic_bar_2_2_8" body2="cap_0" anchor="0 0 0"/>
+
+    <connect body1="plastic_bar_0_0_8" body2="cap_1" anchor="0 0 0"/>
+    <connect body1="plastic_bar_0_2_8" body2="cap_1" anchor="0 0 0"/>
+    <connect body1="plastic_bar_2_0_8" body2="cap_1" anchor="0 0 0"/>
+    <connect body1="plastic_bar_2_2_8" body2="cap_1" anchor="0 0 0"/>
+  </equality>
+</mujoco>

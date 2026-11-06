@@ -50,22 +50,6 @@
 // uniformly: the smooth acceleration, the constraint solver and inverse dynamics all see the
 // same metric.
 
-// pivot floor for the dense Cholesky factors of the metric's blocks: rounding can leave a pivot of
-// a positive definite block as small as n*eps*(max diagonal), e.g. stiff contact rows folded over
-// a light vertex in single precision, and a floor of only mjMINVAL then blows up the preconditioner
-#ifdef mjUSESINGLE
-#define EFF_EPS FLT_EPSILON
-#else
-#define EFF_EPS DBL_EPSILON
-#endif
-static mjtNum effPivotFloor(const mjtNum* mat, int n) {
-  mjtNum dmax = 0;
-  for (int i=0; i < n; i++) {
-    dmax = mju_max(dmax, mat[i*(n+1)]);
-  }
-  return mju_max(mjMINVAL, n*EFF_EPS*dmax);
-}
-
 // arena allocation with hard failure (mirrors stack overflow semantics)
 static void* effAlloc(mjData* d, size_t bytes, size_t align) {
   void* p = mj_arenaAllocByte(d, bytes, align);
@@ -402,37 +386,18 @@ void mj_effMulAdd(const mjModel* m, mjData* d, mjtNum* res, const mjtNum* vec, i
 }
 
 
-// the unfactored 3x3 diagonal block of M + K for the covered dof triple starting at i
-static void effBlockRaw(const mjModel* m, const mjData* d, int i, mjtNum* Bk) {
-  mju_zero(Bk, 9);
-  for (int r = 0; r < 3; r++) {
-    int row = i + r;
-    for (int a = m->M_rowadr[row]; a < m->M_rowadr[row] + m->M_rownnz[row]; a++) {
-      int c = m->M_colind[a];
-      if (c >= i && c < i+3) Bk[3*r + (c-i)] += d->M[a];
-    }
-    for (int a = d->efm_K_rowadr[row]; a < d->efm_K_rowadr[row] + d->efm_K_rownnz[row]; a++) {
-      int c = d->efm_K_colind[a];
-      if (c >= i && c < i+3) Bk[3*r + (c-i)] += d->efm_K_val[a];
-    }
-  }
-}
-
-
 //------------------ sparse Cholesky metric preconditioner ----------------------------------------
 // When every covered flex is a 1D rod or a 2D flex (effChol12D), the covered block of M + K is
-// factored by a reverse-order sparse Cholesky, blocked by vertex, rather than by its 3x3 diagonal
-// blocks only, whatever the solver (effCholApplies): the factor serves qacc_smooth (mj_effSolve)
-// and Newton, while the CG constraint solve preconditions with the folded 3x3 blocks
-// (mj_effPrecFold); 3D flexes keep the blocks.
+// factored by a reverse-order sparse Cholesky, blocked by vertex (effCholApplies); 3D flexes and
+// fallback flex dofs use the qH diagonal preconditioner.
 // The ordering is the model's: mj_setConst orders the vertices of the model's efm_K pattern by
 // minimum degree (mj_effCholSetConst, into efmC_perm). Each step analyses the pattern it
 // assembled under that ordering (effCholReserve), on the vertex graph
 // (mju_cholFactorSymbolicBlocked), and packs the analysis into the metric's buffer efm_L, next to
 // the factor it describes:
-//   [9*nb 3x3 blocks][status][the analysis (effPackLayout)][nL factor values]
-// so the blocks remain the fallback whenever the factor is unusable. The numeric factorization
-// runs lazily (effCholEnsure).
+//   [status][the analysis (effPackLayout)][nL factor values]
+// so the qH diagonal remains the fallback whenever the factor is unusable. The numeric
+// factorization runs lazily (effCholEnsure).
 
 #define EFF_HDR 1
 #define EFF_CHOL_PENDING 2
@@ -498,17 +463,17 @@ static size_t effPackNums(int nb, int nL) {
 
 static void effCholStep(const mjData* d, mjEffChol* c) {
   int nb = d->nefmdof;
-  effPackLayout((int*)(d->efm_L + 9*nb + EFF_HDR), nb, d->efm_dofid, c);
+  effPackLayout((int*)(d->efm_L + EFF_HDR), nb, d->efm_dofid, c);
 }
 
 static int effCholReserved(const mjData* d) {
   int nb = d->nefmdof;
-  return nb && d->nefmL > 9*nb && d->efm_L[9*nb] >= 0;
+  return nb && d->nefmL > 0 && d->efm_L[0] >= 0;
 }
 
-// per-island flex/triple lists, packed into efm_L after the 9*nefmdof 3x3 blocks when islands are
-// active, IPC is disabled and no sparse factor is reserved (effCholReserve):
-//   [9*nb 3x3 blocks][EFF_ISLAND_TAG][nisland, nb, nbd, nflex, cov_adr, cov_ind, bend_adr, ...]
+// per-island flex/triple lists, packed into efm_L when islands are active, IPC is disabled and no
+// sparse factor is reserved (effCholReserve):
+//   [EFF_ISLAND_TAG][nisland, nb, nbd, nflex, cov_adr, cov_ind, bend_adr, ...]
 typedef struct {
   int nisland, nb, nbd, nflex;
   int *cov_adr, *cov_ind;    // covered block indices k in [0, nefmdof) per island
@@ -540,11 +505,10 @@ static void effIslandPackLayout(int* A, mjEffIsland* isl) {
 }
 
 static int effIslandStep(const mjData* d, mjEffIsland* isl) {
-  int nb = d->nefmdof;
-  if (d->nefmL <= 9*nb || d->efm_L[9*nb] != EFF_ISLAND_TAG) {
+  if (d->nefmL <= 0 || d->efm_L[0] != EFF_ISLAND_TAG) {
     return 0;
   }
-  int* A = (int*)(d->efm_L + 9*nb + EFF_HDR);
+  int* A = (int*)(d->efm_L + EFF_HDR);
   if (A[0] != d->nisland) {
     return 0;
   }
@@ -553,7 +517,7 @@ static int effIslandStep(const mjData* d, mjEffIsland* isl) {
 }
 
 static mjtNum* effCholStepValues(const mjData* d, const mjEffChol* c) {
-  return d->efm_L + 9*c->nb + EFF_HDR + effPackNums(c->nb, c->nL);
+  return d->efm_L + EFF_HDR + effPackNums(c->nb, c->nL);
 }
 
 // the covered blocks of a K pattern with row sizes rownnz (nv rows): each nonzero row on a
@@ -832,8 +796,8 @@ static int effCholDimOk(const mjModel* m, int allow2d, int allow3d, int flg_gene
 }
 
 // the step uses the sparse factor: 1D rods and 2D flexes, whatever the solver. It serves
-// qacc_smooth (mj_effSolve) and Newton; the CG constraint solve preconditions with the folded 3x3
-// blocks (mj_effPrecFold) instead, and falls back to the factor only when it cannot fold
+// qacc_smooth (mj_effSolve) and Newton; the CG constraint solve preconditions with the folded
+// per-dof diagonal (mj_effPrecFold) instead, and falls back to the factor only when it cannot fold
 static int effCholApplies(const mjModel* m, const mjData* d, int nb, const int* dofid) {
   if (!nb || nb > EFF_CHOL_MAXVERT || !m->nefmCvert || m->efmC_perm[0] < 0 ||
       !effCholDimOk(m, /*allow2d=*/1, /*allow3d=*/0, efmGeneralCSR(d))) {
@@ -1167,15 +1131,14 @@ static void effCholFill(const mjModel* m, mjData* d, const mjEffChol* c, mjtNum*
 }
 
 static void effCholEnsure(const mjModel* m, mjData* d) {
-  int nb = d->nefmdof;
-  if (!effCholReserved(d) || d->efm_L[9*nb] != EFF_CHOL_PENDING) {
+  if (!effCholReserved(d) || d->efm_L[0] != EFF_CHOL_PENDING) {
     return;
   }
-  d->efm_L[9*nb] = 0;
+  d->efm_L[0] = 0;
   mjEffChol c;
   effCholStep(d, &c);
   if (mj_stackBytesAvailable(d) >= effCholFillBytes(&c, m->nv)) {
-    effCholFill(m, d, &c, d->efm_L + 9*nb, effCholStepValues(d, &c));
+    effCholFill(m, d, &c, d->efm_L, effCholStepValues(d, &c));
   }
 }
 
@@ -1246,7 +1209,7 @@ static void effCholApply(mjData* d, const mjEffChol* c, mjtNum* x, const mjtNum*
   mj_freeStack(d);
 }
 
-// analyse the step's efm_K pattern and allocate d->efm_L with the analysis and the factor tail
+// analyse the step's efm_K pattern and allocate d->efm_L with the analysis and the factor
 static mjtNum* effCholReserve(const mjModel* m, mjData* d, int nb, const int* dofid, int* ntail) {
   *ntail = 0;
   if (!effCholApplies(m, d, nb, dofid)) {
@@ -1254,11 +1217,10 @@ static mjtNum* effCholReserve(const mjModel* m, mjData* d, int nb, const int* do
   }
   int nv = m->nv;
   size_t kcap = effCholKcap(d, nb, dofid);
-  size_t blocks_bytes = mj_stackBytes(sizeof(mjtNum)*9*nb, _Alignof(mjtNum));
   size_t avail = mj_stackBytesAvailable(d);
   size_t sym_bytes = mj_stackFrameBytes() + effIntBytes(nv) + effIntBytes(nb) +
                      effCholAnalysisBytes(m, nb, kcap);
-  if (avail < blocks_bytes + sym_bytes) {
+  if (avail < sym_bytes) {
     mj_warning(d, mjWARN_CNSTRFULL, d->narena);
     return NULL;
   }
@@ -1283,24 +1245,24 @@ static mjtNum* effCholReserve(const mjModel* m, mjData* d, int nb, const int* do
     return NULL;
   }
   size_t npack = effPackNums(nb, pass.nL);
-  if (avail < blocks_bytes + effCholReserveBytes(nb, nv, pass.nL, npack)) {
+  if (avail < effCholReserveBytes(nb, nv, pass.nL, npack)) {
     mj_freeStack(d);
     mj_warning(d, mjWARN_CNSTRFULL, d->narena);
     return NULL;
   }
   int tail = EFF_HDR + (int)npack + pass.nL;
-  if (mj_stackBytesAvailable(d) < effNumBytes(9*(size_t)nb + tail)) {
+  if (mj_stackBytesAvailable(d) < effNumBytes((size_t)tail)) {
     mj_freeStack(d);
     mj_warning(d, mjWARN_CNSTRFULL, d->narena);
     return NULL;
   }
-  mjtNum* B = (mjtNum*)effAlloc(d, sizeof(mjtNum)*(9*(size_t)nb + tail), _Alignof(mjtNum));
+  mjtNum* B = (mjtNum*)effAlloc(d, sizeof(mjtNum)*(size_t)tail, _Alignof(mjtNum));
   if (!B) {
     mj_freeStack(d);
     return NULL;
   }
-  B[9*nb] = EFF_CHOL_PENDING;
-  int* A = (int*)(B + 9*nb + EFF_HDR);
+  B[0] = EFF_CHOL_PENDING;
+  int* A = (int*)(B + EFF_HDR);
   A[0] = pass.nL;
   mjEffChol c;
   effPackLayout(A, nb, dofid, &c);
@@ -1311,18 +1273,27 @@ static mjtNum* effCholReserve(const mjModel* m, mjData* d, int nb, const int* do
   return B;
 }
 
-static int effCholSolve(const mjModel* m, mjData* d, mjtNum* x, const mjtNum* b) {
-  int nb = d->nefmdof;
+static int effCholReady(const mjModel* m, mjData* d, int is_island, mjEffChol* cs) {
   if (!effCholReserved(d)) {
     return 0;
   }
-  effCholEnsure(m, d);
-  if (d->efm_L[9*nb] != 1) {
+  if (is_island && d->efm_L[0] == EFF_CHOL_PENDING && d->threadlock) {
     return 0;
   }
+  effCholEnsure(m, d);
+  if (d->efm_L[0] != 1) {
+    return 0;
+  }
+  effCholStep(d, cs);
+  if (mj_stackBytesAvailable(d) < mj_stackFrameBytes() + 2*effNumBytes(cs->n)) {
+    return 0;
+  }
+  return 1;
+}
+
+static int effCholSolve(const mjModel* m, mjData* d, mjtNum* x, const mjtNum* b) {
   mjEffChol cs;
-  effCholStep(d, &cs);
-  if (mj_stackBytesAvailable(d) < mj_stackFrameBytes() + 2*effNumBytes(cs.n)) {
+  if (!effCholReady(m, d, /*is_island=*/0, &cs)) {
     return 0;
   }
   effCholApply(d, &cs, x, b, effCholStepValues(d, &cs));
@@ -1330,12 +1301,8 @@ static int effCholSolve(const mjModel* m, mjData* d, mjtNum* x, const mjtNum* b)
 }
 
 
-// Build and factor the per-vertex 3x3 diagonal blocks of the flex part of (M + K), stored in
-// d->efm_L, 9 numbers per covered vertex: O(n) to build and apply, approximate where the sparse
-// factorization it replaces was exact. Both consumers use the blocks as a preconditioner: the CG
-// constraint solver (Mgrad = Mtilde \ grad) and the qacc_smooth PCG in mj_effSolve, which
-// supplies the accuracy. For 1D rods and 2D flexes the buffer can also hold a sparse factor of the
-// covered block, which then replaces the blocks (effCholReserve).
+// Record the covered vertex triples (d->efm_dofid, d->nefmdof) of the flex part of (M + K), and
+// for 1D rods and 2D flexes reserve the sparse Cholesky factor of the covered block (effCholReserve).
 static void effBlocks(const mjModel* m, mjData* d) {
   int nv = m->nv;
 
@@ -1348,70 +1315,57 @@ static void effBlocks(const mjModel* m, mjData* d) {
   effCoveredBlocks(m, nv, d->efm_K_rownnz, adr);
   int ntail = 0;
   mjtNum* B = effCholReserve(m, d, nb, adr, &ntail);
-  if (!B) {
-    if (d->nisland > 0 && d->nefc > 0 && m->nflex > 0 && !mjENABLED(mjENBL_IPC)) {
-      ntail = effIslandTail(m, d, nb);
-    }
-    size_t nB = 9*(size_t)nb + (size_t)ntail;
-    B = (mjtNum*) effAlloc(d, sizeof(mjtNum)*(nB > 0 ? nB : 1), _Alignof(mjtNum));
-    if (ntail) {
-      B[9*nb] = EFF_ISLAND_TAG;
-    }
-  }
-  for (int k = 0; k < nb; k++) {
-    mjtNum* Bk = B + 9*k;
-    effBlockRaw(m, d, adr[k], Bk);
-    mju_cholFactor(Bk, 3, effPivotFloor(Bk, 3));
-  }
   d->efm_L = B;
   d->efm_dofid = adr;
   d->nefmdof = nb;
-  d->nefmL = 9*nb + ntail;
-}
-
-// Apply the metric preconditioner: the per-step 3x3 blocks when they exist, else the constant
-// bending factor from mj_setConst, on the dofs they cover; M^-1 on all other dofs. PCG requires
-// symmetry, so covered and uncovered dofs must not see each other: zeroing the covered entries
-// of the right-hand side before the qLD sweep keeps the uncovered rows from reading them.
-// x = (L L') \ b for one 3x3 factor from mju_cholFactor, in mju_cholSolve's arithmetic; b may
-// alias x
-static inline void chol3Solve(mjtNum* x, const mjtNum* L, const mjtNum* b) {
-  mjtNum r0 = b[0] / L[0];
-  mjtNum r1 = (b[1] - L[3]*r0) / L[4];
-  mjtNum r2 = (b[2] - (L[6]*r0 + L[7]*r1)) / L[8];
-  r2 /= L[8];
-  r1 = (r1 - L[7]*r2) / L[4];
-  r0 -= L[3]*r1;
-  r0 -= L[6]*r2;
-  r0 /= L[0];
-  x[0] = r0;
-  x[1] = r1;
-  x[2] = r2;
-}
-
-// x = (M + K)_covered \ b on the covered dofs: with folded blocks L (mj_effPrecFold), those;
-// else the sparse factor of the metric if valid, else the 3x3 blocks d->efm_L; b may alias x
-static void effCovSolve(const mjModel* m, mjData* d, const mjtNum* L, mjtNum* x,
-                        const mjtNum* b) {
-  if (!L && effCholSolve(m, d, x, b)) {
-    return;
-  }
-  if (!L) {
-    L = d->efm_L;
-  }
-  for (int k = 0; k < d->nefmdof; k++) {
-    int i = d->efm_dofid[k];
-    chol3Solve(x + i, L + 9*k, b + i);
-  }
+  d->nefmL = ntail;
 }
 
 static int flexIsland(const mjModel* m, const mjData* d, int f);
 
-// length of the per-dof diagonal fold tail for 1D DER rod twist chains (L + 9*mj_effFoldBlocks),
+// find k in sorted dofid[*lo..nb) with dofid[k] == dof, advancing *lo; returns -1 if absent
+static int effFindDof(const int* dofid, int nb, int dof, int* lo) {
+  int l = *lo, h = nb;
+  while (l < h) {
+    int mid = (l + h) >> 1;
+    if (dofid[mid] < dof) {
+      l = mid + 1;
+    } else {
+      h = mid;
+    }
+  }
+  *lo = l;
+  return (l < nb && dofid[l] == dof) ? l : -1;
+}
+
+// length of the per-dof diagonal fold for covered flex triples and 1D DER rod twist chains,
 // 0 if none
-int mj_effTwistDiagSize(const mjModel* m, const mjData* d, int island) {
+int mj_effFoldDiagSize(const mjModel* m, const mjData* d, int island) {
+  if (!d->efm_active) {
+    return 0;
+  }
+  if (d->nefmdof > 0) {
+    if (island < 0) {
+      return m->nv;
+    }
+    mjEffIsland isl;
+    if (effIslandStep(d, &isl)) {
+      if (isl.cov_adr[island] < isl.cov_adr[island + 1]) {
+        return d->island_nv[island];
+      }
+    } else {
+      const int* idof2dof = d->map_idof2dof + d->island_idofadr[island];
+      int inv = d->island_nv[island];
+      for (int c = 0, lo = 0; c + 2 < inv; c++) {
+        int i = idof2dof[c];
+        if (d->efm_K_rownnz[i] > 0 && effFindDof(d->efm_dofid, d->nefmdof, i, &lo) >= 0) {
+          return inv;
+        }
+      }
+    }
+  }
   int passive = !(mjDISABLED(mjDSBL_SPRING) && mjDISABLED(mjDSBL_DAMPER));
-  if (!d->efm_active || !passive || !mj_effCouplings(m)) {
+  if (!passive || !mj_effCouplings(m)) {
     return 0;
   }
   int sleep_filter = mjENABLED(mjENBL_SLEEP) && d->ntree_awake < m->ntree;
@@ -1556,17 +1510,39 @@ static void effTwistSolve(const mjModel* m, mjData* d, mjtNum* x, const mjtNum* 
 }
 
 
-// L: folded blocks (mj_effPrecFold), or NULL for the step's own factor
+// L: folded per-dof diagonal (mj_effPrecFold), or NULL
 static void effBlockApply(const mjModel* m, mjData* d, const mjtNum* L, mjtNum* x,
                           const mjtNum* b) {
   int nv = m->nv;
   int nbd = m->nefm0dof;
   int flg_bend = nbd && !d->nefmdof;
 
-  // every dof a covered triple: the blocks are the whole preconditioner
+  // every dof a covered triple: folded diagonal (CG) or sparse factor (1D/2D) is the whole
+  // preconditioner
   if (3*d->nefmdof == nv && !flg_bend) {
-    effCovSolve(m, d, L, x, b);
-    return;
+    if (L) {
+      int sleep_dof = mjENABLED(mjENBL_SLEEP) && d->ntree_awake < m->ntree;
+      if (sleep_dof) {
+        for (int k = 0; k < d->nefmdof; k++) {
+          int i = d->efm_dofid[k];
+          if (d->tree_awake[m->dof_treeid[i]] == 0) {
+            mju_zero3(x + i);
+          } else {
+            x[i]   = b[i]   * L[i];
+            x[i+1] = b[i+1] * L[i+1];
+            x[i+2] = b[i+2] * L[i+2];
+          }
+        }
+      } else {
+        for (int r = 0; r < nv; r++) {
+          x[r] = b[r] * L[r];
+        }
+      }
+      return;
+    }
+    if (effCholSolve(m, d, x, b)) {
+      return;
+    }
   }
   int need_stack = (x == b) || flg_bend;
   if (need_stack) {
@@ -1578,12 +1554,18 @@ static void effBlockApply(const mjModel* m, mjData* d, const mjtNum* L, mjtNum* 
     mju_copy(buf, b, nv);   // b aliases x, which the sweep below overwrites
     rhs = buf;
   }
+  mjEffChol cs;
+  int use_chol = !L && effCholReady(m, d, /*is_island=*/0, &cs);
+  int use_fold = (L != NULL) && (d->nefmdof > 0);
 
   // dofs no factor covers: backbone solve, using the qH backbone factor when diagonal
-  // terms exist, else qLD
+  // terms exist, else qLD. PCG requires symmetry, so dofs covered by L, effChol, or efm0_L are
+  // zeroed before the sweep
   mju_copy(x, rhs, nv);
-  for (int k = 0; k < d->nefmdof; k++) {
-    mju_zero(x + d->efm_dofid[k], 3);
+  if (use_chol || use_fold) {
+    for (int k = 0; k < d->nefmdof; k++) {
+      mju_zero(x + d->efm_dofid[k], 3);
+    }
   }
   if (flg_bend) {
     for (int i = 0; i < nbd; i++) {
@@ -1591,19 +1573,33 @@ static void effBlockApply(const mjModel* m, mjData* d, const mjtNum* L, mjtNum* 
     }
   }
   int sleep_filter = mjENABLED(mjENBL_SLEEP) && d->nv_awake < nv;
-  if (d->efm_diag) {
+  if (mj_effUseQH(d)) {
     mj_solveLD(x, d->qH, d->qHDiagInv, sleep_filter ? d->nv_awake : nv, 1,
                m->M_rownnz, m->M_rowadr, m->M_colind, sleep_filter ? d->dof_awake_ind : NULL);
-    const mjtNum* tw_diag = (L && mj_effTwistDiagSize(m, d, -1)) ?
-                            (L + 9*mj_effFoldBlocks(d, -1)) : NULL;
-    effTwistSolve(m, d, x, rhs, -1, tw_diag);
+    if (d->efm_sdiag) {
+      effTwistSolve(m, d, x, rhs, -1, L);
+    }
   } else {
     mj_solveLD(x, d->qLD, d->qLDiagInv, sleep_filter ? d->nv_awake : nv, 1,
                m->M_rownnz, m->M_rowadr, m->M_colind, sleep_filter ? d->dof_awake_ind : NULL);
   }
 
-  // per-step stiffness: the folded blocks, the sparse factor or the 3x3 blocks
-  effCovSolve(m, d, L, x, rhs);
+  // folded per-dof diagonal (CG) or per-step sparse factor (1D rods and 2D flexes)
+  if (use_fold) {
+    int sleep_dof = mjENABLED(mjENBL_SLEEP) && d->ntree_awake < m->ntree;
+    for (int k = 0; k < d->nefmdof; k++) {
+      int i = d->efm_dofid[k];
+      if (sleep_dof && d->tree_awake[m->dof_treeid[i]] == 0) {
+        mju_zero3(x + i);
+      } else {
+        x[i]   = rhs[i]   * L[i];
+        x[i+1] = rhs[i+1] * L[i+1];
+        x[i+2] = rhs[i+2] * L[i+2];
+      }
+    }
+  } else if (use_chol) {
+    effCholApply(d, &cs, x, rhs, effCholStepValues(d, &cs));
+  }
 
   // bending-only: exact (M + K_bend)^-1 on the dofs the constant factor covers
   if (flg_bend) {
@@ -1624,10 +1620,10 @@ static void effBlockApply(const mjModel* m, mjData* d, const mjtNum* L, mjtNum* 
 }
 
 
-// accurate solve of (M + K) x = b by PCG with the 3x3 block preconditioner, converging the
+// accurate solve of (M + K) x = b by PCG with the metric preconditioner, converging the
 // relative residual to opt.tolerance; used for qacc_smooth. Reaching opt.iterations means the
-// metric is too ill-conditioned for the blocks: warn (mjWARN_INERTIA, worst-residual dof) and
-// return x under-converged.
+// metric is too ill-conditioned for the preconditioner: warn (mjWARN_INERTIA, worst-residual dof)
+// and return x under-converged.
 void mj_effSolve(const mjModel* m, mjData* d, mjtNum* x, const mjtNum* b) {
   if (!d->efm_active) {
     mj_effPrec(m, d, x, b);
@@ -1711,7 +1707,7 @@ void mj_effSolve(const mjModel* m, mjData* d, mjtNum* x, const mjtNum* b) {
 void mj_effPrec(const mjModel* m, mjData* d, mjtNum* x, const mjtNum* b) {
   int nv = m->nv;
 
-  // active metric: the prefactored 3x3 blocks are the preconditioner
+  // active metric: apply the step's metric preconditioner
   if (d->efm_active) {
     effBlockApply(m, d, NULL, x, b);
     return;
@@ -1725,164 +1721,60 @@ void mj_effPrec(const mjModel* m, mjData* d, mjtNum* x, const mjtNum* b) {
 }
 
 
-//------------------ folded 3x3 blocks of the CG preconditioner ------------------------------------
-// The CG constraint solve iterates on M + K + rank-1 classes + J'*D*J, but the step's blocks hold
-// the 3x3 diagonal of M + K alone. mj_effPrecFold adds each other term's per-triple 3x3 diagonal
-// into a solver-owned copy, so stiff contacts, tendons and actuators on the flex dofs are
-// preconditioned too: block Jacobi of the solve's operator on the covered dofs, O(nnz) to build,
-// with no sparse factorization (MuJoCo Warp: eff_prec_fold). The efc rows are folded over every
-// row with D > 0, active or not: rows switch state in nearly every CG iteration, and a fold of the
-// rows active at the start matched neither iterate (reef knot: 212 to 59 mean iterations per
-// solve when every row was folded). Under an elliptic cone D_r J_r'J_r stands in for the cone
-// Hessian.
+//------------------ folded per-dof diagonal of the CG preconditioner ------------------------------
+// The CG constraint solve iterates on M + K + rank-1 classes + J'*D*J. mj_effPrecFold folds the
+// passive-contact and efc row diagonals (for every row with D > 0, active or not) into a
+// solver-owned per-dof diagonal L (mj_effFoldDiagSize): covered flex triples store the inverted
+// total diagonal 1 / (M_diag + efm_sdiag + K_diag + K_con_diag + J'DJ_diag), while 1D DER rod
+// twist chains read the additive contact/efc diagonal in effTwistSolve.
 
-// find k in sorted dofid[*lo..nb) with dofid[k] == dof, advancing *lo; returns -1 if absent
-static int effFindDof(const int* dofid, int nb, int dof, int* lo) {
-  int l = *lo, h = nb;
-  while (l < h) {
-    int mid = (l + h) >> 1;
-    if (dofid[mid] < dof) {
-      l = mid + 1;
-    } else {
-      h = mid;
+static void effInvertTripleDiag(const mjModel* m, const mjData* d, int i, int li, mjtNum* L) {
+  for (int r = 0; r < 3; r++) {
+    int row = i + r, lr = li + r;
+    mjtNum diag = d->M[m->M_rowadr[row] + m->M_rownnz[row] - 1] +
+                  (d->efm_sdiag ? d->efm_sdiag[row] : 0) + L[lr];
+    int adr = d->efm_K_rowadr[row], nnz = d->efm_K_rownnz[row];
+    for (int j = adr; j < adr + nnz; j++) {
+      if (d->efm_K_colind[j] == row) {
+        diag += d->efm_K_val[j];
+        break;
+      }
     }
+    L[lr] = 1 / mju_max(mjMINVAL, diag);
   }
-  *lo = l;
-  return (l < nb && dofid[l] == dof) ? l : -1;
 }
 
 
-// number of covered 3x3 blocks mj_effPrecFold writes (at most)
-int mj_effFoldBlocks(const mjData* d, int island) {
-  if (!d->efm_active || !d->nefmdof) {
-    return 0;
-  }
-  if (island < 0) {
-    return d->nefmdof;
-  }
-  mjEffIsland isl;
-  if (effIslandStep(d, &isl)) {
-    return isl.cov_adr[island + 1] - isl.cov_adr[island];
-  }
-  return mjMIN(d->nefmdof, d->island_nv[island] / 3);
-}
-
-
-// stack bytes mj_effPrecFold takes for ncol columns
-size_t mj_effFoldScratch(int ncol) {
-  return mj_stackFrameBytes() + effIntBytes(ncol) + effIntBytes(ncol / 3);
-}
-
-
-// fold the rank-1 classes and the efc rows into L (9*mj_effFoldBlocks + mj_effTwistDiagSize):
-// for each folded triple in ascending dof order, the factored 3x3 diagonal block of
-// M + K + rank-1 classes + J'*D*J, plus the per-dof diagonal fold for 1D DER rod twist chains.
-// island >= 0: J is the island's (island-local columns) and only the island's triples are written
-// compactly in L[0..9*nfold). Returns nfold (0, leaving L untouched, when no triple or twist chain
-// is folded or the stack cannot hold the frame)
+// fold the passive-contact and efc row diagonals into L (mj_effFoldDiagSize) for covered flex
+// triples and 1D DER rod twist chains; returns 1 when folded, 0 if none
 int mj_effPrecFold(const mjModel* m, mjData* d, mjtNum* L, int island, int nefc,
                    const mjtNum* efc_D, int is_sparse, const mjtNum* J,
                    const int* J_rownnz, const int* J_rowadr, const int* J_colind) {
-  int nb = d->nefmdof;
-  int nblk = mj_effFoldBlocks(d, island);
-  int ntw = mj_effTwistDiagSize(m, d, island);
+  int nfold = mj_effFoldDiagSize(m, d, island);
   int ncol = island >= 0 ? d->island_nv[island] : m->nv;
-  if ((!nblk && !ntw) || !d->efm_active || ncol <= 0 ||
-      (nblk && ncol < 3) || mj_stackBytesAvailable(d) < mj_effFoldScratch(ncol)) {
+  if (!nfold || !d->efm_active || ncol <= 0) {
     return 0;
   }
   int idofadr = island >= 0 ? d->island_idofadr[island] : 0;
-  const int* idof2dof = island >= 0 ? d->map_idof2dof + idofadr : NULL;
+  mju_zero(L, nfold);
 
-  mj_markStack(d);
-
-  // blk[c]: compact folded slot p in [0, nfold) of local dof c, else -1;
-  // fold_li[p]: starting local dof of slot p
-  int* blk = effInts(d, ncol);
-  int* fold_li = effInts(d, ncol / 3);
-  for (int c=0; c < ncol; c++) {
-    blk[c] = -1;
-  }
-  int nfold = 0;
-  if (!nblk) {
-    nfold = 0;
-  } else if (island < 0) {
-    for (int k=0; k < nb; k++) {
-      int i = d->efm_dofid[k];
-      blk[i] = blk[i+1] = blk[i+2] = k;
-      fold_li[k] = i;
-      effBlockRaw(m, d, i, L + 9*k);
-    }
-    nfold = nb;
-  } else {
-    mjEffIsland isl;
-    if (effIslandStep(d, &isl)) {
-      int q_end = isl.cov_adr[island + 1];
-      for (int q=isl.cov_adr[island]; q < q_end; q++) {
-        int i = d->efm_dofid[isl.cov_ind[q]];
-        int li = d->map_dof2idof[i] - idofadr;
-        int p = nfold++;
-        blk[li] = blk[li+1] = blk[li+2] = p;
-        fold_li[p] = li;
-        effBlockRaw(m, d, i, L + 9*p);
-      }
-    } else {
-      for (int c=0, lo=0; c + 2 < ncol; ) {
-        int i = idof2dof[c];
-        if (d->efm_K_rownnz[i] > 0 && effFindDof(d->efm_dofid, nb, i, &lo) >= 0) {
-          int p = nfold++;
-          blk[c] = blk[c+1] = blk[c+2] = p;
-          fold_li[p] = c;
-          effBlockRaw(m, d, i, L + 9*p);
-          c += 3;
-        } else {
-          c++;
-        }
-      }
-    }
-  }
-  if (!nfold && !ntw) {
-    mj_freeStack(d);
-    return 0;
-  }
-  mjtNum* tw_diag = ntw ? (L + 9*nblk) : NULL;
-  if (tw_diag) {
-    mju_zero(tw_diag, ntw);
-  }
-
-  // rank-1 classes: scale * v v', restricted to each folded triple (and passive-contact diagonal
-  // on 1D DER rod twist chains)
-  mjEffRank1Iter it = {0};
+  // passive-contact diagonal
+  mjEffRank1Iter it = {.cls = 2};
   mjEffRank1 e;
   while (mj_effRank1Next(m, d, &it, &e, /*flg_contact=*/1)) {
+    if (it.cls != 2) {
+      break;
+    }
     if (island >= 0 && d->tree_island[m->dof_treeid[e.colind[0]]] != island) {
       continue;
     }
     for (int a=0; a < e.nnz; a++) {
       int la = island >= 0 ? d->map_dof2idof[e.colind[a]] - idofadr : e.colind[a];
-      if (tw_diag && it.cls == 2) {
-        tw_diag[la] += e.scale * e.val[a] * e.val[a];
-      }
-      int p = blk[la];
-      if (p < 0) {
-        continue;
-      }
-      int lbase = fold_li[p];
-      mjtNum sva = e.scale * e.val[a];
-      for (int b=0; b < e.nnz; b++) {
-        int lb = island >= 0 ? d->map_dof2idof[e.colind[b]] - idofadr : e.colind[b];
-        if (blk[lb] == p) {
-          L[9*p + 3*(la-lbase) + (lb-lbase)] += sva * e.val[b];
-        }
-      }
+      L[la] += e.scale * e.val[a] * e.val[a];
     }
   }
 
-  // efc rows: fold J'*D*J for every row with D > 0, active or satisfied. Keeping a fixed
-  // preconditioner across all CG iterations preserves Hager-Zhang conjugacy and avoids
-  // refactoring as the active set changes; satisfied contacts mildly over-precondition (damping
-  // steps on those dofs), whereas omitting rows that activate mid-solve leaves stiff contact
-  // directions unpreconditioned
+  // efc rows: fold diag(J'*D*J) for every row with D > 0, active or satisfied
   for (int r=0; r < nefc; r++) {
     mjtNum D = efc_D[r];
     if (!D) {
@@ -1892,50 +1784,48 @@ int mj_effPrecFold(const mjModel* m, mjData* d, mjtNum* L, int island, int nefc,
       int adr = J_rowadr[r], nnz = J_rownnz[r];
       for (int a=0; a < nnz; a++) {
         int la = J_colind[adr+a];
-        if (tw_diag) {
-          tw_diag[la] += D * J[adr+a] * J[adr+a];
-        }
-        int p = blk[la];
-        if (p < 0) {
-          continue;
-        }
-        int lbase = fold_li[p];
-        mjtNum Dja = D * J[adr+a];
-        for (int b=0; b < nnz; b++) {
-          int lb = J_colind[adr+b];
-          if (blk[lb] == p) {
-            L[9*p + 3*(la-lbase) + (lb-lbase)] += Dja * J[adr+b];
-          }
-        }
+        L[la] += D * J[adr+a] * J[adr+a];
       }
     } else {
       const mjtNum* Jr = J + (size_t)r*ncol;
-      if (tw_diag) {
-        for (int c=0; c < ncol; c++) {
-          if (Jr[c]) {
-            tw_diag[c] += D * Jr[c] * Jr[c];
-          }
-        }
-      }
-      for (int p=0; p < nfold; p++) {
-        const mjtNum* Jk = Jr + fold_li[p];
-        for (int a=0; a < 3; a++) {
-          if (!Jk[a]) {
-            continue;
-          }
-          for (int b=0; b < 3; b++) {
-            L[9*p + 3*a + b] += D * Jk[a] * Jk[b];
-          }
+      for (int c=0; c < ncol; c++) {
+        if (Jr[c]) {
+          L[c] += D * Jr[c] * Jr[c];
         }
       }
     }
   }
 
-  for (int p=0; p < nfold; p++) {
-    mju_cholFactor(L + 9*p, 3, effPivotFloor(L + 9*p, 3));
+  // convert covered flex triples (disjoint from 1-dof twist chains) to 1 / total_diag
+  if (d->nefmdof > 0) {
+    if (island < 0) {
+      for (int k = 0; k < d->nefmdof; k++) {
+        int i = d->efm_dofid[k];
+        effInvertTripleDiag(m, d, i, i, L);
+      }
+    } else {
+      mjEffIsland isl;
+      if (effIslandStep(d, &isl)) {
+        int q_end = isl.cov_adr[island + 1];
+        for (int q = isl.cov_adr[island]; q < q_end; q++) {
+          int i = d->efm_dofid[isl.cov_ind[q]];
+          effInvertTripleDiag(m, d, i, d->map_dof2idof[i] - idofadr, L);
+        }
+      } else {
+        const int* idof2dof = d->map_idof2dof + idofadr;
+        for (int c = 0, lo = 0; c + 2 < ncol; ) {
+          int i = idof2dof[c];
+          if (d->efm_K_rownnz[i] > 0 && effFindDof(d->efm_dofid, d->nefmdof, i, &lo) >= 0) {
+            effInvertTripleDiag(m, d, i, c, L);
+            c += 3;
+          } else {
+            c++;
+          }
+        }
+      }
+    }
   }
-  mj_freeStack(d);
-  return nfold ? nfold : 1;
+  return 1;
 }
 
 
@@ -2328,56 +2218,84 @@ void mj_effActuation(const mjModel* m, mjData* d, int flg_factor) {
   }
 
   // factor the backbone qH = M + all metric diagonals
-  if (d->efm_diag) {
+  if (mj_effUseQH(d)) {
     mju_copy(d->qH, d->M, m->nC);
-    for (int i=0; i < nv; i++) {
-      d->qH[m->M_rowadr[i] + m->M_rownnz[i] - 1] += d->efm_diag[i];
-    }
-    for (int t=0; t < d->nefmT; t++) {
-      mjtNum s = d->efm_ts[t];
-      if (!s) {
-        continue;
+    if (d->efm_diag) {
+      for (int i=0; i < nv; i++) {
+        d->qH[m->M_rowadr[i] + m->M_rownnz[i] - 1] += d->efm_diag[i];
       }
-      int i = d->efm_tid[t];
-      int end = m->ten_J_rowadr[i] + m->ten_J_rownnz[i];
-      for (int j=m->ten_J_rowadr[i]; j < end; j++) {
-        int c = m->ten_J_colind[j];
-        d->qH[m->M_rowadr[c] + m->M_rownnz[c] - 1] += s * d->ten_J[j] * d->ten_J[j];
+      for (int t=0; t < d->nefmT; t++) {
+        mjtNum s = d->efm_ts[t];
+        if (!s) {
+          continue;
+        }
+        int i = d->efm_tid[t];
+        int end = m->ten_J_rowadr[i] + m->ten_J_rownnz[i];
+        for (int j=m->ten_J_rowadr[i]; j < end; j++) {
+          int c = m->ten_J_colind[j];
+          d->qH[m->M_rowadr[c] + m->M_rownnz[c] - 1] += s * d->ten_J[j] * d->ten_J[j];
+        }
+      }
+      for (int t=0; t < d->nefmA; t++) {
+        mjtNum s = d->efm_as[t];
+        int i = d->efm_aid[t];
+        int oadr = m->actuator_outadr[i];
+        for (int k=0; k < m->actuator_outnum[i]; k++) {
+          int r = oadr + k;
+          int end = d->moment_rowadr[r] + d->moment_rownnz[r];
+          for (int j=d->moment_rowadr[r]; j < end; j++) {
+            int c = d->moment_colind[j];
+            d->qH[m->M_rowadr[c] + m->M_rownnz[c] - 1] +=
+                s * d->actuator_moment[j] * d->actuator_moment[j];
+          }
+        }
+      }
+      // 1D DER rod torsional coupling diagonal
+      mjEffRank1Iter it_tw = {.cls = 3};
+      mjEffRank1 e_tw;
+      while (mj_effRank1Next(m, d, &it_tw, &e_tw, /*flg_contact=*/0)) {
+        for (int j=0; j < e_tw.nnz; j++) {
+          int c = e_tw.colind[j];
+          d->qH[m->M_rowadr[c] + m->M_rownnz[c] - 1] += e_tw.scale * e_tw.val[j] * e_tw.val[j];
+        }
+      }
+      // fluid drag blocks share M's sparsity: add the full pattern
+      if (d->efm_fluid) {
+        mju_addTo(d->qH, d->efm_fluid, m->nC);
+      }
+
+      // record the diagonal additions for metric-consistent regularization
+      for (int i=0; i < nv; i++) {
+        int diag = m->M_rowadr[i] + m->M_rownnz[i] - 1;
+        d->efm_sdiag[i] = d->qH[diag] - d->M[diag];
       }
     }
-    for (int t=0; t < d->nefmA; t++) {
-      mjtNum s = d->efm_as[t];
-      int i = d->efm_aid[t];
-      int oadr = m->actuator_outadr[i];
-      for (int k=0; k < m->actuator_outnum[i]; k++) {
-        int r = oadr + k;
-        int end = d->moment_rowadr[r] + d->moment_rownnz[r];
-        for (int j=d->moment_rowadr[r]; j < end; j++) {
-          int c = d->moment_colind[j];
-          d->qH[m->M_rowadr[c] + m->M_rownnz[c] - 1] +=
-              s * d->actuator_moment[j] * d->actuator_moment[j];
+
+    // flex stiffness CSR diagonal on standalone 3-dof slider trees joins the qH backbone factor
+    // (articulated trees keep M + efm_sdiag so parent-child inertia couplings are not distorted by
+    // adding diag(efm_K) without efm_K's off-diagonals; added after recording efm_sdiag so
+    // diagapprox efc_diagA/efc_R/efc_D are unchanged, while mj_makeYNumeric whitens against d->qH
+    // so diagexact and dual AR include this diagonal)
+    if (d->nefmK) {
+      for (int i=0; i < nv; ) {
+        if (effSimpleTriple(m, i) && m->tree_dofnum[m->dof_treeid[i]] == 3) {
+          for (int r=0; r < 3; r++) {
+            int row = i + r;
+            int adr = d->efm_K_rowadr[row], nnz = d->efm_K_rownnz[row];
+            for (int j=adr; j < adr + nnz; j++) {
+              if (d->efm_K_colind[j] == row) {
+                d->qH[m->M_rowadr[row]+m->M_rownnz[row]-1] += d->efm_K_val[j];
+                break;
+              }
+            }
+          }
+          i += 3;
+        } else {
+          i++;
         }
       }
     }
-    // 1D DER rod torsional coupling diagonal
-    mjEffRank1Iter it_tw = {.cls = 3};
-    mjEffRank1 e_tw;
-    while (mj_effRank1Next(m, d, &it_tw, &e_tw, /*flg_contact=*/0)) {
-      for (int j=0; j < e_tw.nnz; j++) {
-        int c = e_tw.colind[j];
-        d->qH[m->M_rowadr[c] + m->M_rownnz[c] - 1] += e_tw.scale * e_tw.val[j] * e_tw.val[j];
-      }
-    }
-    // fluid drag blocks share M's sparsity: add the full pattern
-    if (d->efm_fluid) {
-      mju_addTo(d->qH, d->efm_fluid, m->nC);
-    }
 
-    // record the diagonal additions for metric-consistent regularization, then factor
-    for (int i=0; i < nv; i++) {
-      int diag = m->M_rowadr[i] + m->M_rownnz[i] - 1;
-      d->efm_sdiag[i] = d->qH[diag] - d->M[diag];
-    }
     if (flg_factor) {
       int sleep_filter = mjENABLED(mjENBL_SLEEP) && d->nv_awake < nv;
       mj_factorI(d->qH, d->qHDiagInv, sleep_filter ? d->nv_awake : nv,
@@ -2437,12 +2355,10 @@ static void effIslandBuild(const mjModel* m, mjData* d) {
   int nisland = d->nisland;
   int nb = d->nefmdof;
   int ntail = effIslandTail(m, d, nb);
-  if (!nb) {
-    d->efm_L = EFMALLOC(mjtNum, ntail);
-    d->nefmL = ntail;
-  }
+  d->efm_L = EFMALLOC(mjtNum, ntail);
+  d->nefmL = ntail;
 
-  mjtNum* tail = d->efm_L + 9*nb;
+  mjtNum* tail = d->efm_L;
   mju_zero(tail, ntail);
   tail[0] = EFF_ISLAND_TAG;
   int* A = (int*)(tail + EFF_HDR);
@@ -2682,54 +2598,36 @@ void mj_effMulAddIsland(const mjModel* m, mjData* d, mjtNum* res, const mjtNum* 
 
 
 // apply the step's sparse factor on the covered triples of island (vectors in island-local dof
-// coordinates); returns 1 if applied, 0 to fall back to the 3x3 blocks.
-// Note: separate islands have no edges between them in L so zeroing rhs outside the island is
-// exact, though solving the full factor and scanning nefmdof costs O(nefmdof) per island call.
-static int effCholSolveIsland(const mjModel* m, mjData* d, int island, mjtNum* x,
-                              const mjtNum* rhs) {
+// coordinates)
+static void effCholApplyIsland(mjData* d, const mjEffChol* cs, int island, mjtNum* x,
+                               const mjtNum* rhs) {
   int nb = d->nefmdof;
-  if (!effCholReserved(d)) {
-    return 0;
-  }
-  if (d->efm_L[9*nb] == EFF_CHOL_PENDING && d->threadlock) {
-    return 0;
-  }
-  effCholEnsure(m, d);
-  if (d->efm_L[9*nb] != 1) {
-    return 0;
-  }
-  mjEffChol cs;
-  effCholStep(d, &cs);
-  if (mj_stackBytesAvailable(d) < mj_stackFrameBytes() + 2*effNumBytes(cs.n)) {
-    return 0;
-  }
-  const mjtNum* Ls = effCholStepValues(d, &cs);
+  const mjtNum* Ls = effCholStepValues(d, cs);
   int idofadr = d->island_idofadr[island];
   mj_markStack(d);
-  mjtNum* bc = mjSTACKALLOC(d, cs.n, mjtNum);
-  mjtNum* xc = mjSTACKALLOC(d, cs.n, mjtNum);
+  mjtNum* bc = mjSTACKALLOC(d, cs->n, mjtNum);
+  mjtNum* xc = mjSTACKALLOC(d, cs->n, mjtNum);
   for (int k=0; k < nb; k++) {
-    int i = cs.dofid[k];
+    int i = cs->dofid[k];
     if (d->dof_island[i] == island) {
-      mju_copy3(bc + 3*cs.perm[k], rhs + (d->map_dof2idof[i] - idofadr));
+      mju_copy3(bc + 3*cs->perm[k], rhs + (d->map_dof2idof[i] - idofadr));
     } else {
-      mju_zero3(bc + 3*cs.perm[k]);
+      mju_zero3(bc + 3*cs->perm[k]);
     }
   }
-  effCholSolveBlocked(xc, Ls, bc, &cs);
+  effCholSolveBlocked(xc, Ls, bc, cs);
   for (int k=0; k < nb; k++) {
-    int i = cs.dofid[k];
+    int i = cs->dofid[k];
     if (d->dof_island[i] == island) {
-      mju_copy3(x + (d->map_dof2idof[i] - idofadr), xc + 3*cs.perm[k]);
+      mju_copy3(x + (d->map_dof2idof[i] - idofadr), xc + 3*cs->perm[k]);
     }
   }
   mj_freeStack(d);
-  return 1;
 }
 
 
 // island-local metric preconditioner x ~= (M + B)_island^-1 b, vectors in island-local dof
-// coordinates; L: compact folded blocks (mj_effPrecFold) or NULL for the step's own factor;
+// coordinates; L: folded per-dof diagonal (mj_effPrecFold) or NULL;
 // qLD/qLDiagInv/M_* are the island's gathered backbone factor
 void mj_effPrecIsland(const mjModel* m, mjData* d, mjtNum* x, const mjtNum* b, int island,
                       const mjtNum* L, const mjtNum* qLD, const mjtNum* qLDiagInv,
@@ -2743,7 +2641,7 @@ void mj_effPrecIsland(const mjModel* m, mjData* d, mjtNum* x, const mjtNum* b, i
   mjEffIsland isl;
   int has_isl = effIslandStep(d, &isl);
   int has_cov = has_isl && (isl.cov_adr[island] < isl.cov_adr[island + 1]);
-  if (!has_isl && d->nefmdof) {
+  if (!has_isl && d->nefmdof && (L || effCholReserved(d))) {
     for (int c=0, lo=0; c + 2 < nv; c++) {
       int i = idof2dof[c];
       if (d->efm_K_rownnz[i] > 0 && effFindDof(d->efm_dofid, d->nefmdof, i, &lo) >= 0) {
@@ -2752,6 +2650,9 @@ void mj_effPrecIsland(const mjModel* m, mjData* d, mjtNum* x, const mjtNum* b, i
       }
     }
   }
+  mjEffChol cs;
+  int use_chol = !L && has_cov && effCholReady(m, d, /*is_island=*/1, &cs);
+  int use_fold = (L != NULL) && has_cov;
   int has_bend = flg_bend && has_isl && (isl.bend_adr[island] < isl.bend_adr[island + 1]);
   int has_twist = 0;
   if (d->efm_sdiag) {
@@ -2763,8 +2664,9 @@ void mj_effPrecIsland(const mjModel* m, mjData* d, mjtNum* x, const mjtNum* b, i
     }
   }
 
-  // no covered, bending-only, or rod-twist blocks in this island: the gathered backbone factor is all
-  if (!has_cov && !has_bend && !has_twist) {
+  // no folded diagonal, sparse-factor, bending-only, or rod-twist blocks in this island: the
+  // gathered backbone factor is all
+  if (!use_chol && !use_fold && !has_bend && !has_twist) {
     if (x != b) {
       mju_copy(x, b, nv);
     }
@@ -2778,20 +2680,22 @@ void mj_effPrecIsland(const mjModel* m, mjData* d, mjtNum* x, const mjtNum* b, i
 
   // backbone solve on uncovered island dofs
   mju_copy(x, rhs, nv);
-  if (has_cov && has_isl) {
-    int q_end = isl.cov_adr[island + 1];
-    for (int q=isl.cov_adr[island]; q < q_end; q++) {
-      int i = d->efm_dofid[isl.cov_ind[q]];
-      mju_zero(x + (d->map_dof2idof[i] - idofadr), 3);
-    }
-  } else if (has_cov) {
-    for (int c=0, lo=0; c + 2 < nv; ) {
-      int i = idof2dof[c];
-      if (d->efm_K_rownnz[i] > 0 && effFindDof(d->efm_dofid, d->nefmdof, i, &lo) >= 0) {
-        mju_zero(x + c, 3);
-        c += 3;
-      } else {
-        c++;
+  if (use_chol || use_fold) {
+    if (has_isl) {
+      int q_end = isl.cov_adr[island + 1];
+      for (int q=isl.cov_adr[island]; q < q_end; q++) {
+        int i = d->efm_dofid[isl.cov_ind[q]];
+        mju_zero(x + (d->map_dof2idof[i] - idofadr), 3);
+      }
+    } else {
+      for (int c=0, lo=0; c + 2 < nv; ) {
+        int i = idof2dof[c];
+        if (d->efm_K_rownnz[i] > 0 && effFindDof(d->efm_dofid, d->nefmdof, i, &lo) >= 0) {
+          mju_zero(x + c, 3);
+          c += 3;
+        } else {
+          c++;
+        }
       }
     }
   }
@@ -2804,37 +2708,34 @@ void mj_effPrecIsland(const mjModel* m, mjData* d, mjtNum* x, const mjtNum* b, i
   }
   mj_solveLD(x, qLD, qLDiagInv, nv, 1, M_rownnz, M_rowadr, M_colind, NULL);
   if (has_twist) {
-    const mjtNum* tw_diag = (L && mj_effTwistDiagSize(m, d, island)) ?
-                            (L + 9*mj_effFoldBlocks(d, island)) : NULL;
-    effTwistSolve(m, d, x, rhs, island, tw_diag);
+    effTwistSolve(m, d, x, rhs, island, L);
   }
 
-  // folded blocks, else the sparse factor or the per-step 3x3 blocks, on the island's covered
-  // triples
-  if (has_cov && (L || !effCholSolveIsland(m, d, island, x, rhs))) {
+  // folded per-dof diagonal (CG) or sparse factor on the island's covered triples
+  if (use_fold) {
     if (has_isl) {
-      int q0 = isl.cov_adr[island], q_end = isl.cov_adr[island + 1];
-      for (int q=q0; q < q_end; q++) {
-        int k = isl.cov_ind[q];
-        int li = d->map_dof2idof[d->efm_dofid[k]] - idofadr;
-        const mjtNum* blkL = L ? L + 9*(q - q0) : d->efm_L + 9*k;
-        chol3Solve(x + li, blkL, rhs + li);
+      int q_end = isl.cov_adr[island + 1];
+      for (int q=isl.cov_adr[island]; q < q_end; q++) {
+        int c = d->map_dof2idof[d->efm_dofid[isl.cov_ind[q]]] - idofadr;
+        x[c]   = rhs[c]   * L[c];
+        x[c+1] = rhs[c+1] * L[c+1];
+        x[c+2] = rhs[c+2] * L[c+2];
       }
     } else {
-      int p = 0;
       for (int c=0, lo=0; c + 2 < nv; ) {
         int i = idof2dof[c];
-        int k = d->efm_K_rownnz[i] > 0 ? effFindDof(d->efm_dofid, d->nefmdof, i, &lo) : -1;
-        if (k >= 0) {
-          const mjtNum* blkL = L ? L + 9*p : d->efm_L + 9*k;
-          chol3Solve(x + c, blkL, rhs + c);
-          p++;
+        if (d->efm_K_rownnz[i] > 0 && effFindDof(d->efm_dofid, d->nefmdof, i, &lo) >= 0) {
+          x[c]   = rhs[c]   * L[c];
+          x[c+1] = rhs[c+1] * L[c+1];
+          x[c+2] = rhs[c+2] * L[c+2];
           c += 3;
         } else {
           c++;
         }
       }
     }
+  } else if (use_chol) {
+    effCholApplyIsland(d, &cs, island, x, rhs);
   }
 
   // bending-only constant factor restricted to the island
@@ -2984,6 +2885,12 @@ void mj_effBuild(const mjModel* m, mjData* d, int active, int flg_factor) {
   d->efm_as = NULL;
   d->efm_ak = NULL;
   d->efm_ca = NULL;
+  d->efm_K_colind = NULL;
+  d->efm_K_val = NULL;
+  d->efm_dofid = NULL;
+  d->efm_con_ind = NULL;
+  d->efm_con_val = NULL;
+  d->efm_L = NULL;
   if (!active) {
     return;
   }

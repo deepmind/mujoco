@@ -6044,5 +6044,40 @@ TEST_F(XMLReaderTest, CustomNumericLargeAndInvalidSizes) {
               testing::HasSubstr("custom field size exceeds maximum"));
 }
 
+TEST_F(XMLReaderTest, HeadlightActive) {
+  struct Case {
+    const char* attr;
+    int expected;
+  };
+  const Case valid_cases[] = {
+      {"false", 0}, {"true", 1}, {"auto", 2}, {"0", 0}, {"1", 1}, {"2", 2},
+  };
+  std::array<char, 1024> error;
+  for (const Case& c : valid_cases) {
+    std::string xml = std::string("<mujoco><visual><headlight active=\"") +
+                      c.attr + "\"/></visual></mujoco>";
+    mjSpec* spec =
+        mj_parseXMLString(xml.c_str(), nullptr, error.data(), error.size());
+    ASSERT_THAT(spec, NotNull()) << c.attr << ": " << error.data();
+    EXPECT_EQ(spec->visual.headlight.active, c.expected) << c.attr;
+    EXPECT_EQ(mjs_isAuthored(spec, &spec->visual.headlight.active), 1)
+        << c.attr;
+    mjModel* m = mj_compile(spec, nullptr);
+    ASSERT_THAT(m, NotNull()) << c.attr << ": " << mjs_getError(spec);
+    EXPECT_EQ(m->vis.headlight.active, c.expected) << c.attr;
+    mj_deleteModel(m);
+    mj_deleteSpec(spec);
+  }
+
+  for (const char* out_of_range : {"-1", "3"}) {
+    std::string xml = std::string("<mujoco><visual><headlight active=\"") +
+                      out_of_range + "\"/></visual></mujoco>";
+    MjModelPtr bad =
+        LoadModelFromString(xml.c_str(), error.data(), error.size());
+    EXPECT_THAT(bad.get(), IsNull()) << out_of_range;
+    EXPECT_THAT(error.data(), HasSubstr("invalid keyword")) << out_of_range;
+  }
+}
+
 }  // namespace
 }  // namespace mujoco

@@ -15,6 +15,7 @@
 #include <mujoco/mjrfilament.h>
 
 #include <array>
+#include <cmath>
 #include <cstring>
 
 #include <filament/Engine.h>
@@ -132,6 +133,147 @@ void mjrf_defaultReadRequest(mjrfReadRequest* request) {
 
 void mjrf_defaultFrameStats(mjrfFrameStats* stats) {
   memset(stats, 0, sizeof(mjrfFrameStats));
+}
+
+void mjrf_defaultShadowOpts(mjrfShadowOpts* opts) {
+  std::memset(opts, 0, sizeof(mjrfShadowOpts));
+  opts->type = mjSHADOW_TYPE_HARD;
+}
+
+void mjrf_defaultMaterialOpts(mjrfMaterialOpts* opts) {
+  std::memset(opts, 0, sizeof(mjrfMaterialOpts));
+  opts->rgb_color_type = mjCOLORSPACE_LINEAR;
+  opts->enable_textures = true;
+}
+
+void mjrf_defaultHeadlightOpts(mjrfHeadlightOpts* opts) {
+  std::memset(opts, 0, sizeof(mjrfHeadlightOpts));
+  opts->strength = 0.0f;
+}
+
+void mjrf_defaultSkyboxOpts(mjrfSkyboxOpts* opts) {
+  std::memset(opts, 0, sizeof(mjrfSkyboxOpts));
+  opts->enable = true;
+}
+
+void mjrf_defaultHazeOpts(mjrfHazeOpts* opts) {
+  std::memset(opts, 0, sizeof(mjrfHazeOpts));
+  opts->enable = true;
+  setf(opts->color, {1.0f, 1.0f, 1.0f});
+  opts->ratio = 0.3f;
+  opts->slices = 28;
+}
+
+void mjrf_defaultFogOpts(mjrfFogOpts* opts) {
+  std::memset(opts, 0, sizeof(mjrfFogOpts));
+  opts->enable = false;
+  setf(opts->color, {1.0f, 1.0f, 1.0f});
+  opts->density = 0.1f;
+  opts->max_opacity = 1.0f;
+  opts->distance = 0.0f;
+  opts->cutoff = INFINITY;
+  opts->height = 0.0f;
+  opts->height_falloff = 1.0f;
+}
+
+void mjrf_defaultBloomOpts(mjrfBloomOpts* opts) {
+  std::memset(opts, 0, sizeof(mjrfBloomOpts));
+  opts->enable = false;
+  opts->quality = mjQUALITY_LOW;
+  opts->strength = 0.1f;
+  opts->levels = 6;
+  opts->lens_flare = false;
+  opts->starburst = false;
+}
+
+void mjrf_defaultVignetteOpts(mjrfVignetteOpts* opts) {
+  std::memset(opts, 0, sizeof(mjrfVignetteOpts));
+  opts->enable = false;
+  setf(opts->color, {0.0f, 0.0f, 0.0f, 1.0f});
+  opts->mid_point = 0.5f;
+  opts->roundness = 0.5f;
+  opts->feather = 0.5f;
+}
+
+void mjrf_defaultReflectionOpts(mjrfReflectionOpts* opts) {
+  std::memset(opts, 0, sizeof(mjrfReflectionOpts));
+  opts->enable = true;
+}
+
+void mjrf_defaultDepthOfFieldOpts(mjrfDepthOfFieldOpts* opts) {
+  std::memset(opts, 0, sizeof(mjrfDepthOfFieldOpts));
+  opts->enable = false;
+  opts->blur_strength = 1.0f;
+  opts->aspect_ratio = 1.0f;
+  opts->max_aperture_diameter = 0.01f;
+}
+
+void mjrf_defaultDitheringOpts(mjrfDitheringOpts* opts) {
+  std::memset(opts, 0, sizeof(mjrfDitheringOpts));
+  opts->type = mjDITHERING_TYPE_TEMPORAL;
+}
+
+void mjrf_defaultColorGradingOpts(mjrfColorGradingOpts* opts) {
+  std::memset(opts, 0, sizeof(mjrfColorGradingOpts));
+  opts->tone_mapper = mjTONE_MAPPER_PBR_NEUTRAL;
+  opts->output_color_space = mjCOLORSPACE_SRGB;
+  opts->exposure = 0.0f;
+  opts->night_adaptation = 0.0f;
+  opts->contrast = 1.0f;
+  opts->vibrance = 1.0f;
+  opts->saturation = 1.0f;
+  opts->temperature = 0.0f;
+  opts->tint = 0.0f;
+  setf(opts->out_red, {1.0f, 0.0f, 0.0f});
+  setf(opts->out_green, {0.0f, 1.0f, 0.0f});
+  setf(opts->out_blue, {0.0f, 0.0f, 1.0f});
+  setf(opts->shadows, {1.0f, 1.0f, 1.0f, 0.0f});
+  setf(opts->midtones, {1.0f, 1.0f, 1.0f, 0.0f});
+  setf(opts->highlights, {1.0f, 1.0f, 1.0f, 0.0f});
+  setf(opts->tonal_ranges, {0.0f, 0.333f, 0.550f, 1.0f});
+  setf(opts->slope, {1.0f, 1.0f, 1.0f});
+  setf(opts->offset, {0.0f, 0.0f, 0.0f});
+  setf(opts->power, {1.0f, 1.0f, 1.0f});
+  setf(opts->shadow_gamma, {1.0f, 1.0f, 1.0f});
+  setf(opts->mid_point, {1.0f, 1.0f, 1.0f});
+  setf(opts->highlight_scale, {1.0f, 1.0f, 1.0f});
+}
+
+void mjrf_defaultAntialiasingOpts(mjrfAntialiasingOpts* opts) {
+  std::memset(opts, 0, sizeof(mjrfAntialiasingOpts));
+  opts->fxaa_enable = true;
+  opts->tsaa_enable = false;
+  opts->msaa_samples = 0;
+}
+
+void mjrf_defaultAmbientOcclusionOpts(mjrfAmbientOcclusionOpts* opts) {
+  std::memset(opts, 0, sizeof(mjrfAmbientOcclusionOpts));
+  opts->type = mjAMBIENT_OCCLUSION_TYPE_SCALABLE;
+  opts->ssct_enable = false;
+  opts->strength = 1.0f;
+  opts->power = 0.3f;
+  opts->radius = 1.0f;
+  opts->quality = mjQUALITY_LOW;
+  opts->low_pass_filter = mjQUALITY_MEDIUM;
+  opts->upsampling = mjQUALITY_LOW;
+  opts->bent_normals = false;
+}
+
+void mjrf_defaultRenderOpts(mjrfRenderOpts* opts) {
+  mjrf_defaultAmbientOcclusionOpts(&opts->ambient_occlusion);
+  mjrf_defaultAntialiasingOpts(&opts->antialiasing);
+  mjrf_defaultBloomOpts(&opts->bloom);
+  mjrf_defaultColorGradingOpts(&opts->color_grading);
+  mjrf_defaultDepthOfFieldOpts(&opts->depth_of_field);
+  mjrf_defaultDitheringOpts(&opts->dithering);
+  mjrf_defaultFogOpts(&opts->fog);
+  mjrf_defaultHazeOpts(&opts->haze);
+  mjrf_defaultHeadlightOpts(&opts->headlight);
+  mjrf_defaultMaterialOpts(&opts->material);
+  mjrf_defaultReflectionOpts(&opts->reflection);
+  mjrf_defaultShadowOpts(&opts->shadow);
+  mjrf_defaultSkyboxOpts(&opts->skybox);
+  mjrf_defaultVignetteOpts(&opts->vignette);
 }
 
 mjrfContext* mjrf_createContext(const mjrfContextConfig* config) {

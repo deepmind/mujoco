@@ -70,6 +70,13 @@ class Window {
     return height_ > 0 ? static_cast<float>(width_) / static_cast<float>(height_) : 1.0f;
   }
 
+  // The size of the window's drawable surface in device pixels, as reported
+  // by SDL. Not always GetWidth() * GetScale() by GetHeight() * GetScale():
+  // SDL rounds each axis separately, so with a fractional display scale the
+  // height derived from the width's scale can be one pixel off.
+  int GetDrawableWidth() const { return drawable_width_; }
+  int GetDrawableHeight() const { return drawable_height_; }
+
   // Returns the path to a file that was dropped on the window. Once called,
   // the value will be cleared until the next time a file is dropped.
   std::string GetDropFile();
@@ -92,8 +99,13 @@ class Window {
  private:
   void InitOffscreenEglContext();
 
+  // Refreshes the drawable size and scale from SDL.
+  void UpdateDrawableSize();
+
   int width_ = 0;
   int height_ = 0;
+  int drawable_width_ = 0;
+  int drawable_height_ = 0;
   float scale_ = 1.0f;
   Config config_;
   void* native_window_ = nullptr;

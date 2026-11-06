@@ -17,20 +17,31 @@
   <option timestep="0.006" gravity="0 0 -9.81">
     <flag speculative="enable"/>
   </option>
+  <statistic center="0 0 1.25" extent="1.44"/>
   <visual>
-    <headlight ambient="0.4 0.4 0.4" diffuse="0.8 0.8 0.8" specular="0.3 0.3 0.3"/>
-    <global azimuth="135" elevation="-15"/>
+    <global realtime="0.5" azimuth="135" elevation="-14"/>
+    <quality shadowsize="4096"/>
+    <headlight ambient=".25 .25 .25" diffuse=".4 .4 .4" specular=".2 .2 .2"/>
+    <rgba haze=".12 .16 .20 1"/>
   </visual>
+  <asset>
+    <texture name="ibl" type="cube" builtin="gradient" rgb1=".25 .3 .45" rgb2=".55 .5 .45" width="32" height="32"/>
+    <texture type="skybox" builtin="gradient" rgb1=".12 .16 .28" rgb2=".5 .45 .4" width="32" height="512"/>
+    <texture name="floor" type="2d" builtin="checker" rgb1=".1 .2 .3" rgb2=".2 .3 .4" width="512" height="512"/>
+    <material name="ground" texture="floor" texrepeat="2 2" texuniform="true" reflectance=".08"/>
+  </asset>
   <default>
     <geom type="capsule" size="0.006" density="1000" friction="0.3"/>
   </default>
   <worldbody>
-    <light pos="0 -1 3" dir="0 0.4 -1" directional="true"/>
-    <geom name="ground" type="plane" size="2 2 0.01" rgba="0.25 0.28 0.32 1"/>
-    <!-- Fixed horizontal catch bar along Y at z=1.68 (28 cm below link 1's top bar) -->
-    <geom name="catch_bar" type="capsule" fromto="0 -0.25 1.68 0 0.25 1.68"
+    <light pos="1.2 -2 3.4" dir="-.3 .5 -.8" cutoff="35" softness="1" range="20" diffuse=".9 .85 .75" intensity="1000000"/>
+    <light pos="-1 1.6 2.4" dir=".35 -.45 -.75" cutoff="50" softness="1" range="20" diffuse=".5 .65 .8" intensity="350000" castshadow="false"/>
+    <light type="image" texture="ibl" intensity="3000"/>
+    <geom name="ground" type="plane" size="0 0 0.01" material="ground"/>
+    <!-- Fixed horizontal catch bar along Y at z=1.88 (8 cm below link 1's top bar) -->
+    <geom name="catch_bar" type="capsule" fromto="0 -0.25 1.88 0 0.25 1.88"
           size="0.006" rgba="0.9 0.25 0.2 1"/>
-    <!-- Link 1 (XZ plane, z in [1.64, 1.96]): top bar drops 28 cm onto catch_bar -->
+    <!-- Link 1 (XZ plane, z in [1.64, 1.96]): top bar drops 8 cm onto catch_bar -->
     <body name="link1" pos="0 0 1.80">
       <freejoint/>
       <geom name="l1_top"    fromto="-0.06 0  0.16   0.06 0  0.16" rgba="0.2 0.7 0.95 1"/>
@@ -38,24 +49,24 @@
       <geom name="l1_left"   fromto="-0.06 0 -0.16  -0.06 0  0.16" rgba="0.2 0.7 0.95 1"/>
       <geom name="l1_right"  fromto=" 0.06 0 -0.16   0.06 0  0.16" rgba="0.2 0.7 0.95 1"/>
     </body>
-    <!-- Link 2 (YZ plane, rotated 90 deg, interlocked with Link 1) -->
-    <body name="link2" pos="0 0 1.515">
+    <!-- Link 2 (YZ plane, rotated 90 deg, interlocked with Link 1 with 13 cm slack) -->
+    <body name="link2" pos="0 0 1.62">
       <freejoint/>
       <geom name="l2_top"    fromto="0 -0.06  0.16  0  0.06  0.16" rgba="0.95 0.75 0.2 1"/>
       <geom name="l2_bottom" fromto="0 -0.06 -0.16  0  0.06 -0.16" rgba="0.95 0.75 0.2 1"/>
       <geom name="l2_left"   fromto="0 -0.06 -0.16  0 -0.06  0.16" rgba="0.95 0.75 0.2 1"/>
       <geom name="l2_right"  fromto="0  0.06 -0.16  0  0.06  0.16" rgba="0.95 0.75 0.2 1"/>
     </body>
-    <!-- Link 3 (XZ plane, interlocked with Link 2) -->
-    <body name="link3" pos="0 0 1.23">
+    <!-- Link 3 (XZ plane, interlocked with Link 2 with 13 cm slack) -->
+    <body name="link3" pos="0 0 1.44">
       <freejoint/>
       <geom name="l3_top"    fromto="-0.06 0  0.16   0.06 0  0.16" rgba="0.3 0.85 0.45 1"/>
       <geom name="l3_bottom" fromto="-0.06 0 -0.16   0.06 0 -0.16" rgba="0.3 0.85 0.45 1"/>
       <geom name="l3_left"   fromto="-0.06 0 -0.16  -0.06 0  0.16" rgba="0.3 0.85 0.45 1"/>
       <geom name="l3_right"  fromto=" 0.06 0 -0.16   0.06 0  0.16" rgba="0.3 0.85 0.45 1"/>
     </body>
-    <!-- Link 4 (YZ plane, interlocked with Link 3, slight x-offset so the chain swings) -->
-    <body name="link4" pos="0.015 0 0.945">
+    <!-- Link 4 (YZ plane, interlocked with Link 3 with 13 cm slack, slight x-offset so the chain swings) -->
+    <body name="link4" pos="0.015 0 1.26">
       <freejoint/>
       <geom name="l4_top"    fromto="0 -0.06  0.16  0  0.06  0.16" rgba="0.8 0.4 0.95 1"/>
       <geom name="l4_bottom" fromto="0 -0.06 -0.16  0  0.06 -0.16" rgba="0.8 0.4 0.95 1"/>

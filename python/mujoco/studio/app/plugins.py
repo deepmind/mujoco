@@ -264,7 +264,7 @@ class App(plugin.ViewerPlugin):
 
   def __init__(self, config: Config | None = None) -> None:
     install_console_hooks()
-    self._model_path: str = ''
+    self._model_path: str | None = None
     self.theme = ux.load_theme()
     self.config = config or Config()
     self.status = 'Ready'
@@ -330,8 +330,10 @@ class App(plugin.ViewerPlugin):
         self.ux_state.camera_index = ux.TUMBLE_CAMERA_IDX
 
   def reload_model(self) -> None:
-    """Asks the sim to reload the current model from its file."""
-    self.viewer.send_to_sim(messages.LoadModelEvent())
+    """Asks the sim to reload the current model."""
+    self.viewer.send_to_sim(
+        messages.LoadModelEvent(path=self.viewer.model_path)
+    )
 
   def close(self) -> None:
     self.viewer.dispatch(messages.ExitEvent())
@@ -372,12 +374,13 @@ class App(plugin.ViewerPlugin):
     if inputs.handle_miscellaneous_keyboard_events(self):
       return
 
-    if is_freecam_wasd:
-      handled, cam_speed = inputs.handle_freecam_wasd_keyboard_events(
-          self.model, self.data, self.viewer.camera, self.viewer.cam_speed
+    if is_freecam_wasd and self.viewer.client_camera is None:
+      handled, self.viewer.cam_speed = (
+          inputs.handle_freecam_wasd_keyboard_events(
+              self.model, self.data, self.viewer.camera, self.viewer.cam_speed
+          )
       )
       if handled:
-        self.viewer.cam_speed = cam_speed
         return
 
   def handle_camera_tracking_mouse_events(self) -> None:
@@ -401,6 +404,7 @@ class App(plugin.ViewerPlugin):
         self.viewer.vis_options,
         self.viewer.perturb,
         self.ux_state,
+        move_camera=self.viewer.client_camera is None,
     )
 
   def reset_physics(self) -> None:
@@ -719,6 +723,10 @@ class App(plugin.ViewerPlugin):
         imgui.End()
         imgui.PopStyleVar(3)
 
+    # Mirrored for viewers whose client moves the camera (client_camera), after
+    # everything above that can switch the camera mode.
+    self.viewer.camera_index = self.ux_state.camera_index
+
   @messages.handler(priority=messages.Priority.INTERNAL)
   def _on_step_control(self, event: messages.StepControlSnapshot) -> None:
     """Mirrors the sim's step control settings into ``step_control_state``."""
@@ -744,7 +752,7 @@ class App(plugin.ViewerPlugin):
 
   @messages.handler(priority=messages.Priority.INTERNAL)
   def _on_post_model(self, event: messages.PostModelEvent) -> None:
-    same_scene = bool(event.path and event.path == self._model_path)
+    same_scene = event.path == self._model_path
     self._model_path = event.path
     if same_scene:
       self._reload_app_state(event.model)
@@ -753,6 +761,12 @@ class App(plugin.ViewerPlugin):
 
   @messages.handler(priority=messages.Priority.INTERNAL)
   def _on_exit(self, _: messages.ExitEvent) -> None:
+    ux.save_settings(self.theme)
+
+  @messages.handler(priority=messages.Priority.INTERNAL)
+  def _on_theme(self, event: plugin.ThemeEvent) -> None:
+    self.theme = event.theme
+    ux.setup_theme(self.theme)
     ux.save_settings(self.theme)
 
   @messages.handler(priority=messages.Priority.INTERNAL)

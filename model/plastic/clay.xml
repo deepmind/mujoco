@@ -1,0 +1,95 @@
+<!-- Copyright 2026 DeepMind Technologies Limited
+
+     Licensed under the Apache License, Version 2.0 (the "License");
+     you may not use this file except in compliance with the License.
+     You may obtain a copy of the License at
+
+         http://www.apache.org/licenses/LICENSE-2.0
+
+     Unless required by applicable law or agreed to in writing, software
+     distributed under the License is distributed on an "AS IS" BASIS,
+     WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+     See the License for the specific language governing permissions and
+     limitations under the License.
+-->
+
+<mujoco model="Clay">
+  <compiler autolimits="true"/>
+  <option timestep="0.003" solver="CG" iterations="150" tolerance="1e-5" integrator="discrete"/>
+  <size memory="30M"/>
+
+  <visual>
+    <global elevation="-32" azimuth="132" realtime="0.5"/>
+    <rgba haze="0.15 0.25 0.35 1"/>
+    <quality shadowsize="4096"/>
+    <map stiffness="700" fogstart="1" fogend="15" zfar="40" haze="1"/>
+    <headlight ambient="0.06 0.06 0.06" diffuse="0.12 0.12 0.12" specular="0.05 0.05 0.05"/>
+  </visual>
+
+  <statistic meansize="0.03" center="0.01 0.05 0.165" extent="0.57"/>
+
+  <default>
+    <default class="press">
+      <geom material="steel" contype="0" conaffinity="0"/>
+    </default>
+    <default class="blade">
+      <geom type="box" material="die" condim="1" solref="0.003 1" solimp="0.98 0.995 0.001" priority="1"/>
+    </default>
+  </default>
+
+  <asset>
+    <texture type="skybox" builtin="gradient" rgb1="0.3 0.5 0.7" rgb2="0 0 0" width="512" height="512"/>
+    <texture name="grid" type="2d" builtin="checker" rgb1=".1 .2 .3" rgb2=".2 .3 .4" width="100" height="100"/>
+    <material name="grid" texture="grid" texrepeat="8 8" texuniform="true" reflectance="0.06"/>
+    <material name="plinth" rgba="0.22 0.25 0.30 1" specular="0.4" shininess="0.4" metallic="0.4" roughness="0.45"/>
+    <material name="steel" rgba="0.40 0.44 0.50 1" specular="0.75" shininess="0.6" metallic="0.65" roughness="0.28"/>
+    <material name="die" rgba="0.82 0.66 0.34 1" specular="0.85" shininess="0.8" metallic="0.82" roughness="0.20"/>
+    <material name="clay_mat" rgba="0.76 0.38 0.22 1" specular="0.0" shininess="0.0" metallic="0.0" roughness="1.0"/>
+  </asset>
+
+  <worldbody>
+    <!-- Oblique directional key light casting crisp shadows into the '+' trench walls -->
+    <light name="key" directional="true" pos="-0.9 -0.7 1.0" dir="0.62 0.50 -0.60"
+           diffuse=".72 .66 .60" ambient=".08 .08 .08" specular=".18 .16 .14"/>
+    <light name="graze" directional="true" pos="0.8 0.5 0.6" dir="-0.72 -0.45 -0.52" castshadow="false"
+           diffuse=".22 .24 .30" specular=".12 .14 .18"/>
+    <light name="rim" directional="true" pos="0.0 0.9 1.0" dir="0.0 -0.65 -0.76" castshadow="false"
+           diffuse=".14 .16 .22" specular=".10 .12 .16"/>
+
+    <geom name="ground" type="plane" size="0 0 1" material="grid" condim="3" friction="1.5 0.005 0.0001"/>
+    <geom name="board" type="box" pos="0 0 0.004" size="0.156 0.156 0.004" material="plinth" contype="0" conaffinity="0"/>
+
+    <!-- Hinged stamping press behind the clay block (+y) -->
+    <body name="base" pos="0 0.28 0" euler="0 0 90">
+      <geom name="pedestal" class="press" type="box" pos="0 0 0.068" size="0.025 0.045 0.068"/>
+      <geom name="axle" class="press" type="cylinder" pos="0 0 0.120" euler="90 0 0" size="0.016 0.052" material="die"/>
+
+      <body name="arm" pos="0 0 0.120" euler="0 138 0">
+        <joint name="j_stamp" type="hinge" axis="0 1 0" range="-140 0" stiffness="185" springref="-70" damping="2.8"/>
+        <geom name="beam" class="press" type="capsule" fromto="0 0 0 -0.28 0 0" size="0.014" mass="0.8"/>
+
+        <!-- Cross (+) stamping head centered at (0, 0) and level at bottom of stroke -->
+        <body name="head" pos="-0.28 0 0">
+          <geom name="weight" class="press" type="cylinder" pos="0 0 0.048" size="0.042 0.025" mass="42.0"/>
+          <geom name="cross_x" class="press" type="box" pos="0 0 0.020" size="0.116 0.022 0.010" mass="0.5" material="die"/>
+          <geom name="cross_y" class="press" type="box" pos="0 0 0.020" size="0.022 0.116 0.010" mass="0.5" material="die"/>
+          <!-- Frictionless contact blades that stamp a crisp '+' and retract cleanly -->
+          <geom name="blade_x" class="blade" pos="0 0 -0.014" size="0.112 0.018 0.038" mass="0.6"/>
+          <geom name="blade_y" class="blade" pos="0 0 -0.014" size="0.018 0.112 0.038" mass="0.6"/>
+        </body>
+      </body>
+    </body>
+
+    <!-- Elasto-plastic clay block (23x23x5 grid) anchored at its base -->
+    <flexcomp name="clay" type="grid" dim="3" count="23 23 5" spacing="0.013 0.013 0.025"
+              pos="0 0 0.058" radius="0.002" mass="2.2" flatskin="false" material="clay_mat">
+      <pin gridrange="0 0 0 22 22 0"/>
+      <contact condim="1" solref="0.004 1" solimp="0.98 0.995 0.001" selfcollide="none"/>
+      <elasticity young="9.0e4" poisson="0.0" damping="0.025" yield="0.0030"/>
+    </flexcomp>
+  </worldbody>
+
+  <actuator>
+    <motor name="stamp" joint="j_stamp" gear="-1" ctrlrange="-60 60"/>
+  </actuator>
+</mujoco>

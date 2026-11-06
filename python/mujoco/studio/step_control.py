@@ -49,13 +49,13 @@ class StepControl(plugin.SimPlugin):
   """
 
   def __init__(self) -> None:
-    self._model_path: str = ''
+    self._model_path: str | None = None
     self.step_control = sim.StepControl()
     self._measured_reported = -1.0
 
   @messages.handler(priority=messages.Priority.INTERNAL)
   def _on_sim_init(self, _: plugin.SimInitEvent) -> None:
-    self._model_path = ''
+    self._model_path = None
     self.step_control = sim.StepControl()
     self._measured_reported = -1.0
 
@@ -79,7 +79,7 @@ class StepControl(plugin.SimPlugin):
 
   @messages.handler(priority=messages.Priority.INTERNAL)
   def _on_post_model(self, event: messages.PostModelEvent) -> None:
-    same_scene = bool(event.path and event.path == self._model_path)
+    same_scene = event.path == self._model_path
     self._model_path = event.path
     if same_scene:
       # Same scene reloaded: keep pause, speed, and noise; only resync pacing.

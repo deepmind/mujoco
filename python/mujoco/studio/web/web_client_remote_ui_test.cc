@@ -27,13 +27,16 @@
 #include <unordered_map>
 #include <vector>
 
+#include <gmock/gmock.h>
 #include <gtest/gtest.h>
 #include "absl/log/check.h"
 #include <imgui.h>
+#include <mujoco/mujoco.h>
 #include <NetImgui_Api.h>
 #include <NetImgui_CmdPackets.h>
 #include <NetImgui_Network.h>
 #include "google/network_status.h"
+#include "state_payload.h"
 
 // Host shims for browser-specific WebSocket symbols used by RemoteUi.
 namespace mujoco::studio {
@@ -307,10 +310,31 @@ TEST_F(RemoteUiTest, DefersTextureUploadUntilGpuReady) {
 
   EXPECT_EQ(callbacks_.upload_calls, 0);
 
+  // A draw frame arriving before GpuReady() omits draws whose textures are not
+  // uploaded yet (never leaving ElemCount=0 / TexID=0 commands in CmdBuffer).
+  CmdDrawFrame* frame =
+      MakeDrawFrame("DeferredFrame", /*frame_index=*/1, /*tex_id=*/11);
+  frame->ToOffsets();
+  remote_ui_.ProcessCmdDrawFrame(frame);
+  ImDrawData* draw_data = remote_ui_.RemoteDrawData();
+  ASSERT_NE(draw_data, nullptr);
+  ASSERT_EQ(draw_data->CmdLists.Size, 1);
+  EXPECT_EQ(draw_data->CmdLists[0]->CmdBuffer.Size, 0);
+
+  // Once the GPU becomes ready and UpdateTextures() uploads the deferred
+  // texture, the cached draw frame's draw commands are rebuilt with the newly
+  // uploaded GPU texture handle without waiting for another network frame.
   callbacks_.gpu_ready = true;
   remote_ui_.UpdateTextures();
   EXPECT_EQ(callbacks_.upload_calls, 1);
   EXPECT_EQ(callbacks_.textures[100].rgba, pixels);
+  draw_data = remote_ui_.RemoteDrawData();
+  ASSERT_NE(draw_data, nullptr);
+  ASSERT_EQ(draw_data->CmdLists.Size, 1);
+  ASSERT_GT(draw_data->CmdLists[0]->CmdBuffer.Size, 0);
+  EXPECT_GT(draw_data->CmdLists[0]->CmdBuffer[0].ElemCount, 0u);
+  EXPECT_EQ(draw_data->CmdLists[0]->CmdBuffer[0].TexRef._TexID,
+            static_cast<ImTextureID>(100));
 
   // Calling UpdateTextures() again does not re-upload already-uploaded entries.
   remote_ui_.UpdateTextures();
@@ -441,8 +465,10 @@ TEST_F(RemoteUiTest,
     }
   }
 
-  // A draw frame referencing an unmapped texture ID zeroes ElemCount so the
-  // renderer skips the draw call, and reuses the existing ImDrawList.
+  // A draw frame referencing an unmapped texture ID omits the draw command from
+  // CmdBuffer (rather than leaving an ImDrawCmd with ElemCount=0 and _TexID=0,
+  // which Filament's Renderable::SetMesh treats as "draw the entire index
+  // buffer" with ObjectManager::kDecor), and reuses the existing ImDrawList.
   CmdDrawFrame* unmapped =
       MakeDrawFrame("Unmapped", /*frame_index=*/2, /*tex_id=*/999);
   unmapped->ToOffsets();
@@ -451,9 +477,7 @@ TEST_F(RemoteUiTest,
   ASSERT_NE(draw_data, nullptr);
   ASSERT_EQ(draw_data->CmdLists.Size, 1);
   EXPECT_EQ(draw_data->CmdLists[0], list0);
-  for (const ImDrawCmd& cmd : draw_data->CmdLists[0]->CmdBuffer) {
-    EXPECT_EQ(cmd.ElemCount, 0u);
-  }
+  EXPECT_EQ(draw_data->CmdLists[0]->CmdBuffer.Size, 0);
 }
 
 TEST_F(RemoteUiTest, SocketHandshakeReceiveAndInputRoundTrip) {
@@ -553,6 +577,99 @@ TEST_F(RemoteUiTest, SocketHandshakeReceiveAndInputRoundTrip) {
   EXPECT_TRUE(input_cmd.mCompressionSkip);
 
   close(peer_fd);
+}
+
+TEST_F(RemoteUiTest, StateQueueSynchronizesFullPayloadAndBoundsLatency) {
+  StateQueue queue;
+  EXPECT_TRUE(queue.Empty());
+
+  auto make_payload = [](mjtNum q0, mjtNum q1, int spec, double azimuth,
+                         int ngeom) {
+    const mjtNum physics[] = {q0, q1};
+    mjvCamera cam{};
+    cam.azimuth = azimuth;
+    mjvPerturb pert{};
+    pert.select = spec;
+    mjvOption vopt{};
+    mjOption opt{};
+    mjVisual vis{};
+    mjStatistic stat{};
+    std::vector<uint8_t> rflags(mjNRNDFLAG, 0);
+    std::vector<mjvGeom> geoms(ngeom);
+    for (int i = 0; i < ngeom; ++i) {
+      geoms[i].objid = 100 + i;
+    }
+    // The viewer input rides along too; tag it with the azimuth to tell the
+    // payloads apart.
+    const ViewerInputState viewer_input{.camera_generation =
+                                            static_cast<uint32_t>(azimuth)};
+    return SerializeStatePayload(
+        /*model_crc32=*/42u, spec, physics, sizeof(physics), cam, pert, vopt,
+        opt, vis, stat, rflags, geoms.data(), geoms.size(), viewer_input);
+  };
+
+  const std::vector<std::byte> b1 = make_payload(1.0, 10.0, 7, 15.0, 1);
+  const std::vector<std::byte> b2 = make_payload(2.0, 20.0, 7, 30.0, 2);
+  const std::vector<std::byte> b3 = make_payload(3.0, 30.0, 3, 45.0, 0);
+  const std::vector<std::byte> b4 = make_payload(4.0, 40.0, 4, 60.0, 3);
+
+  StatePayloadView v1, v2, v3, v4;
+  ASSERT_TRUE(ParseStatePayload(b1.data(), b1.size(), &v1));
+  ASSERT_TRUE(ParseStatePayload(b2.data(), b2.size(), &v2));
+  ASSERT_TRUE(ParseStatePayload(b3.data(), b3.size(), &v3));
+  ASSERT_TRUE(ParseStatePayload(b4.data(), b4.size(), &v4));
+
+  // Burst of 2 packets in one VSync window followed by 0 in the next:
+  // both frames get distinct consecutive physics, camera, and extra_geoms
+  // states without lag between physics and render state.
+  queue.Push(v1);
+  queue.Push(v2);
+  EXPECT_EQ(queue.Size(), 2u);
+
+  StateQueue::Entry out;
+  ASSERT_TRUE(queue.Pop(&out));
+  EXPECT_EQ(out.sig, 7);
+  EXPECT_THAT(out.state, testing::ElementsAre(1.0, 10.0));
+  ASSERT_TRUE(out.has_render_state);
+  EXPECT_DOUBLE_EQ(out.render_state.camera.azimuth, 15.0);
+  EXPECT_EQ(out.viewer_input.camera_generation, 15u);
+  ASSERT_EQ(out.extra_geoms.size(), 1u);
+  EXPECT_EQ(out.extra_geoms[0].objid, 100);
+
+  ASSERT_TRUE(queue.Pop(&out));
+  EXPECT_EQ(out.sig, 7);
+  EXPECT_THAT(out.state, testing::ElementsAre(2.0, 20.0));
+  ASSERT_TRUE(out.has_render_state);
+  EXPECT_DOUBLE_EQ(out.render_state.camera.azimuth, 30.0);
+  EXPECT_EQ(out.viewer_input.camera_generation, 30u);
+  ASSERT_EQ(out.extra_geoms.size(), 2u);
+  EXPECT_EQ(out.extra_geoms[1].objid, 101);
+  EXPECT_FALSE(queue.Pop(&out));
+
+  // Overflowing past kMaxDepth (3) drops the oldest unconsumed snapshot.
+  v1.physics_spec = 1;
+  v2.physics_spec = 2;
+  queue.Push(v1);
+  queue.Push(v2);
+  queue.Push(v3);
+  queue.Push(v4);
+  EXPECT_EQ(queue.Size(), 3u);
+
+  ASSERT_TRUE(queue.Pop(&out));
+  EXPECT_EQ(out.sig, 2);
+  EXPECT_THAT(out.state, testing::ElementsAre(2.0, 20.0));
+  EXPECT_DOUBLE_EQ(out.render_state.camera.azimuth, 30.0);
+  ASSERT_TRUE(queue.Pop(&out));
+  EXPECT_EQ(out.sig, 3);
+  EXPECT_THAT(out.state, testing::ElementsAre(3.0, 30.0));
+  EXPECT_DOUBLE_EQ(out.render_state.camera.azimuth, 45.0);
+  EXPECT_TRUE(out.extra_geoms.empty());
+  ASSERT_TRUE(queue.Pop(&out));
+  EXPECT_EQ(out.sig, 4);
+  EXPECT_THAT(out.state, testing::ElementsAre(4.0, 40.0));
+  EXPECT_DOUBLE_EQ(out.render_state.camera.azimuth, 60.0);
+  EXPECT_EQ(out.extra_geoms.size(), 3u);
+  EXPECT_TRUE(queue.Empty());
 }
 
 }  // namespace

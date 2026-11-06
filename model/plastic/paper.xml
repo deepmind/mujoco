@@ -1,0 +1,103 @@
+<!-- Copyright 2026 DeepMind Technologies Limited
+
+     Licensed under the Apache License, Version 2.0 (the "License");
+     you may not use this file except in compliance with the License.
+     You may obtain a copy of the License at
+
+         http://www.apache.org/licenses/LICENSE-2.0
+
+     Unless required by applicable law or agreed to in writing, software
+     distributed under the License is distributed on an "AS IS" BASIS,
+     WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+     See the License for the specific language governing permissions and
+     limitations under the License.
+-->
+
+<mujoco model="Paper napkin ring">
+  <compiler autolimits="true"/>
+  <option timestep="0.004" solver="Newton" integrator="discrete"/>
+  <size memory="20M"/>
+
+  <visual>
+    <global elevation="-18" azimuth="90"/>
+    <rgba haze="0.15 0.25 0.35 1"/>
+    <quality shadowsize="4096"/>
+    <map stiffness="700" fogstart="1" fogend="15" zfar="40" haze="1"/>
+    <headlight ambient="0.08 0.08 0.08" diffuse="0.25 0.25 0.25" specular="0.1 0.1 0.1"/>
+  </visual>
+
+  <statistic meansize="0.025" center="0 0.00 0.13" extent="0.46"/>
+
+  <asset>
+    <texture type="skybox" builtin="gradient" rgb1="0.3 0.5 0.7" rgb2="0 0 0" width="512" height="512"/>
+    <texture name="grid" type="2d" builtin="checker" rgb1=".1 .2 .3" rgb2=".2 .3 .4" width="100" height="100"/>
+    <material name="grid" texture="grid" texrepeat="8 8" texuniform="true" reflectance="0.06"/>
+    <material name="brass_mat" rgba="0.82 0.66 0.34 1" specular="0.85" shininess="0.8" metallic="0.8" roughness="0.18"/>
+    <material name="rod_mat" rgba="0.34 0.38 0.44 1" specular="0.6" shininess="0.6" metallic="0.6" roughness="0.3"/>
+    <material name="cloth_mat" rgba="0.24 0.58 0.82 1" specular="0.45" shininess="0.5"/>
+    <mesh name="ring" builtin="supertorus" params="64 0.159091 1 1" scale="0.044 0.044 0.044"/>
+    <material name="paper_mat" rgba="0.94 0.88 0.74 1" specular="0.25" shininess="0.3"/>
+  </asset>
+
+  <worldbody>
+    <light name="key" pos="0.40 -0.62 1.15" dir="-0.40 0.62 -1.05" cutoff="30" softness="1" diffuse=".72 .68 .62"
+           ambient=".12 .12 .12" specular=".2 .2 .2"/>
+    <light name="rim" type="directional" pos="-0.5 1.0 0.8" dir="0.4 -0.8 -0.5" castshadow="false"
+           diffuse=".16 .20 .28" specular=".1 .12 .16"/>
+    <geom name="ground" type="plane" size="0 0 1" material="grid" condim="3" friction="1.0 0.005 0.0001"/>
+
+    <!-- Support posts and base pedestals -->
+    <geom type="capsule" fromto="-0.17 0.051 0.195 -0.17 0.16 0.195" size="0.005" material="rod_mat" contype="0" conaffinity="0"/>
+    <geom type="capsule" fromto="-0.17 0.16 0.195 -0.17 0.16 0.0" size="0.007" material="rod_mat" contype="0" conaffinity="0"/>
+    <geom type="capsule" fromto=" 0.17 0.051 0.195  0.17 0.16 0.195" size="0.005" material="rod_mat" contype="0" conaffinity="0"/>
+    <geom type="capsule" fromto=" 0.17 0.16 0.195  0.17 0.16 0.0" size="0.007" material="rod_mat" contype="0" conaffinity="0"/>
+    <geom type="cylinder" pos="-0.17 0 0.018" size="0.022 0.018" material="rod_mat"/>
+    <geom type="cylinder" pos=" 0.17 0 0.018" size="0.022 0.018" material="rod_mat"/>
+
+    <!-- Left brass ring: smooth visual torus (group 2), colliding capsules (group 3, hidden) -->
+    <frame pos="-0.17 0 0.195">
+      <geom type="mesh" mesh="ring" material="brass_mat" group="2" contype="0" conaffinity="0"/>
+      <replicate count="20" euler="0 0 18">
+        <geom type="capsule" fromto="0.044 -0.006969 0 0.044 0.006969 0" size="0.009" group="3" condim="1" solref="0.003 1"/>
+      </replicate>
+    </frame>
+    <!-- Right brass ring: smooth visual torus (group 2), colliding capsules (group 3, hidden) -->
+    <frame pos="0.17 0 0.195">
+      <geom type="mesh" mesh="ring" material="brass_mat" group="2" contype="0" conaffinity="0"/>
+      <replicate count="20" euler="0 0 18">
+        <geom type="capsule" fromto="0.044 -0.006969 0 0.044 0.006969 0" size="0.009" group="3" condim="1" solref="0.003 1"/>
+      </replicate>
+    </frame>
+
+    <!-- Left sheet: elastic napkin -->
+    <flexcomp name="cloth_napkin" type="grid" dim="2" count="17 17 1" spacing="0.0125 0.0125 0.0125"
+              pos="-0.17 0 0.235" radius="0.001" mass="0.16" material="cloth_mat">
+      <contact condim="1" solref="0.003 1"/>
+      <edge equality="true" solref="0.006 1" solimp="0.99 0.999 0.001"/>
+      <elasticity young="1.2e7" poisson="0.25" thickness="0.0034" elastic2d="bend" damping="0.010"/>
+    </flexcomp>
+
+    <!-- Right sheet: plastic paper napkin -->
+    <flexcomp name="paper_napkin" type="grid" dim="2" count="17 17 1" spacing="0.0125 0.0125 0.0125"
+              pos="0.17 0 0.235" radius="0.001" mass="0.16" material="paper_mat">
+      <contact condim="1" solref="0.003 1"/>
+      <edge equality="true" solref="0.006 1" solimp="0.99 0.999 0.001"/>
+      <elasticity young="1.2e7" poisson="0.25" thickness="0.0034" elastic2d="bend" damping="0.010" yield="0.00001"/>
+    </flexcomp>
+
+    <!-- Downward pullers attached to the center of each sheet -->
+    <body name="pull_L" pos="-0.17 0 0.235">
+      <joint name="j_pull_L" type="slide" axis="0 0 -1" range="-0.02 0.22" stiffness="3600" springref="0.19" damping="900"/>
+      <geom type="sphere" size="0.008" mass="0.2" material="brass_mat" contype="0" conaffinity="0"/>
+    </body>
+    <body name="pull_R" pos="0.17 0 0.235">
+      <joint name="j_pull_R" type="slide" axis="0 0 -1" range="-0.02 0.22" stiffness="3600" springref="0.19" damping="900"/>
+      <geom type="sphere" size="0.008" mass="0.2" material="brass_mat" contype="0" conaffinity="0"/>
+    </body>
+  </worldbody>
+
+  <equality>
+    <connect body1="pull_L" body2="cloth_napkin_144" anchor="0 0 0" solref="0.002 1"/>
+    <connect body1="pull_R" body2="paper_napkin_144" anchor="0 0 0" solref="0.002 1"/>
+  </equality>
+</mujoco>

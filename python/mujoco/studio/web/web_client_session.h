@@ -62,6 +62,7 @@ struct SessionView {
   // negative before the first payload.
   double seconds_since_last_payload = -1.0;
   int camera_mode = 0;  // [SpectatorCamMode].
+  int fps_cap = 60;     // 30, 60, 120, or 0 (Uncapped).
   bool is_downloading = true;
   size_t bytes_downloaded = 0;
   size_t total_bytes = 0;
@@ -79,6 +80,7 @@ class SessionActions {
   virtual void ReleaseControl() = 0;
   virtual void SetCameraMode(int mode) = 0;      // mode is [SpectatorCamMode].
   virtual void SetMaxSpectators(int count) = 0;  // Already clamped by the UI.
+  virtual void SetFpsCap(int fps_cap) = 0;  // 30, 60, 120, or 0 (Uncapped).
 };
 
 // The roster: the server's membership broadcast, sent as a text frame on
@@ -116,14 +118,17 @@ class Session : public SessionActions {
     virtual bool ReadyForPayload() = 0;
     // Applies a parsed payload to the application.
     virtual void OnPayload(const StatePayloadView& view) = 0;
-    // Server swapped models; fetch and load the new one in-place.
-    virtual void OnModelChanged() = 0;
+    // Server swapped models: fetch (or take from the page's cache) and load
+    // the bundle whose crc32 the state payload now carries, in place.
+    virtual void OnModelChanged(uint32_t model_crc32) = 0;
     // Role transition: claim the controller slot.
     virtual void ConnectRemoteUi() = 0;
     // Role transition: drop the stream when spectating
     virtual void ShutdownRemoteUi() = 0;
     // Spectator camera mode change.
     virtual void SetCameraMode(int mode) = 0;
+    // Client framerate cap change (30, 60, 120, or 0 for Uncapped).
+    virtual void SetFpsCap(int fps_cap) {}
   };
 
   explicit Session(Callbacks& callbacks) : callbacks_(callbacks) {}
@@ -191,6 +196,19 @@ class Session : public SessionActions {
   void ReleaseControl() override;
   void SetCameraMode(int mode) override;
   void SetMaxSpectators(int count) override;
+  void SetFpsCap(int fps_cap) override;
+
+  // Remembers this page's theme name ("light", "dark" or "classic") and sends
+  // it to the server, which applies it to the remote UI if this page controls.
+  // Sent again whenever this page gains control, so the remote UI matches the
+  // page's theme from the first frame.
+  void SetTheme(const char* theme);
+
+  // Sends the controller's locally moved camera to the viewer as a
+  // ClientCameraMessage (state_payload.h). The viewer adopts it unless it
+  // changed the camera itself since `generation`
+  // (ViewerInputState::camera_generation; see client_camera.py).
+  void SendCamera(const mjvCamera& camera, uint32_t generation);
 
  private:
   // Detaches callbacks and frees socket_ (if any), resetting to disconnected.
@@ -200,11 +218,15 @@ class Session : public SessionActions {
   // server as a text frame. Dropped silently while not connected.
   void SendText(const char* text);
 
+  // Sends theme_ (see SetTheme).
+  void SendTheme();
+
   // Updates the role and mirrors it into JS (Module.isSpectator), which gates
   // controller-only page behavior (model drag-and-drop upload).
   void SetRole(SessionRole role);
 
-  // Routes a session text frame: roster updates, control grants.
+  // Routes a session text frame: roster updates, control grants, and the
+  // list of model bundles the page may prefetch (handed to the page's JS).
   void OnSessionText(const char* text);
 
   static EM_BOOL OnWsMessage(int event_type,
@@ -239,6 +261,7 @@ class Session : public SessionActions {
   // Role state machine and roster.
   SessionRole role_ = SessionRole::kClaiming;
   Roster roster_;
+  std::string theme_;  // See SetTheme.
 
   // Consecutive rejected /ui claims; the page eventually stops claiming and
   // settles into spectating.

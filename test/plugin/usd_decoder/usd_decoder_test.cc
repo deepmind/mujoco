@@ -23,6 +23,7 @@
 #include <tuple>
 
 #include <gtest/gtest.h>
+#include <mujoco/experimental/usd/utils.h>
 #include <mujoco/mujoco.h>
 #include "test/fixture.h"
 #include <pxr/base/arch/fileSystem.h>
@@ -38,6 +39,11 @@
 
 namespace mujoco {
 namespace {
+
+// Ensure mujoco_usd is not dead-stripped by the linker so its static
+// initializer registers USD plugins (mjcPhysics, newton, usdMjcf) at load time.
+[[maybe_unused]] const pxr::SdfPath kForceLoadMujocoUsd =
+    mujoco::usd::GetUsdPrimPathUserValue(nullptr);
 
 // Joint kind, compiler angle units, and damping source (none/Newton/MJC/both).
 class UsdJointDampingTest

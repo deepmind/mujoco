@@ -594,8 +594,10 @@ positional and directional lighting, fog. Lights, or rather the objects illumina
 However, similar to material reflections, each shadow-casting light adds one rendering pass so this feature should be
 used with caution. Documenting the lighting model in detail is beyond the scope of this chapter; see `OpenGL
 documentation <http://www.glprogramming.com/red/chapter05.html>`__ instead. Note that in addition to lights defined
-by the user in the kinematic tree, there is a default headlight that moves with the camera. Its properties are
-adjusted through the mjVisual options.
+by the user in the kinematic tree, there is a built-in headlight that moves with the camera which can be useful for
+inspecting the model in poorly lit conditions. Its properties are adjusted through the mjVisual options, and it is
+"auto" by default to allow the runtime to decide whether or not it should be enabled. (For backwards compatibility,
+legacy renderers assume an "auto" headlight is on.)
 The number of lights is given by ``mjModel.nlight``.
 
 .. _Standalone:

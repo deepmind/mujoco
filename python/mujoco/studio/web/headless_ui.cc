@@ -129,6 +129,28 @@ static void Client_Connect(const char* title, int port) {
   bool connected = NetImgui::IsConnected();
   bool pending = NetImgui::IsConnectionPending();
 
+  static bool last_connected = false;
+  if (connected != last_connected) {
+    VLOG(1, "Status change: Connected=%s", connected ? "true" : "false");
+    if (last_connected && !connected) {
+      // Reset NetImgui client state on disconnect so ClientInfo::~ClientInfo()
+      // frees tracked CmdTexture buffers and the cached delta-compression
+      // baseline (mpCmdDrawLast) rather than leaking them in ConnectToApp()'s
+      // ContextRestore(). Clear ImGuiBackendFlags_RendererHasTextures and
+      // NetImgui's clipboard callbacks before Startup() so the next session's
+      // ContextOverride() captures clean initial BackendFlags.
+      NetImgui::Shutdown();
+      ImGui::GetIO().BackendFlags &= ~ImGuiBackendFlags_RendererHasTextures;
+      ImGuiPlatformIO& platform_io = ImGui::GetPlatformIO();
+      platform_io.Platform_GetClipboardTextFn = nullptr;
+      platform_io.Platform_SetClipboardTextFn = nullptr;
+      platform_io.Platform_ClipboardUserData = nullptr;
+      NetImgui::Startup();
+      pending = false;
+    }
+    last_connected = connected;
+  }
+
   if (!connected && !pending) {
     static std::chrono::steady_clock::time_point last_reconnect_time =
         std::chrono::steady_clock::now();
@@ -139,12 +161,6 @@ static void Client_Connect(const char* title, int port) {
       VLOG(1, "Retrying ConnectToApp...");
       NetImgui::ConnectToApp(title, "127.0.0.1", port);
     }
-  }
-
-  static bool last_connected = false;
-  if (connected != last_connected) {
-    VLOG(1, "Status change: Connected=%s", connected ? "true" : "false");
-    last_connected = connected;
   }
 }
 

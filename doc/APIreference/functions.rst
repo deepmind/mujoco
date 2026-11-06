@@ -3227,6 +3227,141 @@ Destroys the filament rendering context.
 
 Gets active renderer information for the given filament context.
 
+.. _mjrf_defaultShadowOpts:
+
+`mjrf_defaultShadowOpts <#mjrf_defaultShadowOpts>`__
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. mujoco-include:: mjrf_defaultShadowOpts
+
+Initializes the mjrfShadowOpts to default values.
+
+.. _mjrf_defaultMaterialOpts:
+
+`mjrf_defaultMaterialOpts <#mjrf_defaultMaterialOpts>`__
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. mujoco-include:: mjrf_defaultMaterialOpts
+
+Initializes the mjrfMaterialOpts to default values.
+
+.. _mjrf_defaultHeadlightOpts:
+
+`mjrf_defaultHeadlightOpts <#mjrf_defaultHeadlightOpts>`__
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. mujoco-include:: mjrf_defaultHeadlightOpts
+
+Initializes the mjrfHeadlightOpts to default values.
+
+.. _mjrf_defaultSkyboxOpts:
+
+`mjrf_defaultSkyboxOpts <#mjrf_defaultSkyboxOpts>`__
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. mujoco-include:: mjrf_defaultSkyboxOpts
+
+Initializes the mjrfSkyboxOpts to default values.
+
+.. _mjrf_defaultHazeOpts:
+
+`mjrf_defaultHazeOpts <#mjrf_defaultHazeOpts>`__
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. mujoco-include:: mjrf_defaultHazeOpts
+
+Initializes the mjrfHazeOpts to default values.
+
+.. _mjrf_defaultFogOpts:
+
+`mjrf_defaultFogOpts <#mjrf_defaultFogOpts>`__
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. mujoco-include:: mjrf_defaultFogOpts
+
+Initializes the mjrfFogOpts to default values.
+
+.. _mjrf_defaultBloomOpts:
+
+`mjrf_defaultBloomOpts <#mjrf_defaultBloomOpts>`__
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. mujoco-include:: mjrf_defaultBloomOpts
+
+Initializes the mjrfBloomOpts to default values.
+
+.. _mjrf_defaultVignetteOpts:
+
+`mjrf_defaultVignetteOpts <#mjrf_defaultVignetteOpts>`__
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. mujoco-include:: mjrf_defaultVignetteOpts
+
+Initializes the mjrfVignetteOpts to default values.
+
+.. _mjrf_defaultReflectionOpts:
+
+`mjrf_defaultReflectionOpts <#mjrf_defaultReflectionOpts>`__
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. mujoco-include:: mjrf_defaultReflectionOpts
+
+Initializes the mjrfReflectionOpts to default values.
+
+.. _mjrf_defaultDepthOfFieldOpts:
+
+`mjrf_defaultDepthOfFieldOpts <#mjrf_defaultDepthOfFieldOpts>`__
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. mujoco-include:: mjrf_defaultDepthOfFieldOpts
+
+Initializes the mjrfDepthOfFieldOpts to default values.
+
+.. _mjrf_defaultDitheringOpts:
+
+`mjrf_defaultDitheringOpts <#mjrf_defaultDitheringOpts>`__
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. mujoco-include:: mjrf_defaultDitheringOpts
+
+Initializes the mjrfDitheringOpts to default values.
+
+.. _mjrf_defaultColorGradingOpts:
+
+`mjrf_defaultColorGradingOpts <#mjrf_defaultColorGradingOpts>`__
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. mujoco-include:: mjrf_defaultColorGradingOpts
+
+Initializes the mjrfColorGradingOpts to default values.
+
+.. _mjrf_defaultAntialiasingOpts:
+
+`mjrf_defaultAntialiasingOpts <#mjrf_defaultAntialiasingOpts>`__
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. mujoco-include:: mjrf_defaultAntialiasingOpts
+
+Initializes the mjrfAntialiasingOpts to default values.
+
+.. _mjrf_defaultAmbientOcclusionOpts:
+
+`mjrf_defaultAmbientOcclusionOpts <#mjrf_defaultAmbientOcclusionOpts>`__
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. mujoco-include:: mjrf_defaultAmbientOcclusionOpts
+
+Initializes the mjrfAmbientOcclusionOpts to default values.
+
+.. _mjrf_defaultRenderOpts:
+
+`mjrf_defaultRenderOpts <#mjrf_defaultRenderOpts>`__
+~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~~
+
+.. mujoco-include:: mjrf_defaultRenderOpts
+
+Initializes the mjrfRenderOpts to default values.
+
 .. _mjrf_defaultRenderRequest:
 
 `mjrf_defaultRenderRequest <#mjrf_defaultRenderRequest>`__

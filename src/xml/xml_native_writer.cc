@@ -2147,6 +2147,12 @@ void mjXWriter::Visual(XMLElement* root) {
   for (const auto& sub : subs) {
     XMLElement* elem = InsertEnd(section, sub.tag);
     WriteAttrTable(elem, vis, &visdef, sub.rows, sub.n, authored_);
+    if (sub.rows == kHeadlightAttrs) {
+      int  value         = std::clamp(vis->headlight.active, 0, 2);
+      bool elem_authored = authored_ && mjs_isAuthored(&model->spec, &vis->headlight.active);
+      int  def           = elem_authored ? kDefaultUnauthoredValue : visdef.headlight.active;
+      WriteAttrKey(elem, "active", FalseTrueAuto_map, 3, value, def);
+    }
     if (!elem->FirstAttribute()) { section->DeleteChild(elem); }
   }
 

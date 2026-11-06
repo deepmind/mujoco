@@ -67,9 +67,9 @@ def run(
 
   Args:
     config: Viewer window configuration.
-    model: In-memory model to publish instead.
+    model: An already compiled model to show; exclusive with ``model_path``.
     data: The data for ``model``; a fresh one is created when None.
-    model_path: Model file to load.
+    model_path: A model file (XML, URDF, MJB or MJZ) to load on startup.
     plugins: Optional viewer and sim plugins.
 
   Raises:
@@ -80,6 +80,6 @@ def run(
   with launch(config, plugins=plugins) as handle:
     if model is not None:
       handle.set_model(model, data=data)
-    elif model_path:
-      handle.dispatch(messages.LoadModelEvent(path=model_path))
+    else:
+      handle.dispatch(messages.LoadModelEvent(path=model_path or ''))
     viewer_handle.run_sim_loop(handle)

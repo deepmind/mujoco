@@ -2631,7 +2631,7 @@ rotations as unit quaternions.
    corresponding to mjModel.qpos_spring is also used to compute the spring reference lengths of all tendons, stored in
    mjModel.tendon_lengthspring. This is because :ref:`tendons <tendon>` can also have springs.
 
-.. image:: https://www.gstatic.com/mujoco/doc/images/changelog/wire.gif
+.. image:: https://www.gstatic.com/mujoco/model/plastic/wire.webp
    :width: 40%
    :align: right
    :target: https://github.com/google-deepmind/mujoco/blob/main/model/plastic/wire.xml
@@ -2647,7 +2647,8 @@ rotations as unit quaternions.
    ``springyield`` (ideal elasto-plasticity). When ``0`` (default), plasticity is disabled
    (``mjModel.jnt_plasticadr[j] == -1``) and the spring is purely elastic; setting ``mjModel.jnt_springyield[j] = 0`` at
    runtime on an already-plastic joint (``jnt_plasticadr[j] >= 0``) corresponds to zero yield threshold (full plastic
-   slip).
+   slip). See `model/plastic/ <https://github.com/google-deepmind/mujoco/tree/main/model/plastic/>`__ for example
+   models.
 
 .. image:: images/XMLreference/armature.gif
    :width: 40%
@@ -3438,9 +3439,9 @@ and the +Y axis points up. Thus the frame position and orientation are the key a
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 This element creates a light, which moves with the body where it is defined. To create a fixed light, define it in the
-world body. The lights created here are in addition to the headlight which is always defined and is configured via the
-:ref:`visual <visual>` element. Lights shine along the direction specified by the dir attribute. They do not have
-a full spatial frame with three orthogonal axes.
+world body. The lights created here are in addition to the optional :ref:`headlight <visual-headlight>`, a
+camera-aligned light configured via the :ref:`visual <visual>` element. Lights shine along the direction specified by
+the dir attribute. They do not have a full spatial frame with three orthogonal axes.
 
 By default, MuJoCo uses the standard OpenGL (fixed functional) Phong lighting model for its rendering, with augmented
 with shadow mapping. (See the OpenGL documentation for more information, including details about various attributes.)
@@ -4659,10 +4660,10 @@ except for 1D flexes with zero :ref:`damping<flex-elasticity-damping>`.
    This thickness can be set equal to 2 times the :ref:`radius <deformable-flex-radius>` in order to match the geometry,
    but is exposed separately since the radius might be constrained by considerations related to collision detection.
 
-.. image:: https://www.gstatic.com/mujoco/doc/images/changelog/clay.gif
+.. image:: https://www.gstatic.com/mujoco/model/plastic/clay.webp
    :width: 40%
    :align: right
-   :target: https://github.com/google-deepmind/mujoco/blob/main/model/flex/clay.xml
+   :target: https://github.com/google-deepmind/mujoco/blob/main/model/plastic/clay.xml
 
 .. _flex-elasticity-yield:
 
@@ -4690,7 +4691,8 @@ except for 1D flexes with zero :ref:`damping<flex-elasticity-damping>`.
    (``3 * 2 * (cy*cz + cx*cz + cx*cy)`` entries); the elastic strain is measured in the corotated frame of the polar
    decomposition of the physical deformation gradient :math:`J_e = \partial x / \partial X`. Bending plasticity is not
    supported for interpolated flexes: with :ref:`elastic2d<flex-elasticity-elastic2d>` **bend**, :at:`yield` is ignored
-   and the flex remains purely elastic.
+   and the flex remains purely elastic. See
+   `model/plastic/ <https://github.com/google-deepmind/mujoco/tree/main/model/plastic/>`__ for example models.
 
 .. _flex-elasticity-elastic2d:
 
@@ -9812,11 +9814,12 @@ visualization should somehow be simplified.
 :el-prefix:`visual/` |-| **headlight** |?|
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
-This element is used to adjust the properties of the headlight. There is always a built-in headlight, in addition to any
-lights explicitly defined in the model. The headlight is a directional light centered at the current camera and pointed
-in the direction in which the camera is looking. It does not cast shadows (which would be invisible anyway). Note that
-lights are additive, so if explicit lights are defined in the model, the intensity of the headlight would normally need
-to be reduced.
+This element is used to adjust the properties of the built-in headlight. The headlight is a directional light centered
+at the current camera and pointed in the direction in which the camera is looking. It does not cast shadows (which would
+be invisible anyway). Note that lights are additive, so when the headlight is enabled alongside explicit lights in the
+model, its intensity may need to be reduced. The headlight can be enabled or disabled by setting its
+:ref:`active <visual-headlight-active>` attribute.
+
 
 .. _visual-headlight-ambient:
 
@@ -9836,8 +9839,11 @@ to be reduced.
 
 .. _visual-headlight-active:
 
-:at:`active`: :at-val:`int, "1"`
-   This attribute enables and disables the headlight. A value of 0 means disabled, any other value means enabled.
+:at:`active`: :at-val:`[false, true, auto], "auto"`
+   This attribute enables or disables the headlight. (Note that integer values 0 ("false"), 1 ("true"), and 2 ("auto")
+   are also accepted.) The default value of "auto" allows the runtime to decide whether or not the headlight should be
+   enabled. For example, some tools can turn on the headlight if there are no other lights in the scene. For backwards
+   compatibility, legacy renderers assume an "auto" headlight is always on.
 
 
 .. _visual-map:

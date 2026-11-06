@@ -13,6 +13,7 @@
 # limitations under the License.
 
 mujoco_test(mjcf_file_format_test ADDITIONAL_LINK_LIBRARIES
+  ${PXR_LIBRARIES}
   usd
   tf
   usdGeom
@@ -20,4 +21,10 @@ mujoco_test(mjcf_file_format_test ADDITIONAL_LINK_LIBRARIES
   usdShade
   usd_test_utils
   mjcPhysics
+  $<$<TARGET_EXISTS:Python3::Python>:Python3::Python>
   )
+if(UNIX AND NOT APPLE)
+  target_link_options(mjcf_file_format_test PRIVATE -Wl,--no-as-needed)
+endif()
+add_dependencies(mjcf_file_format_test usdMjcf)
+target_compile_options(mjcf_file_format_test PRIVATE -UPXR_PYTHON_SUPPORT_ENABLED)

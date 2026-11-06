@@ -86,7 +86,7 @@ pillow==12.3.0 \
     --hash=sha256:fdafc9cce40277e0f7a0feabce0ee50dd2fa1800f3b38015e51296b5e814048d \
     --hash=sha256:fe3cca2e4e8a592be0f269a1ca4835c25199d9f3ce815c8491048f785b0a0198 \
     --hash=sha256:ffd0c5368496f41b0944be820fcb7a838aa6e623d250b01acf2643939c3f99d7
-usd-core==25.11; python_version<='3.11' and (platform_machine=='x86_64' or platform_system=='Darwin') \
+usd-core==25.11; python_version<='3.13' and (platform_machine=='x86_64' or platform_system=='Darwin' or platform_system=='Windows') \
     --hash=sha256:2e7fe932069500056510c0881ed4627b654180d2fdb39998f78391cf0d701b1f \
     --hash=sha256:3485b21e8319a74b860df96122fbf7c43a2018b76dd975d3855a5f88a5cdba67 \
     --hash=sha256:4a63a9b5bc8e229e1195c09a0aeebc344f83fd25d95588f040fcff1fd30dd76f \

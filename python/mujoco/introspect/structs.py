@@ -511,7 +511,7 @@ STRUCTS: Mapping[str, StructDecl] = dict([
                          StructFieldDecl(
                              name='active',
                              type=ValueType(name='int'),
-                             doc='is headlight active',
+                             doc='is headlight active (0: no, 1: yes, 2: auto)',
                          ),
                      ),
                  ),
@@ -5810,12 +5810,12 @@ STRUCTS: Mapping[str, StructDecl] = dict([
              StructFieldDecl(
                  name='nefmdof',
                  type=ValueType(name='int'),
-                 doc='number of 3x3 blocks in the effective-metric preconditioner',  # pylint: disable=line-too-long
+                 doc='number of covered vertex triples in the effective metric',
              ),
              StructFieldDecl(
                  name='nefmL',
                  type=ValueType(name='int'),
-                 doc='size of efm_L (9*nefmdof plus optional Cholesky or island tail)',  # pylint: disable=line-too-long
+                 doc='size of efm_L (packed Cholesky factor or island lists)',
              ),
              StructFieldDecl(
                  name='nY',
@@ -7269,7 +7269,7 @@ STRUCTS: Mapping[str, StructDecl] = dict([
                  type=PointerType(
                      inner_type=ValueType(name='mjtNum'),
                  ),
-                 doc='factored 3x3 blocks of M+K and packed tail data',
+                 doc='packed Cholesky factor of M+K or island lists',
                  array_extent=('nefmL',),
              ),
              StructFieldDecl(

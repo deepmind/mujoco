@@ -172,10 +172,14 @@ Window::Window(std::string_view title, int width, int height, Config config)
 #endif
   }
 
-  int drawable_width = width_;
-  int drawable_height = height_;
-  SDL_GL_GetDrawableSize(sdl_window_, &drawable_width, &drawable_height);
-  scale_ = (float)drawable_width / (float)width_;
+  UpdateDrawableSize();
+}
+
+void Window::UpdateDrawableSize() {
+  drawable_width_ = width_;
+  drawable_height_ = height_;
+  SDL_GL_GetDrawableSize(sdl_window_, &drawable_width_, &drawable_height_);
+  scale_ = (float)drawable_width_ / (float)width_;
 }
 
 Window::~Window() {
@@ -194,10 +198,7 @@ void Window::Resize(int width, int height) {
   SDL_SetWindowPosition(sdl_window_, SDL_WINDOWPOS_CENTERED, SDL_WINDOWPOS_CENTERED);
 
   SDL_GetWindowSize(sdl_window_, &width_, &height_);
-  int drawable_width = width_;
-  int drawable_height = height_;
-  SDL_GL_GetDrawableSize(sdl_window_, &drawable_width, &drawable_height);
-  scale_ = (float)drawable_width / (float)width_;
+  UpdateDrawableSize();
 }
 
 void Window::DisableWindowResizing() { SDL_SetWindowResizable(sdl_window_, SDL_FALSE); }
@@ -221,10 +222,7 @@ Window::Status Window::NewFrame() {
     } else if (event.type == SDL_WINDOWEVENT) {
       if (event.window.event == SDL_WINDOWEVENT_RESIZED) {
         SDL_GetWindowSize(sdl_window_, &width_, &height_);
-        int drawable_width = width_;
-        int drawable_height = height_;
-        SDL_GL_GetDrawableSize(sdl_window_, &drawable_width, &drawable_height);
-        scale_ = (float)drawable_width / (float)width_;
+        UpdateDrawableSize();
       } else if (event.window.event == SDL_WINDOWEVENT_CLOSE) {
         should_exit_ = true;
       }

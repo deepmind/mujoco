@@ -877,43 +877,31 @@ mjvGLCamera mjv_camera2GLCamera(const mjModel* model, const mjData* data,
 int mjv_flexBodyId(const mjModel* m, const mjData* d, int flexid, int vertid, mjtNum flexpnt[3]) {
   int flexbodyid = -1;
   if (m->flex_interp[flexid]) {
-    mjtNum* coord = m->flex_vert0 + 3*(m->flex_vertadr[flexid] + vertid);
-    int order = m->flex_interp[flexid];
-    order = order < 0 ? -order : order;
-    int npc = (order+1)*(order+1)*(order+1);
-
-    // cell lookup: get local coords and node indices
+    // lattice node with the largest interpolation weight of this vertex
+    // in shell mode, skip nodes without degrees of freedom
     int gv = m->flex_vertadr[flexid] + vertid;
-    int cell = m->flex_vertcell ? m->flex_vertcell[gv] : -1;
-    mjtNum loc[3];
-    int nodeindices[27];  // max npc for quadratic: 3^3 = 27
-    mju_cellLookup(coord, m->flex_cellnum+3*flexid, order, cell, loc, nodeindices);
-
-    // find node with largest weight in this cell
-    // in shell mode, skip interior nodes (pinned to worldbody)
+    int node[mjMAXFLEXINTERPW];
+    mjtNum weight[mjMAXFLEXINTERPW];
+    int nn = mj_flexInterpWeights(m, flexid, m->flex_vert0 + 3*gv, node, weight);
     int nodeid = -1;
     int nstart = m->flex_nodeadr[flexid];
     mjtNum w = 0;
     int shell_mode = m->flex_interp[flexid] < 0;
-    for (int j = 0; j < npc; j++) {
-      mjtNum ww = mju_evalBasis(loc, j, order);
-      int nid = nodeindices[j];
-      // skip interior nodes in shell mode (they map to worldbody)
+    for (int j = 0; j < nn; j++) {
+      int nid = node[j];
       if (shell_mode && m->body_dofnum[m->flex_nodebodyid[nstart + nid]] == 0) {
         continue;
       }
-      if (ww > w) {
-        w = ww;
+      if (weight[j] > w) {
+        w = weight[j];
         nodeid = nid;
       }
     }
-    flexbodyid = m->flex_nodebodyid[nstart + nodeid];
-    if (m->flex_centered[flexid]) {
-      mju_copy3(flexpnt, d->xpos + 3*flexbodyid);
-    } else {
-      mju_mulMatVec3(flexpnt, d->xmat + 9*flexbodyid, m->flex_node + 3*(nstart + nodeid));
-      mju_addTo3(flexpnt, d->xpos + 3*flexbodyid);
+    if (nodeid < 0) {
+      return -1;
     }
+    flexbodyid = m->flex_nodebodyid[nstart + nodeid];
+    mj_flexNodePos(m, d, flexid, nstart + nodeid, flexpnt);
   } else {
     flexbodyid = m->flex_vertbodyid[m->flex_vertadr[flexid] + vertid];
     mju_copy3(flexpnt, d->flexvert_xpos + 3*(m->flex_vertadr[flexid] + vertid));

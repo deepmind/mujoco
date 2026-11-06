@@ -121,6 +121,14 @@ class SimEndpoint:
       raise RuntimeError('SimEndpoint is closed')
     return self._v2s_snapshot.get()
 
+  def reclaim_to_viewer(
+      self, snapshot_type: type[vp.Snapshot]
+  ) -> vp.Snapshot | None:
+    """Reclaims an unconsumed outgoing snapshot of ``snapshot_type``, if any."""
+    if self._is_closed:
+      raise RuntimeError('SimEndpoint is closed')
+    return self._s2v_snapshot.reclaim_unconsumed(snapshot_type)
+
   def close(self) -> None:
     """Close all channels owned by this endpoint."""
     if not self._is_closed:

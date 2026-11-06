@@ -4559,5 +4559,57 @@ TEST_F(XMLWriterTest, BodyToFrameGeomlessBodyPreservesInertial) {
   mj_deleteSpec(spec);
 }
 
+TEST_F(XMLWriterTest, HeadlightActiveRoundTrip) {
+  struct Case {
+    const char* input;
+    const char* saved_keyword;
+    int expected;
+  };
+  const Case cases[] = {
+      {"false", "false", 0}, {"true", "true", 1}, {"auto", "auto", 2},
+      {"0", "false", 0},     {"1", "true", 1},    {"2", "auto", 2},
+  };
+  std::array<char, 1024> error;
+  for (const Case& c : cases) {
+    std::string xml = std::string("<mujoco><visual><headlight active=\"") +
+                      c.input + "\"/></visual></mujoco>";
+    mjSpec* spec =
+        mj_parseXMLString(xml.c_str(), nullptr, error.data(), error.size());
+    ASSERT_THAT(spec, NotNull()) << c.input << ": " << error.data();
+    mjModel* model = mj_compile(spec, nullptr);
+    ASSERT_THAT(model, NotNull()) << c.input << ": " << mjs_getError(spec);
+
+    // authored save always emits the canonical keyword when authored
+    spec->compiler.savecompiled = 0;
+    std::string saved_authored = SaveToString(spec);
+    EXPECT_THAT(saved_authored,
+                HasSubstr(std::string("active=\"") + c.saved_keyword + "\""))
+        << c.input;
+    MjModelPtr reloaded_authored =
+        LoadModelFromString(saved_authored.c_str(), error.data(), error.size());
+    ASSERT_THAT(reloaded_authored.get(), NotNull())
+        << c.input << ": " << error.data();
+    EXPECT_EQ(reloaded_authored->vis.headlight.active, c.expected) << c.input;
+
+    // compiled save omits the default ("auto" / 2) and emits "false" / "true"
+    std::string saved_compiled = SaveAndReadXml(model);
+    if (c.expected == 2) {
+      EXPECT_THAT(saved_compiled, Not(HasSubstr("active="))) << c.input;
+    } else {
+      EXPECT_THAT(saved_compiled,
+                  HasSubstr(std::string("active=\"") + c.saved_keyword + "\""))
+          << c.input;
+    }
+    MjModelPtr reloaded_compiled =
+        LoadModelFromString(saved_compiled.c_str(), error.data(), error.size());
+    ASSERT_THAT(reloaded_compiled.get(), NotNull())
+        << c.input << ": " << error.data();
+    EXPECT_EQ(reloaded_compiled->vis.headlight.active, c.expected) << c.input;
+
+    mj_deleteModel(model);
+    mj_deleteSpec(spec);
+  }
+}
+
 }  // namespace
 }  // namespace mujoco

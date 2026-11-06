@@ -335,8 +335,10 @@ static void gjk(mjCCDStatus* status, mjCCDObj* obj1, mjCCDObj* obj2) {
     }
 
     // x_k has converged to minimum or is within tolerance for contact
+    // a 0-simplex can't seed EPA, only stop if it's at the origin
     mjtNum x_next_norm = norm3(x_next);
-    if (x_next_norm < min_norm || (k > 0 && mju_abs(x_next_norm - x_norm) < mjMINVAL)) {
+    mjtNum tol = n > 1 ? min_norm : mjMINVAL;
+    if (x_next_norm < tol || (k > 0 && mju_abs(x_next_norm - x_norm) < mjMINVAL)) {
       copy3(x_k, x_next);
       x_norm = x_next_norm;
       break;
@@ -966,52 +968,23 @@ static void rotmat(mjtNum R[9], const mjtNum axis[3]) {
 }
 
 
-// check convexity of 5-vertex hexahedron; if idx != NULL, reorder idx and return 1 if hexa, 0 if tetra
-static inline int hexaConvex(int idx[5], const mjtNum v1[3], const mjtNum v2[3], const mjtNum v3[3],
-                             const mjtNum v4[3], const mjtNum v5[3]) {
-  mjtNum diff45[3], diff41[3], diff42[3], diff43[3];
-  sub3(diff45, v5, v4);
-  sub3(diff41, v1, v4);
-  sub3(diff42, v2, v4);
-  sub3(diff43, v3, v4);
-  mjtNum vol1 = det3(diff41, diff42, diff45);
-  mjtNum vol2 = det3(diff42, diff43, diff45);
-  mjtNum vol3 = det3(diff43, diff41, diff45);
+// return nonzero if the ray v1v2 intersects the triangle v3v4v5 within tolerance
+static inline int rayTriangle(mjtNum det[3], const mjtNum v1[3], const mjtNum v2[3],
+                              const mjtNum v3[3], const mjtNum v4[3], const mjtNum v5[3],
+                              mjtNum tol) {
+  mjtNum tmp[3], diff12[3], diff13[3], diff14[3], diff15[3];
+  sub3(diff12, v2, v1);
+  sub3(diff13, v3, v1);
+  sub3(diff14, v4, v1);
+  sub3(diff15, v5, v1);
 
-  if ((vol1 >= 0 && vol2 >= 0 && vol3 >= 0) ||
-      (vol1 <= 0 && vol2 <= 0 && vol3 <= 0)) {
-    return 1;
-  }
-  if (!idx) {
-    return 0;
-  }
+  if (!det) det = tmp;
+  det[0] = det3(diff13, diff14, diff12);
+  det[1] = det3(diff14, diff15, diff12);
+  det[2] = det3(diff15, diff13, diff12);
 
-  // if [v4, v5] crosses outside a single equator edge, that edge pierces the triangle
-  // formed by the remaining equator vertex and (v4, v5); swap poles and equator
-  int i1 = idx[0], i2 = idx[1], i3 = idx[2], i4 = idx[3], i5 = idx[4];
-  if (vol1 > 0 && vol2 < -mjMINVAL && vol3 < -mjMINVAL) {
-    idx[0] = i3, idx[1] = i5, idx[2] = i4, idx[3] = i1, idx[4] = i2;
-    return 1;
-  }
-  if (vol2 > 0 && vol3 < -mjMINVAL && vol1 < -mjMINVAL) {
-    idx[0] = i1, idx[1] = i5, idx[2] = i4, idx[3] = i2, idx[4] = i3;
-    return 1;
-  }
-  if (vol3 > 0 && vol1 < -mjMINVAL && vol2 < -mjMINVAL) {
-    idx[0] = i2, idx[1] = i5, idx[2] = i4, idx[3] = i3, idx[4] = i1;
-    return 1;
-  }
-
-  // since vol1 + vol2 + vol3 < 0, when two volumes are positive the remaining negative
-  // volume selects the outer tetrahedron containing the 5th vertex in its interior
-  // (or the non-degenerate tetrahedron when a volume is near zero)
-  if (vol1 <= vol2 && vol1 <= vol3) {
-    idx[0] = i1, idx[1] = i2;
-  } else if (vol2 <= vol1 && vol2 <= vol3) {
-    idx[0] = i2, idx[1] = i3;
-  } else {
-    idx[0] = i3, idx[1] = i1;
-  }
+  if (det[0] >= tol && det[1] >= tol && det[2] >= tol) return 1;
+  if (det[0] <= -tol && det[1] <= -tol && det[2] <= -tol) return -1;
   return 0;
 }
 
@@ -1057,6 +1030,44 @@ static int polytope2(Polytope* pt, mjCCDStatus* status, mjCCDObj* obj1, mjCCDObj
   mjtNum* v4 = pt->verts[v4i].vert;
   mjtNum* v5 = pt->verts[v5i].vert;
 
+  // if equator (v3, v4, v5) does not enclose [v1, v2], expand across the non-enclosing edge
+  mjtNum det[3], diff2 = dot3(diff, diff);
+  mjtNum tol = mjMINVAL * diff2 * mju_sqrt(diff2);
+  if (!rayTriangle(det, v1, v2, v3, v4, v5, tol)) {
+    // find equator edge (va, vb) with smallest signed volume; [v1, v2] lies on or outside it
+    int vai = v5i, vbi = v3i, vci = v4i;
+    if (det[0] <= det[1] && det[0] <= det[2]) {
+      vai = v3i, vbi = v4i, vci = v5i;
+    } else if (det[1] <= det[0] && det[1] <= det[2]) {
+      vai = v4i, vbi = v5i, vci = v3i;
+    }
+
+    // outward normal d4 of plane (v1, v2, va, vb) pointing away from vc; a small 1e-3 tilt
+    // along [v1, v2] toward vc's pole breaks axis-aligned support ties without shifting the
+    // equatorial search direction
+    mjtNum *va = pt->verts[vai].vert, *vb = pt->verts[vbi].vert, *vc = pt->verts[vci].vert;
+    mjtNum edge[3], d4[3], d1c[3];
+    sub3(edge, vb, va);
+    sub3(d1c, vc, v1);
+    cross3(d4, edge, diff);
+    mjtNum sign = dot3(d1c, diff) >= 0.5 * diff2 ? 1e-3 : -1e-3;
+    addScl3(d4, d4, diff, sign * norm3(edge));
+
+    // query new support vertex v6 and pop it so it can overwrite a vertex in-place
+    int v6i = epaSupport(pt, obj1, obj2, d4, norm3(d4));
+    pt->nverts--;
+    Vertex v6 = pt->verts[v6i];
+
+    // replace whichever equator vertex allows the new triangle to enclose [v1, v2]
+    if (rayTriangle(NULL, v1, v2, v6.vert, vb, vc, tol)) {
+      pt->verts[vai] = v6;
+    } else if (rayTriangle(NULL, v1, v2, va, v6.vert, vc, tol)) {
+      pt->verts[vbi] = v6;
+    } else if (rayTriangle(NULL, v1, v2, va, vb, v6.vert, tol)) {
+      pt->verts[vci] = v6;
+    }
+  }
+
   // set the polytope center
   for (int i = 0; i < 3; i++) {
     pt->center[i] = 0.2 * (v1[i] + v2[i] + v3[i] + v4[i] + v5[i]);
@@ -1089,7 +1100,7 @@ static int polytope2(Polytope* pt, mjCCDStatus* status, mjCCDObj* obj1, mjCCDObj
   }
 
   // check hexahedron is convex
-  if (!hexaConvex(NULL, v3, v4, v5, v1, v2)) {
+  if (!rayTriangle(NULL, v1, v2, v3, v4, v5, 0)) {
     for (int i = 0; i < 6; i++) {
       if (pt->faces[i].dist2 < mjMINEPATOL2) {
         int vai = (i % 3 == 0) ? v3i : ((i % 3 == 1) ? v5i : v4i);
@@ -1173,6 +1184,40 @@ static int triPointIntersect(const mjtNum v1[3], const mjtNum v2[3], const mjtNu
 }
 
 
+// recover hexahedron or tetrahedron when ray v4v5 misses interior of triangle v1v2v3;
+// return 1 if hexahedron, 0 if tetrahedron
+static inline int recoverHexa(int idx[5], const mjtNum det[3]) {
+  int i1 = idx[0], i2 = idx[1], i3 = idx[2], i4 = idx[3], i5 = idx[4];
+
+  // if [v4, v5] crosses outside a single equator edge, that edge pierces the triangle
+  // formed by the remaining equator vertex and (v4, v5); swap poles and equator
+  if (det[0] > 0 && det[1] < -mjMINVAL && det[2] < -mjMINVAL) {
+    idx[0] = i3, idx[1] = i5, idx[2] = i4, idx[3] = i1, idx[4] = i2;
+    return 1;
+  }
+  if (det[1] > 0 && det[2] < -mjMINVAL && det[0] < -mjMINVAL) {
+    idx[0] = i1, idx[1] = i5, idx[2] = i4, idx[3] = i2, idx[4] = i3;
+    return 1;
+  }
+  if (det[2] > 0 && det[0] < -mjMINVAL && det[1] < -mjMINVAL) {
+    idx[0] = i2, idx[1] = i5, idx[2] = i4, idx[3] = i3, idx[4] = i1;
+    return 1;
+  }
+
+  // since det[0] + det[1] + det[2] < 0, when two volumes are positive the remaining negative
+  // volume selects the outer tetrahedron containing the 5th vertex in its interior
+  // (or the non-degenerate tetrahedron when a volume is near zero)
+  if (det[0] <= det[1] && det[0] <= det[2]) {
+    idx[0] = i1, idx[1] = i2;
+  } else if (det[1] <= det[0] && det[1] <= det[2]) {
+    idx[0] = i2, idx[1] = i3;
+  } else {
+    idx[0] = i3, idx[1] = i1;
+  }
+  return 0;
+}
+
+
 // create a polytope from a 2-simplex (returns 0 on success)
 static int polytope3(Polytope* pt, mjCCDStatus* status, mjCCDObj* obj1, mjCCDObj* obj2,
                      int allow_p2) {
@@ -1221,13 +1266,19 @@ static int polytope3(Polytope* pt, mjCCDStatus* status, mjCCDObj* obj1, mjCCDObj
   }
 
   // check convexity of the hexahedron formed by poles (v4, v5) and equator (v1, v2, v3)
-  int idx[5] = {v1i, v2i, v3i, v4i, v5i};
-  int is_hexa = hexaConvex(idx, v1, v2, v3, v4, v5);
-  v1 = pt->verts[idx[0]].vert;
-  v2 = pt->verts[idx[1]].vert;
-  v3 = pt->verts[idx[2]].vert;
-  v4 = pt->verts[idx[3]].vert;
-  v5 = pt->verts[idx[4]].vert;
+  mjtNum det[3];
+  int idx[5] = {v1i, v2i, v3i, v4i, v5i}, is_hexa = 1;
+
+  // if hexahedron is not convex, try to recover a new hexahedron or a tetrahedron
+  // from convex hull
+  if (!rayTriangle(det, v4, v5, v1, v2, v3, 0)) {
+    is_hexa = recoverHexa(idx, det);
+    v1 = pt->verts[idx[0]].vert;
+    v2 = pt->verts[idx[1]].vert;
+    v3 = pt->verts[idx[2]].vert;
+    v4 = pt->verts[idx[3]].vert;
+    v5 = pt->verts[idx[4]].vert;
+  }
 
   mjtNum dist0, dist1, dist2, dist3, dist4 = mjMAX_LIMIT, dist5 = mjMAX_LIMIT;
   if (is_hexa) {

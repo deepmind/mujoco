@@ -130,8 +130,8 @@ typedef struct mjData_ {
   int     nefmcon;           // packed length of the contact rank-1 rows
   int     nefmT;             // number of tendons with terms in the metric
   int     nefmA;             // number of actuators with terms in the metric
-  int     nefmdof;           // number of 3x3 blocks in the effective-metric preconditioner
-  int     nefmL;             // size of efm_L (9*nefmdof plus optional Cholesky or island tail)
+  int     nefmdof;           // number of covered vertex triples in the effective metric
+  int     nefmL;             // size of efm_L (packed Cholesky factor or island lists)
 
   // variable sizes, continued
   int     nY;                // number of non-zeros in constraint inverse inertia square root
@@ -423,7 +423,7 @@ typedef struct mjData_ {
   int*    efm_dofid;         // block k -> dof address of its vertex triple      (nefmdof x 1)
   int*    efm_con_ind;       // contact rows, packed [nnz, conid, colind...]     (nefmcon x 1)
   mjtNum* efm_con_val;       // contact rows, packed [scale, force, val...]      (nefmcon x 1)
-  mjtNum* efm_L;             // factored 3x3 blocks of M+K and packed tail data  (nefmL x 1)
+  mjtNum* efm_L;             // packed Cholesky factor of M+K or island lists    (nefmL x 1)
 
   //-------------------- arena-allocated: POSITION, VELOCITY, CONTROL/ACCELERATION dependent
 
@@ -533,7 +533,7 @@ typedef struct mjVisual_ {        // visualization options
     float ambient[3];             // ambient rgb (alpha=1)
     float diffuse[3];             // diffuse rgb (alpha=1)
     float specular[3];            // specular rgb (alpha=1)
-    int   active;                 // is headlight active
+    int   active;                 // is headlight active (0: no, 1: yes, 2: auto)
   } headlight;
 
   struct {                        // mapping
@@ -1590,6 +1590,145 @@ typedef enum mjrDrawMode_ {
   mjDRAW_MODE_SEGMENTATION_BY_ID,     // color objects based on segmentation id
   mjDRAW_MODE_SEGMENTATION_BY_COLOR,  // generate visually distinct colors using segmentation id
 } mjrDrawMode;
+typedef enum mjrQuality_ {
+  mjQUALITY_LOW = 0,
+  mjQUALITY_MEDIUM,
+  mjQUALITY_HIGH,
+  mjQUALITY_ULTRA,
+} mjrQuality;
+typedef enum mjrToneMapper_ {
+  mjTONE_MAPPER_LINEAR = 0,
+  mjTONE_MAPPER_PBR_NEUTRAL,
+  mjTONE_MAPPER_ACES,
+  mjTONE_MAPPER_ACES_LEGACY,
+  mjTONE_MAPPER_FILMIC,
+} mjrToneMapper;
+typedef enum mjrShadowType_ {
+  mjSHADOW_TYPE_NONE = 0,
+  mjSHADOW_TYPE_HARD,          // hard shadows (percentage-closer filtered)
+  mjSHADOW_TYPE_SOFT,          // soft shadows (percentage-closer soft shadows)
+} mjrShadowType;
+typedef enum mjrAmbientOcclusionType_ {
+  mjAMBIENT_OCCLUSION_TYPE_NONE = 0,
+  mjAMBIENT_OCCLUSION_TYPE_SCALABLE,      // scalable ambient occlusion (appoximate)
+  mjAMBIENT_OCCLUSION_TYPE_GROUND_TRUTH,  // ground truth based ambient occlusion (accurate)
+} mjrAmbientOcclusionType;
+typedef enum mjrDitheringType_ {
+  mjDITHERING_TYPE_NONE = 0,
+  mjDITHERING_TYPE_TEMPORAL,      // temporal dithering
+} mjrDitheringType;
+typedef struct mjrfShadowOpts_ {
+  int type;                       // shadow algorithm type [mjrShadowType]; defaults to hard
+} mjrfShadowOpts;
+typedef struct mjrfMaterialOpts_ {
+  int rgb_color_type;               // color space for material.color [mjrColorSpace]
+  mjtBool enable_textures;          // whether or not to display textures
+} mjrfMaterialOpts;
+typedef struct mjrfHeadlightOpts_ {
+  float strength;                    // headlight strength, non-positive = off
+} mjrfHeadlightOpts;
+typedef struct mjrfSkyboxOpts_ {
+  mjtBool enable;                 // enables skybox rendering, enabled by default
+} mjrfSkyboxOpts;
+typedef struct mjrfHazeOpts_ {
+  mjtBool enable;               // enables haze effects; enabled by default
+  float color[3];               // haze color; defaults to white
+  float ratio;                  // distance-to-horizon ratio covered by haze; defaults to 0.3
+  int slices;                   // number of slices for haze cone; defaults to 28
+} mjrfHazeOpts;
+typedef struct mjrfFogOpts_ {
+  mjtBool enable;              // enables fog effects
+  float color[3];              // fog color; defaults to white
+  float density;               // fog density; defaults to 0.1
+  float max_opacity;           // maximum opacity of the fog [0, 1]; defaults to 1.0
+  float distance;              // distance between camera and fog start
+  float cutoff;                // point at which fog is no longer rendered; defaults to infinity
+  float height;                // height of the fog floor
+  float height_falloff;        // fog dissipation with altitude; defaults to 1.0
+} mjrfFogOpts;
+typedef struct mjrfBloomOpts_ {
+  mjtBool enable;                // enables bloom effects
+  int quality;                   // quality [mjrQuality]
+  float strength;                // bloom strength [0, 1]; defaults to 0.1
+  int levels;                    // number of blur levels; defaults to 6
+  mjtBool lens_flare;            // render screen-space lens flare
+  mjtBool starburst;             // render starburst on lens flare
+} mjrfBloomOpts;
+typedef struct mjrfVignetteOpts_ {
+  mjtBool enable;                   // enables vignette effects
+  float color[4];                   // vignette color
+  float mid_point;                  // controls size of vignette [0, 1]; defaults to 0.5
+  float roundness;                  // shape rect (0), oval(0.5), circle(1) [0, 1]; defaults to 0.5
+  float feather;                    // softening amount [0, 1]; defaults to 0.5
+} mjrfVignetteOpts;
+typedef struct mjrfReflectionOpts_ {
+  mjtBool enable;                     // enables reflections on planes; enabled by default
+} mjrfReflectionOpts;
+typedef struct mjrfDepthOfFieldOpts_ {
+  mjtBool enable;                       // enables depth of field
+  float blur_strength;                  // strength of blurring [0, 1]; defaults to 1.0
+  float aspect_ratio;                   // aspect ratio of the circle of confusion; defaults to 1.0
+  float max_aperture_diameter;          // maximum aperture diameter; defaults to 0.01
+} mjrfDepthOfFieldOpts;
+typedef struct mjrfDitheringOpts_ {
+  int type;                          // dithering type [mjrDitheringType]; defaults to temporal
+} mjrfDitheringOpts;
+typedef struct mjrfColorGradingOpts_ {
+  int tone_mapper;                   // tone mapping [mjrToneMapper]; defaults to pbr neutral
+  int output_color_space;            // output color space [mjrColorSpace]; defaults to srgb
+  float exposure;                    // exposure adjustment, in stops
+  float night_adaptation;            // scotopic adaptation factor [0, 1]
+  float contrast;                    // contrast adjustment [0, 2]; defaults to 1.0
+  float vibrance;                    // vibrance adjustment [0, 2]; defaults to 1.0
+  float saturation;                  // saturation adjustment [0, 2]; defaults to 1.0
+  float temperature;                 // white balance temperature [-1, 1]
+  float tint;                        // white balance tint [-1, 1]
+  float out_red[3];                  // channel mixer red output [-2, 2]; defaults to [1, 0, 0]
+  float out_green[3];                // channel mixer green output [-2, 2]; defaults to [0, 1, 0]
+  float out_blue[3];                 // channel mixer blue output [-2, 2]; defaults to [0, 0, 1]
+  float shadows[4];                  // shadow color/luminance shift; defaults to [1, 1, 1, 0]
+  float midtones[4];                 // midtone color/luminance shift; defaults to [1, 1, 1, 0]
+  float highlights[4];               // highlight color/luminance shift; defaults to [1, 1, 1, 0]
+  float tonal_ranges[4];             // tonal range boundaries; defaults to [0, 0.333, 0.550, 1]
+  float slope[3];                    // ASC CDL slope; defaults to [1, 1, 1]
+  float offset[3];                   // ASC CDL offset; defaults to [0, 0, 0]
+  float power[3];                    // ASC CDL power; defaults to [1, 1, 1]
+  float shadow_gamma[3];             // gamma adjustment of shadows; defaults to [1, 1, 1]
+  float mid_point[3];                // shadows/highlights boundaries; defaults to [1, 1, 1]
+  float highlight_scale[3];          // scale of highlights; defaults to [1, 1, 1]
+} mjrfColorGradingOpts;
+typedef struct mjrfAntialiasingOpts_ {
+  mjtBool fxaa_enable;                  // enable fast-approximate antialiasing; enabled by default
+  mjtBool tsaa_enable;                  // enable temporal antialiasing
+  int msaa_samples;                     // number of multisample antialiasing samples, 0 to disable
+} mjrfAntialiasingOpts;
+typedef struct mjrfAmbientOcclusionOpts_ {
+  int type;                                 // type; scalable by default [mjrAmbientOcclusionType]
+  mjtBool ssct_enable;                      // whether or not to enable screen space cone tracing
+  float strength;                           // ambient occlusion intensity [0, 1]; defaults to 1.0
+  float power;                              // power/contrast; defaults to 0.3
+  int quality;                              // overall quality [mjrQuality]
+  int low_pass_filter;                      // smoothness quality; defaults to medium [mjrQuality]
+  int upsampling;                           // upsampling quality [mjrQuality]
+  float radius;                             // radius in meters [0, ~10]; defaults to 1.0
+  mjtBool bent_normals;                     // enables bent normals
+} mjrfAmbientOcclusionOpts;
+typedef struct mjrfRenderOpts_ {
+  mjrfAmbientOcclusionOpts ambient_occlusion;
+  mjrfAntialiasingOpts antialiasing;
+  mjrfBloomOpts bloom;
+  mjrfColorGradingOpts color_grading;
+  mjrfDepthOfFieldOpts depth_of_field;
+  mjrfDitheringOpts dithering;
+  mjrfFogOpts fog;
+  mjrfHazeOpts haze;
+  mjrfHeadlightOpts headlight;
+  mjrfMaterialOpts material;
+  mjrfReflectionOpts reflection;
+  mjrfShadowOpts shadow;
+  mjrfSkyboxOpts skybox;
+  mjrfVignetteOpts vignette;
+} mjrfRenderOpts;
 typedef struct mjrfRenderRequest_ {
   mjrfScene* scene;                  // scene to render
   mjrCamera camera;                  // camera (viewpoint) from which to render scene
@@ -1620,8 +1759,8 @@ typedef struct mjrfFrameStats_ {
   double frame_rate;              // frame rate, in frames per second
 } mjrfFrameStats;
 typedef struct mjrfTextureConfig_ {
-  int width;                         // texture width, or number of bytes for compressed data (e.g. KTX)
-  int height;                        // texture height, or 0 for compressed data (e.g. KTX)
+  int width;                         // texture width or num of bytes for compressed data (e.g. KTX)
+  int height;                        // texture height or 0 for compressed data (e.g. KTX)
   int format;                        // pixel format (e.g. RGB8, RGBA8, KTX, etc.) [mjrPixelFormat]
   int color_space;                   // color space (e.g. LINEAR, sRGB, etc.) [mjrColorSpace]
   int sampler_type;                  // texture sampler (e.g. 2D, cube, etc.) [mjrSamplerType]
@@ -1639,7 +1778,7 @@ typedef struct mjrfMeshConfig_ {
   mjrVertexAttribute attributes[mjMAX_VERTEX_ATTRIBUTES];  // per-vertex attribute information
   mjtBool interleaved;          // true if vertex attributes are interleaved
   int index_type;               // index data format (e.g. UINT16 or UINT32) [mjrIndexType]
-  int primitive_type;           // index interpretation (e.g. TRIANGLES, etc.) [mjrMeshPrimitiveType]
+  int primitive_type;           // index interpretation (e.g. TRIANGLES) [mjrMeshPrimitiveType]
 } mjrfMeshConfig;
 typedef struct mjrfMeshData_ {
   mjtSize num_vertices;         // number of vertices
@@ -1680,7 +1819,7 @@ typedef struct mjrfMaterial_ {
   float specular;               // specular factor [0, 1]; disabled if < 0
   float glossiness;             // glossiness factor [0, 1]; disabled if < 0
   float emissive;               // emissive/glow factor [0, 1]; disabled if < 0
-  float reflectance;            // blend factor for reflective surfaces [0, 1]; applies only to planes
+  float reflectance;            // blend factor for reflective surfaces [0, 1]; applies to planes
   mjtBool decor;                // ux/decor element: unlit, drawn on the decor layer, no shadows
   mjtBool selected;             // for "selected" ux elements, adds additional styling
   const mjrfTexture* color_texture;       // color/albedo texture (RGB8)
@@ -3716,6 +3855,21 @@ void mjrf_defaultContextConfig(mjrfContextConfig* config);
 mjrfContext* mjrf_createContext(const mjrfContextConfig* config);
 void mjrf_destroyContext(mjrfContext* ctx);
 void mjrf_getRendererInfo(mjrfContext* ctx, mjrRendererInfo* info);
+void mjrf_defaultShadowOpts(mjrfShadowOpts* opts);
+void mjrf_defaultMaterialOpts(mjrfMaterialOpts* opts);
+void mjrf_defaultHeadlightOpts(mjrfHeadlightOpts* opts);
+void mjrf_defaultSkyboxOpts(mjrfSkyboxOpts* opts);
+void mjrf_defaultHazeOpts(mjrfHazeOpts* opts);
+void mjrf_defaultFogOpts(mjrfFogOpts* opts);
+void mjrf_defaultBloomOpts(mjrfBloomOpts* opts);
+void mjrf_defaultVignetteOpts(mjrfVignetteOpts* opts);
+void mjrf_defaultReflectionOpts(mjrfReflectionOpts* opts);
+void mjrf_defaultDepthOfFieldOpts(mjrfDepthOfFieldOpts* opts);
+void mjrf_defaultDitheringOpts(mjrfDitheringOpts* opts);
+void mjrf_defaultColorGradingOpts(mjrfColorGradingOpts* opts);
+void mjrf_defaultAntialiasingOpts(mjrfAntialiasingOpts* opts);
+void mjrf_defaultAmbientOcclusionOpts(mjrfAmbientOcclusionOpts* opts);
+void mjrf_defaultRenderOpts(mjrfRenderOpts* opts);
 void mjrf_defaultRenderRequest(mjrfRenderRequest* request);
 void mjrf_defaultReadRequest(mjrfReadRequest* request);
 mjrfFrameHandle mjrf_render(mjrfContext* ctx, const mjrfRenderRequest* req, int nreq,

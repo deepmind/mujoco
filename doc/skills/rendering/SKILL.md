@@ -21,7 +21,9 @@ description: >-
 > reference files like [`../../python.rst`](../../python.rst) (`.. _PyRender:`),
 > [`../../XMLreference.rst`](../../XMLreference.rst), and
 > [`../../APIreference/functions.rst`](../../APIreference/functions.rst), grep
-> the literal `.. _Label:` anchor. Outside a checkout, fetch
+> the literal `.. _Label:` anchor. Outside a checkout, the same `doc/*.rst` tree
+> ships offline in `pip install mujoco` at
+> `pathlib.Path(mujoco.__file__).parent / 'doc'`; otherwise fetch
 > `https://mujoco.readthedocs.io/en/latest/<path>.html` (or `/en/stable/` for
 > released pages; `functions.rst` renders inside
 > `APIreference/APIfunctions.html`, and Sphinx anchors lowercase the label,
@@ -315,8 +317,7 @@ OpenGL, Vulkan, Metal, and WebGL support, arbitrary `mjrfRenderTarget` sizes
 -   [C Rendering API Functions](../../APIreference/functions.rst)
     (`.. _Visualization-api:`, `.. _OpenGLrendering:`,
     `.. _FilamentRenderingApi:`) and
-    [C++ Render/Record Samples](../../programming/samples.rst) (`.. _saRender:`,
-    `.. _saRecord:`)
+    [C++ Render Sample](../../programming/samples.rst) (`.. _saRender:`)
 
 ### Source Code & Model Examples
 

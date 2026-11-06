@@ -694,7 +694,7 @@ static void addContactGeoms(const mjModel* m, mjData* d, const mjvOption* vopt, 
             if (con->geom[k] >= 0) {
               movable[k] = (m->body_treeid[m->geom_bodyid[con->geom[k]]] >= 0);
             } else {
-              int body[729];
+              int body[mjMAXFLEXINTERPW];
               int nb = mj_contactBodyWeight(m, d, con, k, body, NULL);
               for (int j=0; j < nb; j++) {
                 if (m->body_treeid[body[j]] >= 0) {

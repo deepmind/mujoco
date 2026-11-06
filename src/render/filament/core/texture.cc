@@ -182,7 +182,8 @@ void Texture::Upload(const mjrfTextureData& data) {
         reinterpret_cast<const uint8_t*>(data.bytes), data.num_bytes);
     has_spherical_harmonics_ = true;
     bundle->getSphericalHarmonics(spherical_harmonics_);
-    const bool is_srgb = false;
+    auto format = ktxreader::Ktx1Reader::toTextureFormat(bundle->getInfo());
+    const bool is_srgb = ktxreader::Ktx1Reader::isSrgbTextureFormat(format);
     texture_ = ktxreader::Ktx1Reader::createTexture(engine_, bundle, is_srgb);
     config_.width = texture_->getWidth();
     config_.height = texture_->getHeight();

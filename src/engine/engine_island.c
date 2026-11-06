@@ -332,7 +332,7 @@ static int unionContactTrees(const mjModel* m, const mjData* d, int* parent,
   }
 
   // flex: get bodies of both sides
-  int body[729];  // 729 = 27*27, as in mj_contactJacobian
+  int body[2*mjMAXFLEXINTERPW];
   int nb = mj_contactBodyWeight(m, d, con, 0, body, NULL);
   nb += mj_contactBodyWeight(m, d, con, 1, body+nb, NULL);
 
@@ -501,7 +501,7 @@ static const char* unionConstraintTrees(const mjModel* m, const mjData* d, int* 
       if (con->exclude != 4) {
         continue;
       }
-      int body[729];  // 729 = 27*27, as in mj_contactJacobian
+      int body[2*mjMAXFLEXINTERPW];
       int nb = mj_contactBodyWeight(m, d, con, 0, body, NULL);
       nb += mj_contactBodyWeight(m, d, con, 1, body+nb, NULL);
 

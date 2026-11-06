@@ -154,14 +154,37 @@ void mj_local2GlobalQuat(mjData* d, mjtNum* xpos, mjtNum* xquat, mjtNum* xmat,
 MJAPI int mj_flexBodySimple(const mjModel* m, int body);
 MJAPI int mj_flexSimple(const mjModel* m, int f);
 
-// For standard flexes, gather J*vec in world coordinates; scatter adds scale*J'*vec to forces.
-// Requires kinematics and comPos, and current flexvert_xpos for general attachments.
+// For standard and interpolated flexes, gather J*vec in world coordinates; scatter adds
+// scale*J'*vec to forces. Requires kinematics and comPos, and current flexvert_xpos for general
+// attachments.
 MJAPI void mj_flexGather(const mjModel* m, mjData* d, int f, mjtNum* res, const mjtNum* vec);
 MJAPI void mj_flexScatter(const mjModel* m, mjData* d, int f, mjtNum* res,
                           const mjtNum* vec, mjtNum scale);
 
-// gather global node positions and velocities
+// gather global node positions and velocities (interior nodes of shell-mode flexes via TFI)
 MJAPI void mju_flexGatherState(const mjModel* m, const mjData* d, int f, mjtNum* xpos, mjtNum* vel);
+
+//---------------------------- flex interpolation -------------------------------------------------
+// Single implementation of the vertex interpolation of interpolated flexes (flex_interp != 0):
+// Lagrange basis of order |flex_interp| in the vertex's cell, with interior lattice nodes of
+// shell-mode flexes (flex_interp < 0) given by Coons TFI of the boundary nodes.
+
+// maximum number of lattice node weights of an interpolated point (mj_flexInterpWeights):
+// one quadratic cell (3x3x3) in shell mode touches at most 6*9 + 12*3 + 8 = 98 boundary nodes
+#define mjMAXFLEXINTERPW 98
+
+// world position of (global) lattice node n of interpolated flex f
+MJAPI void mj_flexNodePos(const mjModel* m, const mjData* d, int f, int n, mjtNum pos[3]);
+
+// vertex vectors (3*vertnum) of interpolated flex f from a lattice node vector whose interior nodes
+// of shell-mode flexes are complete (as from mju_flexGatherState)
+MJAPI void mj_flexInterpVert(const mjModel* m, int f, const mjtNum* nodevec, mjtNum* vertvec);
+
+// lattice node weights of a point at [0,1]^3 reference coordinates coord of interpolated flex f;
+// return number of weights (<= mjMAXFLEXINTERPW)
+MJAPI int mj_flexInterpWeights(const mjModel* m, int f, const mjtNum coord[3],
+                               int* node, mjtNum* weight);
+
 
 // extract 6D force:torque for one contact, in contact frame
 MJAPI void mj_contactForce(const mjModel* m, const mjData* d, int id, mjtNum result[6]);
@@ -190,6 +213,9 @@ MJAPI void mj_warning(mjData* d, int warning, int info);
 
 // the selected integrator performs the constraint solve in the effective metric
 int mj_isMetric(const mjModel* m);
+
+// does the active metric step populate the qH backbone factor (efm_diag or nefmK)
+int mj_effUseQH(const mjData* d);
 
 // do the tendon and actuator classes enter the metric (excluded under solver=PGS only;
 // noslip atop a primal solver keeps them)

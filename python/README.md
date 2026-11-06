@@ -1,20 +1,27 @@
-# MuJoCo Python Bindings
+# MuJoCo Core Python Bindings (`mujoco-core`)
 
 [![PyPI Python Version][pypi-versions-badge]][pypi]
 [![PyPI version][pypi-badge]][pypi]
 
-[pypi-versions-badge]: https://img.shields.io/pypi/pyversions/mujoco
-[pypi-badge]: https://badge.fury.io/py/mujoco.svg
-[pypi]: https://pypi.org/project/mujoco/
+[pypi-versions-badge]: https://img.shields.io/pypi/pyversions/mujoco-core
+[pypi-badge]: https://badge.fury.io/py/mujoco-core.svg
+[pypi]: https://pypi.org/project/mujoco-core/
 
-This package is the canonical Python bindings for the
+This package contains the core Python bindings (`mujoco-core`) for the
 [MuJoCo physics engine](https://github.com/google-deepmind/mujoco).
-These bindings are developed and maintained by Google DeepMind, and is kept
+These bindings are developed and maintained by Google DeepMind, and are kept
 up-to-date with the latest developments in MuJoCo itself.
 
-The `mujoco` package provides direct access to raw MuJoCo C API functions,
-structs, constants, and enumerations. Structs are provided as Python classes,
-with Pythonic initialization and deletion semantics.
+The `mujoco-core` package provides direct access to raw MuJoCo C API functions,
+structs, constants, and enumerations, with only `numpy` as a required runtime
+dependency. It is automatically installed when you install the full `mujoco`
+package (`pip install mujoco`), or can be installed standalone in minimal
+headless simulation environments (`pip install mujoco-core`). To switch an
+existing `mujoco` installation to `mujoco-core` only, run:
+
+```sh
+pip uninstall -y mujoco mujoco-studio && pip install --force-reinstall --no-deps mujoco-core
+```
 
 It is not the aim of this package to provide fully fledged
 scene/environment/game authoring API, as there are already a number of existing

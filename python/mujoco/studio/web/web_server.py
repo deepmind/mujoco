@@ -16,12 +16,14 @@
 This server runs on a background daemon thread with one asyncio loop on a single
 public port:
 
-  * Plain HTTP GET   serves static files (index.html, WASM, assets), /model.
+  * Plain HTTP GET   serves static files (index.html, WASM, assets), /model,
+                     and cached model bundles by content hash
+                     (/model?crc32=...), which browsers prefetch and cache.
   * WebSocket /ui    serves the bridge to the headless NetImgui client, which
                      connects over loopback TCP (see headless_ui.cc).
   * WebSocket /state serves the latest-wins state payload broadcast at ~60Hz
                      (see state_payload.h) as binary frames, and session roster
-                     updates as text frames.
+                     and model prefetch updates as text frames.
   * WebSocket /drop  receives models dragged onto the page (one binary frame per
                      file, controller only; see drop_handler).
 
@@ -37,6 +39,7 @@ _WS_CLOSE_SESSION_FULL.
 """
 
 import asyncio
+import collections
 import datetime
 import enum
 import functools
@@ -50,6 +53,7 @@ import sys
 import threading
 from typing import Any, Awaitable, Callable, cast
 import urllib.parse
+import zlib
 
 from websockets.asyncio.server import serve
 from websockets.asyncio.server import ServerConnection
@@ -85,17 +89,40 @@ _MAX_SPECTATORS_DEFAULT = 8
 
 # Controller-only message prefix carrying the new spectator limit.
 _MAX_SPECTATORS_PREFIX = "max_spectators="
+# Controller-only message prefix carrying the UI theme ("light", "dark", ...).
+_THEME_PREFIX = "theme="
 # Sent to the page whose control claim the controller slot is reserved for.
 _GRANT_MESSAGE = "grant"
 # Sent by the browser after applying each state payload (keep in sync:
-# web_client_session.cc). Flow control for the /state stream: at most one
-# payload is in flight per client, so a slow link carries the freshest state
-# it can instead of buffering seconds of stale payloads in the socket.
+# web_client_session.cc). Flow control for the /state stream: at most
+# _STATE_MAX_IN_FLIGHT payloads are in flight per client, so a slow link
+# carries the freshest state it can instead of buffering seconds of stale
+# payloads in the socket, while links with non-zero round-trip latency
+# (~20-50ms over reverse proxies) keep streaming smoothly at 60Hz.
 _STATE_ACK_MESSAGE = "state_ack"
+# Sent to every browser when it joins and whenever its list of cached model
+# bundles changes: "prefetch=<crc32>:<bytes>,<crc32>:<bytes>,..." in the order
+# to download them in (see WebServer.prefetch_line); a bare "prefetch=" means
+# there is nothing left to prefetch. Each bundle is fetched as
+# /model?crc32=<crc32> (see _serve_model).
+_PREFETCH_PREFIX = "prefetch="
+
+_THEMES = ("light", "dark", "classic")
+
+# Maximum unacknowledged /state payloads in flight per client before
+# send_payloads() waits for an ack and coalesces intermediate updates.
+# An 8-frame window keeps 60-240 FPS streaming across proxy RTTs without
+# letting slow connections build up multi-second queues.
+_STATE_MAX_IN_FLIGHT = 8
 
 # A lost ack must not stall the stream forever; after this long the next
 # payload is sent unacked.
 _STATE_ACK_TIMEOUT_SEC = 2.0
+
+# How many bytes of model bundles the server keeps for /model?crc32=... (the
+# current model always counts, and is never evicted). Plenty for a playlist of
+# scenes; a browser that asks for an evicted bundle falls back to /model.
+_MODEL_CACHE_BYTES_DEFAULT = 512 * 1024 * 1024
 
 # A control grant must arrive within this window, else it moves down the queue.
 _GRANT_EXPIRY_SEC = 5.0
@@ -378,7 +405,10 @@ def _run_server(
   static_root = os.path.realpath(static_dir) if static_dir else None
 
   def _http_headers(
-      content_type: str, content_length: int, cacheable: bool
+      content_type: str,
+      content_length: int,
+      cacheable: bool,
+      immutable: bool = False,
   ) -> Headers:
     headers = Headers()
     headers["Content-Type"] = content_type
@@ -390,19 +420,74 @@ def _run_server(
     if not cacheable:
       headers["Access-Control-Allow-Origin"] = "*"
       headers["Cache-Control"] = "no-store"
+    elif immutable:
+      # A content-addressed resource never changes: let the browser keep it.
+      headers["Access-Control-Allow-Origin"] = "*"
+      headers["Cache-Control"] = "public, max-age=31536000, immutable"
     return headers
+
+  def _serve_model(query_string: str) -> Response:
+    """Builds the response for GET /model and its query forms.
+
+    The current model, which changes on hot-swap and is never cached:
+
+      GET /model                                 -> full bundle bytes
+      GET /model?total_bytes                     -> {"total_bytes": <n>}
+      GET /model?offset_bytes=X&size_bytes=Y     -> bytes [X, X+Y)
+
+    A cached bundle by content hash (the crc32 stamped into state payloads),
+    which the browser prefetches and caches, with the same three forms. Its
+    bytes never change, so the response is marked immutable:
+
+      GET /model?crc32=N[&total_bytes|&offset_bytes=X&size_bytes=Y]
+
+    Args:
+      query_string: The request's query string, possibly empty.
+
+    Returns:
+      The HTTP response.
+    """
+    # total_bytes is a bare flag: keep blank values so it survives parsing.
+    params = urllib.parse.parse_qs(query_string, keep_blank_values=True)
+    if "crc32" in params:
+      try:
+        mjb_data = server.cached_model(int(params["crc32"][0]))
+      except (ValueError, TypeError):
+        return Response(400, "Bad Request", Headers(), b"bad crc32\n")
+      immutable = True
+    else:
+      mjb_data = server.mjb_data  # Snapshot to prevent race with update_model()
+      immutable = False
+    if not mjb_data:
+      return Response(404, "Not Found", Headers(), b"no model\n")
+
+    if "total_bytes" in params:
+      body = json.dumps({"total_bytes": len(mjb_data)}).encode()
+      headers = _http_headers(
+          "application/json", len(body), cacheable=immutable, immutable=True
+      )
+      return Response(200, "OK", headers, body)
+    if "offset_bytes" in params or "size_bytes" in params:
+      try:
+        offset = int(params.get("offset_bytes", [0])[0])
+        size = int(params.get("size_bytes", [0])[0])
+      except (ValueError, TypeError):
+        return Response(400, "Bad Request", Headers(), b"bad params\n")
+      if size <= 0 or offset < 0 or offset >= len(mjb_data):
+        return Response(400, "Bad Request", Headers(), b"bad range\n")
+      mjb_data = mjb_data[offset : min(offset + size, len(mjb_data))]
+    headers = _http_headers(
+        "application/octet-stream",
+        len(mjb_data),
+        cacheable=immutable,
+        immutable=True,
+    )
+    return Response(200, "OK", headers, mjb_data)
 
   def _serve_http(path: str) -> Response:
     """Builds the HTTP response for a non-WebSocket GET request."""
     if path == "/model":
-      mjb_data = server.mjb_data  # Snapshot to prevent race with update_model()
-      if not mjb_data:
-        return Response(404, "Not Found", Headers(), b"no model\n")
-      # The model changes on hot-swap; never serve a cached copy.
-      headers = _http_headers(
-          "application/octet-stream", len(mjb_data), cacheable=False
-      )
-      return Response(200, "OK", headers, mjb_data)
+      return _serve_model("")
 
     if static_root is None:
       return Response(503, "Service Unavailable", Headers(), b"no dist dir\n")
@@ -611,6 +696,12 @@ def _run_server(
               pass
           excess -= 1
         await broadcast_roster()
+      elif text.startswith(_THEME_PREFIX):
+        if sid != controller_sid:
+          return  # Only the controller drives the remote UI.
+        theme = text[len(_THEME_PREFIX) :]
+        if theme in _THEMES:
+          server.set_theme(theme)
 
     async def enforce_activity() -> None:
       """Releases a silent controller when someone waits; kicks silent tabs."""
@@ -812,12 +903,12 @@ def _run_server(
           return None
         return gen, data
 
-      # See _STATE_ACK_MESSAGE: one payload in flight at a time, so the latest
-      # wins read below always ships the freshest state a slow link can carry
-      # (the camera rides this stream, so socket buffering shows up directly as
-      # input latency).
+      # See _STATE_ACK_MESSAGE: at most _STATE_MAX_IN_FLIGHT payloads in flight
+      # at a time, so the latest-wins read below ships the freshest state a slow
+      # link can carry without stalling 60Hz ticks over ~20-50ms proxy RTTs.
       payload_acked = asyncio.Event()
       payload_acked.set()
+      in_flight = 0
       # Set initially so a browser that connects between payloads gets the
       # current one right away.
       state_ready = asyncio.Event()
@@ -825,7 +916,15 @@ def _run_server(
       state_waiters.add(state_ready)
 
       async def send_payloads() -> None:
+        nonlocal in_flight
         last_gen = 0
+        # The bundles this browser may prefetch: sent on join and again
+        # whenever its list changes (add_model wakes the stream like a payload
+        # does), so a late joiner and a long-running page see the same list.
+        # The page starts with an empty queue, so a bare line is only sent to
+        # clear a list it was sent earlier.
+        last_models_gen = -1
+        last_prefetch_line = _PREFETCH_PREFIX
         while True:
           await state_ready.wait()
           try:
@@ -833,26 +932,45 @@ def _run_server(
                 payload_acked.wait(), timeout=_STATE_ACK_TIMEOUT_SEC
             )
           except asyncio.TimeoutError:
-            pass  # Lost ack; send anyway rather than stalling forever.
+            in_flight = 0
+            payload_acked.set()  # Lost ack; send anyway rather than stalling forever.
           # Cleared before the read: an update racing with it sets the event
           # again and is picked up on the next pass instead of being lost.
           state_ready.clear()
+          models_gen = server.models_generation
+          if models_gen != last_models_gen:
+            last_models_gen = models_gen
+            prefetch_line = server.prefetch_line()
+            if prefetch_line != last_prefetch_line:
+              last_prefetch_line = prefetch_line
+              await ws.send(prefetch_line)
           result = read_state()
           if result is None or result[0] == last_gen:
             continue
           last_gen, data = result
-          payload_acked.clear()
+          in_flight += 1
+          if in_flight >= _STATE_MAX_IN_FLIGHT:
+            payload_acked.clear()
           await ws.send(data)
 
       async def recv_messages() -> None:
+        nonlocal in_flight
         async for message in ws:
+          if isinstance(message, bytes):
+            # The controller's locally moved camera, a ClientCameraMessage
+            # (state_payload.h) for the viewer thread to adopt.
+            if sid == controller_sid:
+              server.set_client_camera(message)
+            continue
           if isinstance(message, str):
             if message == _STATE_ACK_MESSAGE:
               # Deliberately does NOT count as liveness: acks keep flowing from
               # hidden tabs (WebSocket events are not requestAnimationFrame
               # gated), and the inactivity policy must still see those tabs as
               # silent.
-              payload_acked.set()
+              in_flight = max(0, in_flight - 1)
+              if in_flight < _STATE_MAX_IN_FLIGHT:
+                payload_acked.set()
               continue
             await handle_session_message(sid, message)
 
@@ -918,35 +1036,8 @@ def _run_server(
           )
         return None  # Proceed with the WebSocket handshake.
 
-      # Chunked model endpoint: the client fetches /model in parallel chunks
-      #
-      #   GET /model?total_bytes                 -> {"total_bytes": <n>}
-      #   GET /model?offset_bytes=X&size_bytes=Y -> bytes [X, X+Y)
-      #
-      # Full model endpoint: the client fetches /model in a single request
-      #
-      #   GET /model  -> full model bytes
-      mjb_data = server.mjb_data  # Snapshot to prevent race with update_model()
-      if path == "/model" and mjb_data and query_string:
-        params = urllib.parse.parse_qs(query_string)
-        if "total_bytes" in params or query_string == "total_bytes":
-          body = json.dumps({"total_bytes": len(mjb_data)}).encode()
-          headers = _http_headers(
-              "application/json", len(body), cacheable=False
-          )
-          return Response(200, "OK", headers, body)
-        try:
-          offset = int(params.get("offset_bytes", [0])[0])
-          size = int(params.get("size_bytes", [0])[0])
-        except (ValueError, TypeError):
-          return Response(400, "Bad Request", Headers(), b"bad params\n")
-        if size <= 0 or offset < 0 or offset >= len(mjb_data):
-          return Response(400, "Bad Request", Headers(), b"bad range\n")
-        chunk = mjb_data[offset : min(offset + size, len(mjb_data))]
-        headers = _http_headers(
-            "application/octet-stream", len(chunk), cacheable=False
-        )
-        return Response(200, "OK", headers, chunk)
+      if path == "/model":
+        return _serve_model(query_string)
 
       return _serve_http(path)
 
@@ -1138,6 +1229,8 @@ class WebServer:
   called at any rate from the viewer thread; browsers only ever see the newest
   payload.  The server thread is started once and persists.  When the model
   changes, update_model() swaps the bytes served at /model, without any restart.
+  Models that may be shown soon can be announced with add_model(): browsers
+  download them in the background and switch to them without a download.
 
   Run the simulation with the web viewer, then visit the printed URL.
   """
@@ -1177,6 +1270,26 @@ class WebServer:
     self._state_payload: bytes | None = None
     self._state_generation: int = 0
     self._wake_state_streams: Callable[[], Any] | None = None
+    self._client_camera: bytes | None = None
+    self._pending_theme: str | None = None
+
+    # Model bundles by crc32 (see _serve_model), least recently used first,
+    # including the current model. add_model() announces bundles browsers may
+    # prefetch; the announced ones that have not become current since are kept
+    # in announcement order (latest last). The generation bumps whenever the
+    # prefetch line changes so the /state streams know to resend it.
+    self.model_cache_bytes = _MODEL_CACHE_BYTES_DEFAULT
+    self._models_lock = threading.Lock()
+    self._models: collections.OrderedDict[int, bytes] = (
+        collections.OrderedDict()
+    )
+    self._announced: collections.OrderedDict[int, None] = (
+        collections.OrderedDict()
+    )
+    self._models_generation: int = 0
+    self._current_crc32: int = 0
+    if mjb_data:
+      self.update_model(mjb_data)
 
     self._stop_event = threading.Event()
     self._thread: threading.Thread | None = None
@@ -1189,6 +1302,10 @@ class WebServer:
     with self._state_lock:
       self._state_payload = payload
       self._state_generation += 1
+    self._wake()
+
+  def _wake(self) -> None:
+    """Wakes the /state streams; a no-op while the server thread is down."""
     # Hop to the server thread's event loop to wake the /state streams; unset
     # while the server thread is not running.
     wake = self._wake_state_streams
@@ -1198,9 +1315,136 @@ class WebServer:
       except RuntimeError:
         pass  # The server's event loop has just closed.
 
-  def update_model(self, mjb_data: bytes) -> None:
-    """Swaps the model bytes served at /model. No server restart needed."""
+  def update_model(self, mjb_data: bytes, crc32: int | None = None) -> None:
+    """Makes ``mjb_data`` the current model, served at /model.
+
+    The bundle also joins the cache under its crc32, so late-joining browsers
+    can prefetch it and nothing evicts it while it is current.
+
+    Args:
+      mjb_data: The model bundle to serve.
+      crc32: The bundle's crc32 (which must match the one stamped into state
+        payloads), or None to compute it here.
+    """
     self.mjb_data = mjb_data
+    self._add_model(mjb_data, crc32, current=True)
+
+  def add_model(self, mjb_data: bytes, crc32: int | None = None) -> int:
+    """Caches a bundle at /model?crc32=... and tells browsers to prefetch it.
+
+    Browsers download announced bundles in announcement order; announcing a
+    bundle again moves it to the end. The least recently used bundles (other
+    than the current model) are dropped once the cache exceeds
+    model_cache_bytes, where adding, switching to, and serving a bundle all
+    count as uses.
+
+    Args:
+      mjb_data: The model bundle.
+      crc32: The bundle's crc32, or None to compute it here.
+
+    Returns:
+      The bundle's crc32.
+    """
+    return self._add_model(mjb_data, crc32, current=False)
+
+  def _add_model(
+      self, mjb_data: bytes, crc32: int | None, current: bool
+  ) -> int:
+    """Caches a bundle, making it the current model if ``current``."""
+    if crc32 is None:
+      crc32 = zlib.crc32(mjb_data)
+    with self._models_lock:
+      before = self._prefetch_items()
+      if crc32 in self._models:
+        self._models.move_to_end(crc32)  # Most recently used.
+      else:
+        self._models[crc32] = mjb_data
+      if current:
+        self._current_crc32 = crc32
+        self._announced.pop(crc32, None)  # On screen: no longer upcoming.
+      else:
+        self._announced[crc32] = None
+        self._announced.move_to_end(crc32)  # Latest announcement last.
+      total = sum(len(data) for data in self._models.values())
+      for old_crc32 in list(self._models):
+        if total <= self.model_cache_bytes:
+          break
+        if old_crc32 not in (crc32, self._current_crc32):
+          total -= len(self._models.pop(old_crc32))
+          self._announced.pop(old_crc32, None)
+      changed = self._prefetch_items() != before
+      if changed:
+        self._models_generation += 1
+    if changed:
+      self._wake()
+    return crc32
+
+  def _prefetch_items(self) -> list[tuple[int, int]]:
+    """Returns (crc32, size) of the bundles browsers may prefetch, in order.
+
+    Upcoming models (announced and not shown since) come first, in
+    announcement order, followed by previously shown models, most recently
+    used first. The current model is left out: every browser already has it,
+    or is about to fetch it because its state payloads name it. Call with
+    _models_lock held.
+    """
+    current = self._current_crc32
+    upcoming = [c for c in self._announced if c != current]
+    shown = [
+        c
+        for c in reversed(self._models)
+        if c != current and c not in self._announced
+    ]
+    return [(c, len(self._models[c])) for c in upcoming + shown]
+
+  def cached_model(self, crc32: int) -> bytes | None:
+    """Returns the cached bundle with this crc32, or None.
+
+    Serving a bundle counts as a use for eviction (see add_model).
+    """
+    with self._models_lock:
+      data = self._models.get(crc32)
+      if data is not None:
+        self._models.move_to_end(crc32)
+      return data
+
+  @property
+  def models_generation(self) -> int:
+    """Counts changes to the prefetch line; see prefetch_line()."""
+    return self._models_generation
+
+  def prefetch_line(self) -> str:
+    """Returns the prefetch line for browsers; see _PREFETCH_PREFIX.
+
+    Lists the bundles in the order to download them (see _prefetch_items); a
+    bare "prefetch=" while nothing but the current model is cached.
+    """
+    with self._models_lock:
+      items = self._prefetch_items()
+    return _PREFETCH_PREFIX + ",".join(f"{c}:{n}" for c, n in items)
+
+  def set_theme(self, theme: str) -> None:
+    """Records a UI theme picked by the controller browser."""
+    with self._state_lock:
+      self._pending_theme = theme
+
+  def pop_theme(self) -> str | None:
+    """Returns and clears any UI theme picked by the controller browser."""
+    with self._state_lock:
+      theme = self._pending_theme
+      self._pending_theme = None
+      return theme
+
+  def set_client_camera(self, camera: bytes) -> None:
+    """Records the latest camera sent by the controlling browser."""
+    with self._state_lock:
+      self._client_camera = camera
+
+  def take_client_camera(self) -> bytes | None:
+    """Returns the camera the controller last sent, once; else None."""
+    with self._state_lock:
+      camera, self._client_camera = self._client_camera, None
+    return camera
 
   def start(self) -> None:
     """Starts the server on a background daemon thread."""

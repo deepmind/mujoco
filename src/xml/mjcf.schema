@@ -754,7 +754,7 @@ element headlight : mjVisual (field=headlight) {
   ambient            : float[3] = {0.1, 0.1, 0.1} (dim=1)
   diffuse            : float[3] = {0.4, 0.4, 0.4} (dim=1)
   specular           : float[3] = {0.5, 0.5, 0.5} (dim=1)
-  active             : int = 1
+  active             : enum<FalseTrueAuto> = auto (reading=custom)
 }
 
 element map : mjVisual (field=map) {
