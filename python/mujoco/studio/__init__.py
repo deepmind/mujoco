@@ -19,7 +19,7 @@ import sys as _sys
 
 from mujoco._version import __version__ as _core_version
 
-__version__ = '4.0.0'
+__version__ = '4.0.1'
 if _core_version != __version__:
   raise ImportError(
       f"Version mismatch between 'mujoco-studio' ({__version__}) and "

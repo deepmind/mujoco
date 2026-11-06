@@ -53,7 +53,7 @@ elif _SYSTEM == 'Darwin':
         'machine. This is not supported by MuJoCo. Please install and run a '
         'native, arm64 build of Python.')
 
-_EXPECTED_VERSION = '4.0.0'
+_EXPECTED_VERSION = '4.0.1'
 try:
   from mujoco._version import __version__ as _core_version
   import mujoco._specs

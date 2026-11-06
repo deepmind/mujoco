@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mujoco-studio"
-version = "4.0.0"
+version = "4.0.1"
 authors = [
     {name = "Google DeepMind", email = "mujoco@deepmind.com"},
 ]
@@ -25,7 +25,7 @@ classifiers = [
     "Topic :: Scientific/Engineering",
 ]
 dependencies = [
-    "mujoco-core==4.0.0",
+    "mujoco-core==4.0.1",
     "numpy",
     "websockets>=13",
 ]
@@ -36,9 +36,9 @@ mujoco-studio = "mujoco.studio.viewer:main"
 
 [project.urls]
 Homepage = "https://github.com/google-deepmind/mujoco"
-Documentation = "https://mujoco.readthedocs.io/en/4.0.0"
+Documentation = "https://mujoco.readthedocs.io/en/4.0.1"
 Repository = "https://github.com/google-deepmind/mujoco"
-Changelog = "https://mujoco.readthedocs.io/en/4.0.0/changelog.html"
+Changelog = "https://mujoco.readthedocs.io/en/4.0.1/changelog.html"
 
 [tool.setuptools]
 include-package-data = false

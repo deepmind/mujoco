@@ -14,7 +14,7 @@
 
 module(
     name = "mujoco",
-    version = "4.0.0",
+    version = "4.0.1",
     # REPO.bazel uses ignore_directories(), which was added in Bazel 8.0.
     bazel_compatibility = [">=8.0.0"],
 )
