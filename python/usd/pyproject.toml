@@ -33,6 +33,11 @@ dependencies = [
 ]
 dynamic = ["readme"]
 
+[project.optional-dependencies]
+test = [
+    "absl-py",
+]
+
 [project.urls]
 Homepage = "https://github.com/google-deepmind/mujoco"
 Documentation = "https://mujoco.readthedocs.io/en/4.0.1"

@@ -10,6 +10,12 @@
 pip install mujoco-usd
 ```
 
+To also install `absl-py` for running the OpenUSD Python tests:
+
+```bash
+pip install "mujoco-usd[test]"
+```
+
 ## Version Alignment
 
 `mujoco-usd` pins the exact matching version of `mujoco-core`
