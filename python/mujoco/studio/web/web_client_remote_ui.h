@@ -14,6 +14,7 @@
 
 // The NetImgui client side of the web viewer. Receives the headless Studio UI
 // (draw frames/textures) over the /ui WebSocket and replies with browser input.
+// Every WebSocket message carries one NetImgui command.
 
 #ifndef MUJOCO_PYTHON_STUDIO_WEB_WEB_CLIENT_REMOTE_UI_H_
 #define MUJOCO_PYTHON_STUDIO_WEB_WEB_CLIENT_REMOTE_UI_H_
@@ -26,10 +27,8 @@
 #include <vector>
 
 #include <imgui.h>
-#include <NetImgui_Api.h>
 #include <NetImgui_CmdPackets.h>
-#include <NetImgui_Network.h>
-#include "google/network_status.h"
+#include "web_client_websocket.h"
 
 namespace mujoco::studio {
 
@@ -41,13 +40,12 @@ struct NetImguiDeleter {
   }
 };
 
-// The browser side of the streamed ImGui UI: connects to the UI WebSocket,
-// receives NetImgui draw frames and textures from the Python side, assembles
-// them into ImGui draw data for rendering, and sends the browser's input back.
+// The browser side of the streamed ImGui UI: talks to the Python side over the
+// UI WebSocket, assembles the NetImgui draw frames and textures it receives
+// into ImGui draw data for rendering, and sends the browser's input back.
 class RemoteUi {
  public:
-  using SocketInfo = NetImgui::Internal::Network::SocketInfo;
-  using ReadyState = NetImgui::Internal::Network::ReadyState;
+  using ReadyState = WebSocket::ReadyState;
   using ClientTextureID = NetImgui::Internal::ClientTextureID;
 
   // The renderer-facing callbacks of the link; the app implements them once.
@@ -69,14 +67,14 @@ class RemoteUi {
   explicit RemoteUi(Callbacks& callbacks) : callbacks_(callbacks) {}
   ~RemoteUi() { Shutdown(); }
 
-  // (Re)connects to the UI WebSocket. Disconnects any existing socket first.
-  void Connect(const std::string& url);
+  // Starts talking over `socket` (see OpenWebSocket), a new connection to the
+  // UI WebSocket, closing any previous one.
+  void Connect(std::unique_ptr<WebSocket> socket);
 
   bool HasSocket() const { return socket_ != nullptr; }
 
   // Current socket state; browser WebSockets connect and close
-  // asynchronously, so this can differ from HasSocket() (see
-  // google/network_status.h).
+  // asynchronously, so this can differ from HasSocket().
   ReadyState ConnectionState() const;
 
   // The WebSocket close code once the socket has closed, else 0.
@@ -92,13 +90,13 @@ class RemoteUi {
     screen_area_[1] = height;
   }
 
-  // Sends the CmdVersion handshake when the socket is newly open, then drains
-  // all incoming commands (draw frames, textures, clipboard) for this frame.
+  // Sends the CmdVersion handshake when the socket is newly open, then
+  // processes all the commands (draw frames, textures, clipboard) received
+  // since the last call.
   void ReceiveAndProcessCommands(int frame);
 
-  // Captures ImGui input and sends it to the remote client. Must run before
-  // ImGui::EndFrame(), because EndFrame() clears the io.InputQueueCharacters
-  // queue this reads (note that ImGui::Render() calls EndFrame() implicitly).
+  // Captures ImGui input and sends it to the remote client. Call before
+  // ImGui::EndFrame() or ImGui::Render().
   void CaptureAndSendInput();
 
   // Invalidates cached GPU texture IDs and re-uploads all CPU-buffered
@@ -119,6 +117,7 @@ class RemoteUi {
     return bytes;
   }
 
+  // Processes one received command; the draw frame one takes ownership of it.
   void ProcessCmdDrawFrame(NetImgui::Internal::CmdDrawFrame* cmd);
   void ProcessCmdTexture(NetImgui::Internal::CmdTexture* cmd);
   // Puts text the remote client copied on this browser's clipboard, or opens
@@ -126,6 +125,9 @@ class RemoteUi {
   void ProcessCmdClipboard(NetImgui::Internal::CmdClipboard* cmd);
 
  private:
+  // Processes one received WebSocket message: one NetImgui command.
+  void ProcessMessage(WebSocket::BytesView message);
+
   void RebuildDrawData();
 
   Callbacks& callbacks_;
@@ -134,38 +136,23 @@ class RemoteUi {
 
   // --- Connection-scoped state, reset on every (re)connect. ----------------
 
-  SocketInfo* socket_ = nullptr;
-  bool handshake_sent_ = false;
-  bool was_connected_ = false;
-  ReadyState last_state_ = ReadyState::kDisconnected;
-  NetImgui::Internal::PendingCom pending_receive_;
-  NetImgui::Internal::CmdPendingRead cmd_pending_read_;
-
-  // When true, the next CmdInput asks the client to send one uncompressed
-  // draw frame (CmdInput::mCompressionSkip). Set on (re)connect and whenever
-  // a delta frame arrives whose reference frame we don't have — without it,
-  // a browser joining mid-stream drops every delta-compressed frame forever
-  // and the remote UI never appears. Mirrors mbCompressionSkipOncePending in
-  // NetImguiServer RemoteClient.
-  bool request_keyframe_ = true;
-
   std::unique_ptr<NetImgui::Internal::CmdDrawFrame, NetImguiDeleter>
       last_uncompressed_frame_;
+  std::unique_ptr<WebSocket> socket_;
+  ReadyState last_state_ = ReadyState::kDisconnected;
+  bool handshake_sent_ = false;
+  // When true, the next CmdInput requests an uncompressed keyframe.
+  bool request_keyframe_ = true;
 
   // --- Session state. -------------------------------------------------------
 
-  // The latest remote frame as Dear ImGui draw data, with one ImDrawList per
-  // remote window (an ImDrawData only points at lists owned elsewhere). The
-  // lists are reused from frame to frame while their windows stay open.
   ImDrawData remote_draw_data_;
   std::vector<std::unique_ptr<ImDrawList>> remote_draw_lists_;
   std::unordered_map<ClientTextureID, uintptr_t> texture_map_;
 
-  // CPU-side texture cache so partial updates from NetImgui can be patched into
-  // these buffers before re-uploading the full texture (partial updates into
-  // GPU textures are not supported by Filament).
+  // CPU-side RGBA mirror of each remote texture for applying sub-rect updates.
   struct TextureEntry {
-    std::vector<uint8_t> pixels;  // Full RGBA pixel data
+    WebSocket::Bytes pixels;
     uint32_t width = 0;
     uint32_t height = 0;
   };

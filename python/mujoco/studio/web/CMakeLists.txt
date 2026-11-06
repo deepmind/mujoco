@@ -28,6 +28,8 @@ if(EMSCRIPTEN)
     web_client_remote_ui.h
     web_client_session.cc
     web_client_session.h
+    web_client_websocket.cc
+    web_client_websocket.h
     state_payload.cc
     state_payload.h
   )

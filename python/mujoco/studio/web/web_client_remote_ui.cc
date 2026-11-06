@@ -18,7 +18,9 @@
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <limits>
 #include <memory>
+#include <span>
 #include <string>
 #include <unordered_map>
 #include <utility>
@@ -27,9 +29,8 @@
 #include <imgui.h>
 #include "studio/ux/imgui_widgets.h"
 #include <NetImgui_CmdPackets.h>
-#include <NetImgui_Network.h>
 #include "google/logging.h"
-#include "google/network_status.h"
+#include "web_client_websocket.h"
 
 #if defined(__EMSCRIPTEN__)
 #include <emscripten/em_js.h>
@@ -51,10 +52,24 @@ void OpenBrowserUrl(const char* url) {}
 #endif  // defined(__EMSCRIPTEN__)
 
 namespace mujoco::studio {
-
-using namespace NetImgui::Internal;
-
 namespace {
+
+using ::NetImgui::Internal::ArrayCount;
+using ::NetImgui::Internal::CmdClipboard;
+using ::NetImgui::Internal::CmdDrawFrame;
+using ::NetImgui::Internal::CmdHeader;
+using ::NetImgui::Internal::CmdInput;
+using ::NetImgui::Internal::CmdTexture;
+using ::NetImgui::Internal::CmdVersion;
+using ::NetImgui::Internal::DecompressCmdDrawFrame;
+using ::NetImgui::Internal::ImguiDraw;
+using ::NetImgui::Internal::ImguiDrawGroup;
+using ::NetImgui::Internal::ImguiVert;
+using ::NetImgui::Internal::netImguiDelete;
+using ::NetImgui::Internal::netImguiDeleteSafe;
+using ::NetImgui::Internal::netImguiSizedNew;
+using ::NetImgui::Internal::PendingCom;
+using ::NetImgui::Internal::StringCopy;
 
 // Delta-compress the GUI stream (relayed to the client via CmdInput).
 constexpr bool kUseCompression = true;
@@ -64,6 +79,19 @@ constexpr bool kUseCompression = true;
 // own, and the clipboard is the only text channel NetImgui offers it.
 constexpr char kOpenUrlPrefix[] = "\x01OPEN_URL:";
 
+// Converts `value` to the integer type T, clamped to T's range. Casting an
+// out-of-range float is undefined (and can trap in WebAssembly), e.g. Dear
+// ImGui's "no mouse" position, -FLT_MAX.
+template <typename T>
+T ClampToInt(float value) {
+  constexpr float kMin = static_cast<float>(std::numeric_limits<T>::min());
+  constexpr float kMax = static_cast<float>(std::numeric_limits<T>::max());
+  if (!(value > kMin)) return std::numeric_limits<T>::min();  // Also NaN.
+  if (value >= kMax) return std::numeric_limits<T>::max();
+  return static_cast<T>(value);
+}
+
+// Logs details when a draw command references a texture ID with no GPU handle.
 void LogUnmappedTexture(
     RemoteUi::ClientTextureID client_tex_id, size_t map_size, uint32_t draw_idx,
     const std::unordered_map<RemoteUi::ClientTextureID, uintptr_t>& tex_map) {
@@ -77,54 +105,19 @@ void LogUnmappedTexture(
   VLOG(1, "  map keys:%s", keys_str.c_str());
 }
 
-void LogCmdReceived(CmdHeader::eCommands cmd_type, uint32_t cmd_size,
-                    int draw_frames, int textures,
-                    const PendingCom& pending_receive) {
-  if (cmd_type == CmdHeader::eCommands::Version) {
-    if (cmd_size < sizeof(CmdVersion)) {
-      LOG(Warning, "Received truncated CmdVersion (size=%u)", cmd_size);
-      return;
-    }
-    const CmdVersion* ver =
-        reinterpret_cast<const CmdVersion*>(pending_receive.pCommand);
-    LOG(Info,
-        "Received CmdVersion from client: name='%s', version=%d, wchar_size=%d",
-        ver->mClientName, static_cast<int>(ver->mVersion), ver->mWCharSize);
-  } else if (cmd_type == CmdHeader::eCommands::DrawFrame) {
-    VLOG(2, "Received DrawFrame #%d (size=%u)", draw_frames, cmd_size);
-  } else if (cmd_type == CmdHeader::eCommands::Texture) {
-    VLOG(2, "Received Texture #%d (size=%u)", textures, cmd_size);
-  } else if (cmd_type == CmdHeader::eCommands::Background) {
-    VLOG(2, "Received Background cmd (size=%u)", cmd_size);
-  } else if (cmd_type == CmdHeader::eCommands::Clipboard) {
-    VLOG(2, "Received Clipboard cmd (size=%u)", cmd_size);
-  } else if (cmd_type != CmdHeader::eCommands::Count &&
-             cmd_type != CmdHeader::eCommands::Input) {
-    VLOG(2, "Received UNKNOWN cmd: type=%d, size=%u",
-         static_cast<int>(cmd_type), cmd_size);
-  }
-}
-
 }  // namespace
 
-void RemoteUi::Connect(const std::string& url) {
-  if (socket_) {
-    Network::Disconnect(socket_);
-    socket_ = nullptr;
-  }
-
-  // The port argument is unused when a full URL is passed.
-  LOG(Info, "Connecting to WebSocket at %s", url.c_str());
-  socket_ = Network::Connect(url.c_str(), 0);
-  LOG(Info, "Network::Connect returned: socket=%p",
-      static_cast<void*>(socket_));
+void RemoteUi::Connect(std::unique_ptr<WebSocket> socket) {
+  socket_ = std::move(socket);
+  handshake_sent_ = false;
+  last_state_ = ReadyState::kDisconnected;
 }
 
 RemoteUi::ReadyState RemoteUi::ConnectionState() const {
-  return Network::GetReadyState(socket_);
+  return socket_ ? socket_->GetReadyState() : ReadyState::kDisconnected;
 }
 
-int RemoteUi::CloseCode() const { return Network::GetCloseCode(socket_); }
+int RemoteUi::CloseCode() const { return socket_ ? socket_->CloseCode() : 0; }
 
 void RemoteUi::ReceiveAndProcessCommands(int frame) {
   if (!socket_) return;
@@ -132,158 +125,81 @@ void RemoteUi::ReceiveAndProcessCommands(int frame) {
   const ReadyState state = ConnectionState();
   if (last_state_ != state) {
     LOG(Info, "WebSocket status changed: '%s' -> '%s' (frame %d)",
-        Network::ReadyStateName(last_state_), Network::ReadyStateName(state),
-        frame);
+        ReadyStateName(last_state_), ReadyStateName(state), frame);
     last_state_ = state;
   }
-  VLOG(1,
-       "Frame %d: status='%s', handshake=%s, cmds=%d, draws=%d, textures=%d, "
-       "has_draw_data=%s",
-       frame, Network::ReadyStateName(state),
-       handshake_sent_ ? "sent" : "not_sent", total_cmds_received_,
-       draw_frames_received_, textures_received_,
-       remote_draw_data_.Valid ? "yes" : "no");
 
-  if (state == ReadyState::kOpen) {
-    if (!handshake_sent_) {
-      CmdVersion cmd_version;
-      StringCopy(cmd_version.mClientName, "MuJoCo Web Viewer");
-      LOG(Info,
-          "Sending CmdVersion handshake: size=%u, type=%d, version=%d, "
-          "wchar_size=%d, name='%s'",
-          cmd_version.mSize, static_cast<int>(cmd_version.mType),
-          static_cast<int>(cmd_version.mVersion), cmd_version.mWCharSize,
-          cmd_version.mClientName);
+  if (state == ReadyState::kOpen && !handshake_sent_) {
+    CmdVersion cmd_version;
+    StringCopy(cmd_version.mClientName, "MuJoCo Web Viewer");
+    if (socket_->SendBinary(std::as_bytes(std::span(&cmd_version, 1)))) {
+      LOG(Info, "Sent the CmdVersion handshake (version=%d, wchar_size=%d)",
+          static_cast<int>(cmd_version.mVersion), cmd_version.mWCharSize);
+      handshake_sent_ = true;
+      // Fresh connection: the client may resume delta compression against
+      // a frame from a previous session; ask for an uncompressed keyframe.
+      request_keyframe_ = true;
+    }
+  }
 
-      PendingCom pending_send;
-      pending_send.pCommand = &cmd_version;
-      pending_send.SizeCurrent = 0;
+  // Everything received, in order: a compressed draw frame needs the one
+  // before it, and the draw frames need the textures sent before them.
+  for (const WebSocket::Bytes& message : socket_->TakeMessages()) {
+    ProcessMessage(message);
+  }
+  VLOG(1, "Frame %d: status='%s', cmds=%d, draws=%d, textures=%d", frame,
+       ReadyStateName(state), total_cmds_received_, draw_frames_received_,
+       textures_received_);
+}
 
-      int send_attempts = 0;
-      while (!pending_send.IsDone() && !pending_send.IsError()) {
-        const size_t before = pending_send.SizeCurrent;
-        Network::DataSend(socket_, pending_send);
-        send_attempts++;
-        if (pending_send.SizeCurrent == before) {
-          // No progress: the socket already reads OPEN (from emscripten's
-          // ready state) but the send backend is not ready yet, because the
-          // open callback that sets mConnected has not run. DataSend then
-          // returns with neither progress nor error, so this loop would spin
-          // the browser's main thread forever. Stop and retry on a later
-          // frame instead (handshake_sent_ stays false below).
-          break;
-        }
+void RemoteUi::ProcessMessage(WebSocket::BytesView message) {
+  bytes_accum_ += message.size();
+  CmdHeader header(CmdHeader::eCommands::Count, 0);
+  if (message.size() >= sizeof(header)) {
+    std::memcpy(static_cast<void*>(&header), message.data(), sizeof(header));
+  }
+  if (message.size() < sizeof(header) || header.mSize != message.size()) {
+    LOG(Warning, "Dropping a %zu-byte UI message that is not one command",
+        message.size());
+    return;
+  }
+  ++total_cmds_received_;
+
+  // Commands are read in place, which needs NetImgui's 8-byte alignment.
+  auto* command =
+      reinterpret_cast<CmdHeader*>(netImguiSizedNew<uint8_t>(message.size()));
+  std::memcpy(static_cast<void*>(command), message.data(), message.size());
+  switch (header.mType) {
+    case CmdHeader::eCommands::DrawFrame:
+      ++draw_frames_received_;
+      VLOG(2, "Received DrawFrame #%d (size=%u)", draw_frames_received_,
+           header.mSize);
+      ProcessCmdDrawFrame(reinterpret_cast<CmdDrawFrame*>(command));
+      return;  // ProcessCmdDrawFrame owns the command now.
+    case CmdHeader::eCommands::Texture:
+      ++textures_received_;
+      VLOG(2, "Received Texture #%d (size=%u)", textures_received_,
+           header.mSize);
+      ProcessCmdTexture(reinterpret_cast<CmdTexture*>(command));
+      break;
+    case CmdHeader::eCommands::Clipboard:
+      VLOG(2, "Received Clipboard cmd (size=%u)", header.mSize);
+      ProcessCmdClipboard(reinterpret_cast<CmdClipboard*>(command));
+      break;
+    case CmdHeader::eCommands::Version:
+      if (header.mSize == sizeof(CmdVersion)) {
+        const auto* version = reinterpret_cast<const CmdVersion*>(command);
+        LOG(Info, "Connected to '%.*s' (version=%d)",
+            static_cast<int>(sizeof(version->mClientName)),
+            version->mClientName, static_cast<int>(version->mVersion));
       }
-      LOG(Info,
-          "CmdVersion send: done=%s, error=%s, attempts=%d, bytes_sent=%zu",
-          pending_send.IsDone() ? "true" : "false",
-          pending_send.IsError() ? "true" : "false", send_attempts,
-          static_cast<size_t>(pending_send.SizeCurrent));
-      if (pending_send.IsDone()) {
-        handshake_sent_ = true;
-        // Fresh connection: the client may resume delta compression against
-        // a frame from a previous session; ask for an uncompressed keyframe.
-        request_keyframe_ = true;
-      }
-    }
-  } else {
-    if (handshake_sent_) {
-      LOG(Info, "Resetting handshake (status='%s')",
-          Network::ReadyStateName(state));
-    }
-    handshake_sent_ = false;
+      break;
+    default:
+      VLOG(2, "Ignoring command type=%d, size=%u",
+           static_cast<int>(header.mType), header.mSize);
+      break;
   }
-
-  // Network receive — drain all available data in one frame.
-  const bool is_connected = (state == ReadyState::kOpen);
-
-  // If the connection has closed, discard any buffered data immediately
-  // rather than churning through stale commands for several seconds.
-  if (was_connected_ && !is_connected) {
-    LOG(Info, "Connection lost (status='%s'). Discarding buffered data.",
-        Network::ReadyStateName(state));
-    // Reset any in-progress receive.
-    if (pending_receive_.bAutoFree)
-      netImguiDeleteSafe(pending_receive_.pCommand);
-    pending_receive_ = PendingCom();
-    was_connected_ = false;
-  }
-  if (is_connected) was_connected_ = true;
-
-  int max_commands_per_frame = 64;
-  int cmds_this_frame = 0;
-  bool had_pending_data = Network::DataReceivePending(socket_);
-  if (had_pending_data) {
-    VLOG(1, "Frame %d: data pending on socket", frame);
-  }
-
-  while (is_connected && max_commands_per_frame-- > 0) {
-    if (pending_receive_.IsReady()) {
-      cmd_pending_read_ = CmdPendingRead();
-      pending_receive_.pCommand = &cmd_pending_read_;
-      pending_receive_.SizeMax = sizeof(cmd_pending_read_);
-      pending_receive_.bAutoFree = false;
-    }
-
-    if (!Network::DataReceivePending(socket_)) break;
-
-    Network::DataReceive(socket_, pending_receive_);
-
-    // Received the header of a command bigger than the header: allocate it.
-    if (pending_receive_.IsBiggerBufferNeeded()) {
-      VLOG(2, "Allocating %u bytes for incoming cmd type=%d",
-           pending_receive_.pCommand->mSize,
-           static_cast<int>(pending_receive_.pCommand->mType));
-      CmdPendingRead* cmd_header = reinterpret_cast<CmdPendingRead*>(
-          netImguiSizedNew<uint8_t>(pending_receive_.pCommand->mSize));
-      *cmd_header = cmd_pending_read_;
-      pending_receive_.pCommand = cmd_header;
-      pending_receive_.SizeMax = cmd_header->mSize;
-      pending_receive_.bAutoFree = true;
-    }
-
-    if (!pending_receive_.IsDone()) {
-      if (pending_receive_.IsError()) {
-        LOG(Error, "Receive ERROR: cmd_size=%u, got=%zu, type=%d",
-            pending_receive_.pCommand->mSize,
-            static_cast<size_t>(pending_receive_.SizeCurrent),
-            static_cast<int>(pending_receive_.pCommand->mType));
-        if (pending_receive_.bAutoFree)
-          netImguiDeleteSafe(pending_receive_.pCommand);
-        pending_receive_ = PendingCom();
-      }
-      continue;
-    }
-
-    // Command fully received — dispatch.
-    bytes_accum_ += pending_receive_.pCommand->mSize;
-    cmds_this_frame++;
-    total_cmds_received_++;
-    CmdHeader::eCommands cmd_type = pending_receive_.pCommand->mType;
-    LogCmdReceived(cmd_type, pending_receive_.pCommand->mSize,
-                   draw_frames_received_, textures_received_, pending_receive_);
-
-    if (cmd_type == CmdHeader::eCommands::Count) {
-      // CmdPendingRead sentinel — skip silently.
-    } else if (cmd_type == CmdHeader::eCommands::DrawFrame) {
-      draw_frames_received_++;
-      ProcessCmdDrawFrame(
-          reinterpret_cast<CmdDrawFrame*>(pending_receive_.pCommand));
-    } else if (cmd_type == CmdHeader::eCommands::Texture) {
-      textures_received_++;
-      ProcessCmdTexture(
-          reinterpret_cast<CmdTexture*>(pending_receive_.pCommand));
-    } else if (cmd_type == CmdHeader::eCommands::Clipboard) {
-      ProcessCmdClipboard(
-          reinterpret_cast<CmdClipboard*>(pending_receive_.pCommand));
-    }
-
-    if (pending_receive_.bAutoFree)
-      netImguiDeleteSafe(pending_receive_.pCommand);
-    pending_receive_ = PendingCom();
-  }
-
-  VLOG(2, "Frame %d: processed %d commands", frame, cmds_this_frame);
+  netImguiDelete(command);
 }
 
 // The headless server's ImGui called SetClipboardText, e.g. for the Console's
@@ -314,9 +230,8 @@ void RemoteUi::UpdateTextures() {
   for (auto& [tex_id, entry] : texture_cpu_) {
     uintptr_t& local_tex = texture_map_[tex_id];
     if (local_tex == 0 && !entry.pixels.empty()) {
-      local_tex = callbacks_.UploadTexture(
-          local_tex, reinterpret_cast<const std::byte*>(entry.pixels.data()),
-          entry.width, entry.height);
+      local_tex = callbacks_.UploadTexture(local_tex, entry.pixels.data(),
+                                           entry.width, entry.height);
       LOG(Info, "UpdateTextures: uploaded tex_id=%lu -> filament=%lu",
           static_cast<unsigned long>(tex_id),
           static_cast<unsigned long>(local_tex));
@@ -332,78 +247,79 @@ void RemoteUi::UpdateTextures() {
 
 void RemoteUi::ProcessCmdTexture(CmdTexture* cmd_texture) {
   if (!cmd_texture) return;
-
-  if (!cmd_texture->ToPointers()) {
-    LOG(Warning, "ProcessCmdTexture: dropping invalid texture command");
+  if (cmd_texture->mSize < sizeof(CmdTexture)) {
+    LOG(Warning, "ProcessCmdTexture: dropping truncated texture command");
     return;
   }
 
-  ClientTextureID tex_id = cmd_texture->mTextureClientID;
+  const ClientTextureID tex_id = cmd_texture->mTextureClientID;
+  if (cmd_texture->mStatus == CmdTexture::eType::Destroy) {
+    auto it = texture_map_.find(tex_id);
+    if (it != texture_map_.end()) {
+      if (it->second != 0 && callbacks_.GpuReady()) {
+        // Pass nullptr pixels to destroy the GPU texture.
+        callbacks_.UploadTexture(it->second, nullptr, 0, 0);
+      }
+      texture_map_.erase(it);
+    }
+    texture_cpu_.erase(tex_id);
+    return;
+  }
+
+  // The command must carry the pixels it describes: one byte each for the
+  // font atlas (alpha only), four for color images.
+  const bool is_a8 = cmd_texture->mFormat == NetImgui::eTexFormat::kTexFmtA8;
+  if (!is_a8 && cmd_texture->mFormat != NetImgui::eTexFormat::kTexFmtRGBA8) {
+    LOG(Warning, "ProcessCmdTexture: dropping texture of unknown format %d",
+        static_cast<int>(cmd_texture->mFormat));
+    return;
+  }
+  // Width, height and size come off the wire. Count the pixels in 64 bits
+  // (size_t is 32 bits in the browser), and cap the count at NetImgui's largest
+  // command before narrowing it, so that the RGBA copy below fits in size_t.
+  const uint32_t patch_w = cmd_texture->mWidth;
+  const uint32_t patch_h = cmd_texture->mHeight;
+  const uint64_t pixel_count64 = static_cast<uint64_t>(patch_w) * patch_h;
+  const uint64_t pixels_size = pixel_count64 * (is_a8 ? 1 : 4);
+  if (pixel_count64 == 0 || pixel_count64 > PendingCom::kMaxCmdSize ||
+      !cmd_texture->mpTextureData.ToPointer(
+          cmd_texture,
+          reinterpret_cast<const uint8_t*>(cmd_texture) + cmd_texture->mSize,
+          pixels_size)) {
+    LOG(Warning, "ProcessCmdTexture: dropping invalid texture command");
+    return;
+  }
+  const size_t pixel_count = static_cast<size_t>(pixel_count64);
+  const uint8_t* pixels = cmd_texture->mpTextureData.Get();
+
   VLOG(
       1,
       "ProcessCmdTexture: client_tex_id=%lu, status=%d, size=%ux%u, format=%d, "
       "offset=%u,%u, map_size=%zu",
       static_cast<unsigned long>(tex_id),
-      static_cast<int>(cmd_texture->mStatus),
-      static_cast<uint32_t>(cmd_texture->mWidth),
-      static_cast<uint32_t>(cmd_texture->mHeight),
+      static_cast<int>(cmd_texture->mStatus), patch_w, patch_h,
       static_cast<int>(cmd_texture->mFormat),
       static_cast<uint32_t>(cmd_texture->mOffsetX),
       static_cast<uint32_t>(cmd_texture->mOffsetY), texture_map_.size());
 
-  uintptr_t& local_tex = texture_map_[tex_id];
-
-  if (cmd_texture->mStatus == CmdTexture::eType::Destroy) {
-    if (local_tex != 0 && callbacks_.GpuReady()) {
-      // Pass nullptr pixels to destroy the GPU texture.
-      callbacks_.UploadTexture(local_tex, nullptr, 0, 0);
-    }
-    local_tex = 0;
-    texture_cpu_.erase(tex_id);
-    return;
-  }
-
-  uint8_t* pixels = cmd_texture->mpTextureData.Get();
-  if (!pixels) return;
-
-  // All of width/height/size come off the wire, so compute in size_t (no
-  // 32-bit overflow) and verify the command actually carries the pixel
-  // bytes before reading them — a short or corrupt command must not make
-  // the memcpy/expand below read past the command buffer.
-  const uint32_t patch_w = cmd_texture->mWidth;
-  const uint32_t patch_h = cmd_texture->mHeight;
-  const size_t pixel_count = static_cast<size_t>(patch_w) * patch_h;
-  const size_t data_size = cmd_texture->mSize >= sizeof(CmdTexture)
-                               ? cmd_texture->mSize - sizeof(CmdTexture)
-                               : 0;
-  const size_t expected_rgba = pixel_count * 4;
-
-  // Detect actual format by data size, not format tag (which can be wrong).
-  const bool is_a8 = (cmd_texture->mFormat == 1) ||
-                     (data_size == pixel_count && data_size != expected_rgba);
-  const size_t needed = is_a8 ? pixel_count : expected_rgba;
-  if (pixel_count == 0 || data_size < needed) {
-    LOG(Warning,
-        "ProcessCmdTexture: tex_id=%lu declares %ux%u but carries only %zu "
-        "bytes; dropping",
-        static_cast<unsigned long>(tex_id), patch_w, patch_h, data_size);
-    return;
-  }
-
   // Convert incoming pixels to RGBA (Filament requires RGBA).
   // For A8 font atlas data, expand each byte to (255, 255, 255, alpha).
-  std::vector<uint8_t> rgba_pixels(pixel_count * 4);
+  WebSocket::Bytes rgba_pixels(pixel_count * 4);
   if (is_a8) {
     for (size_t p = 0; p < pixel_count; ++p) {
-      rgba_pixels[p * 4 + 0] = 255;
-      rgba_pixels[p * 4 + 1] = 255;
-      rgba_pixels[p * 4 + 2] = 255;
-      rgba_pixels[p * 4 + 3] = pixels[p];
+      rgba_pixels[p * 4 + 0] = std::byte{0xFF};
+      rgba_pixels[p * 4 + 1] = std::byte{0xFF};
+      rgba_pixels[p * 4 + 2] = std::byte{0xFF};
+      rgba_pixels[p * 4 + 3] = static_cast<std::byte>(pixels[p]);
     }
   } else {
-    memcpy(rgba_pixels.data(), pixels, expected_rgba);
+    std::memcpy(rgba_pixels.data(), pixels, pixel_count * 4);
   }
 
+  uintptr_t& local_tex = texture_map_[tex_id];
+  // Keep a CPU-side RGBA mirror of each remote texture so partial updates from
+  // NetImgui can be patched in before re-uploading the full texture to
+  // Filament (which does not support sub-rect GPU texture updates).
   TextureEntry& entry = texture_cpu_[tex_id];
 
   if (cmd_texture->mStatus == CmdTexture::eType::Create) {
@@ -426,8 +342,8 @@ void RemoteUi::ProcessCmdTexture(CmdTexture* cmd_texture) {
     // The patch rectangle is wire-supplied; reject one that would write past
     // the stored mirror (e.g. dims desynced from a stale entry after a
     // reconnect) rather than corrupting the heap.
-    if (static_cast<size_t>(off_x) + patch_w > entry.width ||
-        static_cast<size_t>(off_y) + patch_h > entry.height) {
+    if (static_cast<uint64_t>(off_x) + patch_w > entry.width ||
+        static_cast<uint64_t>(off_y) + patch_h > entry.height) {
       LOG(Warning,
           "ProcessCmdTexture: patch %ux%u at (%u,%u) exceeds mirror %ux%u "
           "for tex_id=%lu; dropping",
@@ -439,8 +355,8 @@ void RemoteUi::ProcessCmdTexture(CmdTexture* cmd_texture) {
       size_t dst_offset =
           (static_cast<size_t>(off_y + row) * entry.width + off_x) * 4;
       size_t src_offset = static_cast<size_t>(row) * patch_w * 4;
-      memcpy(&entry.pixels[dst_offset], &rgba_pixels[src_offset],
-             static_cast<size_t>(patch_w) * 4);
+      std::memcpy(&entry.pixels[dst_offset], &rgba_pixels[src_offset],
+                  static_cast<size_t>(patch_w) * 4);
     }
   }
 
@@ -449,9 +365,8 @@ void RemoteUi::ProcessCmdTexture(CmdTexture* cmd_texture) {
   // and will be flushed by UpdateTextures() later.
   if (callbacks_.GpuReady()) {
     const bool was_unmapped = (local_tex == 0);
-    local_tex = callbacks_.UploadTexture(
-        local_tex, reinterpret_cast<const std::byte*>(entry.pixels.data()),
-        entry.width, entry.height);
+    local_tex = callbacks_.UploadTexture(local_tex, entry.pixels.data(),
+                                         entry.width, entry.height);
     VLOG(1, "uploadGuiImage for client_tex_id=%lu -> filament=%lu",
          static_cast<unsigned long>(tex_id),
          static_cast<unsigned long>(local_tex));
@@ -470,8 +385,6 @@ void RemoteUi::ProcessCmdTexture(CmdTexture* cmd_texture) {
 void RemoteUi::ProcessCmdDrawFrame(CmdDrawFrame* cmd_draw_frame) {
   if (!cmd_draw_frame) return;
 
-  // Take ownership to prevent pending_receive_ from deleting it prematurely.
-  pending_receive_.bAutoFree = false;
   if (!cmd_draw_frame->ToPointers()) {
     LOG(Warning, "ProcessCmdDrawFrame: dropping invalid draw frame");
     netImguiDeleteSafe(cmd_draw_frame);
@@ -559,10 +472,10 @@ void RemoteUi::RebuildDrawData() {
     // when color_texture is nullptr).
     cmd_list->CmdBuffer.resize(0);
     cmd_list->CmdBuffer.reserve(draw_group.mDrawCount);
-    cmd_list->Flags =
-        ImDrawListFlags_AllowVtxOffset | ImDrawListFlags_AntiAliasedLines |
-        ImDrawListFlags_AntiAliasedFill |
-        ImDrawListFlags_AntiAliasedLinesUseTex;
+    cmd_list->Flags = ImDrawListFlags_AllowVtxOffset |
+                      ImDrawListFlags_AntiAliasedLines |
+                      ImDrawListFlags_AntiAliasedFill |
+                      ImDrawListFlags_AntiAliasedLinesUseTex;
 
     // Indices
     const uint16_t* indices =
@@ -665,9 +578,12 @@ void RemoteUi::RebuildDrawData() {
 }
 
 // Keep in sync with CaptureImguiInput in the vendored
-// netimgui/Code/ServerApp/Source/NetImguiServer_RemoteClient.cpp
+// netimgui/Code/ServerApp/Source/NetImguiServer_RemoteClient.cpp. Must run
+// before ImGui::EndFrame() (which ImGui::Render() calls implicitly), because
+// EndFrame() clears io.InputQueueCharacters.
 void RemoteUi::CaptureAndSendInput() {
-  if (!socket_) return;
+  // The handshake goes first (see ReceiveAndProcessCommands()).
+  if (!socket_ || !handshake_sent_) return;
 
   if (ConnectionState() != ReadyState::kOpen) return;
 
@@ -705,8 +621,8 @@ void RemoteUi::CaptureAndSendInput() {
   CmdInput cmd_input;
   // The remote client lays out for the screen area (the canvas minus the
   // local role bar), not the whole display.
-  cmd_input.mScreenSize[0] = static_cast<uint16_t>(screen_area_[0]);
-  cmd_input.mScreenSize[1] = static_cast<uint16_t>(screen_area_[1]);
+  cmd_input.mScreenSize[0] = ClampToInt<uint16_t>(screen_area_[0]);
+  cmd_input.mScreenSize[1] = ClampToInt<uint16_t>(screen_area_[1]);
   // An unstable screen size forces the remote UI to relayout every frame
   // (visible as UI flicker), so make changes loud.
   if (cmd_input.mScreenSize[0] != last_screen_size_[0] ||
@@ -735,8 +651,8 @@ void RemoteUi::CaptureAndSendInput() {
   cmd_input.mMouseWheelVert = mouse_wheel_pos_[0];
   cmd_input.mMouseWheelHoriz = mouse_wheel_pos_[1];
   if (!local_wants_mouse) {
-    cmd_input.mMousePos[0] = static_cast<int16_t>(io.MousePos.x);
-    cmd_input.mMousePos[1] = static_cast<int16_t>(io.MousePos.y);
+    cmd_input.mMousePos[0] = ClampToInt<int16_t>(io.MousePos.x);
+    cmd_input.mMousePos[1] = ClampToInt<int16_t>(io.MousePos.y);
   } else {
     // Park the mouse off-screen so the remote side doesn't think we're
     // hovering over anything.
@@ -838,11 +754,8 @@ void RemoteUi::CaptureAndSendInput() {
     pending_input_chars_.clear();
   }
 
-  PendingCom pending_send;
-  pending_send.pCommand = &cmd_input;
-  pending_send.SizeCurrent = 0;
-  Network::DataSend(socket_, pending_send);
-  if (pending_send.IsDone() && cmd_input.mCompressionSkip) {
+  if (socket_->SendBinary(std::as_bytes(std::span(&cmd_input, 1))) &&
+      cmd_input.mCompressionSkip) {
     request_keyframe_ = false;
   }
 }
@@ -851,10 +764,7 @@ void RemoteUi::Shutdown() {
   remote_draw_data_.Clear();
   remote_draw_lists_.clear();
   last_uncompressed_frame_.reset();
-  if (socket_) {
-    Network::Disconnect(socket_);
-    socket_ = nullptr;
-  }
+  socket_.reset();
 }
 
 }  // namespace mujoco::studio

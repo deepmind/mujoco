@@ -14,17 +14,15 @@
 
 #include "web_client_remote_ui.h"
 
-#include <dlfcn.h>
-#include <netdb.h>
-#include <netinet/in.h>
-#include <sys/socket.h>
-#include <unistd.h>
-
+#include <cfloat>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
+#include <memory>
+#include <span>
 #include <string>
 #include <unordered_map>
+#include <utility>
 #include <vector>
 
 #include <gmock/gmock.h>
@@ -34,47 +32,8 @@
 #include <mujoco/mujoco.h>
 #include <NetImgui_Api.h>
 #include <NetImgui_CmdPackets.h>
-#include <NetImgui_Network.h>
-#include "google/network_status.h"
 #include "state_payload.h"
-
-// Host shims for browser-specific WebSocket symbols used by RemoteUi.
-namespace mujoco::studio {
-void PrimeWebSocketUrl(const char* url) {}
-}  // namespace mujoco::studio
-
-namespace NetImgui::Internal::Network {
-namespace {
-ReadyState g_test_ready_state = ReadyState::kOpen;
-int g_test_close_code = 0;
-}  // namespace
-
-ReadyState GetReadyState(SocketInfo* socket) {
-  return socket ? g_test_ready_state : ReadyState::kDisconnected;
-}
-
-int GetCloseCode(SocketInfo* socket) { return socket ? g_test_close_code : 0; }
-}  // namespace NetImgui::Internal::Network
-
-// RemoteUi::Connect(url) calls Network::Connect(url.c_str(), 0) because on WASM
-// the port is embedded in the WebSocket URL. On POSIX, interposing getaddrinfo
-// lets "127.0.0.1:<port>" resolve to the loopback port so RemoteUi can be
-// tested end-to-end over a real POSIX loopback socket.
-extern "C" int getaddrinfo(const char* node, const char* service,
-                           const addrinfo* hints, addrinfo** res) {
-  using GetAddrInfoFn =
-      int (*)(const char*, const char*, const addrinfo*, addrinfo**);
-  static const auto real_getaddrinfo =
-      reinterpret_cast<GetAddrInfoFn>(dlsym(RTLD_NEXT, "getaddrinfo"));
-  if (node != nullptr && service != nullptr && std::strcmp(service, "0") == 0) {
-    const char* colon = std::strchr(node, ':');
-    if (colon != nullptr) {
-      std::string host(node, colon - node);
-      return real_getaddrinfo(host.c_str(), colon + 1, hints, res);
-    }
-  }
-  return real_getaddrinfo(node, service, hints, res);
-}
+#include "web_client_websocket.h"
 
 namespace mujoco::studio {
 namespace {
@@ -91,14 +50,53 @@ using ::NetImgui::Internal::ConvertToCmdDrawFrame;
 using ::NetImgui::Internal::ImguiDraw;
 using ::NetImgui::Internal::netImguiDelete;
 using ::NetImgui::Internal::netImguiSizedNew;
-using ::NetImgui::Internal::Network::ReadyState;
+using ReadyState = WebSocket::ReadyState;
+
+// A WebSocket the test drives: it records the messages RemoteUi sends, and
+// hands RemoteUi the messages the test queues.
+class FakeWebSocket : public WebSocket {
+ public:
+  ReadyState GetReadyState() const override { return state; }
+  int CloseCode() const override { return close_code; }
+  bool SendBinary(BytesView data) override {
+    if (state != ReadyState::kOpen) return false;
+    sent.emplace_back(data.begin(), data.end());
+    return true;
+  }
+  std::vector<Bytes> TakeMessages() override {
+    std::vector<Bytes> messages;
+    messages.swap(received);
+    return messages;
+  }
+
+  std::vector<Bytes> sent;      // Oldest first.
+  std::vector<Bytes> received;  // Taken by the next TakeMessages().
+  ReadyState state = ReadyState::kOpen;
+  int close_code = 0;
+};
+
+// A command as the one WebSocket message carrying it.
+template <typename T>
+WebSocket::Bytes MessageOf(const T* command) {
+  const auto* raw = reinterpret_cast<const std::byte*>(command);
+  return WebSocket::Bytes(raw, raw + command->mSize);
+}
+
+// Reads a sent message back as a command of type T.
+template <typename T>
+T CommandIn(WebSocket::BytesView message) {
+  T command;
+  CHECK_EQ(message.size(), sizeof(command));
+  std::memcpy(static_cast<void*>(&command), message.data(), sizeof(command));
+  return command;
+}
 
 class FakeCallbacks : public RemoteUi::Callbacks {
  public:
   struct UploadedTexture {
+    std::vector<uint8_t> rgba;
     uint32_t width = 0;
     uint32_t height = 0;
-    std::vector<uint8_t> rgba;
     bool destroyed = false;
   };
 
@@ -124,24 +122,30 @@ class FakeCallbacks : public RemoteUi::Callbacks {
 
   bool GpuReady() override { return gpu_ready; }
 
-  bool gpu_ready = true;
-  int upload_calls = 0;
-  uintptr_t next_handle = 100;
   std::unordered_map<uintptr_t, UploadedTexture> textures;
+  uintptr_t next_handle = 100;
+  int upload_calls = 0;
+  bool gpu_ready = true;
 };
 
 class RemoteUiTest : public ::testing::Test {
  protected:
   RemoteUiTest() : context_(ImGui::CreateContext()), remote_ui_(callbacks_) {
     ImGui::SetCurrentContext(context_);
-    NetImgui::Internal::Network::g_test_ready_state = ReadyState::kOpen;
-    NetImgui::Internal::Network::g_test_close_code = 0;
     remote_ui_.SetScreenArea(1920.0f, 1080.0f);
   }
 
   ~RemoteUiTest() override {
     remote_ui_.Shutdown();
     ImGui::DestroyContext(context_);
+  }
+
+  // Connects RemoteUi to a new fake socket, which RemoteUi owns.
+  FakeWebSocket* ConnectFakeSocket() {
+    auto socket = std::make_unique<FakeWebSocket>();
+    FakeWebSocket* fake = socket.get();
+    remote_ui_.Connect(std::move(socket));
+    return fake;
   }
 
   static CmdTexture* MakeTextureCmd(ClientTextureID tex_id,
@@ -359,6 +363,14 @@ TEST_F(RemoteUiTest, RejectsTruncatedPixelsAndOutOfBoundsTexturePatch) {
   netImguiDelete(short_cmd);
   EXPECT_EQ(callbacks_.upload_calls, 1);
 
+  // A pixel format this viewer does not know.
+  CmdTexture* custom_cmd =
+      MakeTextureCmd(11, CmdTexture::eType::Create, eTexFormat::kTexFmtCustom,
+                     4, 4, valid_pixels);
+  remote_ui_.ProcessCmdTexture(custom_cmd);
+  netImguiDelete(custom_cmd);
+  EXPECT_EQ(callbacks_.upload_calls, 1);
+
   // Out-of-bounds patch rectangle: 2x2 at offset (3, 3) exceeds 4x4 mirror.
   std::vector<uint8_t> patch_pixels(2 * 2 * 4, 99);
   CmdTexture* oob_patch =
@@ -481,60 +493,44 @@ TEST_F(RemoteUiTest,
 }
 
 TEST_F(RemoteUiTest, SocketHandshakeReceiveAndInputRoundTrip) {
-  int listen_fd = socket(AF_INET, SOCK_STREAM, 0);
-  ASSERT_GE(listen_fd, 0);
-  sockaddr_in addr = {};
-  addr.sin_family = AF_INET;
-  addr.sin_addr.s_addr = htonl(INADDR_LOOPBACK);
-  addr.sin_port = 0;
-  ASSERT_EQ(bind(listen_fd, reinterpret_cast<sockaddr*>(&addr), sizeof(addr)),
-            0);
-  ASSERT_EQ(listen(listen_fd, 1), 0);
-  socklen_t addr_len = sizeof(addr);
-  ASSERT_EQ(
-      getsockname(listen_fd, reinterpret_cast<sockaddr*>(&addr), &addr_len), 0);
-  const uint16_t port = ntohs(addr.sin_port);
-
-  remote_ui_.Connect("127.0.0.1:" + std::to_string(port));
+  FakeWebSocket* socket = ConnectFakeSocket();
   ASSERT_TRUE(remote_ui_.HasSocket());
 
-  int peer_fd = accept(listen_fd, nullptr, nullptr);
-  ASSERT_GE(peer_fd, 0);
-  close(listen_fd);
-
-  // Frame 1: RemoteUi sends its CmdVersion handshake over the socket.
+  // Nothing is sent before the socket opens.
+  socket->state = ReadyState::kConnecting;
   remote_ui_.ReceiveAndProcessCommands(/*frame=*/1);
-  CmdVersion handshake;
-  ASSERT_EQ(recv(peer_fd, &handshake, sizeof(handshake), MSG_WAITALL),
-            static_cast<ssize_t>(sizeof(handshake)));
+  remote_ui_.CaptureAndSendInput();
+  EXPECT_TRUE(socket->sent.empty());
+
+  // Then RemoteUi sends its CmdVersion handshake, as one message.
+  socket->state = ReadyState::kOpen;
+  remote_ui_.ReceiveAndProcessCommands(/*frame=*/2);
+  ASSERT_EQ(socket->sent.size(), 1u);
+  const CmdVersion handshake = CommandIn<CmdVersion>(socket->sent[0]);
   EXPECT_EQ(handshake.mType, CmdHeader::eCommands::Version);
   EXPECT_STREQ(handshake.mClientName, "MuJoCo Web Viewer");
 
-  // Stream a texture and a draw frame from the peer to RemoteUi.
+  // A texture and a draw frame arrive, one command per message.
   std::vector<uint8_t> pixels(4 * 4 * 4, 200);
   CmdTexture* tex_cmd = MakeTextureCmd(1, CmdTexture::eType::Create,
                                        eTexFormat::kTexFmtRGBA8, 4, 4, pixels);
   CmdDrawFrame* draw_cmd = MakeDrawFrame("Streamed over socket", 1, 1);
   draw_cmd->ToOffsets();
-  const uint32_t expected_bytes = tex_cmd->mSize + draw_cmd->mSize;
-
-  ASSERT_EQ(send(peer_fd, tex_cmd, tex_cmd->mSize, 0),
-            static_cast<ssize_t>(tex_cmd->mSize));
-  ASSERT_EQ(send(peer_fd, draw_cmd, draw_cmd->mSize, 0),
-            static_cast<ssize_t>(draw_cmd->mSize));
+  const uint64_t expected_bytes = tex_cmd->mSize + draw_cmd->mSize;
+  socket->received.push_back(MessageOf(tex_cmd));
+  socket->received.push_back(MessageOf(draw_cmd));
   netImguiDelete(tex_cmd);
   netImguiDelete(draw_cmd);
 
-  for (int i = 0; i < 10 && remote_ui_.RemoteDrawData() == nullptr; ++i) {
-    remote_ui_.ReceiveAndProcessCommands(/*frame=*/2 + i);
-  }
+  remote_ui_.ReceiveAndProcessCommands(/*frame=*/3);
   ASSERT_NE(remote_ui_.RemoteDrawData(), nullptr);
+  EXPECT_EQ(callbacks_.upload_calls, 1);
   EXPECT_EQ(remote_ui_.ConsumeByteCount(), expected_bytes);
   EXPECT_EQ(remote_ui_.ConsumeByteCount(), 0u);
 
-  // CaptureAndSendInput sends a CmdInput packet back to the peer. The screen
-  // size it reports is the screen area (the canvas minus the local role
-  // bar), not the display size.
+  // CaptureAndSendInput sends a CmdInput message back. The screen size it
+  // reports is the screen area (the canvas minus the local role bar), not the
+  // display size.
   ImGuiIO& io = ImGui::GetIO();
   io.DisplaySize = ImVec2(1280, 720);
   remote_ui_.SetScreenArea(1280.0f, 688.0f);
@@ -544,9 +540,8 @@ TEST_F(RemoteUiTest, SocketHandshakeReceiveAndInputRoundTrip) {
   io.InputQueueCharacters.push_back('a');
 
   remote_ui_.CaptureAndSendInput();
-  CmdInput input_cmd;
-  ASSERT_EQ(recv(peer_fd, &input_cmd, sizeof(input_cmd), MSG_WAITALL),
-            static_cast<ssize_t>(sizeof(input_cmd)));
+  ASSERT_EQ(socket->sent.size(), 2u);
+  CmdInput input_cmd = CommandIn<CmdInput>(socket->sent[1]);
   EXPECT_EQ(input_cmd.mType, CmdHeader::eCommands::Input);
   EXPECT_EQ(input_cmd.mScreenSize[0], 1280u);
   EXPECT_EQ(input_cmd.mScreenSize[1], 688u);
@@ -561,9 +556,8 @@ TEST_F(RemoteUiTest, SocketHandshakeReceiveAndInputRoundTrip) {
   // mCompressionSkip unless a delta frame is missing its reference frame.
   io.InputQueueCharacters.resize(0);
   remote_ui_.CaptureAndSendInput();
-  ASSERT_EQ(recv(peer_fd, &input_cmd, sizeof(input_cmd), MSG_WAITALL),
-            static_cast<ssize_t>(sizeof(input_cmd)));
-  EXPECT_FALSE(input_cmd.mCompressionSkip);
+  ASSERT_EQ(socket->sent.size(), 3u);
+  EXPECT_FALSE(CommandIn<CmdInput>(socket->sent[2]).mCompressionSkip);
 
   // Receiving a delta frame with a missing reference frame re-arms
   // mCompressionSkip on the next CmdInput.
@@ -572,11 +566,79 @@ TEST_F(RemoteUiTest, SocketHandshakeReceiveAndInputRoundTrip) {
   gap_frame->ToOffsets();
   remote_ui_.ProcessCmdDrawFrame(gap_frame);
   remote_ui_.CaptureAndSendInput();
-  ASSERT_EQ(recv(peer_fd, &input_cmd, sizeof(input_cmd), MSG_WAITALL),
-            static_cast<ssize_t>(sizeof(input_cmd)));
-  EXPECT_TRUE(input_cmd.mCompressionSkip);
+  ASSERT_EQ(socket->sent.size(), 4u);
+  EXPECT_TRUE(CommandIn<CmdInput>(socket->sent[3]).mCompressionSkip);
+}
 
-  close(peer_fd);
+TEST_F(RemoteUiTest, DropsMessagesThatAreNotOneCommand) {
+  FakeWebSocket* socket = ConnectFakeSocket();
+  std::vector<uint8_t> pixels(2 * 2 * 4, 7);
+  CmdTexture* tex_cmd = MakeTextureCmd(5, CmdTexture::eType::Create,
+                                       eTexFormat::kTexFmtRGBA8, 2, 2, pixels);
+  const WebSocket::Bytes message = MessageOf(tex_cmd);
+  netImguiDelete(tex_cmd);
+
+  socket->received.emplace_back(message.begin(),
+                                message.begin() + 4);  // Shorter than a header.
+  socket->received.emplace_back(message.begin(), message.end() - 1);
+  WebSocket::Bytes doubled = message;
+  doubled.insert(doubled.end(), message.begin(), message.end());
+  socket->received.push_back(std::move(doubled));  // Two commands.
+  remote_ui_.ReceiveAndProcessCommands(/*frame=*/1);
+  EXPECT_EQ(callbacks_.upload_calls, 0);
+
+  socket->received.push_back(message);
+  remote_ui_.ReceiveAndProcessCommands(/*frame=*/2);
+  EXPECT_EQ(callbacks_.upload_calls, 1);
+}
+
+TEST_F(RemoteUiTest, StartsOverOnEachConnection) {
+  FakeWebSocket* first = ConnectFakeSocket();
+  remote_ui_.ReceiveAndProcessCommands(/*frame=*/1);
+  remote_ui_.CaptureAndSendInput();
+  remote_ui_.CaptureAndSendInput();
+  ASSERT_EQ(first->sent.size(), 3u);
+  EXPECT_FALSE(CommandIn<CmdInput>(first->sent[2]).mCompressionSkip);
+
+  // The server closes the connection, e.g. as another page took control.
+  first->state = ReadyState::kClosed;
+  first->close_code = 4001;
+  EXPECT_EQ(remote_ui_.ConnectionState(), ReadyState::kClosed);
+  EXPECT_EQ(remote_ui_.CloseCode(), 4001);
+
+  // A new connection sends the handshake again, then asks for a full frame.
+  FakeWebSocket* second = ConnectFakeSocket();
+  EXPECT_EQ(remote_ui_.ConnectionState(), ReadyState::kOpen);
+  EXPECT_EQ(remote_ui_.CloseCode(), 0);
+  remote_ui_.ReceiveAndProcessCommands(/*frame=*/2);
+  remote_ui_.CaptureAndSendInput();
+  ASSERT_EQ(second->sent.size(), 2u);
+  EXPECT_EQ(CommandIn<CmdVersion>(second->sent[0]).mType,
+            CmdHeader::eCommands::Version);
+  EXPECT_TRUE(CommandIn<CmdInput>(second->sent[1]).mCompressionSkip);
+
+  remote_ui_.Shutdown();
+  EXPECT_FALSE(remote_ui_.HasSocket());
+  EXPECT_EQ(remote_ui_.ConnectionState(), ReadyState::kDisconnected);
+}
+
+TEST_F(RemoteUiTest, ClampsTheScreenSizeAndMousePositionItSends) {
+  FakeWebSocket* socket = ConnectFakeSocket();
+  remote_ui_.ReceiveAndProcessCommands(/*frame=*/1);
+
+  // Out-of-range values (such as Dear ImGui's "no mouse" position, -FLT_MAX),
+  // which do not fit the wire's integers.
+  remote_ui_.SetScreenArea(-1.0f, 1e9f);
+  ImGuiIO& io = ImGui::GetIO();
+  io.MousePos = ImVec2(-FLT_MAX, FLT_MAX);
+  remote_ui_.CaptureAndSendInput();
+
+  ASSERT_EQ(socket->sent.size(), 2u);
+  const CmdInput input = CommandIn<CmdInput>(socket->sent[1]);
+  EXPECT_EQ(input.mScreenSize[0], 0u);
+  EXPECT_EQ(input.mScreenSize[1], 65535u);
+  EXPECT_EQ(input.mMousePos[0], -32768);
+  EXPECT_EQ(input.mMousePos[1], 32767);
 }
 
 TEST_F(RemoteUiTest, StateQueueSynchronizesFullPayloadAndBoundsLatency) {

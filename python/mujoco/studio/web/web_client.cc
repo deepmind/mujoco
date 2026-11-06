@@ -54,12 +54,12 @@
 #include "studio/ux/imgui_widgets.h"
 #include "studio/ux/interaction.h"
 #include "studio/ux/theme.h"
-#include <NetImgui_Api.h>
 #include "google/logging.h"
 #include "state_payload.h"
 #include "web_client_local_ui.h"
 #include "web_client_remote_ui.h"
 #include "web_client_session.h"
+#include "web_client_websocket.h"
 
 #if !defined(__EMSCRIPTEN__)
 #error "web_client.cc is only supported for Emscripten builds"
@@ -72,15 +72,16 @@
 // This stub eliminates that cost entirely.
 extern "C" GLenum __wrap_glGetError(void) { return GL_NO_ERROR; }
 
-using mujoco::studio::DisconnectNotice;
-using mujoco::studio::GuiTheme;
-using mujoco::studio::RemoteUi;
-using mujoco::studio::RemoteUiState;
-using mujoco::studio::RoleWindow;
-using mujoco::studio::Session;
-using mujoco::studio::SessionRole;
-using mujoco::studio::SessionView;
-using mujoco::studio::StatePayloadView;
+using ::mujoco::studio::DisconnectNotice;
+using ::mujoco::studio::GuiTheme;
+using ::mujoco::studio::OpenWebSocket;
+using ::mujoco::studio::RemoteUi;
+using ::mujoco::studio::RemoteUiState;
+using ::mujoco::studio::RoleWindow;
+using ::mujoco::studio::Session;
+using ::mujoco::studio::SessionRole;
+using ::mujoco::studio::SessionView;
+using ::mujoco::studio::StatePayloadView;
 
 // How a spectating page drives its camera. The free modes control the local
 // camera directly; kSpecCamFollow mirrors the controller's camera from the
@@ -454,7 +455,9 @@ void AppCallbacks::OnModelChanged(uint32_t model_crc32) {
   EM_ASM({ reloadModel($0); }, model_crc32);
 }
 
-void AppCallbacks::ConnectRemoteUi() { g_app.remote_ui.Connect(WsUrl("/ui")); }
+void AppCallbacks::ConnectRemoteUi() {
+  g_app.remote_ui.Connect(OpenWebSocket(WsUrl("/ui")));
+}
 
 void AppCallbacks::ShutdownRemoteUi() { g_app.remote_ui.Shutdown(); }
 
@@ -1201,7 +1204,6 @@ void StartApp() {
     SetupScene(g_app.model_holder->model());
   }
 
-  NetImgui::Internal::Network::Startup();
   SDL_StartTextInput();
 
   const char* saved_fps_str = emscripten_run_script_string(
@@ -1218,7 +1220,7 @@ void StartApp() {
   g_app.callbacks.SetFpsCap(saved_fps_cap);
 
   // The UI stream is a path on the page's own host and port.
-  g_app.remote_ui.Connect(WsUrl("/ui"));
+  g_app.remote_ui.Connect(OpenWebSocket(WsUrl("/ui")));
 
   emscripten_set_main_loop(MainLoop, 0, 0);
 }
