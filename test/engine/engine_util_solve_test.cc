@@ -1192,6 +1192,55 @@ TEST_F(EngineUtilSolveTest, CholFactorNumericClampDecouples) {
   }
 }
 
+// Rows 2 and 1 have the same columns and the same number of descendants, but
+// different descendants: row 3 updates row 2 and row 4 updates row 1. They must
+// not be factored as one supernode.
+TEST_F(EngineUtilSolveTest, CholFactorNumericSupernodeDescendants) {
+  MjModelPtr model = LoadModelFromString("<mujoco/>");
+  MjDataPtr d = MakeData(model);
+
+  constexpr int n = 5;
+  // clang-format off
+  mjtNum H[n * n] = {
+    10, 1,  1,  1,  1,
+    1,  10, 1,  0,  1,
+    1,  1,  10, 1,  0,
+    1,  0,  1,  10, 0,
+    1,  1,  0,  0,  10,
+  };
+  // clang-format on
+  mjtNum sparseH[n * n];
+  int H_rownnz[n], H_rowadr[n], H_colind[n * n];
+  mju_dense2sparse(sparseH, H, n, n, H_rownnz, H_rowadr, H_colind, n * n);
+
+  // symbolic factorization
+  int L_rownnz[n], L_rowadr[n], LT_rownnz[n], LT_rowadr[n];
+  mju_cholFactorSymbolic(nullptr, L_rownnz, L_rowadr, nullptr, LT_rownnz,
+                         LT_rowadr, nullptr, H_rownnz, H_rowadr, H_colind, n,
+                         d.get());
+  int L_colind[n * n], LT_colind[n * n], LT_map[n * n];
+  mju_cholFactorSymbolic(L_colind, L_rownnz, L_rowadr, LT_colind, LT_rownnz,
+                         LT_rowadr, LT_map, H_rownnz, H_rowadr, H_colind, n,
+                         d.get());
+
+  // numeric factorization
+  mjtNum L[n * n], scratch[n];
+  int rank = mju_cholFactorNumeric(
+      L, n, mjMINVAL, L_rownnz, L_rowadr, L_colind, LT_rownnz, LT_rowadr,
+      LT_colind, LT_map, sparseH, H_rownnz, H_rowadr, H_colind, scratch);
+  EXPECT_EQ(rank, n);
+
+  // L'*L reconstructs H
+  mjtNum Ldense[n * n], LTL[n * n];
+  mju_sparse2dense(Ldense, L, n, n, L_rownnz, L_rowadr, L_colind);
+  mju_mulMatTMat(LTL, Ldense, Ldense, n, n, n);
+  mjtNum eps = MjTol(1e-12, 1e-5);
+  for (int i = 0; i < n * n; i++) {
+    EXPECT_NEAR(LTL[i], H[i], eps)
+        << "mismatch at (" << i / n << ", " << i % n << ")";
+  }
+}
+
 // NaN pivots must trigger rank-deficiency clamping and row decoupling rather
 // than bypassing `diag < mindiag` and poisoning the factor with NaN while
 // reporting full rank.
