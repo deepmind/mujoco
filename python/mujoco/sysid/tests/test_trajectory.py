@@ -185,6 +185,21 @@ def test_split(sample_trajectory):
   assert len(chunks[0].sensordata) == 1
 
 
+def test_split_keeps_named_signals(sample_trajectory):
+  traj, *_ = sample_trajectory
+  for i, chunk in enumerate(traj.split(1)):
+    for original, part, name in (
+        (traj.control, chunk.control, "ctrl1"),
+        (traj.sensordata, chunk.sensordata, "sensor2"),
+    ):
+      signal_type, indices = part.get_indices(name)
+      original_type, original_indices = original.get_indices(name)
+      assert signal_type == original_type
+      np.testing.assert_array_equal(
+          part.data[:, indices], original.data[i:i + 1, original_indices]
+      )
+
+
 def test_check_compatible_sensor_mismatch(box_model):
   """Mismatched sensor dimensions between data and model are caught before rollout."""
   times = np.array([0.0, 0.01, 0.02])

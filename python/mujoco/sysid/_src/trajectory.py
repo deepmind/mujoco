@@ -253,10 +253,12 @@ class SystemTrajectory:
           SystemTrajectory(
               model=self.model,
               control=timeseries.TimeSeries(
-                  control_times_chunk, control_data_chunk
+                  control_times_chunk, control_data_chunk, self.control.signal_mapping
               ),
               sensordata=timeseries.TimeSeries(
-                  sensordata_times_chunk, sensordata_data_chunk
+                  sensordata_times_chunk,
+                  sensordata_data_chunk,
+                  self.sensordata.signal_mapping,
               ),
               initial_state=initial_state,
               state=timeseries.TimeSeries(
