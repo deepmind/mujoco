@@ -53,6 +53,26 @@ class TypeParsingTest(absltest.TestCase):
 
     self.assertEqual(parsed_type, expected_type)
 
+  def test_duplicate_qualifier(self):
+    with self.assertRaises(ValueError):
+      type_parsing.parse_type('int const const')
+
+  def test_invalid_pointer_qualifier(self):
+    with self.assertRaises(ValueError):
+      type_parsing.parse_type('int *const const')
+
+  def test_void_pointer_to_function(self):
+    parsed = type_parsing.parse_type('void *(*)(void *)')
+    self.assertEqual(parsed, ast_nodes.ValueType('void *(*)(void *)'))
+
+  def test_unbalanced_parens(self):
+    with self.assertRaises(ValueError):
+      type_parsing.parse_type('int (*)(')
+
+  def test_parse_function_return_type(self):
+    parsed = type_parsing.parse_function_return_type('int(int)')
+    self.assertEqual(parsed, ast_nodes.ValueType('int'))
+
 
 if __name__ == '__main__':
   absltest.main()
