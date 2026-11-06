@@ -75,11 +75,6 @@ class HeadlessUi {
     io.ConfigDpiScaleViewports = true;
     io.DisplaySize = ImVec2(1400, 720);
 
-    // Disable ImGui auto-repeat in headless mode since the browser handles key
-    // repeat at the OS level, avoiding the frame amplification issue where many
-    // frames with identical key-down states trigger unwanted repeats.
-    io.KeyRepeatDelay = 9999.0f;
-
     // Initialize the main viewport's DPI scale. Without this, the headless
     // context leaves DpiScale at 0.0f (no platform backend sets it), which
     // triggers an assertion in ImGui::SetCurrentViewport() when
@@ -218,7 +213,7 @@ class HeadlessUi {
     if (tex_id == 0) {
       tex_id = next_tex_id_++;
     }
-    std::string data = pixels;
+    const std::string_view data(pixels);
     if (width <= 0 || height <= 0 ||
         data.size() < static_cast<size_t>(width) * height * bpp) {
       LOG(Error, "UploadImage: bad dimensions %dx%dx%d for %zu bytes", width,
@@ -285,7 +280,7 @@ class HeadlessUi {
   // ---- The UI stream, called from the web server's thread. -----------------
 
   py::bytes StartSession(const py::bytes& handshake) {
-    const std::string data = handshake;
+    const std::string_view data(handshake);
     mujoco::studio::netui::Bytes reply;
     std::string error;
     bool started = false;
@@ -306,7 +301,7 @@ class HeadlessUi {
   }
 
   bool PushInput(const py::bytes& message) {
-    const std::string data = message;
+    const std::string_view data(message);
     py::gil_scoped_release no_gil;
     return session_.PushInput(std::as_bytes(std::span(data)));
   }

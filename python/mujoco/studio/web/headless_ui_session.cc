@@ -16,6 +16,7 @@
 
 #include <algorithm>
 #include <cfloat>
+#include <cmath>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
@@ -226,7 +227,7 @@ void HeadlessUiSession::ResetLocked() {
   pending_textures_.clear();
   pending_clipboards_.clear();
   pending_inputs_.clear();
-  pending_frame_message_.clear();
+  has_pending_frame_ = false;
   pending_frame_.Clear();
   has_reference_frame_ = false;
   reference_frame_.Clear();
@@ -269,17 +270,29 @@ std::vector<netui::Bytes> HeadlessUiSession::TakeMessages() {
   // Texture and clipboard updates wait until a draw frame is ready so every
   // non-empty batch ends with a draw frame (the message the browser acks).
   // If multiple frames were captured since the last TakeMessages() call, only
-  // the newest frame is kept, encoded against `reference_frame_` (the last
-  // frame returned here) unless a full frame was requested.
-  if (!active_ || pending_frame_message_.empty()) return messages;
+  // the newest frame is encoded here against `reference_frame_` (the last frame
+  // returned here) unless a full frame was requested.
+  if (!active_ || !has_pending_frame_) return messages;
+  const bool send_full = full_frame_wanted_ || !has_reference_frame_;
+  netui::Bytes frame_message =
+      netui::EncodeDrawFrame(pending_frame_, next_frame_index_,
+                             send_full ? nullptr : &reference_frame_);
+  has_pending_frame_ = false;
+  if (frame_message.empty()) {
+    // The browser would reject a frame this large, ask for a keyframe, and get
+    // the same frame again, so drop it and say why. Texture and clipboard
+    // updates wait for the next frame.
+    LOG(Error, "TakeMessages: dropping a draw frame larger than %zu bytes",
+        netui::kMaxMessageBytes);
+    return messages;
+  }
   messages.swap(pending_textures_);
   messages.insert(messages.end(),
                   std::make_move_iterator(pending_clipboards_.begin()),
                   std::make_move_iterator(pending_clipboards_.end()));
   pending_clipboards_.clear();
-  messages.push_back(std::move(pending_frame_message_));
-  pending_frame_message_.clear();
-  if (pending_frame_is_full_) full_frame_wanted_ = false;
+  messages.push_back(std::move(frame_message));
+  if (send_full) full_frame_wanted_ = false;
   // The browser will have this frame: the next one is compressed against it.
   reference_frame_ = std::move(pending_frame_);
   has_reference_frame_ = true;
@@ -318,6 +331,20 @@ void HeadlessUiSession::ApplyOneInput(const netui::Input& input) {
   ImGuiIO& io = ImGui::GetIO();
   if (input.screen_size[0] > 0 && input.screen_size[1] > 0) {
     io.DisplaySize = ImVec2(input.screen_size[0], input.screen_size[1]);
+  }
+  if (std::isfinite(input.framebuffer_scale) &&
+      input.framebuffer_scale > 0.0f) {
+    const float scale =
+        std::round(std::clamp(input.framebuffer_scale, 0.5f, 4.0f) * 100.0f) *
+        0.01f;
+    io.DisplayFramebufferScale = ImVec2(scale, scale);
+  }
+  const bool macos = (input.header.flags & netui::Input::kMacOsBehaviors) != 0;
+  if (io.ConfigMacOSXBehaviors != macos) {
+    if (has_previous_input_) {
+      ReleaseInput();
+    }
+    io.ConfigMacOSXBehaviors = macos;
   }
   io.AddMousePosEvent(input.mouse_pos[0], input.mouse_pos[1]);
   AddInputEvents(io, has_previous_input_ ? &previous_input_ : nullptr, input);
@@ -379,22 +406,11 @@ void HeadlessUiSession::CaptureFrame(ImGuiMouseCursor mouse_cursor) {
     pending_textures_.push_back(std::move(message));
   }
 
-  // Encode the frame against `reference_frame_` (the last frame returned by
-  // TakeMessages(), which the browser already has). If a previous frame was
-  // captured since the last TakeMessages() call, this overwrites
-  // `pending_frame_message_` so the superseded frame is never sent.
-  pending_frame_is_full_ = full_frame_wanted_ || !has_reference_frame_;
-  pending_frame_message_ = netui::EncodeDrawFrame(
-      frame, next_frame_index_,
-      pending_frame_is_full_ ? nullptr : &reference_frame_);
-  if (pending_frame_message_.empty()) {
-    // The browser would reject a frame this large, ask for a keyframe, and get
-    // the same frame again, so drop it and say why.
-    LOG(Error, "CaptureFrame: dropping a draw frame larger than %zu bytes",
-        netui::kMaxMessageBytes);
-    return;
-  }
+  // Store the serialized draw lists; TakeMessages() encodes only the newest
+  // frame that actually goes out on the wire, replacing any earlier frame
+  // captured since the last TakeMessages() call.
   pending_frame_ = std::move(frame);
+  has_pending_frame_ = true;
 }
 
 void HeadlessUiSession::QueueClipboard(std::string_view text) {

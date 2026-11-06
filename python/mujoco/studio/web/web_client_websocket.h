@@ -12,9 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-// A browser WebSocket as the web client's UI stream uses it: whole binary
-// messages each way, read from the app's frame loop. The browser connects and
-// closes WebSockets asynchronously; GetReadyState() tells where it stands.
+// A browser WebSocket as the web client's /ui and /state streams use it: whole
+// binary or text frames each way, read from the app's frame loop. The browser
+// connects and closes WebSockets asynchronously; GetReadyState() tells where it
+// stands.
 
 #ifndef MUJOCO_PYTHON_STUDIO_WEB_WEB_CLIENT_WEBSOCKET_H_
 #define MUJOCO_PYTHON_STUDIO_WEB_WEB_CLIENT_WEBSOCKET_H_
@@ -23,6 +24,7 @@
 #include <memory>
 #include <span>
 #include <string>
+#include <utility>
 #include <vector>
 
 namespace mujoco::studio {
@@ -40,6 +42,12 @@ class WebSocket {
     kError,
   };
 
+  struct Frame {
+    Bytes binary;
+    std::string text;
+    bool is_text = false;
+  };
+
   // Closes the socket.
   virtual ~WebSocket() = default;
 
@@ -47,6 +55,9 @@ class WebSocket {
 
   // The close code the server sent, once the socket has closed; else 0.
   virtual int CloseCode() const = 0;
+
+  // The close reason text sent by the server once the socket has closed.
+  virtual std::string CloseReason() const { return ""; }
 
   // Sends one binary message. Returns false if the socket is not open.
   virtual bool SendBinary(BytesView data) = 0;
@@ -56,6 +67,18 @@ class WebSocket {
 
   // Returns the binary messages received since the last call, oldest first.
   virtual std::vector<Bytes> TakeMessages() = 0;
+
+  // Returns all frames (text and binary) received since the last call, oldest
+  // first. Default implementation wraps TakeMessages() as binary frames.
+  virtual std::vector<Frame> TakeFrames() {
+    std::vector<Frame> frames;
+    for (Bytes& message : TakeMessages()) {
+      Frame frame;
+      frame.binary = std::move(message);
+      frames.push_back(std::move(frame));
+    }
+    return frames;
+  }
 };
 
 // Human-readable state name, for logs.

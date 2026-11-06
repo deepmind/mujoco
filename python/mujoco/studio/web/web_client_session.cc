@@ -14,15 +14,27 @@
 
 #include "web_client_session.h"
 
+#ifdef __EMSCRIPTEN__
 #include <emscripten.h>
+#else
+#include <ctime>
+#endif
 
+#include <cstddef>
+#include <cstdint>
 #include <cstdio>
 #include <cstring>
+#include <memory>
+#include <span>
+#include <string>
+#include <utility>
 
 #include "logging.h"
 #include "state_payload.h"
+#include "web_client_websocket.h"
 
 namespace mujoco::studio {
+namespace {
 
 // Session-channel messages sent/received as text frames on the state WebSocket.
 constexpr char kMsgRequestControl[] = "request_control";
@@ -49,120 +61,37 @@ constexpr double kUiRetrySec = 1.0;
 // settles into spectating.
 constexpr int kMaxUiRejects = 3;
 
-EM_BOOL Session::OnWsMessage(int event_type,
-                             const EmscriptenWebSocketMessageEvent* event,
-                             void* user_data) {
-  auto* session = static_cast<Session*>(user_data);
-  session->server_close_code_ = 0;  // Accepted; hide the disconnect notice.
-  session->server_close_reason_.clear();
-  if (event->isText) {
-    // Text frames carry session metadata; emscripten null-terminates them.
-    session->OnSessionText(reinterpret_cast<const char*>(event->data));
-  } else {
-    session->HandleMessage(event->data, event->numBytes);
-    // Flow control: the server keeps at most one state payload in flight and
-    // sends the next (freshest) one only after this ack. Without it, a slow
-    // link buffers seconds of stale payloads in the socket and the whole viewer
-    // lags by that queue.
-    session->SendText(kMsgStateAck);
-  }
-  return EM_TRUE;
+}  // namespace
+
+double Session::DefaultClock() {
+#ifdef __EMSCRIPTEN__
+  return emscripten_get_now() / 1000.0;
+#else
+  struct timespec ts{};
+  timespec_get(&ts, TIME_UTC);
+  return static_cast<double>(ts.tv_sec) +
+         static_cast<double>(ts.tv_nsec) * 1e-9;
+#endif
 }
 
-EM_BOOL Session::OnWsOpen(int event_type,
-                          const EmscriptenWebSocketOpenEvent* event,
-                          void* user_data) {
-  auto* session = static_cast<Session*>(user_data);
-  session->connected_ = true;
-  // server_close_code_ is NOT cleared here: a rejected connection also fires
-  // open before the server's closing code arrives. It clears on the first
-  // received message, which proves the server accepted us.
-  LOG(Info, "State WebSocket connected");
-  return EM_TRUE;
-}
-
-EM_BOOL Session::OnWsError(int event_type,
-                           const EmscriptenWebSocketErrorEvent* event,
-                           void* user_data) {
-  LOG(Error, "State WebSocket error");
-  return EM_TRUE;
-}
-
-EM_BOOL Session::OnWsClose(int event_type,
-                           const EmscriptenWebSocketCloseEvent* event,
-                           void* user_data) {
-  auto* session = static_cast<Session*>(user_data);
-  LOG(Info, "State WebSocket closed (code=%d)", event->code);
-  session->connected_ = false;
-
-  // Codes 4xxx are deliberate server-side closes (e.g. kWsCloseSessionFull).
-  // These conditions pass, so the GUI shows a notice while the reconnect loop
-  // retries at a slower pace. The reason is shown too: for kWsCloseViewerError
-  // it names the exception that stopped the viewer.
-  if (event->code >= 4000 && event->code <= 4999) {
-    session->server_close_code_ = event->code;
-    session->server_close_reason_ = event->reason;  // Null-terminated.
-    LOG(Info,
-        "Server ended this connection (code=%d, reason=\"%s\"); retrying "
-        "slowly.",
-        event->code, event->reason);
-  }
-
-  // Free the handle; without this, every closed socket (including each failed
-  // reconnect) leaks its handle and callback registrations in Emscripten's
-  // socket table. Session (this) is a stable global, so the user_data of any
-  // already-queued event stays valid; detaching the callbacks first stops them
-  // firing on the freed handle.
-  session->CloseSocket();
-
-  return EM_TRUE;
-}
-
-void Session::CloseSocket() {
-  if (socket_ <= 0) return;
-  emscripten_websocket_set_onopen_callback(socket_, nullptr, nullptr);
-  emscripten_websocket_set_onmessage_callback(socket_, nullptr, nullptr);
-  emscripten_websocket_set_onerror_callback(socket_, nullptr, nullptr);
-  emscripten_websocket_set_onclose_callback(socket_, nullptr, nullptr);
-  emscripten_websocket_delete(socket_);
-  socket_ = 0;
-  connected_ = false;
-}
-
-void Session::Connect(const std::string& url) {
-  // Drop any lingering socket first so a reconnect cannot leak the old one.
-  CloseSocket();
-
-  EmscriptenWebSocketCreateAttributes attr;
-  emscripten_websocket_init_create_attributes(&attr);
-  attr.url = url.c_str();
-  attr.protocols = nullptr;
-  attr.createOnMainThread = EM_TRUE;
-
-  socket_ = emscripten_websocket_new(&attr);
-  if (socket_ <= 0) {
-    LOG(Error, "Failed to create state WebSocket");
-    return;
-  }
-  emscripten_websocket_set_onopen_callback(socket_, this, OnWsOpen);
-  emscripten_websocket_set_onmessage_callback(socket_, this, OnWsMessage);
-  emscripten_websocket_set_onerror_callback(socket_, this, OnWsError);
-  emscripten_websocket_set_onclose_callback(socket_, this, OnWsClose);
-  LOG(Info, "State WebSocket connecting to %s", url.c_str());
+void Session::Connect(std::unique_ptr<WebSocket> socket) {
+  socket_ = std::move(socket);
 }
 
 void Session::SendText(const char* text) {
-  if (socket_ && connected_) {
-    emscripten_websocket_send_utf8_text(socket_, text);
+  if (socket_) {
+    socket_->SendText(text);
   }
 }
 
 void Session::SetRole(SessionRole role) {
   role_ = role;
+#ifdef __EMSCRIPTEN__
   // Warning: clang-format splits `!==` into `!= =`, so avoid that syntax!
   EM_ASM(
       { Module.isSpectator = !!$0; },
       role == SessionRole::kControlling ? 0 : 1);
+#endif
 }
 
 bool ParseRoster(const char* text, Roster* roster) {
@@ -216,12 +145,14 @@ void Session::OnSessionText(const char* text) {
     remote_ui_state_ = RemoteUiState::kConnecting;
   } else if (strncmp(text, kMsgPrefetchPrefix, strlen(kMsgPrefetchPrefix)) ==
              0) {
+#ifdef __EMSCRIPTEN__
     // The page's JS owns the model cache and the background downloads.
     EM_ASM(
         {
           if (Module.onPrefetchHint) Module.onPrefetchHint(UTF8ToString($0));
         },
         text);
+#endif
   }
 }
 
@@ -234,8 +165,46 @@ void Session::FillView(SessionView* view) const {
 }
 
 void Session::Update() {
-  const double now = emscripten_get_now() / 1000.0;
-  if (now - last_heartbeat_time_ >= kHeartbeatSec) {
+  if (socket_) {
+    // server_close_code_ is NOT cleared on socket open: a rejected connection
+    // also opens briefly before the server's close frame arrives. It clears on
+    // the first received message, which proves the server accepted us.
+    for (const WebSocket::Frame& frame : socket_->TakeFrames()) {
+      server_close_code_ = 0;
+      server_close_reason_.clear();
+      if (frame.is_text) {
+        OnSessionText(frame.text.c_str());
+      } else {
+        HandleMessage(frame.binary);
+        // Flow control: the server keeps at most one state payload in flight
+        // and sends the next (freshest) one only after this ack. Without it, a
+        // slow link buffers seconds of stale payloads in the socket and the
+        // whole viewer lags by that queue.
+        SendText(kMsgStateAck);
+      }
+    }
+
+    const WebSocket::ReadyState state = socket_->GetReadyState();
+    if (state == WebSocket::ReadyState::kClosed ||
+        state == WebSocket::ReadyState::kError) {
+      const int code = socket_->CloseCode();
+      LOG(Info, "State WebSocket closed (code=%d)", code);
+      // Codes 4xxx are deliberate server-side closes (e.g. kWsCloseSessionFull)
+      // whose reason text is surfaced in the disconnect notice.
+      if (code >= 4000 && code <= 4999) {
+        server_close_code_ = code;
+        server_close_reason_ = socket_->CloseReason();
+        LOG(Info,
+            "Server ended this connection (code=%d, reason=\"%s\"); retrying "
+            "slowly.",
+            code, server_close_reason_.c_str());
+      }
+      socket_.reset();
+    }
+  }
+
+  const double now = clock_();
+  if (Connected() && now - last_heartbeat_time_ >= kHeartbeatSec) {
     last_heartbeat_time_ = now;
     SendText(kMsgHeartbeat);
   }
@@ -249,30 +218,37 @@ void Session::HandleRemoteUiState(RemoteUiState state, int close_code) {
       server_close_code_ != 0) {
     return;
   }
-  const double now = emscripten_get_now() / 1000.0;
-  if (now - last_ui_retry_time_ < kUiRetrySec) {
-    return;
-  }
   if (state == RemoteUiState::kOpen) {
     ui_reject_count_ = 0;
     if (role_ != SessionRole::kControlling) {
       SetRole(SessionRole::kControlling);  // The claim succeeded.
       SendTheme();  // The remote UI takes this page's theme.
     }
-  } else if (state == RemoteUiState::kClosedOrError) {
-    last_ui_retry_time_ = now;
+    return;
+  }
+  if (state == RemoteUiState::kClosedOrError) {
     // A kWsCloseControllerTaken close while kControlling means another page
     // took the slot (Steal Control): settle instantly. A rejected claim
     // (kClaiming) retries a few times first, because a reloading controller
     // briefly races its own slot.
-    const bool ousted = close_code == kWsCloseControllerTaken &&
-                        role_ == SessionRole::kControlling;
-    if (ousted || (close_code == kWsCloseControllerTaken &&
-                   ++ui_reject_count_ >= kMaxUiRejects)) {
+    if (close_code == kWsCloseControllerTaken &&
+        role_ == SessionRole::kControlling) {
       LOG(Info, "Controller slot taken; spectating");
       SetRole(SessionRole::kSpectating);
       // Also drops the last received UI frame: a page forced out of the
       // controller slot must not keep showing a frozen Studio UI.
+      callbacks_.ShutdownRemoteUi();
+      return;
+    }
+    const double now = clock_();
+    if (now - last_ui_retry_time_ < kUiRetrySec) {
+      return;
+    }
+    last_ui_retry_time_ = now;
+    if (close_code == kWsCloseControllerTaken &&
+        ++ui_reject_count_ >= kMaxUiRejects) {
+      LOG(Info, "Controller slot taken; spectating");
+      SetRole(SessionRole::kSpectating);
       callbacks_.ShutdownRemoteUi();
     } else {
       LOG(Info, "UI WebSocket closed; reconnecting...");
@@ -282,16 +258,16 @@ void Session::HandleRemoteUiState(RemoteUiState state, int close_code) {
   }
 }
 
-void Session::HandleMessage(const uint8_t* data, uint32_t num_bytes) {
-  last_message_time_ = emscripten_get_now() / 1000.0;
+void Session::HandleMessage(std::span<const std::byte> message) {
+  last_message_time_ = clock_();
   if (!callbacks_.ReadyForPayload()) {
     return;
   }
-  bytes_accum_ += num_bytes;
+  bytes_accum_ += message.size();
 
   StatePayloadView view;
-  if (!ParseStatePayload(data, num_bytes, &view)) {
-    LOG(Error, "Malformed state payload (%u bytes); dropping", num_bytes);
+  if (!ParseStatePayload(message.data(), message.size(), &view)) {
+    LOG(Error, "Malformed state payload (%zu bytes); dropping", message.size());
     return;
   }
 
@@ -345,9 +321,9 @@ void Session::SendTheme() {
 }
 
 void Session::SendCamera(const mjvCamera& camera, uint32_t generation) {
-  if (socket_ && connected_) {
+  if (socket_) {
     ClientCameraMessage message = MakeClientCameraMessage(camera, generation);
-    emscripten_websocket_send_binary(socket_, &message, sizeof(message));
+    socket_->SendBinary(std::as_bytes(std::span(&message, 1)));
   }
 }
 }  // namespace mujoco::studio

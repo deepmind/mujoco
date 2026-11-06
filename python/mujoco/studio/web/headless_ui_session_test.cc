@@ -612,5 +612,88 @@ TEST_F(HeadlessUiSessionTest, ForwardsClipboardTextWithNextFrame) {
   }
 }
 
+TEST_F(HeadlessUiSessionTest,
+       KeyframeRequestAfterCaptureFrameTakesEffectImmediately) {
+  Connect();
+  RunFrame("First");
+  session_.TakeMessages();
+
+  // CaptureFrame() runs on the UI thread before the browser's keyframe request
+  // arrives on the server thread; TakeMessages() encodes lazily so the request
+  // still produces an uncompressed frame immediately.
+  RunFrame("Frist");
+  netui::Input input;
+  input.header.flags = netui::Input::kRequestKeyframe;
+  ASSERT_TRUE(PushInput(input));
+
+  std::vector<netui::Bytes> messages = session_.TakeMessages();
+  ASSERT_EQ(messages.size(), 1u);
+  EXPECT_EQ(HeaderOf<netui::DrawFrame>(messages.back()).header.flags &
+                netui::DrawFrame::kCompressed,
+            0u);
+
+  // Subsequent frames resume delta compression once the keyframe was sent.
+  RunFrame("Fisrt");
+  messages = session_.TakeMessages();
+  ASSERT_EQ(messages.size(), 1u);
+  EXPECT_NE(HeaderOf<netui::DrawFrame>(messages.back()).header.flags &
+                netui::DrawFrame::kCompressed,
+            0u);
+}
+
+TEST_F(HeadlessUiSessionTest, AppliesFramebufferScaleAndMacOsModifierSwap) {
+  StartSession();
+
+  netui::Input input;
+  input.screen_size[0] = 800;
+  input.screen_size[1] = 600;
+  input.framebuffer_scale = 2.0f;
+  ASSERT_TRUE(PushInput(input));
+  BeginFrame();
+  ImGuiIO& io = ImGui::GetIO();
+  EXPECT_FLOAT_EQ(io.DisplayFramebufferScale.x, 2.0f);
+  EXPECT_FLOAT_EQ(io.DisplayFramebufferScale.y, 2.0f);
+  EndFrame("HiDPI");
+
+  // Out-of-range scales clamp to [0.5, 4.0].
+  input.framebuffer_scale = 10.0f;
+  ASSERT_TRUE(PushInput(input));
+  BeginFrame();
+  EXPECT_FLOAT_EQ(io.DisplayFramebufferScale.x, 4.0f);
+  EndFrame("HiDPI");
+
+  input.framebuffer_scale = 0.1f;
+  ASSERT_TRUE(PushInput(input));
+  BeginFrame();
+  EXPECT_FLOAT_EQ(io.DisplayFramebufferScale.x, 0.5f);
+  EndFrame("HiDPI");
+
+  // Physical Super from a macOS browser maps to Dear ImGui Ctrl once.
+  netui::Input mac_input;
+  mac_input.screen_size[0] = 800;
+  mac_input.screen_size[1] = 600;
+  mac_input.header.flags = netui::Input::kMacOsBehaviors;
+  mac_input.SetImGuiKeyDown(ImGuiKey_LeftSuper);
+  mac_input.SetImGuiKeyDown(ImGuiKey_ReservedForModSuper);
+  ASSERT_TRUE(PushInput(mac_input));
+  BeginFrame();
+  EXPECT_TRUE(io.ConfigMacOSXBehaviors);
+  EXPECT_TRUE(io.KeyCtrl);
+  EXPECT_TRUE(ImGui::IsKeyDown(ImGuiKey_LeftCtrl));
+  EndFrame("Mac");
+
+  // Switching macOS behavior off releases held modifiers before flipping mode.
+  netui::Input linux_input;
+  linux_input.screen_size[0] = 800;
+  linux_input.screen_size[1] = 600;
+  ASSERT_TRUE(PushInput(linux_input));
+  BeginFrame();
+  EXPECT_FALSE(io.ConfigMacOSXBehaviors);
+  EXPECT_FALSE(io.KeyCtrl);
+  EXPECT_FALSE(io.KeySuper);
+  EXPECT_FALSE(ImGui::IsKeyDown(ImGuiKey_LeftCtrl));
+  EXPECT_FALSE(ImGui::IsKeyDown(ImGuiKey_LeftSuper));
+  EndFrame("Linux");
+}
 }  // namespace
 }  // namespace mujoco::studio

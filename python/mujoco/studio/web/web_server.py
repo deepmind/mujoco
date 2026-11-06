@@ -136,6 +136,9 @@ _MODEL_CACHE_BYTES_DEFAULT = 512 * 1024 * 1024
 # A control grant must arrive within this window, else it moves down the queue.
 _GRANT_EXPIRY_SEC = 5.0
 
+# A /ui client must complete its Hello handshake within this window.
+_HANDSHAKE_TIMEOUT_SEC = 5.0
+
 
 # A controller whose tab stops running (hidden or closed without a clean
 # disconnect) is released once someone is waiting for control. Detected by
@@ -371,7 +374,9 @@ def _session_id(ws: ServerConnection) -> str:
   query = path.split("?", 1)[1] if "?" in path else ""
   for part in query.split("&"):
     if part.startswith("sid="):
-      return part[4:]
+      sid = urllib.parse.unquote(part[4:])[:128]
+      if sid:
+        return sid
   return f"anon-{id(ws)}"
 
 
@@ -563,9 +568,11 @@ def _run_server(
         )
     )
 
-    # The browser controlling the UI (single slot) and all browsers receiving
-    # the state broadcast (controller + spectators), keyed by session id.
-    active_ui_ws = None
+    # The browser controlling the UI (single slot), any /ui handshake currently
+    # in flight, and all browsers receiving the state broadcast (controller +
+    # spectators), keyed by session id.
+    active_ui_ws: ServerConnection | None = None
+    claiming_ui_ws: ServerConnection | None = None
     controller_sid: str | None = None
     state_clients: dict[str, ServerConnection] = {}
 
@@ -630,7 +637,7 @@ def _run_server(
     async def grant_next() -> None:
       """Offers the free controller slot to the pending or next queued page."""
       nonlocal pending_grant_sid
-      if active_ui_ws is not None:
+      if active_ui_ws is not None or claiming_ui_ws is not None:
         return
 
       if pending_grant_sid is None:
@@ -660,7 +667,11 @@ def _run_server(
       async def expire(granted: str) -> None:
         nonlocal pending_grant_sid
         await asyncio.sleep(_GRANT_EXPIRY_SEC)
-        if pending_grant_sid == granted and active_ui_ws is None:
+        if (
+            pending_grant_sid == granted
+            and active_ui_ws is None
+            and claiming_ui_ws is None
+        ):
           pending_grant_sid = None
           await grant_next()
 
@@ -670,7 +681,7 @@ def _run_server(
 
     async def handle_session_message(sid: str, text: str) -> None:
       """A control or heartbeat message from one browser (/state text)."""
-      nonlocal pending_grant_sid, max_spectators
+      nonlocal claiming_ui_ws, pending_grant_sid, max_spectators
       last_heartbeat[sid] = loop_time()
       if text == _SessionMessage.REQUEST_CONTROL:
         if sid != controller_sid and sid not in control_queue:
@@ -693,6 +704,11 @@ def _run_server(
             await active_ui_ws.close(
                 _WS_CLOSE_CONTROLLER_TAKEN, "control taken"
             )
+          elif claiming_ui_ws is not None:
+            claiming = claiming_ui_ws
+            claiming_ui_ws = None
+            await claiming.close(_WS_CLOSE_CONTROLLER_TAKEN, "control taken")
+            await grant_next()
           else:
             await grant_next()
       elif text == _SessionMessage.HEARTBEAT:
@@ -758,15 +774,15 @@ def _run_server(
     # --- /ui: stream the headless UI to the controlling browser -------------
 
     async def ui_handler(ws: ServerConnection) -> None:
-      nonlocal active_ui_ws, controller_sid, pending_grant_sid
+      nonlocal active_ui_ws, claiming_ui_ws, controller_sid, pending_grant_sid
       nonlocal ui_rejection_logged
       ui = server.ui
       if ui is None:
         await ws.close(_WS_CLOSE_CONTROLLER_TAKEN, "controller unavailable")
         return
-      if active_ui_ws is not None:
+      if active_ui_ws is not None or claiming_ui_ws is not None:
         # One controller at a time. The rejected browser spectates and may retry
-        # via its "Take control" button once the controller leaves.
+        # via its "Request control" button once the controller leaves.
         logger.debug("[UiStream] Controller slot taken; rejecting new browser")
         await ws.close(_WS_CLOSE_CONTROLLER_TAKEN, "controller slot taken")
         return
@@ -775,21 +791,25 @@ def _run_server(
         # The slot is reserved for a granted page (queue fairness).
         await ws.close(_WS_CLOSE_CONTROLLER_TAKEN, "controller slot reserved")
         return
-      if sid == pending_grant_sid:
-        pending_grant_sid = None
-      if sid in control_queue:
-        control_queue.remove(sid)
-      active_ui_ws = ws
-      controller_sid = sid
-      last_controller_input[0] = loop_time()
-      await broadcast_roster()
 
+      claiming_ui_ws = ws
+      session_started = False
       try:
         # Handshake: the browser's Hello message, answered with the UI's. A
-        # new session then re-sends everything the browser needs.
-        handshake = await ws.recv()
+        # new session then re-sends everything the browser needs. Only promote
+        # this browser to controller once its handshake has been validated, so
+        # stalled or incompatible clients cannot flip the session roster.
+        try:
+          handshake = await asyncio.wait_for(
+              ws.recv(), timeout=_HANDSHAKE_TIMEOUT_SEC
+          )
+        except asyncio.TimeoutError:
+          await ws.close(CloseCode.POLICY_VIOLATION, "handshake timeout")
+          return
         if not isinstance(handshake, bytes):
           await ws.close(CloseCode.POLICY_VIOLATION, "expected a handshake")
+          return
+        if claiming_ui_ws is not ws:
           return
         try:
           reply = ui.start_session(handshake)
@@ -801,7 +821,20 @@ def _run_server(
             logger.warning("[UiStream] Rejected a browser: %s", e)
           await ws.close(CloseCode.POLICY_VIOLATION, _close_reason(str(e)))
           return
+        session_started = True
         await ws.send(reply)
+        if claiming_ui_ws is not ws:
+          return
+
+        claiming_ui_ws = None
+        if sid == pending_grant_sid:
+          pending_grant_sid = None
+        if sid in control_queue:
+          control_queue.remove(sid)
+        active_ui_ws = ws
+        controller_sid = sid
+        last_controller_input[0] = loop_time()
+        await broadcast_roster()
         logger.debug("[UiStream] Session started.")
 
         # See _UI_ACK_PREFIX: one frame in flight at a time. The UI keeps
@@ -859,17 +892,28 @@ def _run_server(
         pass
       finally:
         logger.debug("[UiStream] Session ended.")
-        # Only this handler can have started a session: it holds the slot.
-        ui.end_session()
+        was_claiming = claiming_ui_ws is ws
+        if was_claiming:
+          claiming_ui_ws = None
+        if session_started:
+          ui.end_session()
         if active_ui_ws is ws:
           active_ui_ws = None
           controller_sid = None
           await grant_next()
           await broadcast_roster()
+        elif (
+            was_claiming
+            and active_ui_ws is None
+            and pending_grant_sid is None
+            and control_queue
+        ):
+          await grant_next()
 
     # --- /state: latest-wins payload broadcast --------------------------------
 
     async def state_handler(ws: ServerConnection) -> None:
+      nonlocal pending_grant_sid
       sid = _session_id(ws)
       # A page reconnecting after a network blip keeps its sid; its stale entry
       # (dead socket, not yet cleaned up) must not count against the limit,
@@ -994,6 +1038,13 @@ def _run_server(
           if sid in control_queue:
             control_queue.remove(sid)
           last_heartbeat.pop(sid, None)
+          if (
+              pending_grant_sid == sid
+              and active_ui_ws is None
+              and claiming_ui_ws is None
+          ):
+            pending_grant_sid = None
+            await grant_next()
           logger.info(
               "[StateWS] Browser disconnected (%d total)", len(state_clients)
           )
@@ -1145,16 +1196,17 @@ def _run_server(
     async def watch_stop() -> None:
       loop = asyncio.get_running_loop()
       stopped = asyncio.Event()
-
-      def poll() -> None:
-        stop_event.wait()
-        try:
-          loop.call_soon_threadsafe(stopped.set)
-        except RuntimeError:
-          pass  # Loop already closed.
-
-      threading.Thread(target=poll, daemon=True).start()
-      await stopped.wait()
+      with server._state_lock:  # pylint: disable=protected-access
+        server._wake_stop = (  # pylint: disable=protected-access
+            functools.partial(loop.call_soon_threadsafe, stopped.set)
+        )
+        if stop_event.is_set():
+          stopped.set()
+      try:
+        await stopped.wait()
+      finally:
+        with server._state_lock:  # pylint: disable=protected-access
+          server._wake_stop = None  # pylint: disable=protected-access
       logger.debug("[Http] Stop event received; shutting down.")
 
     # The UI codec does its own delta compression and the state payload is
@@ -1283,6 +1335,7 @@ class WebServer:
 
     # Wakes the /ui stream's sender; set while the server's event loop runs.
     self._wake_ui_stream: Callable[[], Any] | None = None
+    self._wake_stop: Callable[[], Any] | None = None
 
     self._stop_event = threading.Event()
     self._thread: threading.Thread | None = None
@@ -1478,7 +1531,14 @@ class WebServer:
         which show it on the page.
     """
     self.stop_reason = reason
-    self._stop_event.set()
+    with self._state_lock:
+      self._stop_event.set()
+      wake = self._wake_stop
+    if wake is not None:
+      try:
+        wake()
+      except RuntimeError:
+        pass
     if self._thread is not None:
       self._thread.join(timeout=5.0)
       self._thread = None

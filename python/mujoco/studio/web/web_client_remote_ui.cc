@@ -71,6 +71,28 @@ T ClampToInt(float value) {
   return static_cast<T>(value);
 }
 
+// Reverses Dear ImGui's macOS Ctrl <-> Super swap so Input carries physical
+// keys on the wire and the host swaps them at most once.
+ImGuiKey PhysicalKey(ImGuiKey key, bool macos_behaviors) {
+  if (!macos_behaviors) return key;
+  switch (key) {
+    case ImGuiKey_LeftCtrl:
+      return ImGuiKey_LeftSuper;
+    case ImGuiKey_LeftSuper:
+      return ImGuiKey_LeftCtrl;
+    case ImGuiKey_RightCtrl:
+      return ImGuiKey_RightSuper;
+    case ImGuiKey_RightSuper:
+      return ImGuiKey_RightCtrl;
+    case ImGuiKey_ReservedForModCtrl:
+      return ImGuiKey_ReservedForModSuper;
+    case ImGuiKey_ReservedForModSuper:
+      return ImGuiKey_ReservedForModCtrl;
+    default:
+      return key;
+  }
+}
+
 // Logs details when a draw command references a texture ID with no GPU handle.
 void LogUnmappedTexture(
     RemoteUi::TextureId tex_id, size_t map_size, uint32_t draw_idx,
@@ -87,15 +109,33 @@ void LogUnmappedTexture(
 
 }  // namespace
 
-void RemoteUi::Connect(std::unique_ptr<WebSocket> socket) {
-  socket_ = std::move(socket);
-  handshake_sent_ = false;
-  last_state_ = ReadyState::kDisconnected;
+void RemoteUi::ResetSessionState() {
+  if (callbacks_.GpuReady()) {
+    for (const auto& [tex_id, handle] : texture_map_) {
+      if (handle != 0) {
+        callbacks_.UploadTexture(handle, nullptr, 0, 0);
+      }
+    }
+  }
+  texture_map_.clear();
+  texture_cpu_.clear();
+  remote_draw_data_.Clear();
+  remote_draw_lists_.clear();
+  pending_input_chars_.clear();
   frame_to_ack_.reset();
-  request_keyframe_ = true;
   last_serialized_frame_.Clear();
   last_frame_index_ = 0;
   last_decoded_frame_.reset();
+  handshake_sent_ = false;
+  handshake_accepted_ = false;
+  mouse_cursor_ = ImGuiMouseCursor_Arrow;
+}
+
+void RemoteUi::Connect(std::unique_ptr<WebSocket> socket) {
+  ResetSessionState();
+  socket_ = std::move(socket);
+  last_state_ = ReadyState::kDisconnected;
+  request_keyframe_ = true;
 }
 
 RemoteUi::ReadyState RemoteUi::ConnectionState() const {
@@ -187,6 +227,7 @@ void RemoteUi::ProcessMessage(netui::BytesView bytes) {
       if (bytes.size() == sizeof(netui::Hello)) {
         netui::Hello hello;
         std::memcpy(&hello, bytes.data(), sizeof(hello));
+        handshake_accepted_ = true;
         LOG(Info, "Connected to Studio UI host (version=%d)",
             static_cast<int>(hello.header.version));
       }
@@ -286,60 +327,71 @@ void RemoteUi::ProcessTextureMessage(netui::BytesView message) {
   const size_t pixel_count = static_cast<size_t>(pixel_count64);
   const std::byte* pixels = payload.data();
 
-  netui::Bytes rgba_pixels(pixel_count * 4);
-  if (is_a8) {
-    for (size_t p = 0; p < pixel_count; ++p) {
-      rgba_pixels[p * 4 + 0] = std::byte{0xFF};
-      rgba_pixels[p * 4 + 1] = std::byte{0xFF};
-      rgba_pixels[p * 4 + 2] = std::byte{0xFF};
-      rgba_pixels[p * 4 + 3] = pixels[p];
-    }
-  } else {
-    std::memcpy(rgba_pixels.data(), pixels, pixel_count * 4);
-  }
-
-  uintptr_t& local_tex = texture_map_[tex_id];
   // Keep a CPU-side RGBA mirror of each remote texture so partial updates can
   // be patched in before re-uploading the full texture to Filament (which does
   // not support sub-rect GPU texture updates).
-  TextureEntry& entry = texture_cpu_[tex_id];
-
+  TextureEntry* entry = nullptr;
   if (hdr.action == netui::Texture::Action::kCreate) {
-    entry.width = patch_w;
-    entry.height = patch_h;
-    entry.pixels = std::move(rgba_pixels);
+    entry = &texture_cpu_[tex_id];
+    entry->width = patch_w;
+    entry->height = patch_h;
+    entry->pixels.resize(pixel_count * 4);
+    if (is_a8) {
+      for (size_t p = 0; p < pixel_count; ++p) {
+        entry->pixels[p * 4 + 0] = std::byte{0xFF};
+        entry->pixels[p * 4 + 1] = std::byte{0xFF};
+        entry->pixels[p * 4 + 2] = std::byte{0xFF};
+        entry->pixels[p * 4 + 3] = pixels[p];
+      }
+    } else {
+      std::memcpy(entry->pixels.data(), pixels, pixel_count * 4);
+    }
   } else {
-    if (entry.pixels.empty()) {
+    auto cpu_it = texture_cpu_.find(tex_id);
+    if (cpu_it == texture_cpu_.end() || cpu_it->second.pixels.empty()) {
       LOG(Warning,
           "ProcessTextureMessage: partial update for tex_id=%lu "
           "but no CPU mirror exists, skipping",
           static_cast<unsigned long>(tex_id));
       return;
     }
+    entry = &cpu_it->second;
     const uint32_t off_x = hdr.x;
     const uint32_t off_y = hdr.y;
-    if (static_cast<uint64_t>(off_x) + patch_w > entry.width ||
-        static_cast<uint64_t>(off_y) + patch_h > entry.height) {
+    if (static_cast<uint64_t>(off_x) + patch_w > entry->width ||
+        static_cast<uint64_t>(off_y) + patch_h > entry->height) {
       LOG(Warning,
           "ProcessTextureMessage: patch %ux%u at (%u,%u) exceeds mirror %ux%u "
           "for tex_id=%lu; dropping",
-          patch_w, patch_h, off_x, off_y, entry.width, entry.height,
+          patch_w, patch_h, off_x, off_y, entry->width, entry->height,
           static_cast<unsigned long>(tex_id));
       return;
     }
     for (uint32_t row = 0; row < patch_h; ++row) {
-      const size_t dst_offset =
-          (static_cast<size_t>(off_y + row) * entry.width + off_x) * 4;
-      const size_t src_offset = static_cast<size_t>(row) * patch_w * 4;
-      std::memcpy(&entry.pixels[dst_offset], &rgba_pixels[src_offset],
-                  static_cast<size_t>(patch_w) * 4);
+      std::byte* dst =
+          &entry->pixels[(static_cast<size_t>(off_y + row) * entry->width +
+                          off_x) *
+                         4];
+      if (is_a8) {
+        const std::byte* src = &pixels[static_cast<size_t>(row) * patch_w];
+        for (uint32_t col = 0; col < patch_w; ++col) {
+          dst[col * 4 + 0] = std::byte{0xFF};
+          dst[col * 4 + 1] = std::byte{0xFF};
+          dst[col * 4 + 2] = std::byte{0xFF};
+          dst[col * 4 + 3] = src[col];
+        }
+      } else {
+        const std::byte* src = &pixels[static_cast<size_t>(row) * patch_w * 4];
+        std::memcpy(dst, src, static_cast<size_t>(patch_w) * 4);
+      }
     }
   }
 
+  uintptr_t& local_tex = texture_map_[tex_id];
   if (callbacks_.GpuReady()) {
     const bool was_unmapped = (local_tex == 0);
-    local_tex = callbacks_.UploadTexture(local_tex, entry.pixels.data(),
-                                         entry.width, entry.height);
+    local_tex = callbacks_.UploadTexture(local_tex, entry->pixels.data(),
+                                         entry->width, entry->height);
     VLOG(1, "uploadGuiImage for client_tex_id=%lu -> filament=%lu",
          static_cast<unsigned long>(tex_id),
          static_cast<unsigned long>(local_tex));
@@ -365,6 +417,13 @@ void RemoteUi::ProcessDrawFrameMessage(netui::BytesView message) {
     return;
   }
 
+  if (frame.mouse_cursor >= ImGuiMouseCursor_None &&
+      frame.mouse_cursor < ImGuiMouseCursor_COUNT) {
+    mouse_cursor_ = static_cast<ImGuiMouseCursor>(frame.mouse_cursor);
+  } else {
+    mouse_cursor_ = ImGuiMouseCursor_Arrow;
+  }
+
   last_decoded_frame_ = std::move(frame);
   RebuildDrawData();
 }
@@ -372,7 +431,6 @@ void RemoteUi::ProcessDrawFrameMessage(netui::BytesView message) {
 void RemoteUi::RebuildDrawData() {
   if (!last_decoded_frame_.has_value()) return;
   const netui::DecodedFrame& frame = *last_decoded_frame_;
-
   uint64_t total_vtx = 0;
   uint64_t total_idx = 0;
   uint64_t total_draws = 0;
@@ -530,7 +588,9 @@ void RemoteUi::CaptureAndSendInput() {
   }
   input.framebuffer_scale =
       io.DisplayFramebufferScale.x > 0.0f ? io.DisplayFramebufferScale.x : 1.0f;
-  input.header.flags = request_keyframe_ ? netui::Input::kRequestKeyframe : 0;
+  input.header.flags =
+      (request_keyframe_ ? netui::Input::kRequestKeyframe : 0) |
+      (io.ConfigMacOSXBehaviors ? netui::Input::kMacOsBehaviors : 0);
 
   // Wheel fields are lifetime running totals so freezing accumulation while a
   // local overlay captures the mouse avoids spurious deltas on release.
@@ -557,7 +617,7 @@ void RemoteUi::CaptureAndSendInput() {
     for (int i = 0; i < ImGuiKey_NamedKey_COUNT; ++i) {
       const auto key = static_cast<ImGuiKey>(ImGuiKey_NamedKey_BEGIN + i);
       if (ImGui::IsKeyDown(key)) {
-        input.SetKeyDown(i, true);
+        input.SetImGuiKeyDown(PhysicalKey(key, io.ConfigMacOSXBehaviors), true);
       }
     }
 
@@ -582,12 +642,9 @@ void RemoteUi::CaptureAndSendInput() {
 }
 
 void RemoteUi::Shutdown() {
-  remote_draw_data_.Clear();
-  remote_draw_lists_.clear();
-  last_serialized_frame_.Clear();
-  last_frame_index_ = 0;
-  last_decoded_frame_.reset();
+  ResetSessionState();
   socket_.reset();
+  last_state_ = ReadyState::kDisconnected;
 }
 
 }  // namespace mujoco::studio

@@ -71,8 +71,14 @@ class RemoteUi {
   // asynchronously, so this can differ from HasSocket().
   ReadyState ConnectionState() const;
 
+  // True once the server has replied with a compatible Hello handshake.
+  bool IsSessionAccepted() const { return handshake_accepted_; }
+
   // The WebSocket close code once the socket has closed, else 0.
   int CloseCode() const;
+
+  // The mouse cursor requested by the latest remote draw frame.
+  ImGuiMouseCursor MouseCursor() const { return mouse_cursor_; }
 
   // The part of the canvas the remote UI may use, in logical pixels: the
   // whole window minus the browser-local role bar along the bottom. Sent to
@@ -122,6 +128,9 @@ class RemoteUi {
   // Processes one received WebSocket binary message.
   void ProcessMessage(netui::BytesView message);
 
+  // Destroys GPU textures and clears per-session draw/texture/input state.
+  void ResetSessionState();
+
   void RebuildDrawData();
 
   Callbacks& callbacks_;
@@ -137,7 +146,9 @@ class RemoteUi {
   uint64_t last_frame_index_ = 0;
   std::unique_ptr<WebSocket> socket_;
   ReadyState last_state_ = ReadyState::kDisconnected;
+  ImGuiMouseCursor mouse_cursor_ = ImGuiMouseCursor_Arrow;
   bool handshake_sent_ = false;
+  bool handshake_accepted_ = false;
   // When true, the next Input requests an uncompressed keyframe.
   bool request_keyframe_ = true;
 

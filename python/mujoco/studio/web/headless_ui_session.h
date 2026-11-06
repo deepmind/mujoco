@@ -82,7 +82,7 @@ class HeadlessUiSession {
   // ImGui::NewFrame().
   void ApplyInput();
 
-  // Encodes texture changes and the rendered draw frame for TakeMessages().
+  // Records texture changes and serialized draw lists for TakeMessages().
   // Call after ImGui::Render() on the current Dear ImGui context.
   void CaptureFrame(ImGuiMouseCursor mouse_cursor);
 
@@ -106,20 +106,19 @@ class HeadlessUiSession {
 
   mutable std::mutex mutex_;
   // Guarded by mutex_:
-  netui::SerializedFrame pending_frame_;          // ... and serialized.
-  netui::SerializedFrame reference_frame_;        // Last frame taken by browser.
-  netui::Bytes pending_frame_message_;            // The newest frame, encoded.
-  std::vector<netui::Bytes> pending_textures_;    // Oldest first.
+  netui::SerializedFrame pending_frame_;        // Newest frame, serialized.
+  netui::SerializedFrame reference_frame_;      // Last frame taken by browser.
+  std::vector<netui::Bytes> pending_textures_;  // Oldest first.
   std::vector<netui::Bytes> pending_clipboards_;  // Oldest first.
   std::vector<netui::Input> pending_inputs_;      // Oldest first.
   uint64_t session_id_ = 0;        // Incremented by every StartSession().
   uint64_t next_frame_index_ = 1;  // Index of the next frame taken.
   bool active_ = false;
-  bool has_input_ = false;              // The session's browser has sent input.
-  bool resend_textures_ = false;        // Re-create all textures with next frame.
-  bool release_input_ = false;          // Release the previous browser's input.
-  bool full_frame_wanted_ = true;       // Send the next frame uncompressed.
-  bool pending_frame_is_full_ = false;  // ... and not compressed.
+  bool has_input_ = false;          // The session's browser has sent input.
+  bool resend_textures_ = false;    // Re-create all textures with next frame.
+  bool release_input_ = false;      // Release the previous browser's input.
+  bool full_frame_wanted_ = true;   // Send the next frame uncompressed.
+  bool has_pending_frame_ = false;  // A new frame awaits sending.
   bool has_reference_frame_ = false;
 
   // UI thread only:

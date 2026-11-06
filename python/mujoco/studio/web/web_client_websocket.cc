@@ -20,6 +20,7 @@
 #include <cstdint>
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 
 #include "logging.h"
@@ -71,6 +72,8 @@ class BrowserWebSocket final : public WebSocket {
 
   int CloseCode() const override { return close_code_; }
 
+  std::string CloseReason() const override { return close_reason_; }
+
   bool SendBinary(BytesView data) override {
     if (state_ != ReadyState::kOpen) return false;
     return emscripten_websocket_send_binary(
@@ -84,9 +87,19 @@ class BrowserWebSocket final : public WebSocket {
            EMSCRIPTEN_RESULT_SUCCESS;
   }
 
+  std::vector<Frame> TakeFrames() override {
+    std::vector<Frame> frames;
+    frames.swap(received_);
+    return frames;
+  }
+
   std::vector<Bytes> TakeMessages() override {
     std::vector<Bytes> messages;
-    messages.swap(received_);
+    for (Frame& frame : TakeFrames()) {
+      if (!frame.is_text) {
+        messages.push_back(std::move(frame.binary));
+      }
+    }
     return messages;
   }
 
@@ -101,12 +114,20 @@ class BrowserWebSocket final : public WebSocket {
   static EM_BOOL OnMessage(int event_type,
                            const EmscriptenWebSocketMessageEvent* event,
                            void* user_data) {
-    if (!event->isText) {
-      // Emscripten frees the data when this returns.
+    // Emscripten frees the event buffer when this callback returns.
+    auto* self = static_cast<BrowserWebSocket*>(user_data);
+    Frame frame;
+    if (event->isText) {
+      // Emscripten's numBytes includes the trailing NUL for UTF-8 text.
+      const size_t len =
+          event->numBytes > 0 ? static_cast<size_t>(event->numBytes - 1) : 0;
+      frame.is_text = true;
+      frame.text.assign(reinterpret_cast<const char*>(event->data), len);
+    } else {
       const auto* bytes = reinterpret_cast<const std::byte*>(event->data);
-      static_cast<BrowserWebSocket*>(user_data)->received_.emplace_back(
-          bytes, bytes + static_cast<size_t>(event->numBytes));
+      frame.binary.assign(bytes, bytes + static_cast<size_t>(event->numBytes));
     }
+    self->received_.push_back(std::move(frame));
     return EM_TRUE;
   }
 
@@ -124,10 +145,12 @@ class BrowserWebSocket final : public WebSocket {
     // Browsers report a failed connection as an error, then a close.
     if (self->state_ != ReadyState::kError) self->state_ = ReadyState::kClosed;
     self->close_code_ = event->code;
+    self->close_reason_ = event->reason;
     return EM_TRUE;
   }
 
-  std::vector<Bytes> received_;
+  std::vector<Frame> received_;
+  std::string close_reason_;
   EMSCRIPTEN_WEBSOCKET_T socket_ = 0;
   ReadyState state_ = ReadyState::kConnecting;
   int close_code_ = 0;

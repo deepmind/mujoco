@@ -100,10 +100,10 @@ struct Telemetry {
 };
 
 struct ModelDownloadStatus {
-  bool is_downloading = true;
   size_t bytes_downloaded = 0;
   size_t total_bytes = 0;
   int retry_count = 0;
+  bool is_downloading = true;
 };
 
 // The implementation of every interface needed by the session and remote UI.
@@ -663,7 +663,7 @@ void MainLoopImpl() {
       g_app.frame_count - g_app.last_state_retry_frame > state_retry_interval) {
     g_app.last_state_retry_frame = g_app.frame_count;
     LOG(Info, "State WebSocket down; reconnecting...");
-    g_app.session.Connect(WsUrl("/state"));
+    g_app.session.Connect(OpenWebSocket(WsUrl("/state")));
   }
 
   // Pass the remote UI (/ui) WebSocket state to the session state machine.
@@ -674,7 +674,9 @@ void MainLoopImpl() {
   if (g_app.remote_ui.HasSocket()) {
     switch (g_app.remote_ui.ConnectionState()) {
       case RemoteUi::ReadyState::kOpen:
-        ui_state = RemoteUiState::kOpen;
+        ui_state = g_app.remote_ui.IsSessionAccepted()
+                       ? RemoteUiState::kOpen
+                       : RemoteUiState::kConnecting;
         break;
       case RemoteUi::ReadyState::kClosed:
       case RemoteUi::ReadyState::kError:
@@ -718,6 +720,9 @@ void MainLoopImpl() {
   // channel; in a free camera mode they drive their local camera directly.
   g_app.remote_ui.CaptureAndSendInput();
   if (g_app.session.Role() == SessionRole::kControlling) {
+    if (!ImGui::GetIO().WantCaptureMouse) {
+      ImGui::SetMouseCursor(g_app.remote_ui.MouseCursor());
+    }
     HandleControllerCameraInput();
   } else {
     g_app.camera_generation_valid = false;
@@ -1074,7 +1079,7 @@ void FinishModelLoad() {
   }
   // Connect the state WebSocket to receive simulation state from Python.
   if (!g_app.session.HasSocket()) {
-    g_app.session.Connect(WsUrl("/state"));
+    g_app.session.Connect(OpenWebSocket(WsUrl("/state")));
   }
   g_app.download_status.is_downloading = false;
   LOG(Info, "Model loaded and scene initialized successfully!");

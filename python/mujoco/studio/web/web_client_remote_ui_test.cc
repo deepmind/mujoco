@@ -753,5 +753,116 @@ TEST_F(RemoteUiTest, StateQueueSynchronizesFullPayloadAndBoundsLatency) {
   EXPECT_TRUE(queue.Empty());
 }
 
+TEST_F(RemoteUiTest, SessionAcceptanceMouseCursorAndTextureCleanupOnShutdown) {
+  FakeWebSocket* socket = ConnectFakeSocket();
+  remote_ui_.ReceiveAndProcessCommands(/*frame=*/1);
+  EXPECT_FALSE(remote_ui_.IsSessionAccepted());
+
+  netui::Hello server_hello;
+  const auto hello_bytes = std::as_bytes(std::span(&server_hello, 1));
+  socket->received.emplace_back(hello_bytes.begin(), hello_bytes.end());
+  remote_ui_.ReceiveAndProcessCommands(/*frame=*/2);
+  EXPECT_TRUE(remote_ui_.IsSessionAccepted());
+
+  RegisterDummyTexture(/*tex_id=*/1);
+  ASSERT_TRUE(callbacks_.textures.count(100));
+  EXPECT_FALSE(callbacks_.textures[100].destroyed);
+
+  netui::SerializedFrame frame = RenderSerializedFrame("Cursor", /*tex_id=*/1);
+  frame.mouse_cursor = ImGuiMouseCursor_TextInput;
+  remote_ui_.ProcessDrawFrameMessage(
+      netui::EncodeDrawFrame(frame, /*frame_index=*/1));
+  EXPECT_EQ(remote_ui_.MouseCursor(), ImGuiMouseCursor_TextInput);
+
+  // Out-of-range cursor values fall back to Arrow.
+  frame.mouse_cursor = 999;
+  remote_ui_.ProcessDrawFrameMessage(
+      netui::EncodeDrawFrame(frame, /*frame_index=*/2));
+  EXPECT_EQ(remote_ui_.MouseCursor(), ImGuiMouseCursor_Arrow);
+
+  frame.mouse_cursor = ImGuiMouseCursor_ResizeEW;
+  remote_ui_.ProcessDrawFrameMessage(
+      netui::EncodeDrawFrame(frame, /*frame_index=*/3));
+  ASSERT_EQ(remote_ui_.MouseCursor(), ImGuiMouseCursor_ResizeEW);
+
+  // Shutdown destroys live GPU textures and clears session state.
+  remote_ui_.Shutdown();
+  EXPECT_FALSE(remote_ui_.IsSessionAccepted());
+  EXPECT_EQ(remote_ui_.MouseCursor(), ImGuiMouseCursor_Arrow);
+  EXPECT_EQ(remote_ui_.RemoteDrawData(), nullptr);
+  EXPECT_TRUE(callbacks_.textures[100].destroyed);
+}
+
+TEST_F(RemoteUiTest, ExpandsPartialA8TextureUpdateInPlace) {
+  std::vector<uint8_t> initial_a8(4 * 4, 10);
+  remote_ui_.ProcessTextureMessage(
+      MakeTextureMsg(77, netui::Texture::Action::kCreate,
+                     netui::Texture::Format::kAlpha8, 4, 4, initial_a8));
+  ASSERT_EQ(callbacks_.upload_calls, 1);
+
+  const std::vector<uint8_t> patch_a8 = {100, 110, 120, 130};
+  remote_ui_.ProcessTextureMessage(
+      MakeTextureMsg(77, netui::Texture::Action::kUpdate,
+                     netui::Texture::Format::kAlpha8, 2, 2, patch_a8,
+                     /*offset_x=*/1, /*offset_y=*/1));
+  ASSERT_EQ(callbacks_.upload_calls, 2);
+
+  const auto& rgba = callbacks_.textures[100].rgba;
+  ASSERT_EQ(rgba.size(), 4u * 4u * 4u);
+  for (uint32_t y = 0; y < 4; ++y) {
+    for (uint32_t x = 0; x < 4; ++x) {
+      const size_t idx = (y * 4 + x) * 4;
+      EXPECT_EQ(rgba[idx + 0], 255);
+      EXPECT_EQ(rgba[idx + 1], 255);
+      EXPECT_EQ(rgba[idx + 2], 255);
+      if (x >= 1 && x < 3 && y >= 1 && y < 3) {
+        EXPECT_EQ(rgba[idx + 3], patch_a8[(y - 1) * 2 + (x - 1)]);
+      } else {
+        EXPECT_EQ(rgba[idx + 3], 10);
+      }
+    }
+  }
+
+  // Updating an unknown texture ID is ignored without uploading.
+  remote_ui_.ProcessTextureMessage(
+      MakeTextureMsg(999, netui::Texture::Action::kUpdate,
+                     netui::Texture::Format::kAlpha8, 2, 2, patch_a8,
+                     /*offset_x=*/0, /*offset_y=*/0));
+  EXPECT_EQ(callbacks_.upload_calls, 2);
+}
+
+TEST_F(RemoteUiTest, PreservesPhysicalModifierKeysUnderMacOsBehaviors) {
+  FakeWebSocket* socket = ConnectFakeSocket();
+  remote_ui_.ReceiveAndProcessCommands(/*frame=*/1);
+
+  ImGuiIO& io = ImGui::GetIO();
+  io.DisplaySize = ImVec2(800, 600);
+  io.DisplayFramebufferScale = ImVec2(2.0f, 2.0f);
+  io.ConfigInputTrickleEventQueue = false;
+  io.ConfigMacOSXBehaviors = true;
+  unsigned char* font_pixels = nullptr;
+  int font_w = 0, font_h = 0;
+  io.Fonts->GetTexDataAsAlpha8(&font_pixels, &font_w, &font_h);
+  io.Fonts->SetTexID(static_cast<ImTextureID>(1));
+
+  io.AddKeyEvent(ImGuiKey_LeftSuper, true);
+  io.AddKeyEvent(ImGuiMod_Super, true);
+  ImGui::NewFrame();
+  // Locally, Dear ImGui swaps Super to Ctrl when ConfigMacOSXBehaviors is set.
+  EXPECT_TRUE(io.KeyCtrl);
+  EXPECT_TRUE(ImGui::IsKeyDown(ImGuiKey_LeftCtrl));
+
+  remote_ui_.CaptureAndSendInput();
+  ImGui::EndFrame();
+
+  ASSERT_EQ(socket->sent.size(), 2u);
+  const netui::Input sent = CommandIn<netui::Input>(socket->sent[1]);
+  EXPECT_FLOAT_EQ(sent.framebuffer_scale, 2.0f);
+  EXPECT_NE(sent.header.flags & netui::Input::kMacOsBehaviors, 0u);
+  EXPECT_TRUE(sent.IsImGuiKeyDown(ImGuiKey_LeftSuper));
+  EXPECT_TRUE(sent.IsImGuiKeyDown(ImGuiKey_ReservedForModSuper));
+  EXPECT_FALSE(sent.IsImGuiKeyDown(ImGuiKey_LeftCtrl));
+  EXPECT_FALSE(sent.IsImGuiKeyDown(ImGuiKey_ReservedForModCtrl));
+}
 }  // namespace
 }  // namespace mujoco::studio
