@@ -325,6 +325,11 @@ class HeadlessUi {
     return result;
   }
 
+  uint64_t LastFrameIndex() const {
+    py::gil_scoped_release no_gil;
+    return session_.LastFrameIndex();
+  }
+
  private:
   static constexpr auto kTargetFrameDuration =
       std::chrono::duration<double>(1.0 / 60.0);
@@ -379,7 +384,10 @@ void InitHeadlessUi(py::module_& m) {
            "Returns the messages to send to the browser now, one NetImgui "
            "command each: none until a new frame is ready, then the texture "
            "changes since the last frame returned followed by the newest "
-           "frame, compressed against that last frame.");
+           "frame, compressed against that last frame.")
+      .def("last_frame_index", &HeadlessUi::LastFrameIndex,
+           "Returns the index of the last frame take_messages() returned (0 "
+           "before the first). The browser acks a frame by echoing its index.");
 }
 
 }  // namespace mujoco::python::studio

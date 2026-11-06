@@ -318,6 +318,26 @@ TEST_F(HeadlessUiSessionTest, CompressesAgainstTheLastFrameTaken) {
   ExpectSameDrawData(*unpacked, *expected);
 }
 
+// The browser acks a frame by echoing its index.
+TEST_F(HeadlessUiSessionTest, LastFrameIndexIsThatOfTheLastFrameTaken) {
+  EXPECT_EQ(session_.LastFrameIndex(), 0u);
+  Connect();
+  RunFrame("First");
+  EXPECT_EQ(session_.LastFrameIndex(), 0u);  // Not taken yet.
+  std::vector<std::string> messages = session_.TakeMessages();
+  Received first(messages.back());
+  EXPECT_EQ(first.As<CmdDrawFrame>()->mFrameIndex, 1u);
+  EXPECT_EQ(session_.LastFrameIndex(), 1u);
+
+  RunFrame("Frist");
+  messages = session_.TakeMessages();
+  Received second(messages.back());
+  EXPECT_EQ(second.As<CmdDrawFrame>()->mFrameIndex, 2u);
+  EXPECT_EQ(session_.LastFrameIndex(), 2u);
+  EXPECT_TRUE(session_.TakeMessages().empty());  // Nothing new, no change.
+  EXPECT_EQ(session_.LastFrameIndex(), 2u);
+}
+
 TEST_F(HeadlessUiSessionTest, SendsAFullFrameWhenTheBrowserAsks) {
   Connect();
   RunFrame("First");

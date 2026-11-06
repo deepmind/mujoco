@@ -369,6 +369,11 @@ std::vector<std::string> HeadlessUiSession::TakeMessages() {
   return messages;
 }
 
+uint64_t HeadlessUiSession::LastFrameIndex() const {
+  std::lock_guard<std::mutex> lock(mutex_);
+  return next_frame_index_ - 1;
+}
+
 void HeadlessUiSession::ApplyInput() {
   std::vector<CmdInput> inputs;
   bool release = false;

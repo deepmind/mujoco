@@ -74,6 +74,10 @@ using ::NetImgui::Internal::StringCopy;
 // Delta-compress the GUI stream (relayed to the client via CmdInput).
 constexpr bool kUseCompression = true;
 
+// Sent as a text message after receiving draw frames, followed by the index of
+// the newest (CmdDrawFrame::mFrameIndex).
+constexpr char kMsgUiAckPrefix[] = "ui_ack=";
+
 // Clipboard text with this prefix is a URL for this browser to open in a new
 // tab rather than something to copy: the headless server has no browser of its
 // own, and the clipboard is the only text channel NetImgui offers it.
@@ -111,6 +115,7 @@ void RemoteUi::Connect(std::unique_ptr<WebSocket> socket) {
   socket_ = std::move(socket);
   handshake_sent_ = false;
   last_state_ = ReadyState::kDisconnected;
+  frame_to_ack_.reset();
 }
 
 RemoteUi::ReadyState RemoteUi::ConnectionState() const {
@@ -147,6 +152,15 @@ void RemoteUi::ReceiveAndProcessCommands(int frame) {
   for (const WebSocket::Bytes& message : socket_->TakeMessages()) {
     ProcessMessage(message);
   }
+  // Flow control: the server keeps at most one draw frame in flight, and sends
+  // the next (newest) one once this page acks it by its index. Without it, a
+  // slow link would buffer seconds of stale frames. Sent from the frame loop,
+  // so the UI streams no faster than this page draws it.
+  if (frame_to_ack_) {
+    socket_->SendText(
+        (kMsgUiAckPrefix + std::to_string(*frame_to_ack_)).c_str());
+    frame_to_ack_.reset();
+  }
   VLOG(1, "Frame %d: status='%s', cmds=%d, draws=%d, textures=%d", frame,
        ReadyStateName(state), total_cmds_received_, draw_frames_received_,
        textures_received_);
@@ -174,6 +188,9 @@ void RemoteUi::ProcessMessage(WebSocket::BytesView message) {
       ++draw_frames_received_;
       VLOG(2, "Received DrawFrame #%d (size=%u)", draw_frames_received_,
            header.mSize);
+      if (header.mSize >= sizeof(CmdDrawFrame)) {
+        frame_to_ack_ = reinterpret_cast<CmdDrawFrame*>(command)->mFrameIndex;
+      }
       ProcessCmdDrawFrame(reinterpret_cast<CmdDrawFrame*>(command));
       return;  // ProcessCmdDrawFrame owns the command now.
     case CmdHeader::eCommands::Texture:

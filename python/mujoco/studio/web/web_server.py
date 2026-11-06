@@ -21,7 +21,8 @@ public port:
                      (/model?crc32=...), which browsers prefetch and cache.
   * WebSocket /ui    streams the headless Studio UI to the controlling browser
                      and its input back, one NetImgui command per WebSocket
-                     message (see UiSession and headless_ui_session.h).
+                     message and one frame in flight (see UiSession and
+                     _UI_ACK_PREFIX).
   * WebSocket /state serves the latest-wins state payload broadcast at ~60Hz
                      (see state_payload.h) as binary frames, and session roster
                      and model prefetch updates as text frames.
@@ -116,9 +117,16 @@ _THEMES = ("light", "dark", "classic")
 # letting slow connections build up multi-second queues.
 _STATE_MAX_IN_FLIGHT = 8
 
-# A lost ack must not stall the stream forever; after this long the next
-# payload is sent unacked.
-_STATE_ACK_TIMEOUT_SEC = 2.0
+# Sent by the browser on /ui after it receives draw frames, followed by the
+# index of the newest: the same flow control for the UI stream, which keeps at
+# most one frame in flight. The index tells the ack of the frame in flight from
+# a late ack of an older one, which must not release the next frame.
+_UI_ACK_PREFIX = "ui_ack="
+
+# A lost ack must not stall a stream forever; after this long the next payload
+# is sent unacked, and so is the next UI frame if the page still sends input
+# (see ui_handler).
+_ACK_TIMEOUT_SEC = 2.0
 
 # How many bytes of model bundles the server keeps for /model?crc32=... (the
 # current model always counts, and is never evicted). Plenty for a playlist of
@@ -197,8 +205,13 @@ class UiSession(Protocol):
   def take_messages(self) -> list[bytes]:
     """Returns the messages to send to the browser now, possibly none.
 
-    A non-empty list ends with one draw frame, after any texture changes.
+    A non-empty list ends with one draw frame, after any texture changes; the
+    browser acks it by its index (see last_frame_index and _UI_ACK_PREFIX).
     """
+    ...
+
+  def last_frame_index(self) -> int:
+    """Returns the index of the last draw frame take_messages() returned."""
     ...
 
 
@@ -791,11 +804,36 @@ def _run_server(
         await ws.send(reply)
         logger.debug("[UiStream] Session started.")
 
+        # See _UI_ACK_PREFIX: one frame in flight at a time. The UI keeps
+        # capturing frames meanwhile; only the newest is sent once the browser
+        # has the last one, so a slow link shows a fresh UI, not a backlog.
+        frame_acked = asyncio.Event()
+        frame_acked.set()
+        frame_sent_at = 0.0  # Loop time at which the last frame went out.
+        frame_sent_ack = ""  # The browser's ack of that frame.
+
         async def send_frames() -> None:
+          nonlocal frame_sent_at, frame_sent_ack
           while True:
             await ui_frame_ready.wait()
+            try:
+              await asyncio.wait_for(
+                  frame_acked.wait(), timeout=_ACK_TIMEOUT_SEC
+              )
+            except asyncio.TimeoutError:
+              # A page that still draws sends input every frame, so its ack was
+              # lost: send anyway rather than stall. A hidden tab draws nothing
+              # (no input, no ack) and would only pile frames up unread: keep
+              # waiting until it draws again.
+              if last_controller_input[0] <= frame_sent_at:
+                continue
             ui_frame_ready.clear()
-            for message in ui.take_messages():
+            messages = ui.take_messages()
+            if messages:  # Ends with a frame (textures, if any, go first).
+              frame_acked.clear()
+              frame_sent_at = loop_time()
+              frame_sent_ack = f"{_UI_ACK_PREFIX}{ui.last_frame_index()}"
+            for message in messages:
               await ws.send(message)
 
         async def receive_input() -> None:
@@ -803,6 +841,8 @@ def _run_server(
             if isinstance(message, bytes):
               last_controller_input[0] = loop_time()
               ui.push_input(message)
+            elif message == frame_sent_ack:  # Not a late ack of an older one.
+              frame_acked.set()
 
         done, pending = await asyncio.wait(
             [
@@ -885,7 +925,7 @@ def _run_server(
           await state_ready.wait()
           try:
             await asyncio.wait_for(
-                payload_acked.wait(), timeout=_STATE_ACK_TIMEOUT_SEC
+                payload_acked.wait(), timeout=_ACK_TIMEOUT_SEC
             )
           except asyncio.TimeoutError:
             in_flight = 0
@@ -1272,7 +1312,7 @@ class WebServer:
     """Tells the /ui stream that the UI has a new frame for the browser.
 
     Called from the viewer thread after each HeadlessUi.end_frame(), so the
-    frame goes out right away.
+    frame goes out as soon as the browser can take it.
     """
     wake = self._wake_ui_stream
     if wake is None:

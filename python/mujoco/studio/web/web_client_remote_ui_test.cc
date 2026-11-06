@@ -63,14 +63,20 @@ class FakeWebSocket : public WebSocket {
     sent.emplace_back(data.begin(), data.end());
     return true;
   }
+  bool SendText(const char* text) override {
+    if (state != ReadyState::kOpen) return false;
+    sent_text.emplace_back(text);
+    return true;
+  }
   std::vector<Bytes> TakeMessages() override {
     std::vector<Bytes> messages;
     messages.swap(received);
     return messages;
   }
 
-  std::vector<Bytes> sent;      // Oldest first.
-  std::vector<Bytes> received;  // Taken by the next TakeMessages().
+  std::vector<Bytes> sent;             // Binary messages, oldest first.
+  std::vector<std::string> sent_text;  // Text messages, oldest first.
+  std::vector<Bytes> received;         // Taken by the next TakeMessages().
   ReadyState state = ReadyState::kOpen;
   int close_code = 0;
 };
@@ -620,6 +626,44 @@ TEST_F(RemoteUiTest, StartsOverOnEachConnection) {
   remote_ui_.Shutdown();
   EXPECT_FALSE(remote_ui_.HasSocket());
   EXPECT_EQ(remote_ui_.ConnectionState(), ReadyState::kDisconnected);
+}
+
+TEST_F(RemoteUiTest, AcksEachBatchOfMessagesHoldingADrawFrame) {
+  FakeWebSocket* socket = ConnectFakeSocket();
+  remote_ui_.ReceiveAndProcessCommands(/*frame=*/1);
+  EXPECT_TRUE(socket->sent_text.empty());
+
+  // Textures alone are not acked: the server waits for the frame's ack.
+  std::vector<uint8_t> pixels(4 * 4 * 4, 200);
+  CmdTexture* tex_cmd = MakeTextureCmd(1, CmdTexture::eType::Create,
+                                       eTexFormat::kTexFmtRGBA8, 4, 4, pixels);
+  socket->received.push_back(MessageOf(tex_cmd));
+  netImguiDelete(tex_cmd);
+  remote_ui_.ReceiveAndProcessCommands(/*frame=*/2);
+  EXPECT_TRUE(socket->sent_text.empty());
+
+  CmdDrawFrame* draw_cmd = MakeDrawFrame("Acked", /*frame_index=*/1);
+  draw_cmd->ToOffsets();
+  socket->received.push_back(MessageOf(draw_cmd));
+  netImguiDelete(draw_cmd);
+  remote_ui_.ReceiveAndProcessCommands(/*frame=*/3);
+  EXPECT_EQ(socket->sent_text, std::vector<std::string>{"ui_ack=1"});
+
+  // Nothing new, nothing to ack.
+  remote_ui_.ReceiveAndProcessCommands(/*frame=*/4);
+  EXPECT_EQ(socket->sent_text.size(), 1u);
+
+  // Frames received together get one ack, for the newest: the server only
+  // waits for that one.
+  for (uint64_t frame_index : {2, 3}) {
+    draw_cmd = MakeDrawFrame("Acked", frame_index);
+    draw_cmd->ToOffsets();
+    socket->received.push_back(MessageOf(draw_cmd));
+    netImguiDelete(draw_cmd);
+  }
+  remote_ui_.ReceiveAndProcessCommands(/*frame=*/5);
+  EXPECT_EQ(socket->sent_text,
+            (std::vector<std::string>{"ui_ack=1", "ui_ack=3"}));
 }
 
 TEST_F(RemoteUiTest, ClampsTheScreenSizeAndMousePositionItSends) {

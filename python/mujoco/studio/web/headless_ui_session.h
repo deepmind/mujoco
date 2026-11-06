@@ -76,6 +76,10 @@ class HeadlessUiSession {
   // frame has been captured, or an empty vector if no frame is ready.
   std::vector<std::string> TakeMessages();
 
+  // The index of the last draw frame TakeMessages() returned (0 before the
+  // first). The browser acks a frame by echoing its index.
+  uint64_t LastFrameIndex() const;
+
   // ---- UI thread ------------------------------------------------------------
 
   // Applies queued browser input to the current Dear ImGui context. Call before

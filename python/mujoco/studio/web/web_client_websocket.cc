@@ -78,6 +78,12 @@ class BrowserWebSocket final : public WebSocket {
                static_cast<uint32_t>(data.size())) == EMSCRIPTEN_RESULT_SUCCESS;
   }
 
+  bool SendText(const char* text) override {
+    if (state_ != ReadyState::kOpen) return false;
+    return emscripten_websocket_send_utf8_text(socket_, text) ==
+           EMSCRIPTEN_RESULT_SUCCESS;
+  }
+
   std::vector<Bytes> TakeMessages() override {
     std::vector<Bytes> messages;
     messages.swap(received_);

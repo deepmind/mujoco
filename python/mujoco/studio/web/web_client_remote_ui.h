@@ -22,6 +22,7 @@
 #include <cstddef>
 #include <cstdint>
 #include <memory>
+#include <optional>
 #include <string>
 #include <unordered_map>
 #include <vector>
@@ -138,6 +139,8 @@ class RemoteUi {
 
   std::unique_ptr<NetImgui::Internal::CmdDrawFrame, NetImguiDeleter>
       last_uncompressed_frame_;
+  // The index of the newest draw frame received since the last ack.
+  std::optional<uint64_t> frame_to_ack_;
   std::unique_ptr<WebSocket> socket_;
   ReadyState last_state_ = ReadyState::kDisconnected;
   bool handshake_sent_ = false;

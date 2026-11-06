@@ -51,6 +51,9 @@ class WebSocket {
   // Sends one binary message. Returns false if the socket is not open.
   virtual bool SendBinary(BytesView data) = 0;
 
+  // Sends one text message. Returns false if the socket is not open.
+  virtual bool SendText(const char* text) = 0;
+
   // Returns the binary messages received since the last call, oldest first.
   virtual std::vector<Bytes> TakeMessages() = 0;
 };
