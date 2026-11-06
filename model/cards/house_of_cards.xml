@@ -9,7 +9,7 @@
     <global azimuth="150" elevation="-15"/>
     <quality shadowsize="4096"/>
     <rgba haze=".2 .23 .28 1"/>
-    <map force=".002"/>
+    <map force="0.003" stiffness="2000"/>
   </visual>
 
   <!-- Frictional stability requires elliptic cones and large impratio. -->
