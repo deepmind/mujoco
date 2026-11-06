@@ -3,6 +3,11 @@ Building
 
 .. WARNING:: OpenUSD support is currently experimental and subject to frequent change.
 
+.. tip::
+   If you are using Python 3.11--3.13 on Linux ``x86_64``, Windows ``x86_64``, or macOS ``arm64``, you can install
+   prebuilt C++ OpenUSD bindings directly from PyPI with ``pip install mujoco-usd`` (or ``pip install mujoco[usd]``)
+   without building OpenUSD or MuJoCo from source.
+
 MuJoCo must be built against a pre-built USD library, we provide a utility to do so but you may also bring your own USD
 libraries.
 

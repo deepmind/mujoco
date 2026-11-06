@@ -6,13 +6,18 @@ Exporting
 Currently, exporting MuJoCo scenes to OpenUSD format is an area of active development. The primary method for exporting
 is expected to be through the Python API.
 
+Native C++ exporter (mujoco-usd)
+--------------------------------
+
+In Python 3.11--3.13 on Linux ``x86_64``, Windows ``x86_64``, and macOS ``arm64``, installing ``mujoco-usd``
+(``pip install mujoco-usd`` or ``pip install mujoco[usd]``) provides native C++ OpenUSD stage authoring and trajectory
+recording via ``mujoco.usd.writer`` and ``mujoco.usd.layer_sink``, backed by the :doc:`mjcPhysics <mjcPhysics>` schemas.
+
 USDExporter
 -----------
 
-At the moment the only way to export USD from MuJoCo is to use the existing USDExporter in :doc:`../python`.
-
-We are working on native support for writing simulations as animations to existing USD scenes, please check back here
-for updates.
+MuJoCo also includes the pure-Python :ref:`USDExporter <PyUSDexport>` in :doc:`../python` (requiring only ``usd-core``
+and ``pillow``) for exporting scenes and trajectories across all platforms and Python versions.
 
 mujoco-usd-converter
 --------------------

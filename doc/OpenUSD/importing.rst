@@ -9,8 +9,9 @@ assets and scenes defined in USD into your MuJoCo simulations.
 USD in MJCF
 -----------------------------
 
-If you have built mujoco with USD enabled, you can reference USD assets from MJCF via the ``<model`` tag with content
-type ``text/usd``.
+If you have installed ``mujoco-usd`` in Python (``pip install mujoco-usd`` or ``pip install mujoco[usd]``, which
+automatically registers the ``usd_decoder`` plugin when ``mujoco`` is imported) or have :doc:`built MuJoCo with USD
+enabled <building>`, you can reference USD assets from MJCF via the ``<model`` tag with content type ``text/usd``.
 
 .. code-block:: xml
     :caption: example.xml

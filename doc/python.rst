@@ -43,6 +43,18 @@ The recommended way to install this package is via `PyPI <https://pypi.org/proje
 A copy of the MuJoCo library is provided as part of the package and does **not** need to be downloaded or installed
 separately.
 
+Starting in MuJoCo 4.0.0, the top-level ``mujoco`` distribution is a metapackage that installs the core bindings
+(``mujoco-core``), MuJoCo Studio and Filament rendering (``mujoco-studio``), and the classic OpenGL rendering
+dependencies (``glfw`` and ``pyopengl``). Depending on your environment, you can also install individual sub-packages:
+
+- ``pip install mujoco-core``: Minimal core simulation bindings depending only on ``numpy`` (ideal for headless servers
+  and RL training). Install ``mujoco-core[rendering]`` to include ``glfw`` and ``pyopengl`` for classic OpenGL rendering
+  and ``mujoco.viewer`` without MuJoCo Studio.
+- ``pip install mujoco-studio``: `MuJoCo Studio <https://pypi.org/project/mujoco-studio/>`__ interactive viewer and
+  Filament renderer bindings (automatically installs ``mujoco-core``).
+- ``pip install mujoco[usd]`` or ``pip install mujoco-usd``: OpenUSD importer, exporter, and physics schemas; see
+  :ref:`USD exporter<PyUSDexport>` and :doc:`OpenUSD/index`.
+
 .. _PyViewer:
 
 Interactive viewer
@@ -938,10 +950,17 @@ Building from source
       bash make_sdist.sh
 
    The ``make_sdist.sh`` script generates additional C++ header files that are
-   needed to build the bindings, and also pulls in required files from elsewhere
-   in the repository outside the ``python`` directory into the sdist. Upon
-   completion, the script will create a ``dist`` directory with a
-   ``mujoco-x.y.z.tar.gz`` file (where ``x.y.z`` is the version number).
+   needed to build the core bindings, and also pulls in required files from
+   elsewhere in the repository outside the ``python`` directory into the sdist.
+   Upon completion, the script will create a ``dist`` directory with a
+   ``mujoco_core-x.y.z.tar.gz`` file (where ``x.y.z`` is the version number).
+
+   .. note::
+      To build source distributions for the optional sub-packages or top-level
+      metapackage as well, run ``(cd studio && bash make_sdist.sh)``
+      (``studio/dist/mujoco_studio-x.y.z.tar.gz``), ``(cd usd && bash make_sdist.sh)``
+      (``usd/dist/mujoco_usd-x.y.z.tar.gz``), or ``(cd mujoco_full && bash make_sdist.sh)``
+      (``mujoco_full/dist/mujoco-x.y.z.tar.gz``).
 
 7. Use the generated source distribution to build and install the bindings.
    You'll need to specify the path to the MuJoCo library you downloaded
@@ -963,7 +982,7 @@ Building from source
       cd dist
       MUJOCO_PATH=/PATH/TO/MUJOCO \
       MUJOCO_PLUGIN_PATH=/PATH/TO/MUJOCO/PLUGIN \
-      pip install mujoco-x.y.z.tar.gz
+      pip install mujoco_core-x.y.z.tar.gz
 
 The Python bindings should now be installed! To check that they've been
 successfully installed, ``cd`` outside of the ``mujoco`` directory and run
@@ -1225,18 +1244,23 @@ to make objects in the scene look more realistic.
 Installation
 ^^^^^^^^^^^^
 
-The recommended way to install the necessary requirements for the USD exporter is via
-`PyPI <https://pypi.org/project/mujoco/>`__:
+The recommended way to install OpenUSD support is via `PyPI <https://pypi.org/project/mujoco/>`__:
 
 .. code-block:: shell
 
    pip install mujoco[usd]
 
-This installs the optional dependencies ``usd-core`` and ``pillow`` required by the USD exporter.
+This installs ``usd-core`` and ``pillow`` (required by the pure-Python ``USDExporter`` below) and, on Python 3.11--3.13
+for Linux ``x86_64``, Windows ``x86_64``, and macOS ``arm64``, also installs
+`mujoco-usd <https://pypi.org/project/mujoco-usd/>`__, which provides the prebuilt C++ OpenUSD importer
+(``usd_decoder``), native exporter (``mujoco.usd.writer`` and ``mujoco.usd.layer_sink``), and physics schemas
+(``mujoco.usd.MjcPhysics``). Headless users using ``mujoco-core`` can also install ``pip install mujoco-usd`` (or
+``pip install mujoco-core[usd]``) directly; note that ``mujoco-usd`` pins the exact ``usd-core`` release it was compiled
+against (``usd-core==25.11``). See :doc:`OpenUSD/index` for details on native OpenUSD workflows.
 
 If you are building from source, please ensure to `build the Python bindings
 <https://mujoco.readthedocs.io/en/stable/python.html#building-from-source>`__. Then, using pip, install the required
-``usd-core`` and ``pillow`` packages.
+``usd-core`` and ``pillow`` packages (or see :doc:`OpenUSD/building` to build the C++ OpenUSD bindings from source).
 
 .. _PyUSDExporter:
 
