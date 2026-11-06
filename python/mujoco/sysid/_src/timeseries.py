@@ -654,7 +654,7 @@ class TimeSeries:
     return scipy.interpolate.interp1d(
         self.times,
         self.data,
-        kind=method,
+        kind=5 if method == "quintic" else method,
         axis=0,
         bounds_error=False,
         fill_value=(self.data[0], self.data[-1]),  # pyright: ignore

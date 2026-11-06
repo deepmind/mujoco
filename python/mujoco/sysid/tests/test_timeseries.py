@@ -153,6 +153,15 @@ def test_interpolate_scalar(scalar_ts, method, expected):
   assert result[0] == pytest.approx(expected, abs=1e-5)
 
 
+def test_quintic_interpolation():
+  times = np.arange(7, dtype=float)
+  ts = TimeSeries(times, times**5)
+  np.testing.assert_allclose(
+      ts.interpolate([-1, 1.5, 3.5, 7], method="quintic"),
+      [0, 1.5**5, 3.5**5, 6**5],
+  )
+
+
 def test_interpolate_array(scalar_ts, multi_ts):
   """Interpolating at multiple times simultaneously works for scalar and multi-column data."""
   t_values = np.array([0.5, 1.5, 2.5, 3.5])
