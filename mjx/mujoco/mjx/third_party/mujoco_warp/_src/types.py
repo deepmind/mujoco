@@ -2921,6 +2921,11 @@ class SolverContext:
   flex_scratch: Optional[tuple] = None
   solve_ld_scratch: Optional[wp.array] = None
   tw_diag: Optional[wp.array] = None
+  h_tile_nz: Optional[wp.array3d[int]] = None
+  h_row_mask: Optional[wp.array3d[wp.uint64]] = None
+  h_col_mask: Optional[wp.array3d[wp.uint64]] = None
+  h_tile_is_diag: Optional[wp.array2d[int]] = None
+  h_rhs_work: Optional[wp.array3d[float]] = None
 
 
 @dataclasses.dataclass

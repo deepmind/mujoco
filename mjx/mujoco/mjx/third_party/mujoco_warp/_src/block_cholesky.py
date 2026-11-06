@@ -293,3 +293,277 @@ def create_blocked_cholesky_solve_func(block_size: int, matrix_size_static: int)
 
 def create_blocked_cholesky_solve_newton_func(block_size: int, matrix_size_static: int, vector_size_static: int):
   return _create_blocked_cholesky_solve_func(block_size, matrix_size_static, True, vector_size_static)
+
+
+@wp.func_native(
+  snippet="""
+#if defined(__CUDA_ARCH__)
+    return __ffsll((long long)x) - 1;
+#else
+    return __builtin_ctzll((unsigned long long)x);
+#endif
+"""
+)
+def ctz64(x: wp.uint64) -> int: ...
+
+
+@lru_cache(maxsize=None)
+def create_blocked_cholesky_sparse_tiles_factorize_solve_newton_func(
+  block_size: int,
+  matrix_size_static: int,
+  vector_size_static: int,
+):
+  nwords_static = (matrix_size_static // block_size + 63) // 64
+
+  @wp.func
+  def blocked_cholesky_sparse_tiles_factorize_solve_func(
+    # In:
+    A: wp.array2d[float],
+    b: wp.array2d[float],
+    rhs_work: wp.array2d[float],
+    row_mask: wp.array2d[wp.uint64],
+    col_mask: wp.array2d[wp.uint64],
+    tile_is_diag: wp.array[int],
+    matrix_size: int,
+    # Out:
+    U_out: wp.array2d[float],
+    result_out: wp.array2d[float],
+  ):
+    """Reverse block Cholesky factorization and solve skipping zero and diagonal tiles."""
+    rhs_tile = wp.tile_load(
+      rhs_work,
+      shape=(matrix_size_static, 1),
+      offset=(0, 0),
+      storage="shared",
+      bounds_check=False,
+    )
+    ntiles = matrix_size // block_size
+
+    # Reverse elimination (tk = ntiles - 1 down to 0): factor A = R R^T where R is
+    # block-upper-triangular with diagonal blocks R_{tk,tk} = U_{tk,tk}^T and
+    # off-diagonal blocks R_{ti,tk} = S_{ti,tk} U_{tk,tk}^{-1} (ti < tk).
+    for tk in range(ntiles - 1, -1, -1):
+      if tile_is_diag[tk] == 0:
+        k = tk * block_size
+        rhs_view = wp.tile_view(rhs_tile, shape=(block_size, 1), offset=(k, 0))
+
+        A_kk_tile = wp.tile_load(
+          A,
+          shape=(block_size, block_size),
+          offset=(k, k),
+          storage="shared",
+          bounds_check=False,
+          aligned=True,
+        )
+
+        for w in range(wp.static(nwords_static)):
+          m = row_mask[tk, w]
+          while m != wp.uint64(0):
+            tj = w * 64 + ctz64(m)
+            m = m & (m - wp.uint64(1))
+            j = tj * block_size
+            R_kj_tile = wp.tile_load(
+              U_out,
+              shape=(block_size, block_size),
+              offset=(k, j),
+              storage="shared",
+              bounds_check=False,
+              aligned=True,
+            )
+            wp.tile_matmul(R_kj_tile, wp.tile_transpose(R_kj_tile), A_kk_tile, alpha=-1.0)
+
+            y_block = wp.tile_view(rhs_tile, shape=(block_size, 1), offset=(j, 0))
+            wp.tile_matmul(R_kj_tile, y_block, rhs_view, alpha=-1.0)
+
+        wp.tile_cholesky_inplace(A_kk_tile, fill_mode="upper")
+        wp.tile_store(U_out, A_kk_tile, offset=(k, k), bounds_check=False, aligned=True)
+
+        wp.tile_lower_solve_inplace(wp.tile_transpose(A_kk_tile), rhs_view)
+
+        for w_i in range(wp.static(nwords_static)):
+          cmask = col_mask[tk, w_i]
+          while cmask != wp.uint64(0):
+            ti = w_i * 64 + ctz64(cmask)
+            cmask = cmask & (cmask - wp.uint64(1))
+            i = ti * block_size
+            A_ik_tile = wp.tile_load(
+              A,
+              shape=(block_size, block_size),
+              offset=(i, k),
+              storage="shared",
+              bounds_check=False,
+              aligned=True,
+            )
+
+            for w_j in range(wp.static(nwords_static)):
+              m_ik = row_mask[tk, w_j] & row_mask[ti, w_j]
+              while m_ik != wp.uint64(0):
+                tj = w_j * 64 + ctz64(m_ik)
+                m_ik = m_ik & (m_ik - wp.uint64(1))
+                j = tj * block_size
+                R_ij_tile = wp.tile_load(
+                  U_out,
+                  shape=(block_size, block_size),
+                  offset=(i, j),
+                  storage="shared",
+                  bounds_check=False,
+                  aligned=True,
+                )
+                R_kj_tile = wp.tile_load(
+                  U_out,
+                  shape=(block_size, block_size),
+                  offset=(k, j),
+                  storage="shared",
+                  bounds_check=False,
+                  aligned=True,
+                )
+                wp.tile_matmul(
+                  R_ij_tile,
+                  wp.tile_transpose(R_kj_tile),
+                  A_ik_tile,
+                  alpha=-1.0,
+                )
+
+            wp.tile_lower_solve_inplace(wp.tile_transpose(A_kk_tile), wp.tile_transpose(A_ik_tile))
+            wp.tile_store(
+              U_out,
+              A_ik_tile,
+              offset=(i, k),
+              bounds_check=False,
+              aligned=True,
+            )
+
+    # Second substitution (ti = 0 to ntiles - 1): solve R^T x = y
+    for ti in range(ntiles):
+      if tile_is_diag[ti] == 0:
+        i = ti * block_size
+        tmp_tile = wp.tile_view(rhs_tile, shape=(block_size, 1), offset=(i, 0))
+        for w in range(wp.static(nwords_static)):
+          cmask = col_mask[ti, w]
+          while cmask != wp.uint64(0):
+            tk = w * 64 + ctz64(cmask)
+            cmask = cmask & (cmask - wp.uint64(1))
+            k = tk * block_size
+            R_ki_tile = wp.tile_load(
+              U_out,
+              shape=(block_size, block_size),
+              offset=(k, i),
+              storage="shared",
+              bounds_check=False,
+              aligned=True,
+            )
+            x_tile = wp.tile_view(rhs_tile, shape=(block_size, 1), offset=(k, 0))
+            wp.tile_matmul(wp.tile_transpose(R_ki_tile), x_tile, tmp_tile, alpha=-1.0)
+
+        U_tile = wp.tile_load(
+          U_out,
+          shape=(block_size, block_size),
+          offset=(i, i),
+          storage="shared",
+          bounds_check=False,
+          aligned=True,
+        )
+        wp.tile_upper_solve_inplace(U_tile, tmp_tile)
+
+    return wp.static(_create_newton_decrement_func(matrix_size_static, vector_size_static))(rhs_tile, b, result_out)
+
+  return blocked_cholesky_sparse_tiles_factorize_solve_func
+
+
+@lru_cache(maxsize=None)
+def create_blocked_cholesky_sparse_tiles_solve_newton_func(
+  block_size: int,
+  matrix_size_static: int,
+  vector_size_static: int,
+):
+  nwords_static = (matrix_size_static // block_size + 63) // 64
+
+  @wp.func
+  def blocked_cholesky_sparse_tiles_solve_func(
+    # In:
+    U: wp.array2d[float],
+    b: wp.array2d[float],
+    rhs_work: wp.array2d[float],
+    row_mask: wp.array2d[wp.uint64],
+    col_mask: wp.array2d[wp.uint64],
+    tile_is_diag: wp.array[int],
+    matrix_size: int,
+    # Out:
+    result_out: wp.array2d[float],
+  ):
+    """Reverse block Cholesky solve skipping zero and diagonal tiles."""
+    rhs_tile = wp.tile_load(
+      rhs_work,
+      shape=(matrix_size_static, 1),
+      offset=(0, 0),
+      storage="shared",
+      bounds_check=False,
+    )
+    ntiles = matrix_size // block_size
+
+    # First substitution (tk = ntiles - 1 down to 0): solve R y = b
+    for tk in range(ntiles - 1, -1, -1):
+      if tile_is_diag[tk] == 0:
+        k = tk * block_size
+        rhs_view = wp.tile_view(rhs_tile, shape=(block_size, 1), offset=(k, 0))
+        for w in range(wp.static(nwords_static)):
+          rmask = row_mask[tk, w]
+          while rmask != wp.uint64(0):
+            tj = w * 64 + ctz64(rmask)
+            rmask = rmask & (rmask - wp.uint64(1))
+            j = tj * block_size
+            R_kj_tile = wp.tile_load(
+              U,
+              shape=(block_size, block_size),
+              offset=(k, j),
+              storage="shared",
+              bounds_check=False,
+              aligned=True,
+            )
+            y_block = wp.tile_view(rhs_tile, shape=(block_size, 1), offset=(j, 0))
+            wp.tile_matmul(R_kj_tile, y_block, rhs_view, alpha=-1.0)
+
+        U_tile = wp.tile_load(
+          U,
+          shape=(block_size, block_size),
+          offset=(k, k),
+          storage="shared",
+          bounds_check=False,
+          aligned=True,
+        )
+        wp.tile_lower_solve_inplace(wp.tile_transpose(U_tile), rhs_view)
+
+    # Second substitution (ti = 0 to ntiles - 1): solve R^T x = y
+    for ti in range(ntiles):
+      if tile_is_diag[ti] == 0:
+        i = ti * block_size
+        tmp_tile = wp.tile_view(rhs_tile, shape=(block_size, 1), offset=(i, 0))
+        for w in range(wp.static(nwords_static)):
+          cmask = col_mask[ti, w]
+          while cmask != wp.uint64(0):
+            tk = w * 64 + ctz64(cmask)
+            cmask = cmask & (cmask - wp.uint64(1))
+            k = tk * block_size
+            R_ki_tile = wp.tile_load(
+              U,
+              shape=(block_size, block_size),
+              offset=(k, i),
+              storage="shared",
+              bounds_check=False,
+              aligned=True,
+            )
+            x_tile = wp.tile_view(rhs_tile, shape=(block_size, 1), offset=(k, 0))
+            wp.tile_matmul(wp.tile_transpose(R_ki_tile), x_tile, tmp_tile, alpha=-1.0)
+        U_tile = wp.tile_load(
+          U,
+          shape=(block_size, block_size),
+          offset=(i, i),
+          storage="shared",
+          bounds_check=False,
+          aligned=True,
+        )
+        wp.tile_upper_solve_inplace(U_tile, tmp_tile)
+
+    return wp.static(_create_newton_decrement_func(matrix_size_static, vector_size_static))(rhs_tile, b, result_out)
+
+  return blocked_cholesky_sparse_tiles_solve_func
