@@ -912,11 +912,11 @@
 
   <equality>
     <joint joint1="pullB" joint2="pullA" polycoef="0 1 0 0 0"/>
-    <joint joint1="beadA_x" joint2="pullA" polycoef="0 -0.33333 0 0 0"/>
-    <joint joint1="beadB_x" joint2="pullA" polycoef="0 0.33333 0 0 0"/>
+    <joint joint1="beadA_x" joint2="pullA" polycoef="0 -0.2 0 0 0"/>
+    <joint joint1="beadB_x" joint2="pullA" polycoef="0 0.2 0 0 0"/>
   </equality>
 
   <actuator>
-    <position name="pull" joint="pullA" kp="30" kv="8" ctrlrange="0 0.52"/>
+    <position name="pull" joint="pullA" kp="30" kv="8" ctrlrange="0 1"/>
   </actuator>
 </mujoco>

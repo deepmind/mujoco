@@ -293,20 +293,10 @@ class SlideChangedEvent(messages.Event):
   is_custom: bool = False
 
 
-def _smoothstep(t: float, t0: float, t1: float) -> float:
-  """Cubic smoothstep interpolation on ``[t0, t1]``."""
-  if t <= t0:
-    return 0.0
-  if t >= t1:
-    return 1.0
-  u = (t - t0) / (t1 - t0)
-  return u * u * (3.0 - 2.0 * u)
-
-
 def _step_ipc_bag(model: mujoco.MjModel, data: mujoco.MjData) -> None:
-  """Smoothly pulls the ribbon drawstring so the liner mouth gathers shut."""
+  """Holds the drawstring at the top of its range so the mouth gathers shut."""
   if model.nu > 0:
-    data.ctrl[0] = 0.52 * _smoothstep(float(data.time), 0.35, 3.4)
+    data.ctrl[0] = 1.0
 
 
 def _init_fridge_door(model: mujoco.MjModel, data: mujoco.MjData) -> None:
@@ -329,35 +319,100 @@ SLIDES: tuple[SlideSpec, ...] = (
         model_relpath='welcome/welcome.xml',
     ),
     SlideSpec(
-        slug='ipc',
-        category='Deformables',
-        title='Penetration-Free Cloth Contact',
+        slug='ccd',
+        category='Speculative Contacts',
+        title='Speculative Contacts: Baseball Bat',
         caption=(
-            "MuJoCo's IPC contact mode checks every step for intersections,"
-            ' so cloth never passes through itself or the objects it touches.'
-            ' Here a ribbon drawstring slides inside a bin liner hem and'
-            ' cinches it shut by contact alone.'
+            'Speculative contacts sweep fast-moving geometry across each step'
+            ' to stop thin objects from tunneling through one another. Even at'
+            ' a coarse 10 ms timestep, a thin bat cleanly hits a'
+            ' fast-pitched baseball.'
         ),
-        model_relpath='flex/bag.xml',
-        pre_step_fn=_step_ipc_bag,
+        model_relpath='speculative/flipper.xml',
+    ),
+    SlideSpec(
+        slug='chain',
+        category='Speculative Contacts',
+        title='Speculative Contacts: Falling Chain',
+        caption=(
+            'Four free-falling chain links built from thin 6 mm capsules drop'
+            ' onto a fixed catch bar at a 6 ms timestep. Speculative contacts'
+            ' catch every link-to-link impact even when links move more than a'
+            ' capsule radius per step.'
+        ),
+        model_relpath='speculative/chain.xml',
+    ),
+    SlideSpec(
+        slug='surfacevel',
+        category='Contact & Actuation',
+        title='Surface Velocity: Luggage Carousel',
+        caption=(
+            'Static geometry can apply tangential or rotational surface'
+            ' velocity through friction without adding moving joints. Three'
+            ' conveyor belts feed bags onto a spinning carousel using contact'
+            ' alone.'
+        ),
+        model_relpath='surfacevel/carousel.xml',
         camera=CameraPreset(
-            lookat=(0.0, 0.0, 0.22),
-            distance=0.68,
-            azimuth=125.0,
-            elevation=-22.0,
+            lookat=(-0.25, -1.55, 0.55),
+            distance=5.6,
+            azimuth=118.0,
+            elevation=-26.0,
         ),
     ),
     SlideSpec(
-        slug='dipper',
-        category='Deformables',
-        title='Elastic Rods in Mechanisms',
+        slug='adhesion',
+        category='Contact & Actuation',
+        title='Magnetic Adhesion',
         caption=(
-            'Discrete elastic rods model beams and cables that bend and twist,'
-            ' coupled to rigid bodies through ordinary joints and constraints.'
-            ' Here a crank-driven piston rocks a flexible dipper arm carrying'
-            ' a suspended weight.'
+            'Contacts can apply attractive normal forces to model magnets,'
+            ' suction cups, and sticky surfaces in the solver. A swinging'
+            ' fridge door snaps shut across a 3 mm gap, and pulling hard'
+            ' enough breaks the seal.'
         ),
-        model_relpath='flex/mechanisms/dipper.xml',
+        model_relpath='adhesion/fridge_door.xml',
+        init_fn=_init_fridge_door,
+        camera=CameraPreset(
+            lookat=(-0.08, 0.0, 0.42),
+            distance=1.25,
+            azimuth=-125.0,
+            elevation=-18.0,
+        ),
+    ),
+    SlideSpec(
+        slug='cards',
+        category='Contact & Integration',
+        title='House of Cards',
+        caption=(
+            'Twenty-six playing cards stand four stories tall on friction'
+            ' alone, held steady by elliptic friction cones and the noslip'
+            ' solver. Drag a card with the mouse to test how much the'
+            ' structure can take before toppling.'
+        ),
+        model_relpath='cards/house_of_cards.xml',
+        camera=CameraPreset(
+            lookat=(0.0, 0.0, 0.105),
+            distance=0.46,
+            azimuth=150.0,
+            elevation=-15.0,
+        ),
+    ),
+    SlideSpec(
+        slug='arch',
+        category='Contact & Integration',
+        title='Dry-Stone Gothic Arch',
+        caption=(
+            'Unmortared stone wedges and a keystone hold together by friction'
+            ' alone. Elliptic friction cones and the discrete integrator keep'
+            ' the arch standing steady under gravity at an 8 ms timestep.'
+        ),
+        model_relpath='arch/gothic.xml',
+        camera=CameraPreset(
+            lookat=(0.0, 0.0, 0.95),
+            distance=3.6,
+            azimuth=152.0,
+            elevation=-18.0,
+        ),
     ),
     SlideSpec(
         slug='wire',
@@ -420,111 +475,34 @@ SLIDES: tuple[SlideSpec, ...] = (
         ),
     ),
     SlideSpec(
-        slug='roller',
-        category='Plasticity',
-        title='Stamped Plastic Slab',
+        slug='dipper',
+        category='Deformables',
+        title='Elastic Rods in Mechanisms',
         caption=(
-            'Trilinear flexes deform a coarse grid of cells beneath a finer'
-            ' surface mesh to keep simulation fast. As toothed wheels roll'
-            ' across both slabs, the elastic slab rebounds flat while the'
-            ' plastic one keeps each dent.'
+            'Discrete elastic rods model beams and cables that bend and twist,'
+            ' coupled to rigid bodies through ordinary joints and constraints.'
+            ' Here a crank-driven piston rocks a flexible dipper arm carrying'
+            ' a suspended weight.'
         ),
-        model_relpath='plastic/roller.xml',
+        model_relpath='flex/mechanisms/dipper.xml',
     ),
     SlideSpec(
-        slug='ccd',
-        category='Speculative Contacts',
-        title='Speculative Contacts: Baseball Bat',
+        slug='ipc',
+        category='Deformables',
+        title='Penetration-Free Cloth Contact',
         caption=(
-            'Speculative contacts sweep fast-moving geometry across each step'
-            ' to stop thin objects from tunneling through one another. Even at'
-            ' a coarse 10 ms timestep, a thin bat cleanly hits a'
-            ' fast-pitched baseball.'
+            "MuJoCo's IPC contact mode checks every step for intersections,"
+            ' so cloth never passes through itself or the objects it touches.'
+            ' Here a ribbon drawstring slides inside the hem of a bag hanging'
+            ' from a hoop and cinches it shut by contact alone.'
         ),
-        model_relpath='speculative/flipper.xml',
-    ),
-    SlideSpec(
-        slug='chain',
-        category='Speculative Contacts',
-        title='Speculative Contacts: Falling Chain',
-        caption=(
-            'Four free-falling chain links built from thin 6 mm capsules drop'
-            ' onto a fixed catch bar at a 6 ms timestep. Speculative contacts'
-            ' catch every link-to-link impact even when links move more than a'
-            ' capsule radius per step.'
-        ),
-        model_relpath='speculative/chain.xml',
-    ),
-    SlideSpec(
-        slug='cards',
-        category='Contact & Integration',
-        title='House of Cards',
-        caption=(
-            'Twenty-six playing cards stand four stories tall on friction'
-            ' alone, held steady by elliptic friction cones and the noslip'
-            ' solver. Drag a card with the mouse to test how much the'
-            ' structure can take before toppling.'
-        ),
-        model_relpath='cards/house_of_cards.xml',
+        model_relpath='flex/bag_hoop.xml',
+        pre_step_fn=_step_ipc_bag,
         camera=CameraPreset(
-            lookat=(0.0, 0.0, 0.105),
-            distance=0.46,
-            azimuth=150.0,
-            elevation=-15.0,
-        ),
-    ),
-    SlideSpec(
-        slug='arch',
-        category='Contact & Integration',
-        title='Dry-Stone Gothic Arch',
-        caption=(
-            'Unmortared stone wedges and a keystone hold together by friction'
-            ' alone. Elliptic friction cones and the discrete integrator keep'
-            ' the arch standing steady under gravity at an 8 ms timestep.'
-        ),
-        model_relpath='arch/gothic.xml',
-        camera=CameraPreset(
-            lookat=(0.0, 0.0, 0.95),
-            distance=3.6,
-            azimuth=152.0,
-            elevation=-18.0,
-        ),
-    ),
-    SlideSpec(
-        slug='surfacevel',
-        category='Contact & Actuation',
-        title='Surface Velocity: Luggage Carousel',
-        caption=(
-            'Static geometry can apply tangential or rotational surface'
-            ' velocity through friction without adding moving joints. Three'
-            ' conveyor belts feed bags onto a spinning carousel using contact'
-            ' alone.'
-        ),
-        model_relpath='surfacevel/carousel.xml',
-        camera=CameraPreset(
-            lookat=(-0.25, -1.55, 0.55),
-            distance=5.6,
-            azimuth=118.0,
-            elevation=-26.0,
-        ),
-    ),
-    SlideSpec(
-        slug='adhesion',
-        category='Contact & Actuation',
-        title='Magnetic Adhesion',
-        caption=(
-            'Contacts can apply attractive normal forces to model magnets,'
-            ' suction cups, and sticky surfaces in the solver. A swinging'
-            ' fridge door snaps shut across a 3 mm gap, and pulling hard'
-            ' enough breaks the seal.'
-        ),
-        model_relpath='adhesion/fridge_door.xml',
-        init_fn=_init_fridge_door,
-        camera=CameraPreset(
-            lookat=(-0.08, 0.0, 0.42),
-            distance=1.25,
-            azimuth=-125.0,
-            elevation=-18.0,
+            lookat=(0.0, 0.0, 0.22),
+            distance=0.68,
+            azimuth=125.0,
+            elevation=-22.0,
         ),
     ),
     SlideSpec(

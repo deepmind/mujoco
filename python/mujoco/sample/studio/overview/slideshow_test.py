@@ -80,7 +80,7 @@ class SlideshowTest(absltest.TestCase):
         ),
         len(slideshow_plugins.SLIDES) - 1,
     )
-    self.assertEqual(slideshow_plugins.resolve_slide_index('ipc'), 1)
+    self.assertEqual(slideshow_plugins.resolve_slide_index('ccd'), 1)
     self.assertGreater(slideshow_plugins.resolve_slide_index('surfacevel'), 0)
     self.assertGreater(slideshow_plugins.resolve_slide_index('chain'), 0)
     self.assertEqual(
@@ -105,7 +105,7 @@ class SlideshowTest(absltest.TestCase):
 
   def test_all_slides_compile_and_step_cleanly(self):
     sim_plugin = slideshow_plugins.SlideshowSim()
-    self.assertLen(slideshow_plugins.SLIDES, 15)
+    self.assertLen(slideshow_plugins.SLIDES, 14)
 
     for idx, slide in enumerate(slideshow_plugins.SLIDES):
       with self.subTest(slide=slide.slug):
