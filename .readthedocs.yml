@@ -26,12 +26,12 @@ build:
         uv pip install \
           -r doc/requirements.txt \
           pip setuptools
-      # generate and install doc-only mujoco stubs (no C build required)
+      # generate and install doc-only mujoco-core and mujoco stubs (no C build required)
       - python doc/make_mujoco_stubs.py python/mujoco_doc
       - |
         UV_PROJECT_ENVIRONMENT=$READTHEDOCS_VIRTUALENV_PATH \
-        uv pip install --no-deps python/mujoco_doc
-      # install mjx and mujoco_warp (mujoco dep satisfied by stubs above)
+        uv pip install --no-deps python/mujoco_doc/core python/mujoco_doc/meta
+      # install mjx and mujoco_warp (mujoco-core and mujoco deps satisfied by stubs above)
       - UV_PROJECT_ENVIRONMENT=$READTHEDOCS_VIRTUALENV_PATH uv pip install -e mjx
       - |
         find mjx/mujoco/mjx/third_party/mujoco_warp -type f -exec \

@@ -12,9 +12,10 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 # ==============================================================================
-"""Generates a pip-installable doc-only mujoco stub package.
+"""Generates pip-installable doc-only mujoco-core and mujoco stub packages.
 
-This creates a lightweight pure-Python package that provides the mujoco
+This creates lightweight pure-Python packages (`<output_dir>/core` for
+`mujoco-core` and `<output_dir>/meta` for `mujoco`) that provide the mujoco
 public API surface (enums, constants) without C extensions, for use by
 Sphinx autodoc during documentation builds.
 
@@ -37,7 +38,8 @@ def _read_version(repo_root: str) -> str:
     for line in f:
       m = re.fullmatch(r'version\s*=\s*"([^"]+)"', line.strip())
       if m:
-        return m.group(1)
+        ver = m.group(1)
+        return '0.0.0' if ver.startswith('__COPYBARA_') else ver
   raise RuntimeError('Could not find version in python/pyproject.toml')
 
 
@@ -57,7 +59,28 @@ def _parse_constants(repo_root: str) -> Dict[str, str]:
   return consts
 
 
-_PYPROJECT_TEMPLATE = textwrap.dedent("""\
+_CORE_PYPROJECT_TEMPLATE = textwrap.dedent("""\
+    [build-system]
+    requires = ["setuptools"]
+    build-backend = "setuptools.build_meta"
+
+    [project]
+    name = "mujoco-core"
+    version = "{version}"
+    requires-python = ">=3.11"
+    dependencies = []
+
+    [project.optional-dependencies]
+    rendering = []
+
+    [tool.setuptools]
+    include-package-data = false
+
+    [tool.setuptools.packages.find]
+    include = ["mujoco*"]
+""")
+
+_META_PYPROJECT_TEMPLATE = textwrap.dedent("""\
     [build-system]
     requires = ["setuptools"]
     build-backend = "setuptools.build_meta"
@@ -66,13 +89,10 @@ _PYPROJECT_TEMPLATE = textwrap.dedent("""\
     name = "mujoco"
     version = "{version}"
     requires-python = ">=3.11"
-    dependencies = []
+    dependencies = ["mujoco-core=={version}"]
 
     [tool.setuptools]
-    include-package-data = false
-
-    [tool.setuptools.packages.find]
-    include = ["mujoco*"]
+    packages = []
 """)
 
 _INIT_PY_TEMPLATE = textwrap.dedent("""\
@@ -95,7 +115,7 @@ _INIT_PY_TEMPLATE = textwrap.dedent("""\
 
     try:
         from importlib.metadata import version as _v
-        __version__ = _v('mujoco')
+        __version__ = _v('mujoco-core')
     except Exception:
         __version__ = '0.0.0'
 
@@ -143,7 +163,7 @@ _INIT_PY_TEMPLATE = textwrap.dedent("""\
 
 
 def main(argv: Sequence[str]) -> None:
-  """Generates the doc-only mujoco stub package."""
+  """Generates the doc-only mujoco-core and mujoco stub packages."""
   if len(argv) != 2:
     print(f'Usage: {argv[0]} <output_dir>', file=sys.stderr)
     sys.exit(1)
@@ -153,12 +173,17 @@ def main(argv: Sequence[str]) -> None:
   version = _read_version(repo_root)
   consts = _parse_constants(repo_root)
 
-  mujoco_dir = os.path.join(output_dir, 'mujoco')
+  core_dir = os.path.join(output_dir, 'core')
+  mujoco_dir = os.path.join(core_dir, 'mujoco')
+  meta_dir = os.path.join(output_dir, 'meta')
   os.makedirs(mujoco_dir, exist_ok=True)
+  os.makedirs(meta_dir, exist_ok=True)
 
-  # Write pyproject.toml.
-  with open(os.path.join(output_dir, 'pyproject.toml'), 'w') as f:
-    f.write(_PYPROJECT_TEMPLATE.format(version=version))
+  # Write core and meta pyproject.toml files.
+  with open(os.path.join(core_dir, 'pyproject.toml'), 'w') as f:
+    f.write(_CORE_PYPROJECT_TEMPLATE.format(version=version))
+  with open(os.path.join(meta_dir, 'pyproject.toml'), 'w') as f:
+    f.write(_META_PYPROJECT_TEMPLATE.format(version=version))
 
   # Write mujoco/__init__.py with constants inlined.
   constants_str = '\n'.join(f'{k} = {v}' for k, v in sorted(consts.items()))
@@ -171,7 +196,10 @@ def main(argv: Sequence[str]) -> None:
   shutil.rmtree(introspect_dst, ignore_errors=True)
   shutil.copytree(introspect_src, introspect_dst)
 
-  print(f'Generated doc-only mujoco {version} package at {output_dir}')
+  print(
+      f'Generated doc-only mujoco-core and mujoco {version} packages at'
+      f' {output_dir}'
+  )
 
 
 if __name__ == '__main__':
