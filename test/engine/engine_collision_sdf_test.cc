@@ -421,5 +421,46 @@ TEST_F(SdfTest, PrimitiveGradientAndDistanceSingularities) {
   EXPECT_MJTNUM_EQ(gradient[2], 0.0);
 }
 
+TEST_F(SdfTest, ObtuseMeshTriangleNotPrunedByCircumradius) {
+  // Obtuse triangle [(1, 0, 0), (0, -0.1, -0.1), (0, 0.1, -0.1)] has
+  // circumradius ~0.5075 < max centroid-to-vertex distance ~0.6700. At x =
+  // -1.49 against a [-0.5, 0.5]^3 SDF box, centroid SDF distance is ~0.653
+  // (exceeding circumradius while the tip at x = -0.49 penetrates by 0.01).
+  static constexpr char kObtuseMeshSdfXml[] = R"(
+  <mujoco>
+    <asset>
+      <mesh name="obtuse_tet"
+            vertex="1 0 0  0 -0.1 -0.1  0 0.1 -0.1  0 0 0.2"/>
+      <mesh name="cube"
+            vertex="-0.5 -0.5 -0.5  0.5 -0.5 -0.5
+                    -0.5  0.5 -0.5  0.5  0.5 -0.5
+                    -0.5 -0.5  0.5  0.5 -0.5  0.5
+                    -0.5  0.5  0.5  0.5  0.5  0.5"/>
+    </asset>
+    <worldbody>
+      <body pos="-1.49 0 0">
+        <freejoint/>
+        <geom name="tet" type="mesh" mesh="obtuse_tet"/>
+      </body>
+      <geom name="sdf" type="sdf" mesh="cube"/>
+    </worldbody>
+  </mujoco>
+  )";
+  char error[1024];
+  MjModelPtr model =
+      LoadModelFromString(kObtuseMeshSdfXml, error, sizeof(error));
+  ASSERT_THAT(model.get(), NotNull()) << error;
+  MjDataPtr data = MakeData(model);
+  ASSERT_THAT(data, NotNull());
+  mj_forward(model.get(), data.get());
+
+  ASSERT_GE(data->ncon, 1);
+  mjtNum min_dist = 0;
+  for (int i = 0; i < data->ncon; ++i) {
+    min_dist = mju_min(min_dist, data->contact[i].dist);
+  }
+  EXPECT_NEAR(min_dist, -0.01, MjTol(2e-3, 2e-3));
+}
+
 }  // namespace
 }  // namespace mujoco

@@ -690,28 +690,33 @@ static mjtNum stepGradient(mjtNum x[3], const mjModel* m, const mjSDF* s,
 
 //---------------------------- bounding box vs sdf -------------------------------------------------
 
+// max distance from point to triangle vertices
+static mjtNum maxVertDist(const mjtNum triangle[9], const mjtNum p[3]) {
+  mjtNum diff[3], max_dist2 = 0;
+  for (int i = 0; i < 3; i++) {
+    mju_sub3(diff, triangle + 3*i, p);
+    max_dist2 = mju_max(max_dist2, mju_dot3(diff, diff));
+  }
+  return mju_sqrt(max_dist2);
+}
+
+
 // stricter triangle collision
 static int triangleIntersect(const mjtNum triangle[9], const mjModel* m,
                              const mjSDF* sdf, const mjData* d) {
   mjtNum edges[6];
   mjtNum normal[3], center[3];
-  mjtNum v[9], cross[9], p[3];
+  mjtNum v[9], cross[9], centroid[3], p[3];
   mjtNum kDistanceScl = 10.;
   mjtNum kMinHeight = 0.1;  // minimum tetrahedron height to avoid degeneracy
 
-  // triangle normal
-  mju_sub3(edges+0, triangle+3, triangle);
-  mju_sub3(edges+3, triangle+6, triangle);
-  mju_cross(normal, edges, edges+3);
-  mju_normalize3(normal);
-
   // triangle centroid
-  mju_scl3(p, triangle, 1./3.);
-  mju_addToScl3(p, triangle+3, 1./3.);
-  mju_addToScl3(p, triangle+6, 1./3.);
+  mju_scl3(centroid, triangle, 1./3.);
+  mju_addToScl3(centroid, triangle+3, 1./3.);
+  mju_addToScl3(centroid, triangle+6, 1./3.);
 
   // SDF distance at centroid
-  mjtNum dist_at_centroid = mjc_distance(m, d, sdf, p);
+  mjtNum dist_at_centroid = mjc_distance(m, d, sdf, centroid);
 
   // compute h = offset for fourth point
   mjtNum h = -dist_at_centroid/kDistanceScl;
@@ -719,20 +724,18 @@ static int triangleIntersect(const mjtNum triangle[9], const mjModel* m,
   // if |h| is too small, we'd create a degenerate (nearly-flat) tetrahedron
   // whose circumsphere would be gigantic; fall back to simpler triangle check
   if (mju_abs(h) < kMinHeight) {
-    // simple check: circumcircle of triangle
-    // compute triangle circumradius
-    mjtNum a = mju_dist3(triangle, triangle+3);
-    mjtNum b = mju_dist3(triangle+3, triangle+6);
-    mjtNum c = mju_dist3(triangle+6, triangle);
-    mjtNum s = (a + b + c) / 2.0;
-    mjtNum area = mju_sqrt(s * (s-a) * (s-b) * (s-c));
-    mjtNum circumradius = (a * b * c) / (4.0 * mju_max(area, mjMINVAL));
-
-    // check if centroid is within circumradius of the SDF
-    return dist_at_centroid < circumradius;
+    // check if centroid is within max vertex distance of the SDF
+    return dist_at_centroid < maxVertDist(triangle, centroid);
   }
 
+  // triangle normal
+  mju_sub3(edges+0, triangle+3, triangle);
+  mju_sub3(edges+3, triangle+6, triangle);
+  mju_cross(normal, edges, edges+3);
+  mju_normalize3(normal);
+
   // fourth point: triangle centroid pushed along normal
+  mju_copy3(p, centroid);
   mju_addToScl3(p, normal, -h);
 
   // circumsphere center (of tetrahedron formed by triangle + fourth point)
@@ -749,7 +752,7 @@ static int triangleIntersect(const mjtNum triangle[9], const mjModel* m,
   mjtNum denom = 2.*mju_dot3(v, cross);
   if (mju_abs(denom) < mjMINVAL) {
     // degenerate: fall back to simple distance check
-    return dist_at_centroid < mju_norm3(edges);
+    return dist_at_centroid < maxVertDist(triangle, centroid);
   }
   mju_scl3(center, center, 1./denom);
 
