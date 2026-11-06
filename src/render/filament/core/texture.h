@@ -15,7 +15,6 @@
 #ifndef MUJOCO_SRC_RENDER_FILAMENT_CORE_TEXTURE_H_
 #define MUJOCO_SRC_RENDER_FILAMENT_CORE_TEXTURE_H_
 
-#include <cstddef>
 #include <cstdint>
 #include <filament/Engine.h>
 #include <filament/Texture.h>
@@ -77,22 +76,12 @@ class Texture : public mjrfTexture {
   }
 
  private:
-  void ReleaseData();
-
-  // Hands the release function and user data to a pending upload, which calls
-  // ReleaseUploaded when Filament no longer needs the data.
-  void* TakeRelease();
-  static void ReleaseUploaded(void* buffer, size_t size, void* user);
-
   uint64_t id_ = 0;
   filament::Engine* engine_ = nullptr;
   filament::Texture* texture_ = nullptr;
   mjrfTextureConfig config_;
   SphericalHarmonics spherical_harmonics_;
   bool has_spherical_harmonics_ = false;
-
-  void* user_data_ = nullptr;
-  void (*release_callback_)(void* user_data) = nullptr;
 };
 }  // namespace mujoco
 

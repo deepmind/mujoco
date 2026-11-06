@@ -44,6 +44,7 @@ target_sources(${MUJOCO_FILAMENT_TARGET_NAME}
         core/outliner.h
         core/reflection_manager.cc
         core/reflection_manager.h
+        core/releaser.h
         core/render_target.cc
         core/render_target.h
         core/renderable.cc

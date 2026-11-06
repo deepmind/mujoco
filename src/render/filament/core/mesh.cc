@@ -14,13 +14,10 @@
 
 #include "render/filament/core/mesh.h"
 
-#include <algorithm>
 #include <cfloat>
 #include <cstddef>
 #include <cstdint>
 #include <cstring>
-#include <memory>
-#include <mutex>
 #include <utility>
 
 #include <backend/BufferDescriptor.h>
@@ -33,6 +30,7 @@
 #include <math/vec4.h>
 #include <mujoco/mjrfilament.h>
 #include <mujoco/mujoco.h>
+#include "render/filament/core/releaser.h"
 #include "render/filament/support/filament_util.h"
 
 namespace mujoco {
@@ -104,8 +102,7 @@ int FillSequence(std::byte* buffer, std::size_t num_bytes) {
 
 Mesh::Mesh(filament::Engine* engine, const mjrfMeshConfig& config)
     : engine_(engine),
-      config_(config),
-      shared_state_(std::make_shared<SharedState>()) {
+      config_(config) {
   // Perform some validation on the config.
   const mjrVertexAttribute* positions = nullptr;
   const mjrVertexAttribute* normals = nullptr;
@@ -142,7 +139,6 @@ Mesh::Mesh(filament::Engine* engine, const mjrfMeshConfig& config)
 }
 
 Mesh::~Mesh() {
-  ReleaseResources();
   if (index_buffer_) {
     engine_->destroy(index_buffer_);
   }
@@ -155,16 +151,11 @@ Mesh::~Mesh() {
 }
 
 void Mesh::Upload(const mjrfMeshData& data) {
-  shared_state_ = std::make_shared<SharedState>();
+  Releaser releaser;
+  releaser.Add(data.release, data.user_data);
 
-  // If the user has provided a release callback, then we need to ensure we
-  // call is when filament is done with the mesh data.
-  if (data.release) {
-    shared_state_->callbacks.push_back([=]() { data.release(data.user_data); });
-  }
-
-  UpdateVertexBuffer(data);
-  UpdateIndexBuffer(data);
+  UpdateVertexBuffer(data, releaser);
+  UpdateIndexBuffer(data, releaser);
   UpdateBounds(data);
 }
 
@@ -231,27 +222,10 @@ void Mesh::InitIndexBuffer() {
   index_buffer_ = ib_builder.build(*engine_);
 }
 
-void Mesh::UpdateVertexBuffer(const mjrfMeshData& data) {
+void Mesh::UpdateVertexBuffer(const mjrfMeshData& data, Releaser& releaser) {
   if (config_.max_vertices != data.num_vertices) {
     mju_error("Vertex count does not match config.");
   }
-
-  // The filament BufferDescriptor callback for releasing the memory.
-  // We pass a heap-allocated shared_ptr to the shared state as the user data.
-  auto callback = +[](void* buffer, size_t size, void* user) {
-    auto* state_ptr = static_cast<std::shared_ptr<SharedState>*>(user);
-    auto state = *state_ptr;
-    delete state_ptr;
-
-    std::lock_guard<std::mutex> lock(state->mutex);
-    if (!state->called) {
-      for (const auto& cb : state->callbacks) {
-        cb();
-      }
-      state->callbacks.clear();
-      state->called = true;
-    }
-  };
 
   if (config_.interleaved) {
     int total_vertex_size = 0;
@@ -259,11 +233,12 @@ void Mesh::UpdateVertexBuffer(const mjrfMeshData& data) {
       total_vertex_size += VertexAttributeTypeSize(config_.attributes[i]);
     }
 
-    auto* user_data = new std::shared_ptr<SharedState>(shared_state_);
     const void* bytes = data.vertices[0];
     const size_t nbytes = data.num_vertices * total_vertex_size;
-    vertex_buffer_->setBufferAt(*engine_, 0,
-                                {bytes, nbytes, callback, user_data});
+
+    filament::backend::BufferDescriptor desc{bytes, nbytes, &Releaser::Release,
+                                             releaser.Acquire()};
+    vertex_buffer_->setBufferAt(*engine_, 0, std::move(desc));
   } else {
     // Assign the individual data buffers.
     for (int i = 0; i < config_.num_attributes; ++i) {
@@ -273,16 +248,17 @@ void Mesh::UpdateVertexBuffer(const mjrfMeshData& data) {
       if (attrib.usage == mjVERTEX_ATTRIBUTE_USAGE_NORMAL) {
         // Replace normals with orientations.
         nbytes = data.num_vertices * sizeof(float4);
-        bytes = BuildOrientationsFromNormals(data.num_vertices, bytes);
+        bytes = BuildOrientationsFromNormals(data.num_vertices, bytes, releaser);
       }
-      auto* user_data = new std::shared_ptr<SharedState>(shared_state_);
-      vertex_buffer_->setBufferAt(*engine_, i,
-                                  {bytes, nbytes, callback, user_data});
+
+      filament::backend::BufferDescriptor desc{
+          bytes, nbytes, &Releaser::Release, releaser.Acquire()};
+      vertex_buffer_->setBufferAt(*engine_, i, std::move(desc));
     }
   }
 }
 
-void Mesh::UpdateIndexBuffer(const mjrfMeshData& data) {
+void Mesh::UpdateIndexBuffer(const mjrfMeshData& data, Releaser& releaser) {
   if (data.num_indices == 0) {
     return;
   }
@@ -299,9 +275,7 @@ void Mesh::UpdateIndexBuffer(const mjrfMeshData& data) {
   // In this case, we need to create the sequence of indices explicitly.
   const void* indices = data.indices;
   if (indices == nullptr) {
-    std::byte* sequence = new std::byte[num_bytes];
-    shared_state_->callbacks.push_back([=]() { delete[] sequence; });
-
+    std::byte* sequence = releaser.Alloc(num_bytes);
     if (config_.index_type == mjINDEX_TYPE_U16) {
       FillSequence<uint16_t>(sequence, num_bytes);
     } else {
@@ -309,12 +283,11 @@ void Mesh::UpdateIndexBuffer(const mjrfMeshData& data) {
     }
     indices = sequence;
   }
-  // We don't worry about setting a release callback here because the release
-  // callback for the vertex buffer will call release_callbacks_.
-  filament::backend::BufferDescriptor desc(indices, num_bytes);
+  filament::backend::BufferDescriptor desc(
+      indices, num_bytes, &Releaser::Release, releaser.Acquire());
   index_buffer_->setBuffer(*engine_, std::move(desc));
 
-  UpdateWireframeIndexBuffer(indices);
+  UpdateWireframeIndexBuffer(indices, releaser);
 }
 
 template <typename T>
@@ -330,7 +303,8 @@ static void FillWireframeIndices(const void* src, int num_indices, T* out) {
   }
 }
 
-void Mesh::UpdateWireframeIndexBuffer(const void* src_indices) {
+void Mesh::UpdateWireframeIndexBuffer(const void* src_indices,
+                                      Releaser& releaser) {
   // Line meshes are their own wireframe. Interior edges shared between two
   // triangles are deliberately not deduplicated so that triangle index ranges
   // map to line index ranges by doubling; see GetWireframeIndexBuffer().
@@ -351,8 +325,8 @@ void Mesh::UpdateWireframeIndexBuffer(const void* src_indices) {
                                ? sizeof(uint16_t)
                                : sizeof(uint32_t);
   const int num_bytes = num_line_indices * element_size;
-  std::byte* lines = new std::byte[num_bytes];
-  shared_state_->callbacks.push_back([=]() { delete[] lines; });
+  std::byte* lines = releaser.Alloc(num_bytes);
+
   if (config_.index_type == mjINDEX_TYPE_U16) {
     FillWireframeIndices(src_indices, config_.max_indices,
                          reinterpret_cast<uint16_t*>(lines));
@@ -360,7 +334,8 @@ void Mesh::UpdateWireframeIndexBuffer(const void* src_indices) {
     FillWireframeIndices(src_indices, config_.max_indices,
                          reinterpret_cast<uint32_t*>(lines));
   }
-  filament::backend::BufferDescriptor desc(lines, num_bytes);
+  filament::backend::BufferDescriptor desc(lines, num_bytes, &Releaser::Release,
+                                           releaser.Acquire());
   wireframe_index_buffer_->setBuffer(*engine_, std::move(desc));
 }
 
@@ -388,22 +363,10 @@ void Mesh::UpdateBounds(const mjrfMeshData& data) {
   }
 }
 
-void Mesh::ReleaseResources() {
-  std::lock_guard<std::mutex> lock(shared_state_->mutex);
-  if (!shared_state_->called) {
-    for (const auto& callback : shared_state_->callbacks) {
-      callback();
-    }
-    shared_state_->callbacks.clear();
-    shared_state_->called = true;
-  }
-}
-
 float4* Mesh::BuildOrientationsFromNormals(int num_vertices,
-                                           const void* normals) {
-  float4* orientations = new float4[num_vertices];
-  shared_state_->callbacks.push_back([=]() { delete[] orientations; });
-
+                                           const void* normals,
+                                           Releaser& releaser) {
+  float4* orientations = releaser.Alloc<float4>(num_vertices);
   const float* normals_ptr = reinterpret_cast<const float*>(normals);
   for (int i = 0; i < num_vertices; ++i) {
     orientations[i] = CalculateOrientation(ReadFloat3(normals_ptr, i));

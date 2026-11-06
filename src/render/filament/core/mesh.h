@@ -15,12 +15,7 @@
 #ifndef MUJOCO_SRC_RENDER_FILAMENT_CORE_MESH_H_
 #define MUJOCO_SRC_RENDER_FILAMENT_CORE_MESH_H_
 
-#include <array>
-#include <functional>
-#include <memory>
-#include <mutex>
 #include <optional>
-#include <vector>
 
 #include <filament/Box.h>
 #include <filament/Engine.h>
@@ -29,6 +24,7 @@
 #include <filament/VertexBuffer.h>
 #include <math/vec4.h>
 #include <mujoco/mjrfilament.h>
+#include "render/filament/core/releaser.h"
 #include "render/filament/core/types.h"
 
 namespace mujoco {
@@ -79,15 +75,14 @@ class Mesh : public mjrfMesh {
   void InitVertexBuffer();
   void InitIndexBuffer();
 
-  void UpdateVertexBuffer(const mjrfMeshData& data);
-  void UpdateIndexBuffer(const mjrfMeshData& data);
-  void UpdateWireframeIndexBuffer(const void* indices);
+  void UpdateVertexBuffer(const mjrfMeshData& data, Releaser& releaser);
+  void UpdateIndexBuffer(const mjrfMeshData& data, Releaser& releaser);
+  void UpdateWireframeIndexBuffer(const void* indices, Releaser& releaser);
   void UpdateBounds(const mjrfMeshData& data);
 
   filament::math::float4* BuildOrientationsFromNormals(int num_vertices,
-                                                       const void* normals);
-
-  void ReleaseResources();
+                                                       const void* normals,
+                                                       Releaser& releaser);
 
   filament::Engine* engine_ = nullptr;
   mjrfMeshConfig config_;
@@ -96,15 +91,7 @@ class Mesh : public mjrfMesh {
   filament::IndexBuffer* wireframe_index_buffer_ = nullptr;
   filament::VertexBuffer* vertex_buffer_ = nullptr;
   std::optional<filament::Box> bounds_;
-
-  struct SharedState {
-    std::vector<std::function<void()>> callbacks;
-    std::mutex mutex;
-    bool called = false;
-  };
-  std::shared_ptr<SharedState> shared_state_;
 };
-
 }  // namespace mujoco
 
 #endif  // MUJOCO_SRC_RENDER_FILAMENT_CORE_MESH_H_

@@ -15,7 +15,6 @@
 #include "render/filament/core/texture.h"
 
 #include <atomic>
-#include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <utility>
@@ -26,6 +25,7 @@
 #include <ktxreader/Ktx1Reader.h>
 #include <mujoco/mjrfilament.h>
 #include <mujoco/mujoco.h>
+#include "render/filament/core/releaser.h"
 
 namespace mujoco {
 
@@ -162,18 +162,16 @@ Texture::Texture(filament::Engine* engine, const mjrfTextureConfig& config,
 }
 
 Texture::~Texture() {
-  ReleaseData();
   if (texture_) {
     engine_->destroy(texture_);
   }
 }
 
 void Texture::Upload(const mjrfTextureData& data) {
-  user_data_ = data.user_data;
-  release_callback_ = data.release;
+  Releaser releaser;
+  releaser.Add(data.release, data.user_data);
 
   if (data.bytes == nullptr || data.num_bytes == 0) {
-    ReleaseData();
     return;
   }
 
@@ -187,7 +185,6 @@ void Texture::Upload(const mjrfTextureData& data) {
     texture_ = ktxreader::Ktx1Reader::createTexture(engine_, bundle, is_srgb);
     config_.width = texture_->getWidth();
     config_.height = texture_->getHeight();
-    ReleaseData();
     return;
   }
 
@@ -201,34 +198,36 @@ void Texture::Upload(const mjrfTextureData& data) {
     }
 
     filament::Texture::PixelBufferDescriptor desc(
-        data.bytes, data.num_bytes, format, type, &ReleaseUploaded,
-        TakeRelease());
+        data.bytes, data.num_bytes, format, type, &Releaser::Release,
+        releaser.Acquire());
     texture_->setImage(*engine_, 0, std::move(desc));
   } else {
     const int face_size = config_.width * GetFaceHeight(config_) * num_channels;
     const int num_bytes = face_size * kNumFacesPerCube;
 
     if (config_.width == config_.height) {
-      uint8_t* copy = new uint8_t[num_bytes];
-      auto release_callback = +[](void* buffer, size_t size, void* user) {
-        delete[] reinterpret_cast<uint8_t*>(buffer);
-      };
+      // Create a new image buffer into which we can make 6 copies of the input
+      // image to create a cubemap. Because this will be the actual buffer
+      // passed to Filament, we use a new Releaser and allow the original to go
+      // out of scope.
+      Releaser copy_releaser;
+      uint8_t* copy = copy_releaser.Alloc<uint8_t>(num_bytes);
       for (int i = 0; i < kNumFacesPerCube; ++i) {
         std::memcpy(copy + (i * face_size), data.bytes, face_size);
       }
       filament::Texture::PixelBufferDescriptor desc(copy, num_bytes, format,
-                                                    type, release_callback);
+                                                    type, &Releaser::Release,
+                                                    copy_releaser.Acquire());
       texture_->setImage(*engine_, /*level=*/0, /*xoffset=*/0, /*yoffset=*/0,
                          /*zoffset=*/0, config_.width, GetFaceHeight(config_),
                          /*depth=*/6, std::move(desc));
-      ReleaseData();
     } else {
       if (num_bytes != data.num_bytes) {
         mju_error("Texture size does not match data size.");
       }
       filament::Texture::PixelBufferDescriptor desc(
-          data.bytes, data.num_bytes, format, type, &ReleaseUploaded,
-          TakeRelease());
+          data.bytes, data.num_bytes, format, type, &Releaser::Release,
+          releaser.Acquire());
       texture_->setImage(*engine_, /*level=*/0, /*xoffset=*/0, /*yoffset=*/0,
                          /*zoffset=*/0, config_.width, GetFaceHeight(config_),
                          /*depth=*/6, std::move(desc));
@@ -240,39 +239,7 @@ void Texture::Upload(const mjrfTextureData& data) {
   }
 }
 
-// The release function and user data of a pending upload. The descriptor owns
-// them, so the data is released once Filament has read it, even if the Texture
-// was destroyed in the meantime.
-struct PendingRelease {
-  void (*release)(void* user_data);
-  void* user_data;
-};
-
-void* Texture::TakeRelease() {
-  auto* pending = new PendingRelease{release_callback_, user_data_};
-  release_callback_ = nullptr;
-  user_data_ = nullptr;
-  return pending;
-}
-
-void Texture::ReleaseUploaded(void* buffer, size_t size, void* user) {
-  auto* pending = static_cast<PendingRelease*>(user);
-  if (pending->release) {
-    pending->release(pending->user_data);
-  }
-  delete pending;
-}
-
-void Texture::ReleaseData() {
-  if (release_callback_) {
-    release_callback_(user_data_);
-    release_callback_ = nullptr;
-    user_data_ = nullptr;
-  }
-}
-
 mjrSamplerType Texture::GetSamplerType() const {
   return static_cast<mjrSamplerType>(config_.sampler_type);
 }
-
 }  // namespace mujoco

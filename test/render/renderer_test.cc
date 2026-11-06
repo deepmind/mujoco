@@ -1112,5 +1112,146 @@ TEST_F(RendererTest, MeshReuploadReleasesResources) {
 
   mjrf_removeSceneRenderable(scene, renderable.get());
 }
+
+// Submits an empty frame and blocks until Filament has executed every queued
+// command and dispatched the resulting BufferDescriptor release callbacks.
+static void RenderEmptyFrameAndWait(mjrfContext* ctx, mjrfScene* scene) {
+  mjrfRenderRequest req;
+  mjrf_defaultRenderRequest(&req);
+  req.scene = scene;
+  req.target = nullptr;
+  req.viewport = {0, 0, 16, 16};
+  req.post_processing = false;
+  req.shadows = false;
+  req.reflections = false;
+  req.camera.orthographic = true;
+  req.camera.pos[2] = 1.0f;
+  req.camera.forward[2] = -1.0f;
+  req.camera.up[1] = 1.0f;
+  req.camera.frustum_near = 0.0f;
+  req.camera.frustum_far = 1.0f;
+  req.camera.frustum_center = 8.0f;
+  req.camera.frustum_width = 8.0f;
+  req.camera.frustum_bottom = 16.0f;
+  mjrfFrameHandle frame = mjrf_render(ctx, &req, 1, nullptr, 0);
+  mjrf_waitForFrame(ctx, frame);
+}
+
+// Regression test for a use-after-free: mjrf_uploadMesh only queues the vertex
+// and index buffers on Filament's command stream, which references the caller's
+// memory (and Mesh-internal index/orientation scratch buffers) until the
+// backend copies it. Destroying the mesh before that happens (e.g. when
+// ModelResources re-creates meshes) used to run data.release and free the
+// internal buffers synchronously in ~Mesh, so the backend later read freed
+// memory. The release must be deferred until Filament has consumed the buffers.
+TEST_F(RendererTest, MeshDestroyedBeforeFlushDefersRelease) {
+  Renderer renderer(MakeOffscreenConfig());
+  mjrfContext* ctx = renderer.GetContext();
+
+  // Separate normals and implicit indices exercise every internal allocation:
+  // orientations, the index sequence and the wireframe indices.
+  mjrfMeshConfig config;
+  mjrf_defaultMeshConfig(&config);
+  config.num_attributes = 2;
+  config.attributes[0].usage = mjVERTEX_ATTRIBUTE_USAGE_POSITION;
+  config.attributes[0].type = mjVERTEX_ATTRIBUTE_TYPE_FLOAT3;
+  config.attributes[1].usage = mjVERTEX_ATTRIBUTE_USAGE_NORMAL;
+  config.attributes[1].type = mjVERTEX_ATTRIBUTE_TYPE_FLOAT3;
+  config.max_vertices = 3;
+  config.max_indices = 3;
+  config.interleaved = false;
+  config.index_type = mjINDEX_TYPE_U16;
+  config.primitive_type = mjMESH_PRIMITIVE_TYPE_TRIANGLES;
+  UniquePtr<mjrfMesh> mesh = CreateMesh(ctx, config);
+
+  struct HeapPayload {
+    std::vector<float> positions = {
+        -1.0f, -1.0f, 0.0f, 1.0f, -1.0f, 0.0f, 0.0f, 1.0f, 0.0f,
+    };
+    std::vector<float> normals = {
+        0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 1.0f,
+    };
+    int* release_count = nullptr;
+  };
+
+  int release_count = 0;
+  auto* payload = new HeapPayload{.release_count = &release_count};
+
+  mjrfMeshData data;
+  mjrf_defaultMeshData(&data);
+  data.num_vertices = 3;
+  data.vertices[0] = payload->positions.data();
+  data.vertices[1] = payload->normals.data();
+  data.num_indices = 3;
+  data.indices = nullptr;
+  data.user_data = payload;
+  data.release = +[](void* user) {
+    auto* p = static_cast<HeapPayload*>(user);
+    (*p->release_count)++;
+    delete p;
+  };
+  EXPECT_EQ(release_count, 0);
+  mjrf_uploadMesh(mesh.get(), &data);
+  EXPECT_EQ(release_count, 0);
+  mesh.reset();
+
+  // Filament has not executed the queued uploads yet, so the payload must
+  // still be alive.
+  EXPECT_EQ(release_count, 0);
+
+  RenderEmptyFrameAndWait(ctx, renderer.GetScene("scene"));
+  EXPECT_EQ(release_count, 1);
+}
+
+// Two uploads queued on the same mesh before a flush each own their buffers
+// until Filament consumes them; the second upload must not drop or release the
+// first upload's data early.
+TEST_F(RendererTest, MeshReuploadBeforeFlushReleasesBothUploads) {
+  Renderer renderer(MakeOffscreenConfig());
+  mjrfContext* ctx = renderer.GetContext();
+  UniquePtr<mjrfMesh> mesh = MakeQuadMesh(ctx);
+
+  struct HeapQuad {
+    std::vector<float> vertices = {
+        -256.0f, -256.0f, 256.0f, -256.0f, -256.0f, 256.0f, 256.0f, 256.0f,
+    };
+    std::vector<float> uvs = {
+        0.0f, 0.0f, 1.0f, 0.0f, 0.0f, 1.0f, 1.0f, 1.0f,
+    };
+    std::vector<uint8_t> colors = std::vector<uint8_t>(16, 255);
+    std::vector<uint16_t> indices = {0, 1, 2, 1, 3, 2};
+    int* release_count = nullptr;
+  };
+
+  auto upload = [&](int* count) {
+    auto* quad = new HeapQuad{.release_count = count};
+    mjrfMeshData data;
+    mjrf_defaultMeshData(&data);
+    data.num_vertices = 4;
+    data.vertices[0] = quad->vertices.data();
+    data.vertices[1] = quad->uvs.data();
+    data.vertices[2] = quad->colors.data();
+    data.num_indices = 6;
+    data.indices = quad->indices.data();
+    data.user_data = quad;
+    data.release = +[](void* user) {
+      auto* q = static_cast<HeapQuad*>(user);
+      (*q->release_count)++;
+      delete q;
+    };
+    mjrf_uploadMesh(mesh.get(), &data);
+  };
+
+  int release_count_1 = 0;
+  int release_count_2 = 0;
+  upload(&release_count_1);
+  upload(&release_count_2);
+  EXPECT_EQ(release_count_1, 0);
+  EXPECT_EQ(release_count_2, 0);
+
+  RenderEmptyFrameAndWait(ctx, renderer.GetScene("scene"));
+  EXPECT_EQ(release_count_1, 1);
+  EXPECT_EQ(release_count_2, 1);
+}
 }  // namespace
 }  // namespace mujoco
