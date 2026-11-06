@@ -236,55 +236,8 @@ void DefProperty(pybind11::class_<C, O...>& c, const char* name, T C::* prop) {
 PYBIND11_MODULE(_render_filament, m, pybind11::mod_gil_not_used()) {
 #include "render_filament_generated.cc.inc"
 
-  // Explicit bindings for creation functions.
-  mjrf_context.def(
-      py::init([](mjrfContextConfig& config) {
-        return std::make_unique<PyContext>(&config);
-      }),
-      py::arg("config"));
+  // Explicit bindings for memory management functions.
 
-  mjrf_context.def(
-      "create_mesh",
-      [](PyContext& ctx, mjrfMeshConfig& config) {
-        return std::make_unique<PyMesh>(ctx.get(), &config);
-      },
-      py::arg("params"), py::keep_alive<0, 1>());
-  mjrf_context.def(
-      "create_texture",
-      [](PyContext& ctx, mjrfTextureConfig& config) {
-        return std::make_unique<PyTexture>(ctx.get(), &config);
-      },
-      py::arg("config"), py::keep_alive<0, 1>());
-
-  mjrf_context.def(
-      "create_scene",
-      [](PyContext& ctx, mjrfSceneParams& params) {
-        return std::make_unique<PyScene>(ctx.get(), &params);
-      },
-      py::arg("params"), py::keep_alive<0, 1>());
-
-  mjrf_context.def(
-      "create_render_target",
-      [](PyContext& ctx, mjrfRenderTargetConfig& config) {
-        return std::make_unique<PyRenderTarget>(ctx.get(), &config);
-      },
-      py::arg("config"), py::keep_alive<0, 1>());
-
-  mjrf_context.def(
-      "create_light",
-      [](PyContext& ctx, mjrfLightParams& params) {
-        return std::make_unique<PyLight>(ctx.get(), &params);
-      },
-      py::arg("params"), py::keep_alive<0, 1>());
-
-  mjrf_context.def(
-      "create_renderable",
-      [](PyContext& ctx, mjrfRenderableParams& params) {
-        return std::make_unique<PyRenderable>(ctx.get(), &params);
-      },
-      py::arg("params"), py::keep_alive<0, 1>());
-
-  // memory management
   // Note: ReadRequest stores a raw pointer to `buffer`; the caller must
   // keep the underlying Python buffer object alive until rendering finishes.
   mjrf_read_request.def(
@@ -312,16 +265,6 @@ PYBIND11_MODULE(_render_filament, m, pybind11::mod_gil_not_used()) {
       data.bytes = buf;
       data.num_bytes = sv.size();
     }, py::arg("bytes"));
-
-  mjrf_mesh_config.def(
-      "attributes",
-      [](mjrfMeshConfig& config, int i) {
-        if (i < 0 || i >= mjMAX_VERTEX_ATTRIBUTES) {
-          throw py::index_error("Index out of range");
-        }
-        return config.attributes[i];
-      },
-      py::arg("i"));
 
   mjrf_mesh_data.def(
       "set_vertices",
@@ -421,14 +364,26 @@ PYBIND11_MODULE(_render_filament, m, pybind11::mod_gil_not_used()) {
       },
       py::arg("config"), py::arg("indices"));
 
-  // other
-  mjrf_scene.def(
-      "configure_from_model",
-      [](PyScene& scene, const MjModelWrapper& model) {
-        return mjrf_configureSceneFromModel(scene.get(), model.get());
+  // Allow users to read a specific attribute from the MeshConfig.
+  mjrf_mesh_config.def(
+      "attributes",
+      [](mjrfMeshConfig& config, int i) {
+        if (i < 0 || i >= mjMAX_VERTEX_ATTRIBUTES) {
+          throw py::index_error("Index out of range");
+        }
+        return config.attributes[i];
       },
-      py::arg("model"));
+      py::arg("i"));
 
+  // mjrf_getRenderableMaterial takes a pointer to the mjrfMaterial. For python,
+  // we return a copy.
+  mjrf_renderable.def("get_material", [](PyRenderable& renderable) {
+    mjrfMaterial material;
+    mjrf_getRenderableMaterial(renderable.get(), &material);
+    return material;
+  });
+
+  // mjrf_render converts Python lists into C-style arrays.
   mjrf_context.def("render",
     [](PyContext& ctx, const std::vector<mjrfRenderRequest>& req,
         const std::vector<mjrfReadRequest>& read) {
@@ -437,12 +392,6 @@ PYBIND11_MODULE(_render_filament, m, pybind11::mod_gil_not_used()) {
     },
     py::arg("req"), py::arg("read"),
     py::call_guard<py::gil_scoped_release>());
-
-  mjrf_renderable.def("get_material", [](PyRenderable& renderable) {
-    mjrfMaterial material;
-    mjrf_getRenderableMaterial(renderable.get(), &material);
-    return material;
-  });
 
   using ModelResources = mujoco::ModelResources;
   {

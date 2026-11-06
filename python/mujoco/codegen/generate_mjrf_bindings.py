@@ -48,6 +48,10 @@ _OBJECTS = [
     'mjrfRenderTarget',
 ]
 
+_MUJOCO_OBJECTS = [
+    'mjModel',
+]
+
 # Do not autogenerate bindings for the following functions and fields.
 _EXCLUDED = [
     # mjrfReadRequest implements a custom `alloc` function.
@@ -75,8 +79,6 @@ _EXCLUDED = [
     # This function takes a pointer+int size in the C API, but we want to pass
     # in a python list/tuple instead.
     'mjrf_render',
-    # currently cannot pass a mjModel object with these bindings
-    'mjrf_configureSceneFromModel',
 ]
 
 # These structs are defined outside of the mjrf namespace, but we want to
@@ -211,9 +213,18 @@ def _is_param_array(param: ast_nodes.FunctionParameterDecl) -> bool:
 def _is_param_object(param: ast_nodes.FunctionParameterDecl) -> bool:
   """Returns True if the given function parameter is an object."""
   base_type = param.decltype.replace('const ', '').replace(' *', '')
-  if base_type in _OBJECTS:
+  if base_type in _OBJECTS or base_type in _MUJOCO_OBJECTS:
     return True
   return False
+
+
+def _wrap_param(param: ast_nodes.FunctionParameterDecl) -> str:
+  base_type = param.decltype.replace('const ', '').replace(' *', '')
+  stripped = _try_strip_all_prefixes(base_type)
+  if base_type in _MUJOCO_OBJECTS:
+    return f'Mj{stripped}Wrapper&'
+  else:
+    return f'Py{stripped}&'
 
 
 def _get_param_type(param: ast_nodes.FunctionParameterDecl) -> str:
@@ -226,9 +237,7 @@ def _get_param_type(param: ast_nodes.FunctionParameterDecl) -> str:
     return value_type + str(array_type.extents[0]) + '::Ref&'
   elif _is_param_object(param):
     # e.g. convert `mjrLight*` to `PyLight&`
-    base_type = param.decltype.replace('const ', '').replace(' *', '')
-    stripped = _try_strip_all_prefixes(base_type)
-    return f'Py{stripped}&'
+    return _wrap_param(param)
   elif param.decltype == 'mjtBool':
     return 'bool'
   # Assume everything else is compatible.
@@ -262,6 +271,9 @@ def _get_field_type(field: ast_nodes.StructFieldDecl) -> str:
     if obj_type in _OBJECTS:
       stripped = _try_strip_all_prefixes(obj_type)
       return f'Py{stripped}'
+    elif obj_type in _MUJOCO_OBJECTS:
+      stripped = _try_strip_all_prefixes(obj_type)
+      return f'Mj{stripped}Wrapper'
 
   return field.decltype
 
@@ -433,11 +445,32 @@ def _make_function(code: code_builder.CodeBuilder, func: ast_nodes.FunctionDecl)
     code.line(',\n  '.join(params))
   with code.block(')'):
     code.line(f'return {return_type}{func.name}({", ".join(args)});')
-  for param in func.parameters[1:]:
+  for param in func.parameters[0 if ident == 'm' else 1:]:
     code.line(f', py::arg("{param.name}")')
   if func.name in _RELEASE_GIL:
     code.line(', py::call_guard<py::gil_scoped_release>()')
   code.line(');')
+
+
+def _make_create_function(code: code_builder.CodeBuilder, func: ast_nodes.FunctionDecl) -> None:
+  """Generates a Python create function for a MuJoCo object."""
+  obj_type = func.name.replace('mjrf_create', '')
+  if obj_type == 'Context':
+    # mjrfContext provides its own initializer.
+    code.line('mjrf_context.def(py::init(')
+    code.line('[](mjrfContextConfig& config)')
+    with code.block():
+      code.line('return std::make_unique<PyContext>(&config);')
+    code.line('), py::arg("config"));')
+  else:
+    # All other objects are `create_` member functions of the context.
+    ptype = func.parameters[1].decltype.replace(' *', '')
+    pname = 'params' if 'Params' in func.parameters[1].name else 'config'
+    code.line(f'mjrf_context.def("create_{_snake_case(obj_type)}",')
+    code.line(f'  [](PyContext& ctx, {ptype}& {pname})')
+    with code.block():
+      code.line(f'return std::make_unique<Py{obj_type}>(ctx.get(), &{pname});')
+    code.line(f', py::arg("{pname}"), py::keep_alive<0, 1>());')
 
 
 def _snake_case(name: str) -> str:
@@ -500,6 +533,11 @@ def main(_) -> None:
 
     _make_function(code, func)
     code.newline()
+
+  for name, func in visitor.exported_functions.items():
+    if name.startswith('mjrf_create'):
+      _make_create_function(code, func)
+      code.newline()
 
   print(code.to_string())
 
