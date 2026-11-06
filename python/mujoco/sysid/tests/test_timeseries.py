@@ -104,6 +104,26 @@ def test_save_and_load(scalar_ts, multi_ts, tmp_path):
   np.testing.assert_array_equal(loaded2.data, multi_ts.data)
 
 
+@pytest.mark.parametrize(
+    "nsteps, ncolumns, scalar",
+    [(3, 1, True), (1, 1, True), (3, 1, False), (3, 2, False), (3, 0, False)],
+)
+def test_save_to_csv(tmp_path, nsteps, ncolumns, scalar):
+  """CSV output contains timestamps followed by each signal column."""
+  times = np.arange(nsteps) * 0.5
+  columns = np.arange(nsteps * ncolumns).reshape(nsteps, ncolumns)
+  data = columns[:, 0] if scalar else columns
+  ts = TimeSeries(times=times, data=data)
+  path = tmp_path / "timeseries.csv"
+
+  ts.save_to_csv(path)
+
+  loaded = np.loadtxt(path, delimiter=",", ndmin=2)
+  assert loaded.shape == (nsteps, ncolumns + 1)
+  np.testing.assert_array_equal(loaded[:, 0], times)
+  np.testing.assert_array_equal(loaded[:, 1:], columns)
+
+
 def test_save_and_load_with_signal_mapping(tmp_path):
   """Save/load also preserves the signal_mapping (sensor name -> column index map)."""
   times = np.array([0.0, 1.0, 2.0, 3.0, 4.0])
