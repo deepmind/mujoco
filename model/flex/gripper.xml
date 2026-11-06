@@ -16,7 +16,7 @@
 <mujoco model="Gripper">
   <include file="scene.xml"/>
 
-  <option cone="elliptic" impratio="10" integrator="implicitfast"/>
+  <option cone="elliptic" impratio="10" integrator="discrete" solver="Newton"/>
 
   <worldbody>
     <body name="hand" pos="0 0 .37">

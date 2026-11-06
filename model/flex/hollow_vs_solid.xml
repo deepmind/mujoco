@@ -16,7 +16,7 @@
 <mujoco>
   <include file="scene.xml"/>
 
-  <option cone="elliptic" solver="CG" />
+  <option cone="elliptic" integrator="discrete" solver="Newton"/>
 
   <default>
     <default class="gripper">

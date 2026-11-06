@@ -16,7 +16,7 @@
 <mujoco model="Trilinear">
   <include file="scene.xml"/>
 
-  <option solver="CG" tolerance="1e-6" integrator="discrete"/>
+  <option solver="Newton" tolerance="1e-6" integrator="discrete"/>
 
   <size memory="10M"/>
 

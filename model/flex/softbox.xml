@@ -16,7 +16,7 @@
 <mujoco model="Soft box">
   <include file="scene.xml"/>
 
-  <option solver="CG" tolerance="1e-6"/>
+  <option solver="Newton" tolerance="1e-6"/>
 
   <size memory="30M"/>
 

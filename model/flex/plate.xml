@@ -16,7 +16,7 @@
 <mujoco model="Plate">
   <include file="scene.xml"/>
 
-  <option solver="CG" tolerance="1e-6" integrator="Euler"/>
+  <option solver="Newton" tolerance="1e-6" integrator="Euler"/>
 
   <size memory="10M"/>
 

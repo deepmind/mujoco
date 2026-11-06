@@ -16,7 +16,7 @@
 <mujoco model="Full-flex sphere">
   <include file="scene.xml"/>
 
-  <option solver="CG" tolerance="1e-6" timestep=".001" integrator="implicitfast"/>
+  <option solver="Newton" tolerance="1e-6" timestep=".001" integrator="Euler"/>
 
   <size memory="10M"/>
 

@@ -16,7 +16,7 @@
 <mujoco model="Pancake">
   <include file="scene.xml"/>
 
-  <option timestep="0.001" solver="CG" tolerance="1e-6" integrator="Euler"/>
+  <option timestep="0.001" solver="Newton" tolerance="1e-6" integrator="Euler"/>
 
   <size memory="10M"/>
 
