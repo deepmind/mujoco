@@ -81,10 +81,10 @@ class SlideshowTest(absltest.TestCase):
         len(slideshow_plugins.SLIDES) - 1,
     )
     self.assertEqual(slideshow_plugins.resolve_slide_index('ipc'), 1)
-    self.assertGreater(slideshow_plugins.resolve_slide_index('newton'), 0)
+    self.assertGreater(slideshow_plugins.resolve_slide_index('surfacevel'), 0)
     self.assertGreater(slideshow_plugins.resolve_slide_index('chain'), 0)
     self.assertEqual(
-        slideshow_plugins.resolve_slide_index('SCALING'),
+        slideshow_plugins.resolve_slide_index('SLEEP'),
         len(slideshow_plugins.SLIDES) - 1,
     )
     with self.assertRaises(ValueError):
@@ -105,7 +105,7 @@ class SlideshowTest(absltest.TestCase):
 
   def test_all_slides_compile_and_step_cleanly(self):
     sim_plugin = slideshow_plugins.SlideshowSim()
-    self.assertLen(slideshow_plugins.SLIDES, 18)
+    self.assertLen(slideshow_plugins.SLIDES, 15)
 
     for idx, slide in enumerate(slideshow_plugins.SLIDES):
       with self.subTest(slide=slide.slug):
@@ -173,51 +173,19 @@ class SlideshowTest(absltest.TestCase):
     z_retracted = float(data.xpos[head_id, 2])
     self.assertGreater(z_retracted, z_stamped + 0.10)
 
-  def test_froude_scaling_ratios(self):
-    model = slideshow_plugins._build_froude_scaling_model()
-    half_mount = mujoco.mj_name2id(
-        model, int(mujoco.mjtObj.mjOBJ_BODY), 'half_upper'
-    )
-    unit_mount = mujoco.mj_name2id(
-        model, int(mujoco.mjtObj.mjOBJ_BODY), 'unit_upper'
-    )
-    large_mount = mujoco.mj_name2id(
-        model, int(mujoco.mjtObj.mjOBJ_BODY), 'large_upper'
-    )
-    self.assertAlmostEqual(
-        float(model.body_mass[half_mount]) / float(model.body_mass[unit_mount]),
-        0.5**3,
-        places=5,
-    )
-    self.assertAlmostEqual(
-        float(model.body_mass[large_mount])
-        / float(model.body_mass[unit_mount]),
-        1.8**3,
-        places=4,
-    )
-    data = mujoco.MjData(model)
-    slideshow_plugins._init_froude_scaling(model, data)
-    self.assertAlmostEqual(float(data.qpos[0]), 1.15)
-    self.assertAlmostEqual(float(data.qpos[2]), 1.15)
-    self.assertAlmostEqual(float(data.qpos[4]), 1.15)
-
   def test_draggable_bodies_hang_off_joints(self):
-    model = slideshow_plugins._build_froude_scaling_model()
+    sim_plugin = slideshow_plugins.SlideshowSim(prefetch=False)
+    model, _ = sim_plugin.compile_slide(
+        slideshow_plugins.resolve_slide_index('adhesion')
+    )
     body = lambda name: mujoco.mj_name2id(
         model, int(mujoco.mjtObj.mjOBJ_BODY), name
     )
-    # The world (and so the floor and gantry) and the jointless pivot mounts
-    # orbit the camera; the pendulum links and their children can be pulled.
+    # The world (and so the fridge cabinet) orbits the camera; the hinged door
+    # and its handle can be pulled.
     self.assertFalse(slideshow_plugins.is_draggable_body(model, 0))
-    self.assertFalse(
-        slideshow_plugins.is_draggable_body(model, body('unit_mount'))
-    )
-    self.assertTrue(
-        slideshow_plugins.is_draggable_body(model, body('unit_upper'))
-    )
-    self.assertTrue(
-        slideshow_plugins.is_draggable_body(model, body('large_lower'))
-    )
+    self.assertTrue(slideshow_plugins.is_draggable_body(model, body('door')))
+    self.assertTrue(slideshow_plugins.is_draggable_body(model, body('handle')))
     self.assertFalse(slideshow_plugins.is_draggable_body(model, -1))
     self.assertFalse(slideshow_plugins.is_draggable_body(model, model.nbody))
 
@@ -264,14 +232,18 @@ class SlideshowTest(absltest.TestCase):
     ]
     self.assertLen(events, 1)
     self.assertEqual(events[0].index, len(slideshow_plugins.SLIDES) - 1)
-    self.assertEqual(events[0].slug, 'scaling')
+    self.assertEqual(events[0].slug, 'sleep')
 
-    # Reset reapplies initial angles on the scaling slide.
+    # Reset reapplies the initial door angle on the fridge-door slide.
+    adhesion = slideshow_plugins.resolve_slide_index('adhesion')
+    viewer_ep.send_to_sim(slideshow_plugins.SelectSlideEvent(index=adhesion))
+    handle.sync()
+    viewer_ep.get_sim_events()
     assert handle.data is not None
     handle.data.qpos[:] = 0.0
     viewer_ep.send_to_sim(messages.ResetEvent())
     handle.sync()
-    self.assertTrue(math.isclose(float(handle.data.qpos[0]), 1.15))
+    self.assertTrue(math.isclose(float(handle.data.qpos[0]), 0.30))
 
   def test_deck_compile_order_is_nearest_first(self):
     self.assertEqual(
@@ -311,9 +283,9 @@ class SlideshowTest(absltest.TestCase):
 
     # Switching to a compiled slide publishes that very model, with fresh data
     # and the slide's initial state, instead of compiling again.
-    scaling = slideshow_plugins.resolve_slide_index('scaling')
-    scaling_hint = hints[order.index(scaling)]
-    viewer_ep.send_to_sim(slideshow_plugins.SelectSlideEvent(index=scaling))
+    adhesion = slideshow_plugins.resolve_slide_index('adhesion')
+    adhesion_hint = hints[order.index(adhesion)]
+    viewer_ep.send_to_sim(slideshow_plugins.SelectSlideEvent(index=adhesion))
     handle.sync()
     model_events = [
         e
@@ -321,9 +293,9 @@ class SlideshowTest(absltest.TestCase):
         if isinstance(e, messages.ModelEvent)
     ]
     self.assertLen(model_events, 1)
-    self.assertIs(model_events[0].model, scaling_hint.model)
+    self.assertIs(model_events[0].model, adhesion_hint.model)
     assert handle.data is not None
-    self.assertTrue(math.isclose(float(handle.data.qpos[0]), 1.15))
+    self.assertTrue(math.isclose(float(handle.data.qpos[0]), 0.30))
 
   def test_prefetch_off_compiles_on_demand_without_hints(self):
     viewer_ep, sim_ep = launch_thread.make_thread_endpoints()

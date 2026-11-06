@@ -306,7 +306,7 @@ def _smoothstep(t: float, t0: float, t1: float) -> float:
 def _step_ipc_bag(model: mujoco.MjModel, data: mujoco.MjData) -> None:
   """Smoothly pulls the ribbon drawstring so the liner mouth gathers shut."""
   if model.nu > 0:
-    data.ctrl[0] = 0.48 * _smoothstep(float(data.time), 0.35, 3.4)
+    data.ctrl[0] = 0.52 * _smoothstep(float(data.time), 0.35, 3.4)
 
 
 def _init_fridge_door(model: mujoco.MjModel, data: mujoco.MjData) -> None:
@@ -314,171 +314,6 @@ def _init_fridge_door(model: mujoco.MjModel, data: mujoco.MjData) -> None:
   if model.nq >= 1 and model.nv >= 1:
     data.qpos[0] = 0.30
     data.qvel[0] = -0.65
-
-
-def _make_pendulum_unit_spec(rgba: Sequence[float]) -> mujoco.MjSpec:
-  """Creates an unscaled double-pendulum sub-spec for ``<frame scale=...>``."""
-  unit = mujoco.MjSpec()
-  pivot = unit.worldbody.add_body(name='mount', pos=[0.0, 0.0, 0.0])
-  pivot.add_geom(
-      type=mujoco.mjtGeom.mjGEOM_CYLINDER,
-      fromto=[0.0, -0.045, 0.0, 0.0, 0.045, 0.0],
-      size=[0.032, 0.0, 0.0],
-      rgba=[0.30, 0.33, 0.38, 1.0],
-      contype=0,
-      conaffinity=0,
-  )
-
-  upper = pivot.add_body(name='upper', pos=[0.0, 0.0, 0.0])
-  upper.add_joint(
-      name='shoulder',
-      type=mujoco.mjtJoint.mjJNT_HINGE,
-      axis=[0.0, 1.0, 0.0],
-      damping=0.004,
-  )
-  upper.add_geom(
-      type=mujoco.mjtGeom.mjGEOM_CAPSULE,
-      fromto=[0.0, 0.0, 0.0, 0.0, 0.0, -0.26],
-      size=[0.022, 0.0, 0.0],
-      density=1200.0,
-      rgba=list(rgba),
-  )
-
-  lower = upper.add_body(name='lower', pos=[0.0, 0.0, -0.26])
-  lower.add_joint(
-      name='elbow',
-      type=mujoco.mjtJoint.mjJNT_HINGE,
-      axis=[0.0, 1.0, 0.0],
-      damping=0.002,
-  )
-  lower.add_geom(
-      type=mujoco.mjtGeom.mjGEOM_CAPSULE,
-      fromto=[0.0, 0.0, 0.0, 0.0, 0.0, -0.22],
-      size=[0.018, 0.0, 0.0],
-      density=1200.0,
-      rgba=list(rgba),
-  )
-  lower.add_geom(
-      type=mujoco.mjtGeom.mjGEOM_SPHERE,
-      pos=[0.0, 0.0, -0.22],
-      size=[0.042, 0.0, 0.0],
-      density=2200.0,
-      rgba=[min(1.0, rgba[0] + 0.12), min(1.0, rgba[1] + 0.12), rgba[2], 1.0],
-  )
-  return unit
-
-
-def _build_froude_scaling_model() -> mujoco.MjModel:
-  """Builds a procedural scene attaching one pendulum spec at 3 scales."""
-  spec = mujoco.MjSpec()
-  spec.modelname = 'Uniform <frame scale> (0.5x, 1.0x, 1.8x)'
-  spec.option.timestep = 0.002
-  spec.option.integrator = mujoco.mjtIntegrator.mjINT_IMPLICITFAST
-
-  spec.add_texture(
-      name='sky',
-      type=mujoco.mjtTexture.mjTEXTURE_SKYBOX,
-      builtin=mujoco.mjtBuiltin.mjBUILTIN_GRADIENT,
-      rgb1=[0.12, 0.16, 0.28],
-      rgb2=[0.5, 0.45, 0.4],
-      width=32,
-      height=512,
-  )
-  spec.add_texture(
-      name='ibl',
-      type=mujoco.mjtTexture.mjTEXTURE_CUBE,
-      builtin=mujoco.mjtBuiltin.mjBUILTIN_GRADIENT,
-      rgb1=[0.25, 0.3, 0.45],
-      rgb2=[0.55, 0.5, 0.45],
-      width=32,
-      height=32,
-  )
-  grid_tex = spec.add_texture(
-      name='grid',
-      type=mujoco.mjtTexture.mjTEXTURE_2D,
-      builtin=mujoco.mjtBuiltin.mjBUILTIN_CHECKER,
-      rgb1=[0.16, 0.20, 0.25],
-      rgb2=[0.22, 0.27, 0.33],
-      width=256,
-      height=256,
-  )
-  grid_mat = spec.add_material(name='grid', texuniform=True, reflectance=0.12)
-  grid_mat.textures[mujoco.mjtTextureRole.mjTEXROLE_RGB] = grid_tex.name
-
-  # The same look as the showcase scenes: a gradient sky and image light, a
-  # warm soft key light with shadows, a cool fill, and an infinite floor that
-  # fades into haze at the horizon.
-  spec.visual.quality.shadowsize = 4096
-  spec.visual.rgba.haze = [0.12, 0.16, 0.20, 1.0]
-  spec.worldbody.add_light(
-      pos=[1.5, -2.5, 3.6],
-      dir=[-0.3, 0.5, -0.8],
-      cutoff=35.0,
-      softness=1.0,
-      range=20.0,
-      diffuse=[0.9, 0.85, 0.75],
-      intensity=1.2e6,
-      castshadow=True,
-  )
-  spec.worldbody.add_light(
-      pos=[-1.5, 2.0, 2.8],
-      dir=[0.35, -0.45, -0.75],
-      cutoff=50.0,
-      softness=1.0,
-      range=20.0,
-      diffuse=[0.5, 0.65, 0.8],
-      intensity=4e5,
-      castshadow=False,
-  )
-  spec.worldbody.add_light(
-      type=mujoco.mjtLightType.mjLIGHT_IMAGE,
-      texture='ibl',
-      intensity=3000.0,
-  )
-  spec.worldbody.add_geom(
-      name='floor',
-      type=mujoco.mjtGeom.mjGEOM_PLANE,
-      size=[0.0, 0.0, 0.05],
-      material='grid',
-  )
-
-  # Overhead gantry bar supporting the three scaled copies.
-  spec.worldbody.add_geom(
-      name='gantry',
-      type=mujoco.mjtGeom.mjGEOM_CAPSULE,
-      fromto=[-1.25, 0.0, 1.22, 1.25, 0.0, 1.22],
-      size=[0.022, 0.0, 0.0],
-      rgba=[0.36, 0.39, 0.44, 1.0],
-      contype=0,
-      conaffinity=0,
-  )
-  for side_x in (-1.25, 1.25):
-    spec.worldbody.add_geom(
-        type=mujoco.mjtGeom.mjGEOM_CAPSULE,
-        fromto=[side_x, 0.0, 0.0, side_x, 0.0, 1.22],
-        size=[0.024, 0.0, 0.0],
-        rgba=[0.28, 0.31, 0.36, 1.0],
-        contype=0,
-        conaffinity=0,
-    )
-
-  variants = (
-      ('half_', -0.90, 0.5, (0.32, 0.72, 0.92, 1.0)),
-      ('unit_', -0.15, 1.0, (0.90, 0.72, 0.30, 1.0)),
-      ('large_', 0.80, 1.8, (0.90, 0.44, 0.32, 1.0)),
-  )
-  for prefix, x_pos, scale, rgba in variants:
-    frame = spec.worldbody.add_frame(pos=[x_pos, 0.0, 1.22], scale=scale)
-    spec.attach(_make_pendulum_unit_spec(rgba), frame=frame, prefix=prefix)
-
-  return spec.compile()
-
-
-def _init_froude_scaling(model: mujoco.MjModel, data: mujoco.MjData) -> None:
-  """Releases all three scaled pendulums from identical initial angles."""
-  for i in range(0, model.nq - 1, 2):
-    data.qpos[i] = 1.15
-    data.qpos[i + 1] = -0.65
 
 
 SLIDES: tuple[SlideSpec, ...] = (
@@ -498,8 +333,8 @@ SLIDES: tuple[SlideSpec, ...] = (
         category='Deformables',
         title='Penetration-Free Cloth Contact',
         caption=(
-            'Incremental Potential Contact uses barrier potentials so thin'
-            ' shells, rods, and rigid bodies never pass through one another.'
+            "MuJoCo's IPC contact mode checks every step for intersections,"
+            ' so cloth never passes through itself or the objects it touches.'
             ' Here a ribbon drawstring slides inside a bin liner hem and'
             ' cinches it shut by contact alone.'
         ),
@@ -597,18 +432,6 @@ SLIDES: tuple[SlideSpec, ...] = (
         model_relpath='plastic/roller.xml',
     ),
     SlideSpec(
-        slug='torsion',
-        category='Plasticity',
-        title='Plastic Torsion',
-        caption=(
-            'Volumetric plasticity captures shear as well as compression. Two'
-            ' wrenches twist square bars past a half turn and release: the'
-            ' elastic bar unwinds straight, while the plastic bar keeps about'
-            ' eighty degrees of twist.'
-        ),
-        model_relpath='plastic/torsion.xml',
-    ),
-    SlideSpec(
         slug='ccd',
         category='Speculative Contacts',
         title='Speculative Contacts: Baseball Bat',
@@ -619,18 +442,6 @@ SLIDES: tuple[SlideSpec, ...] = (
             ' fast-pitched baseball.'
         ),
         model_relpath='speculative/flipper.xml',
-    ),
-    SlideSpec(
-        slug='newton',
-        category='Speculative Contacts',
-        title="Speculative Contacts: Newton's Cradle",
-        caption=(
-            "Five 3 mm steel plates swing in a Newton's cradle, moving four"
-            ' times their thickness per step at impact. Speculative contacts'
-            ' prevent tunneling and transfer momentum cleanly across the'
-            ' stack.'
-        ),
-        model_relpath='speculative/newton.xml',
     ),
     SlideSpec(
         slug='chain',
@@ -667,10 +478,9 @@ SLIDES: tuple[SlideSpec, ...] = (
         category='Contact & Integration',
         title='Dry-Stone Gothic Arch',
         caption=(
-            'The discrete integrator solves contact forces implicitly within'
-            ' each step to hold compression and static-friction structures'
-            ' without drift. Unmortared stone wedges and a keystone stand'
-            ' rock-steady under gravity at an 8 ms timestep.'
+            'Unmortared stone wedges and a keystone hold together by friction'
+            ' alone. Elliptic friction cones and the discrete integrator keep'
+            ' the arch standing steady under gravity at an 8 ms timestep.'
         ),
         model_relpath='arch/gothic.xml',
         camera=CameraPreset(
@@ -733,25 +543,6 @@ SLIDES: tuple[SlideSpec, ...] = (
             distance=2.55,
             azimuth=122.0,
             elevation=-32.0,
-        ),
-    ),
-    SlideSpec(
-        slug='scaling',
-        category='Modeling',
-        title='Uniform Model Scaling',
-        caption=(
-            'Attaching a model at a uniform scale automatically rescales its'
-            ' lengths, masses, and inertias together. Released from the same'
-            ' angle at 0.5x, 1x, and 1.8x size, larger double pendulums swing'
-            ' more slowly just as physics predicts.'
-        ),
-        build_model_fn=_build_froude_scaling_model,
-        init_fn=_init_froude_scaling,
-        camera=CameraPreset(
-            lookat=(-0.05, 0.0, 0.72),
-            distance=2.85,
-            azimuth=90.0,
-            elevation=-14.0,
         ),
     ),
 )
@@ -862,8 +653,9 @@ def apply_interactive_camera(
     model: Loaded MuJoCo model.
     data: Forwarded MuJoCo data.
     camera: Viewer camera to configure in place.
-    preset: Explicit spherical free-camera preset, or None to convert camera 0
-      (falling back to ``mjv_defaultFreeCamera`` when the model has no cameras).
+    preset: Explicit spherical free-camera preset, or None to convert the
+      model's ``visual/global/cameraid`` camera (falling back to
+      ``mjv_defaultFreeCamera`` when it is unset, like MuJoCo Studio).
   """
   mujoco.mjv_defaultFreeCamera(model, camera)
   camera.type = int(mujoco.mjtCamera.mjCAMERA_FREE)
@@ -879,8 +671,6 @@ def apply_interactive_camera(
 
   cam_id = model.vis.global_.cameraid
   if not 0 <= cam_id < model.ncam:
-    cam_id = 0 if model.ncam > 0 else -1
-  if cam_id < 0:
     return
 
   pos = np.asarray(data.cam_xpos[cam_id], dtype=np.float64)
@@ -1156,7 +946,7 @@ class SlideshowSim(plugin.SimPlugin):
     )
 
   # Run after ViewerHandle._on_reset (Priority.INTERNAL = 1) so slide-specific
-  # initial joint states (e.g. swinging fridge door, angled pendulums) reapply.
+  # initial joint states (e.g. the swinging fridge door) reapply.
   @messages.handler(priority=0)
   def _on_reset(self, _: messages.ResetEvent) -> None:
     self._slide_loaded_wall_time = time.monotonic()

@@ -16,6 +16,9 @@
 <mujoco model="Flexible dipper arm">
   <include file="scene.xml"/>
   <statistic center=".25 0 .9" extent="2.5"/>
+  <visual>
+    <global cameraid="0"/>
+  </visual>
   <worldbody>
     <camera name="overview" pos="1.4 -2.65 1.7" xyaxes="0.92604713 0.37740789 -0 -0.11322929 0.27783112 0.95393344"/>
     <geom type="box" pos="-.05 0 .09" size=".65 .27 .09"/>
