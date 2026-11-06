@@ -16,11 +16,14 @@
 
 #include "src/engine/engine_collision_gjk.h"
 
+#include <algorithm>
+#include <array>
 #include <cstddef>
 #include <cstdint>
 #include <memory>
 #include <string>
 #include <string_view>
+#include <tuple>
 #include <vector>
 
 #include <gmock/gmock.h>
@@ -3285,6 +3288,232 @@ TEST_F(MjGjkTest, CylinderCylinderNearlyConcentric) {
   ASSERT_EQ(ncons, 1);
   EXPECT_NEAR(dist, -1.0, MjTol(kTolerance, 1e-5));
 }
+
+// Exercise feature recovery directly: support indices identify cylinder rims,
+// but do not identify the angle of a point on a rim.
+class CylinderEdgeTest
+    : public MujocoTest,
+      public ::testing::WithParamInterface<std::tuple<bool, bool, bool>> {
+ protected:
+  void SetUp() override {
+    const auto [swap, margin, rotated] = GetParam();
+    swap_ = swap;
+    margin_ = margin ? 0.1 : 0;
+    mjtNum quat[4] = {1, 2, 3, 4};
+    if (!rotated) {
+      mju_zero4(quat);
+      quat[0] = 1;
+    }
+    mju_normalize4(quat);
+    mju_quat2Mat(mat_, quat);
+  }
+
+  void ToWorld(mjtNum res[3], const mjtNum local[3]) const {
+    mju_mulMatVec3(res, mat_, local);
+    mju_addTo3(res, origin_);
+  }
+
+  mjCCDObj Object(int type, const mjtNum pos[3], const mjtNum size[3]) const {
+    mjCCDObj obj = {};
+    obj.geom = 0;
+    obj.geom_type = type;
+    obj.margin = margin_;
+    mju_copy3(obj.size, size);
+    mju_copy(obj.mat, mat_, 9);
+    ToWorld(obj.pos, pos);
+    return obj;
+  }
+
+  struct Contacts {
+    int count;
+    mjtNum cylinder[12] = {};
+    mjtNum box[12] = {};
+    mjtNum dist[4] = {};
+  };
+
+  Contacts Collide(mjCCDObj cylinder, mjCCDObj box, const mjtNum wc[3],
+                   const mjtNum wb[3]) const {
+    Contacts contacts = {};
+    ToWorld(contacts.cylinder, wc);
+    ToWorld(contacts.box, wb);
+    auto buffer = std::vector<uint8_t>(mjc_ccdSize(16, 3, kMaxIterations));
+    contacts.count =
+        swap_
+            ? mjc_multicontact(&box, &cylinder, contacts.box, contacts.cylinder,
+                               contacts.dist, 4, 3, 16, buffer.data())
+            : mjc_multicontact(&cylinder, &box, contacts.cylinder, contacts.box,
+                               contacts.dist, 4, 3, 16, buffer.data());
+    // Compare unordered contact sets in the common local frame.
+    for (int i = 0; i < contacts.count; ++i) {
+      for (mjtNum* point : {contacts.cylinder + 3 * i, contacts.box + 3 * i}) {
+        mjtNum diff[3];
+        mju_sub3(diff, point, origin_);
+        mju_mulMatTVec3(point, mat_, diff);
+      }
+    }
+    if (contacts.count == 2 && contacts.cylinder[2] > contacts.cylinder[5]) {
+      for (int j = 0; j < 3; ++j) {
+        std::swap(contacts.cylinder[j], contacts.cylinder[j + 3]);
+        std::swap(contacts.box[j], contacts.box[j + 3]);
+      }
+      std::swap(contacts.dist[0], contacts.dist[1]);
+    }
+    return contacts;
+  }
+
+  void ExpectEdge(const Contacts& contacts, mjtNum x, mjtNum y,
+                  mjtNum face) const {
+    ASSERT_EQ(contacts.count, 2);
+    for (int i = 0; i < 2; ++i) {
+      SCOPED_TRACE(i);
+      // The generator is parallel to the axis, clipped at the box's z limits.
+      EXPECT_NEAR(contacts.cylinder[3 * i], x + margin_ / 2,
+                  MjTol(1e-14, 1e-5));
+      EXPECT_NEAR(contacts.box[3 * i], face - margin_ / 2, MjTol(1e-14, 1e-5));
+      for (const mjtNum* point :
+           {contacts.cylinder + 3 * i, contacts.box + 3 * i}) {
+        EXPECT_NEAR(point[1], y, MjTol(1e-14, 1e-5));
+        EXPECT_NEAR(point[2], i ? 1 : -1, MjTol(1e-14, 1e-5));
+      }
+      EXPECT_NEAR(contacts.dist[i], face - x - margin_, MjTol(1e-14, 1e-5));
+    }
+  }
+
+  bool swap_;
+  mjtNum margin_;
+  mjtNum mat_[9];
+  const mjtNum origin_[3] = {0.25, -0.5, 0.75};
+};
+
+TEST_P(CylinderEdgeTest, CyclicSupportOrder) {
+  const mjtNum zero[3] = {};
+  const mjtNum cylinder_size[3] = {1, 2, 0};
+  // The narrow face exposes count changes; the wide face exposes position
+  // changes.
+  for (mjtNum width : {0.2, 2.0}) {
+    for (bool same_rim : {false, true}) {
+      SCOPED_TRACE(::testing::Message()
+                   << "width=" << width << " same_rim=" << same_rim);
+      const mjtNum box_pos[3] = {1.85, -width / 2, 0};
+      const mjtNum box_size[3] = {1, width, 1};
+      auto cylinder = Object(mjGEOM_CYLINDER, zero, cylinder_size);
+      auto box = Object(mjGEOM_BOX, box_pos, box_size);
+      cylinder.nsupp = box.nsupp = 3;
+      const mjtNum vertices[9] = {
+          0.8, 0.6, 2, 0.8, -0.6, 2, 1, 0, same_rim ? mjtNum{2} : mjtNum{-2}};
+      const mjtNum box_vertices[9] = {0.85, mjtNum{-1.5} * width, -1,
+                                      0.85, mjtNum{0.5} * width,  -1,
+                                      0.85, mjtNum{0.5} * width,  1};
+      const int rims[3] = {0, 0, same_rim ? 0 : 1};
+      const int corners[3] = {0, 2, 6};
+      // These are valid support points on the uninflated shapes (as used by
+      // the shallow-penetration GJK path). Their 1/4, 1/4, 1/2 combinations
+      // give the witnesses; they have the same radial direction for every
+      // order.
+      const mjtNum wc[3] = {0.9, 0, same_rim ? mjtNum{2} : mjtNum{0}};
+      const mjtNum wb[3] = {0.85, 0, 0};
+      std::array<Contacts, 3> contacts;
+      for (int order = 0; order < 3; ++order) {
+        SCOPED_TRACE(order);
+        for (int i = 0; i < 3; ++i) {
+          int j = (i + order) % 3;
+          cylinder.suppind[i] = rims[j];
+          box.suppind[i] = corners[j];
+          ToWorld(cylinder.suppvert + 3 * i, vertices + 3 * j);
+          ToWorld(box.suppvert + 3 * i, box_vertices + 3 * j);
+        }
+        contacts[order] = Collide(cylinder, box, wc, wb);
+        ExpectEdge(contacts[order], 1, 0, 0.85);
+      }
+      for (int order = 1; order < 3; ++order) {
+        EXPECT_EQ(contacts[0].count, contacts[order].count);
+        if (contacts[0].count != contacts[order].count) continue;
+        EXPECT_THAT(
+            AsVector(contacts[order].cylinder, 3 * contacts[0].count),
+            Pointwise(MjNear(1e-14, 1e-5),
+                      AsVector(contacts[0].cylinder, 3 * contacts[0].count)));
+        EXPECT_THAT(
+            AsVector(contacts[order].box, 3 * contacts[0].count),
+            Pointwise(MjNear(1e-14, 1e-5),
+                      AsVector(contacts[0].box, 3 * contacts[0].count)));
+      }
+    }
+  }
+}
+
+TEST_P(CylinderEdgeTest, OnAxisWitness) {
+  // Keep the zero-radius control exactly on-axis in both precisions. Arbitrary
+  // rotations are covered by the edge and cap tests.
+  if (std::get<2>(GetParam())) {
+    const mjtNum rotation[9] = {0, 0, 1, 1, 0, 0, 0, 1, 0};
+    mju_copy(mat_, rotation, 9);
+  }
+  const mjtNum zero[3] = {};
+  const mjtNum cylinder_size[3] = {1, 2, 0};
+  const mjtNum box_pos[3] = {0.9, 0, 0};
+  const mjtNum box_size[3] = {1, 2, 1};
+  for (mjtNum radius : {1.0, 0.0}) {
+    SCOPED_TRACE(radius);
+    auto cylinder = Object(mjGEOM_CYLINDER, zero, cylinder_size);
+    auto box = Object(mjGEOM_BOX, box_pos, box_size);
+    cylinder.nsupp = 2;
+    cylinder.suppind[0] = 0;
+    cylinder.suppind[1] = 1;
+    // Antipodal rim points, or cap centers supported in the axial directions.
+    // Both have their midpoint on the axis, where no radial direction is
+    // defined.
+    const mjtNum vertices[6] = {radius, 0, 2, -radius, 0, -2};
+    ToWorld(cylinder.suppvert, vertices);
+    ToWorld(cylinder.suppvert + 3, vertices + 3);
+    box.nsupp = 3;
+    const int corners[3] = {0, 2, 6};
+    const mjtNum box_vertices[9] = {-0.1, -2, -1, -0.1, 2, -1, -0.1, 2, 1};
+    for (int i = 0; i < 3; ++i) {
+      box.suppind[i] = corners[i];
+      ToWorld(box.suppvert + 3 * i, box_vertices + 3 * i);
+    }
+    const mjtNum wb[3] = {-0.1, 0, 0};
+    ExpectEdge(Collide(cylinder, box, zero, wb), radius, 0, -0.1);
+  }
+}
+
+TEST_P(CylinderEdgeTest, CapFaceControl) {
+  const mjtNum zero[3] = {};
+  const mjtNum cylinder_size[3] = {1, 2, 0};
+  const mjtNum box_pos[3] = {0, 0, 2.9};
+  const mjtNum box_size[3] = {2, 2, 1};
+  auto cylinder = Object(mjGEOM_CYLINDER, zero, cylinder_size);
+  auto box = Object(mjGEOM_BOX, box_pos, box_size);
+  cylinder.nsupp = box.nsupp = 3;
+  const mjtNum vertices[9] = {1, 0, 2, -0.6, 0.8, 2, -0.6, -0.8, 2};
+  const mjtNum box_vertices[9] = {-2, -2, 1.9, 2, -2, 1.9, -2, 2, 1.9};
+  const int corners[3] = {0, 1, 2};
+  for (int i = 0; i < 3; ++i) {
+    cylinder.suppind[i] = 0;
+    box.suppind[i] = corners[i];
+    ToWorld(cylinder.suppvert + 3 * i, vertices + 3 * i);
+    ToWorld(box.suppvert + 3 * i, box_vertices + 3 * i);
+  }
+  const mjtNum wc[3] = {0, 0, 2};
+  const mjtNum wb[3] = {0, 0, 1.9};
+  Contacts contacts = Collide(cylinder, box, wc, wb);
+  ASSERT_EQ(contacts.count, 4);
+  for (int i = 0; i < contacts.count; ++i) {
+    const mjtNum* c = contacts.cylinder + 3 * i;
+    const mjtNum* b = contacts.box + 3 * i;
+    EXPECT_NEAR(c[2], 2 + margin_ / 2, MjTol(1e-14, 1e-5));
+    EXPECT_NEAR(b[2], 1.9 - margin_ / 2, MjTol(1e-14, 1e-5));
+    EXPECT_NEAR(c[0] * c[0] + c[1] * c[1], 1, MjTol(1e-14, 1e-5));
+    EXPECT_NEAR(c[0], b[0], MjTol(1e-14, 1e-5));
+    EXPECT_NEAR(c[1], b[1], MjTol(1e-14, 1e-5));
+    EXPECT_NEAR(contacts.dist[i], -0.1 - margin_, MjTol(1e-14, 1e-5));
+  }
+}
+
+INSTANTIATE_TEST_SUITE_P(All, CylinderEdgeTest,
+                         ::testing::Combine(::testing::Bool(),
+                                            ::testing::Bool(),
+                                            ::testing::Bool()));
 
 TEST_F(MjGjkTest, BoxNormalsFaceDiagonal) {
   static constexpr char xml[] = R"(

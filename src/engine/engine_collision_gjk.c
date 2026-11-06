@@ -2258,22 +2258,29 @@ static int boxEdgeNormals(mjtNum res[9], mjtNum endverts[9], int dim, mjCCDObj* 
 
 // recover edge of a cylinder from witness point
 static int cylinderEdgeNormals(mjtNum res[9], mjtNum endverts[9], int dim, mjCCDObj* obj,
-                               mjtNum v[9], int v1i) {
+                               mjtNum v[9], int v1i, const mjtNum w[3]) {
   if (dim == 1 || dim == 2) {
     mjtNum sgn = v1i ? 1.0 : -1.0;
     res[0] = sgn * obj->mat[2];
     res[1] = sgn * obj->mat[5];
     res[2] = sgn * obj->mat[8];
 
-    if (obj->margin > 0 && obj->geom >= 0) {
-      mjtNum diff[3], local[2];
+    // support indices identify rims, not angles; use the witness to locate the generator
+    mjtNum diff[3], local[2];
+    sub3(diff, w, obj->pos);
+    local[0] = obj->mat[0]*diff[0] + obj->mat[3]*diff[1] + obj->mat[6]*diff[2];
+    local[1] = obj->mat[1]*diff[0] + obj->mat[4]*diff[1] + obj->mat[7]*diff[2];
+    mjtNum n2 = local[0]*local[0] + local[1]*local[1];
+
+    // an on-axis witness has no radial direction; retain the support vertex direction
+    if (n2 < mjMINVAL2) {
       sub3(diff, v, obj->pos);
       local[0] = obj->mat[0]*diff[0] + obj->mat[3]*diff[1] + obj->mat[6]*diff[2];
       local[1] = obj->mat[1]*diff[0] + obj->mat[4]*diff[1] + obj->mat[7]*diff[2];
-      mjtNum n2 = local[0]*local[0] + local[1]*local[1];
-      mjtNum scl = n2 >= mjMINVAL2 ? obj->size[0] / mju_sqrt(n2) : 0;
-      globalcoord(v, obj->mat, obj->pos, scl * local[0], scl * local[1], -sgn * obj->size[1]);
+      n2 = local[0]*local[0] + local[1]*local[1];
     }
+    mjtNum scl = n2 >= mjMINVAL2 ? obj->size[0] / mju_sqrt(n2) : 0;
+    globalcoord(v, obj->mat, obj->pos, scl * local[0], scl * local[1], -sgn * obj->size[1]);
 
     // compute endverts = v1 + res * 2 * half_length
     addScl3(endverts, v, res, 2 * obj->size[1]);
@@ -2501,7 +2508,7 @@ static inline int geomEdgeNormals(mjtNum* res, mjtNum* endverts, int dim, mjCCDO
   } else if (obj->geom_type == mjGEOM_MESH) {
     return meshEdgeNormals(res, endverts, dim, obj, triface, trifacei);
   } else if (obj->geom_type == mjGEOM_CYLINDER) {
-    return cylinderEdgeNormals(res, endverts, dim, obj, triface, trifacei[0]);
+    return cylinderEdgeNormals(res, endverts, dim, obj, triface, trifacei[0], x);
   } else if (obj->geom_type == mjGEOM_CAPSULE) {
     return capsuleEdgeNormals(res, endverts, obj, triface, x);
   }
