@@ -18,6 +18,7 @@ from typing import Optional, Tuple, Union
 
 import jax
 from jax import numpy as jp
+
 import mujoco
 
 
@@ -230,9 +231,11 @@ def axis_angle_to_quat(axis: jax.Array, angle: jax.Array) -> jax.Array:
 
 def quat_integrate(q: jax.Array, v: jax.Array, dt: jax.Array) -> jax.Array:
   """Integrates a quaternion given angular velocity and dt."""
-  v, norm_ = normalize_with_norm(v)
-  angle = dt * norm_
-  q_res = axis_angle_to_quat(v, angle)
+  rotation = dt * v
+  angle = norm(rotation)
+  # sinc retains the linear velocity derivative when the angular speed is zero.
+  scale = 0.5 * jp.sinc(angle / (2 * jp.pi))
+  q_res = jp.concatenate((jp.cos(0.5 * angle)[None], scale * rotation))
   q_res = quat_mul(q, q_res)
   return normalize(q_res)
 
