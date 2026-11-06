@@ -645,7 +645,7 @@ The Python bindings provide the ``mujoco.MjVfs`` as a wrapper around the :ref:`m
 
    with mujoco.MjVfs() as vfs:
        vfs["model.xml"] = b"<mujoco/>"
-       spec = mujoco.MjSpec.from_string("model.xml", vfs=vfs)
+       spec = mujoco.MjSpec.from_file("model.xml", vfs=vfs)
        spec.compile(vfs=vfs)
 
 You can also create an instance directly and call ``close()`` when done:
@@ -864,7 +864,9 @@ modified, for example:
 
   texture = spec.add_texture(name='texture', height=1, width=3, nchannel=3)
   texture.data = bytes([255, 0, 0, 0, 255, 0, 0, 0, 255])  # Assign red, green and blue pixels.
-  texture.data[1] = 255  # Change the first pixel to yellow.
+  pixels = bytearray(texture.data)  # texture.data is bytes, so edit a copy.
+  pixels[1] = 255  # Change the first pixel to yellow.
+  texture.data = bytes(pixels)
 
 .. _PyMJCF:
 
