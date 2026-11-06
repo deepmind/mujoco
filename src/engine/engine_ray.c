@@ -99,6 +99,43 @@ static int ray_eliminate(const mjModel* m, const mjData* d, int geomid,
 }
 
 
+// cull geom by bounding sphere, return 1 if ray cannot improve closest hit
+static int ray_cull(const mjModel* m, const mjData* d, int geomid, const mjtNum pnt[3],
+                    const mjtNum dir[3], mjtNum vec_len, mjtNum dist) {
+  // skip unbounded geoms and SDFs (plugin surface is not bounded by mesh AABB)
+  mjtNum rbound = m->geom_rbound[geomid];
+  if (rbound <= 0 || m->geom_type[geomid] == mjGEOM_SDF) {
+    return 0;
+  }
+
+  // tolerance (~1e3 * machine epsilon) for rounding in projection and distance
+#ifdef mjUSESINGLE
+  const mjtNum bound_eps = 1e-4f;
+#else
+  const mjtNum bound_eps = 1e-12;
+#endif
+  mjtNum dif[3];
+  mju_sub3(dif, d->geom_xpos+3*geomid, pnt);
+  mjtNum proj = mju_dot3(dif, dir);
+  mjtNum rpad = rbound + bound_eps*(mju_abs(proj) + rbound);
+
+  // behind origin
+  if (proj + rpad < 0) {
+    return 1;
+  }
+
+  // beyond closest hit
+  if (dist >= 0 && proj - rpad > dist*vec_len) {
+    return 1;
+  }
+
+  // outside bounding sphere
+  mjtNum perp[3];
+  mju_addScl3(perp, dif, dir, -proj);
+  return mju_dot3(perp, perp) > rpad*rpad;
+}
+
+
 // compute both real solutions of a*x^2 + 2*b*x + c = 0, return smallest non-negative solution if any
 static mjtNum ray_quad(mjtNum a, mjtNum b, mjtNum c, mjtNum x[2]) {
   // compute determinant
@@ -1327,9 +1364,14 @@ mjtNum mj_ray(const mjModel* m, const mjData* d, const mjtNum pnt[3], const mjtN
   mjtNum* p_normal = normal ? normal_local : NULL;
 
   // check vector length
-  if (mju_norm3(vec) < mjMINVAL) {
+  mjtNum vec_len = mju_norm3(vec);
+  if (vec_len < mjMINVAL) {
     mjERROR("vector length is too small");
   }
+
+  // normalize ray direction
+  mjtNum dir[3];
+  mju_scl3(dir, vec, 1/vec_len);
 
   // clear result
   dist = -1;
@@ -1339,6 +1381,11 @@ mjtNum mj_ray(const mjModel* m, const mjData* d, const mjtNum pnt[3], const mjtN
   // loop over geoms not eliminated by mask and bodyexclude
   for (int i=0; i < ngeom; i++) {
     if (!ray_eliminate(m, d, i, geomgroup, flg_static, bodyexclude)) {
+      // cull by bounding sphere
+      if (ray_cull(m, d, i, pnt, dir, vec_len, dist)) {
+        continue;
+      }
+
       int type = m->geom_type[i];
       if (type == mjGEOM_MESH) {
         newdist = mj_rayMesh(m, d, i, pnt, vec, p_normal);

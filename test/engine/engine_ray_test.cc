@@ -1024,5 +1024,114 @@ TEST_F(RayTest, RayHfieldDegenerateDimensions) {
   EXPECT_THAT(normal, ElementsAre(0, 0, 1));
 }
 
+TEST_F(RayTest, RayCullBehindOriginAndCloserHit) {
+  static constexpr char kXml[] = R"(
+  <mujoco>
+    <worldbody>
+      <geom name="behind" type="sphere" pos="-2 0 0" size="0.5" group="0"/>
+      <geom name="straddle" type="sphere" pos="-0.3 0 0" size="0.5" group="1"/>
+      <geom name="near" type="sphere" pos="2 0 0" size="0.4" group="2"/>
+      <geom name="far_occluded" type="cylinder" pos="5 0 0" size="0.5 0.5"
+        group="2"/>
+      <geom name="off_axis" type="box" pos="1.5 2 0" size="0.4 0.4 0.4"
+        group="2"/>
+      <geom name="small_front_center" type="sphere" pos="3 0 0" size="0.2"
+        group="3"/>
+      <geom name="large_far_center" type="sphere" pos="3.5 0 0" size="1.0"
+        group="3"/>
+    </worldbody>
+  </mujoco>
+  )";
+  char error[1024];
+  MjModelPtr m = LoadModelFromString(kXml, error, sizeof(error));
+  ASSERT_THAT(m.get(), NotNull()) << error;
+  MjDataPtr d = MakeData(m);
+  ASSERT_THAT(d.get(), NotNull());
+  mj_forward(m.get(), d.get());
+
+  const mjtNum pnt[3] = {0, 0, 0};
+  const mjtNum vec[3] = {2, 0, 0};
+
+  // Coaxial sphere behind origin (infinite line intersects, forward ray
+  // misses).
+  const mjtByte group_behind[mjNGROUP] = {1, 0, 0, 0, 0, 0};
+  int geomid = 99;
+  mjtNum normal[3] = {1, 2, 3};
+  mjtNum dist =
+      mj_ray(m.get(), d.get(), pnt, vec, group_behind, 1, -1, &geomid, normal);
+  EXPECT_EQ(dist, -1);
+  EXPECT_EQ(geomid, -1);
+  EXPECT_THAT(normal, ElementsAre(0, 0, 0));
+
+  // Sphere with center behind origin (-0.3) whose front cap (+0.2) is ahead.
+  const mjtByte group_straddle[mjNGROUP] = {0, 1, 0, 0, 0, 0};
+  int straddle_id = mj_name2id(m.get(), mjOBJ_GEOM, "straddle");
+  dist = mj_ray(m.get(), d.get(), pnt, vec, group_straddle, 1, -1, &geomid,
+                normal);
+  EXPECT_EQ(geomid, straddle_id);
+  EXPECT_NEAR(dist, 0.1, MjTol(1e-15, 1e-7));
+  EXPECT_THAT(normal, ElementsAre(MjNear(1, 1e-15, 1e-7), 0, 0));
+
+  // Closer hit at x = 1.6 culls coaxial cylinder at x = 5 and off-axis box.
+  const mjtByte group_occluded[mjNGROUP] = {1, 0, 1, 0, 0, 0};
+  int near_id = mj_name2id(m.get(), mjOBJ_GEOM, "near");
+  dist = mj_ray(m.get(), d.get(), pnt, vec, group_occluded, 1, -1, &geomid,
+                normal);
+  EXPECT_EQ(geomid, near_id);
+  EXPECT_NEAR(dist, 0.8, MjTol(1e-15, 1e-6));
+  EXPECT_THAT(normal, ElementsAre(MjNear(-1, 1e-15, 1e-6), 0, 0));
+
+  // Sphere with farther center (3.5 > 2.8) but closer front cap (2.5 < 2.8)
+  // must not be culled by the earlier hit at x = 2.8.
+  const mjtByte group_overlap[mjNGROUP] = {0, 0, 0, 1, 0, 0};
+  int large_id = mj_name2id(m.get(), mjOBJ_GEOM, "large_far_center");
+  dist =
+      mj_ray(m.get(), d.get(), pnt, vec, group_overlap, 1, -1, &geomid, normal);
+  EXPECT_EQ(geomid, large_id);
+  EXPECT_NEAR(dist, 1.25, MjTol(1e-15, 1e-7));
+  EXPECT_THAT(normal, ElementsAre(MjNear(-1, 1e-15, 1e-7), 0, 0));
+}
+
+TEST_F(RayTest, RayCullOffsetMeshVertices) {
+  // Asymmetric frustum with wide base at x = 0 and narrow cap at x = 3:
+  // compiler places geom_xpos at CoM (x < 0.9), far behind the x = 3 cap.
+  static constexpr char kXml[] = R"(
+  <mujoco>
+    <asset>
+      <mesh name="frustum"
+        vertex="0 -1.5 -1.5  0  1.5 -1.5  0  1.5  1.5  0 -1.5  1.5
+                3 -0.2 -0.2  3  0.2 -0.2  3  0.2  0.2  3 -0.2  0.2"/>
+    </asset>
+    <worldbody>
+      <geom name="blocker" type="sphere" pos="2.2 0 0" size="0.2"/>
+      <geom name="frustum_geom" type="mesh" mesh="frustum"/>
+    </worldbody>
+  </mujoco>
+  )";
+  char error[1024];
+  MjModelPtr m = LoadModelFromString(kXml, error, sizeof(error));
+  ASSERT_THAT(m.get(), NotNull()) << error;
+  MjDataPtr d = MakeData(m);
+  ASSERT_THAT(d.get(), NotNull());
+  mj_forward(m.get(), d.get());
+
+  int frustum_id = mj_name2id(m.get(), mjOBJ_GEOM, "frustum_geom");
+  EXPECT_LT(d->geom_xpos[3 * frustum_id], 0.9);
+
+  // Shoot from x = 5 along -x: blocker hits first at x = 2.4, while frustum's
+  // geom_xpos is near x = 0.65 (far beyond x = 2.4) yet its x = 3 cap is
+  // closer (dist = (5 - 3) / 2 = 1.0; mesh_vert is float in both precisions).
+  const mjtNum pnt[3] = {5, 0, 0};
+  const mjtNum vec[3] = {-2, 0.04, 0.02};
+  int geomid = -1;
+  mjtNum normal[3] = {0, 0, 0};
+  mjtNum dist =
+      mj_ray(m.get(), d.get(), pnt, vec, nullptr, 1, -1, &geomid, normal);
+  EXPECT_EQ(geomid, frustum_id);
+  EXPECT_NEAR(dist, 1.0, MjTol(1e-6, 1e-6));
+  EXPECT_THAT(normal, ElementsAre(MjNear(1, 1e-6, 1e-6), MjNear(0, 1e-6, 1e-6),
+                                  MjNear(0, 1e-6, 1e-6)));
+}
+
 }  // namespace
 }  // namespace mujoco
