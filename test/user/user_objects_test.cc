@@ -986,7 +986,6 @@ TEST_F(MjCGeomTest, ShellInertiaEllipsoid) {
                     "vanish in float32 precision";
   }
   // test special case of ellipsoid with dimensions: a = b = c
-  // TODO(taylorhowell): add test for ellipsoid with dimensions: a != b != c
   static constexpr char xml[] = R"(
   <mujoco>
     <worldbody>
@@ -1043,6 +1042,75 @@ TEST_F(MjCGeomTest, ShellInertiaEllipsoid) {
   EXPECT_NEAR(shell_inertia[0], m->body_inertia[6], 10 * kInertiaTol);
   EXPECT_NEAR(shell_inertia[1], m->body_inertia[7], 10 * kInertiaTol);
   EXPECT_NEAR(shell_inertia[2], m->body_inertia[8], 10 * kInertiaTol);
+}
+
+TEST_F(MjCGeomTest, ShellInertiaEllipsoidDifferentDimensions) {
+  // test ellipsoid with dimensions: a != b != c
+  static constexpr char xml[] = R"(
+  <mujoco>
+    <worldbody>
+      <body>
+        <geom type="ellipsoid" size="0.1 0.2 0.3" shellinertia="true"/>
+      </body>
+      <body>
+        <geom type="ellipsoid" size="0.1 0.2 0.3" density="1e8"/>
+      </body>
+      <body>
+        <geom type="ellipsoid" size="0.10000001 0.20000001 0.30000001" density="1e8"/>
+      </body>
+    </worldbody>
+  </mujoco>
+  )";
+  std::array<char, 1000> error;
+  mjModel* m = LoadModelFromString(xml, error.data(), error.size());
+  ASSERT_THAT(m, NotNull()) << error.data();
+
+  // dimensions: a = 0.1, b = 0.2, c = 0.3
+  mjtNum a = 0.1;
+  mjtNum b = 0.2;
+  mjtNum c = 0.3;
+  mjtNum a2 = a * a;
+  mjtNum b2 = b * b;
+  mjtNum c2 = c * c;
+
+  // body 1: shell inertia with default surface density (1000)
+  // Surface area using Thomsen approximation
+  double p = 1.6075;
+  double tmp = std::pow(a * b, p) + std::pow(b * c, p) + std::pow(c * a, p);
+  mjtNum surface_area = 4 * mjPI * std::pow(tmp / 3, 1 / p);
+  mjtNum mass1 = surface_area * 1000;  // surface area * surface density
+  EXPECT_NEAR(m->body_mass[1], mass1, kInertiaTol);
+
+  // For shell inertia, the calculation uses the difference method (expanded - original)
+  // We verify that the inertias are different for different axes (a != b != c)
+  // The shell inertia should have Ix != Iy != Iz when a != b != c
+  mjtNum Ix = m->body_inertia[3];
+  mjtNum Iy = m->body_inertia[4];
+  mjtNum Iz = m->body_inertia[5];
+
+  // Verify that inertias are different (since a != b != c)
+  EXPECT_GT(std::abs(Ix - Iy), kInertiaTol);
+  EXPECT_GT(std::abs(Iy - Iz), kInertiaTol);
+  EXPECT_GT(std::abs(Ix - Iz), kInertiaTol);
+
+  // Verify volume inertia for body 2 (solid ellipsoid)
+  // For volume: Ix = mass * (b^2 + c^2) / 5, Iy = mass * (a^2 + c^2) / 5, Iz = mass * (a^2 + b^2) / 5
+  mjtNum* inertia2 = m->body_inertia + 6;
+  mjtNum mass2 = m->body_mass[2];
+  mjtNum expected_Ix_vol = mass2 * (b2 + c2) / 5;
+  mjtNum expected_Iy_vol = mass2 * (a2 + c2) / 5;
+  mjtNum expected_Iz_vol = mass2 * (a2 + b2) / 5;
+
+  EXPECT_NEAR(inertia2[0], expected_Ix_vol, kInertiaTol);
+  EXPECT_NEAR(inertia2[1], expected_Iy_vol, kInertiaTol);
+  EXPECT_NEAR(inertia2[2], expected_Iz_vol, kInertiaTol);
+
+  // Verify that volume inertias are also different
+  EXPECT_GT(std::abs(inertia2[0] - inertia2[1]), kInertiaTol);
+  EXPECT_GT(std::abs(inertia2[1] - inertia2[2]), kInertiaTol);
+  EXPECT_GT(std::abs(inertia2[0] - inertia2[2]), kInertiaTol);
+
+  mj_deleteModel(m);
 }
 
 TEST_F(MjCGeomTest, ShellInertiaBox) {
