@@ -691,7 +691,8 @@ MJAPI void mj_loadPluginLibrary(const char* path);
 
 // Scan a directory and load all dynamic libraries. Dynamic libraries in the specified directory
 // are assumed to register one or more plugins. Optionally, if a callback is specified, it is called
-// for each dynamic library encountered that registers plugins.
+// for each dynamic library encountered that registers plugins. A library that fails to load is
+// skipped with a warning.
 MJAPI void mj_loadAllPluginLibraries(const char* directory, mjfPluginLibraryLoadCallback callback);
 
 // Return version number: 1.0.2 is encoded as 102.

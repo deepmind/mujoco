@@ -819,10 +819,10 @@ TEST_F(EnginePluginTest, ArchiveProviderRegistration) {
 }
 
 #if !defined(_WIN32) && !defined(__CYGWIN__)
-// mju_error from a failing dlopen must not longjmp past the plugin table lock,
-// or the std::string locals of mj_loadAllPluginLibraries; leaks are detected
-// when running under asan
-TEST_F(MujocoTest, LoadAllPluginLibrariesErrorReleasesLock) {
+// a library that fails to load is skipped with a warning (rather than mju_error
+// aborting the scan), without invoking the callback or leaving the plugin table
+// locked; leaks are detected when running under asan
+TEST_F(MujocoTest, LoadAllPluginLibrariesSkipsUnloadableLibrary) {
   #if defined(__APPLE__)
   const char* suffix = ".dylib";
   #else
@@ -834,9 +834,14 @@ TEST_F(MujocoTest, LoadAllPluginLibrariesErrorReleasesLock) {
   std::filesystem::create_directories(dir);
   std::ofstream(dir / (std::string("not_a_library") + suffix)) << "not an ELF";
 
-  auto load_all = MjuErrorMessageFrom(mj_loadAllPluginLibraries);
-  EXPECT_THAT(load_all(dir.string().c_str(), nullptr),
-              HasSubstr("Error loading plugin library"));
+  int nplugin_before = mjp_pluginCount();
+  static int callback_calls = 0;
+  callback_calls = 0;
+  mock_warning_handler.ExpectWarnings("Error loading plugin library");
+  mj_loadAllPluginLibraries(
+      dir.string().c_str(), +[](const char*, int, int) { ++callback_calls; });
+  EXPECT_EQ(callback_calls, 0);
+  EXPECT_EQ(mjp_pluginCount(), nplugin_before);
   std::filesystem::remove_all(dir);
 
   // registering an identical plugin takes the table lock on another thread
@@ -971,8 +976,9 @@ TEST_F(MujocoTest, LoadAllPluginLibrariesUtf8Path) {
       });
   EXPECT_EQ(std::string(loaded_file), filename_u8);
 #else
-  auto load_all = MjuErrorMessageFrom(mj_loadAllPluginLibraries);
-  EXPECT_THAT(load_all(dir_u8.c_str(), nullptr), HasSubstr(filename_u8));
+  // the file is not a loadable library: the warning must name it in UTF-8
+  mock_warning_handler.ExpectWarnings(filename_u8);
+  mj_loadAllPluginLibraries(dir_u8.c_str(), nullptr);
 #endif
 
   std::filesystem::remove_all(utf8_dir);

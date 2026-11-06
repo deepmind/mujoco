@@ -251,7 +251,8 @@ For applications that need to be able to load arbitrary user-provided MJCF model
 scan and load all dynamic libraries found without a specific directory. Users who bring along an MJCF that requires a
 plugin can then be instructed to place the requisite plugin libraries in the relevant directory. For example, this is
 what is done in the :ref:`saSimulate` interactive viewer application. The :ref:`mj_loadAllPluginLibraries` function is
-provided for this scan-and-load use case.
+provided for this scan-and-load use case. A library in the directory that fails to load, for example because one of its
+dependencies is missing, is skipped with a warning rather than aborting the application.
 
 .. _exWriting:
 

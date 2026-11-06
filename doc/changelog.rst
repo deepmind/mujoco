@@ -2,6 +2,16 @@
 Changelog
 =========
 
+Upcoming Version (not yet released)
+-----------------------------------
+
+Bug fixes
+^^^^^^^^^
+- :ref:`mj_loadAllPluginLibraries` now skips a dynamic library that fails to load with a warning instead of calling
+  :ref:`mju_error`, so one unloadable library in the plugin directory no longer aborts :ref:`simulate<saSimulate>` at
+  startup. In the 4.0.0 macOS and Linux archives this happened with the USD decoder plugin, which can only be loaded
+  from a Python process.
+
 Version 4.0.0 (November 6, 2026)
 --------------------------------
 
