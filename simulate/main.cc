@@ -23,6 +23,7 @@
 #include <mutex>
 #include <new>
 #include <string>
+#include <string_view>
 #include <thread>
 
 #include <mujoco/mujoco.h>
@@ -533,6 +534,24 @@ int main(int argc, char** argv) {
     mju_error("Headers and library have different versions");
   }
 
+  const char* filename = nullptr;
+  for (int i = 1; i < argc; ++i) {
+    const std::string_view arg(argv[i]);
+    if (arg == "--version" || arg == "-v") {
+      return 0;
+    }
+    if (arg == "--help" || arg == "-h") {
+      std::printf("Usage: simulate [options] [model_file]\n\n"
+                  "Options:\n"
+                  "  -h, --help     Print this help message and exit\n"
+                  "  -v, --version  Print version and exit\n");
+      return 0;
+    }
+    if (!arg.empty() && arg[0] != '-') {
+      filename = argv[i];
+    }
+  }
+
   // scan for libraries in the plugin directory to load additional plugins
   scanPluginLibraries();
 
@@ -552,9 +571,6 @@ int main(int argc, char** argv) {
       &opt,
       &pert,
       /* is_passive = */ false);
-
-  const char* filename = nullptr;
-  if (argc > 1) { filename = argv[1]; }
 
   // start physics thread
   std::thread physicsthreadhandle(&PhysicsThread, sim.get(), filename);
