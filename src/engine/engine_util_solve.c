@@ -15,6 +15,7 @@
 #include "engine/engine_util_solve.h"
 
 #include <stdio.h>
+#include <string.h>
 
 #include <mujoco/mjdata.h>
 #include <mujoco/mjsan.h>  // IWYU pragma: keep
@@ -762,7 +763,9 @@ int mju_cholFactorNumeric(mjtNum* restrict L, int n, mjtNum mindiag,
     while (ns < 3 && r - ns >= 0 && L_nnz > ns &&
            L_colptr[L_nnz-1-ns] == r - ns &&
            L_rownnz[r-ns] == L_nnz - ns &&
-           LT_rownnz[r-ns] == LT_nnz + ns) {
+           LT_rownnz[r-ns] == LT_nnz + ns &&
+           !memcmp(LT_colind + LT_rowadr[r-ns] + ns + 1, LT_colind + LT_rowadr[r] + 1,
+                   (LT_nnz - 1) * sizeof(int))) {
       ns++;
     }
 
