@@ -18,6 +18,7 @@ from typing import Optional, Tuple, Union
 
 import jax
 from jax import numpy as jp
+
 import mujoco
 
 
@@ -403,7 +404,10 @@ def closest_segment_point(
 ) -> jax.Array:
   """Returns the closest point on the a-b line segment to a point pt."""
   ab = b - a
-  t = jp.dot(pt - a, ab) / (jp.dot(ab, ab) + 1e-6)
+  length_squared = jp.dot(ab, ab)
+  # A fixed epsilon biases projections on short segments. Only guard zero.
+  denominator = jp.where(length_squared > 0, length_squared, 1.0)
+  t = jp.dot(pt - a, ab) / denominator
   return a + jp.clip(t, 0.0, 1.0) * ab
 
 
