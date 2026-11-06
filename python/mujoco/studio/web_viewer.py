@@ -18,9 +18,9 @@ separating the viewer and simulation.
 
 The WebViewer streams UI and simulation state to a browser:
 
-  * The ImGui UI is built into a headless ImGui context and streamed to the
-    browser with the NetImgui protocol through a WebSocket-to-TCP proxy.
-    Input captured in the browser flows back over the same connection and is
+  * The ImGui UI is built into a headless ImGui context, whose frames are
+    streamed to the browser as NetImgui messages over a WebSocket. Input
+    captured in the browser flows back over the same connection and is
     injected into the headless context, so all viewer-side plugins work
     unmodified.
   * Physics state and render function state are streamed to the browser over
@@ -31,8 +31,7 @@ The WebViewer streams UI and simulation state to a browser:
     scene with Filament and overlays the remote ImGui draw data.
   * Everything is served through one public port (default 8080): the page and
     model over HTTP, the UI stream at path /ui and the state stream at /state.
-    Exposing or tunneling that single port exposes the whole viewer; the other
-    ports are loopback-internal.
+    Exposing or tunneling that single port exposes the whole viewer.
   * Models the sim announces ahead of time (``PreloadModelEvent``) are served
     by content hash as well, so browsers download them in the background and
     switch to them instantly when they become the current model.
@@ -188,7 +187,6 @@ class WebViewer(viewer_protocol.Viewer):
       perturb: mujoco.MjvPerturb | None = None,
       render_flags: ux.RenderFlags | None = None,
       extra_geoms: list[mujoco.MjvGeom] | None = None,
-      ui_tcp_port: int = 0,
   ) -> None:
     """Initializes the WebViewer.
 
@@ -202,9 +200,6 @@ class WebViewer(viewer_protocol.Viewer):
       perturb: Perturbation parameters. Internal object is created if None.
       render_flags: Render flags. Internal object is created if None.
       extra_geoms: List of extra geoms. Internal list is created if None.
-      ui_tcp_port: Loopback TCP port the headless NetImgui client connects to. 0
-        (the default) uses an OS-assigned ephemeral port — both endpoints live
-        in this process tree, so no fixed number is needed.
     """
     super().__init__(
         config,
@@ -222,20 +217,16 @@ class WebViewer(viewer_protocol.Viewer):
     # (e.g. a ViewerConfig.host field and a --host flag) for all interfaces, so
     # that the viewer is not reachable from the network by default.
     self._host = '::'
-    # Bind both listening sockets up front, in this process: bind conflicts
-    # surface here as one clear error, and the loopback port is OS-assigned so
-    # viewer instances can never collide on it.
+    # Bind the listening socket up front, in this process, so a bind conflict
+    # surfaces here as one clear error.
     self._http_sock = web_server.bind_public_socket(
         self._host, config.http_port
     )
     self._http_port = self._http_sock.getsockname()[1]
-    self._tcp_sock = web_server.bind_loopback_socket(ui_tcp_port)
-    self._ui_tcp_port = self._tcp_sock.getsockname()[1]
 
-    # Headless ImGui context streaming UI draw data via NetImgui.
+    # Headless ImGui context whose frames the web server streams at /ui.
     self._headless_ui = headless_ui.HeadlessUi(
         config.title or 'MuJoCo Web Viewer',
-        self._ui_tcp_port,
         _find_assets_dir(),
     )
 
@@ -295,7 +286,7 @@ class WebViewer(viewer_protocol.Viewer):
 
     self._web_server = web_server.WebServer(
         http_sock=self._http_sock,
-        tcp_sock=self._tcp_sock,
+        ui=self._headless_ui,
         mjb_data=mjb_data,
         drop_queue=self._drop_queue,
     )
@@ -401,13 +392,14 @@ class WebViewer(viewer_protocol.Viewer):
       )
       self._web_server.update_state(payload)
 
-    # Finish the ImGui frame; NetImgui sends the draw data to the browser.
+    # Finish the ImGui frame and send it to the browser.
     self._headless_ui.end_frame()
+    if self._web_server is not None:
+      self._web_server.notify_ui_frame()
 
   def close(self) -> None:
     self._stop_server()
     self._http_sock.close()
-    self._tcp_sock.close()
     if self._drop_dir is not None:
       shutil.rmtree(self._drop_dir, ignore_errors=True)
       self._drop_dir = None
@@ -465,7 +457,7 @@ class WebViewer(viewer_protocol.Viewer):
   def upload_image(
       self, tex_id: int, img: str | bytes, width: int, height: int, bpp: int
   ) -> int:
-    """Uploads an image to the browser over the NetImgui texture channel."""
+    """Uploads an image to the browser over the UI stream."""
     if isinstance(img, str):
       img = img.encode('latin-1')
     return self._headless_ui.upload_image(tex_id, img, width, height, bpp)

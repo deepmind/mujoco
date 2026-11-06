@@ -16,15 +16,18 @@
 //
 // This pybind11 module provides a HeadlessUi class that:
 // 1. Creates a headless ImGui context (no window, no renderer).
-// 2. Connects as a netimgui client, streaming ImGui draw data to a remote
-//    viewer (the browser's web_client, bridged through web_server.py).
-// 3. Receives input events from the remote viewer and injects them into
-//    the ImGui context.
+// 2. Turns each frame into NetImgui messages for the browser's web_client,
+//    which web_server.py sends over the /ui WebSocket (see
+//    headless_ui_session.h).
+// 3. Applies the input the browser sends back to the ImGui context.
 
+#include <algorithm>
 #include <chrono>
+#include <cstddef>
 #include <cstdint>
 #include <cstring>
 #include <memory>
+#include <span>
 #include <string>
 #include <string_view>
 #include <thread>
@@ -35,8 +38,8 @@
 #include <imgui_internal.h>
 #include <implot.h>
 #include <mujoco/studio/ux/fonts.h>
-#include <NetImgui_Api.h>
 #include "google/logging.h"
+#include "headless_ui_session.h"
 #include <pybind11/pybind11.h>
 #include <pybind11/stl.h>
 
@@ -44,139 +47,75 @@ namespace py = pybind11;
 
 namespace {
 
-// Headless ImGui + netimgui viewer for the MuJoCo web viewer.
+// A headless ImGui context whose frames are streamed to the browser.
 //
-// This class manages a headless ImGui context that streams its draw data
-// via the netimgui protocol to a remote viewer. Unlike the NativeViewer's
-// Viewer class (native_viewer.cc), this does NOT create a window, initialize
-// a renderer, or handle mouse/keyboard input directly. All rendering and
-// input handling happens on the remote client (web_client.cc in the browser).
-//
-// The lifecycle follows the SampleNoBackend pattern:
-//   Client_Startup()   — create context, load fonts, init NetImgui
-//   Client_Connect()   — manage connection state (called each frame)
-//   Client_Shutdown()  — release resources
-
-// Initialize the Dear ImGui Context and the NetImgui library.
-// Based on SampleNoBackend::Client_Startup() from
-// netimgui/Code/Sample/SampleNoBackend/SampleNoBackend.cpp
-static bool Client_Startup(ImGuiContext*& context,
-                           ImPlotContext*& implot_context,
-                           const std::string& assets_dir) {
-  IMGUI_CHECKVERSION();
-  context = ImGui::CreateContext();
-  ImGui::SetCurrentContext(context);
-  implot_context = ImPlot::CreateContext();
-  ImPlot::SetCurrentContext(implot_context);
-
-  ImGuiIO& io = ImGui::GetIO();
-  io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
-  io.BackendFlags |= ImGuiBackendFlags_HasGamepad;
-  io.IniFilename = nullptr;
-  io.ConfigDpiScaleFonts = true;
-  io.ConfigDpiScaleViewports = true;
-  io.DisplaySize = ImVec2(1400, 720);
-
-  // Disable ImGui auto-repeat in headless mode since the browser handles key
-  // repeat at the OS level, avoiding the frame amplification issue where many
-  // frames with identical key-down states trigger unwanted repeats.
-  io.KeyRepeatDelay = 9999.0f;
-
-  // Initialize the main viewport's DPI scale. Without this, the headless
-  // context leaves DpiScale at 0.0f (no platform backend sets it), which
-  // triggers an assertion in ImGui::SetCurrentViewport() when
-  // BeginMainMenuBar() is called.
-  ImGuiViewport* main_vp = ImGui::GetMainViewport();
-  if (main_vp) {
-    main_vp->DpiScale = 1.0f;
-  }
-
-  ImGui::StyleColorsLight();
-
-  // The Studio font set shared with the native viewer and the browser client.
-  mujoco::studio::AddStudioFonts([&assets_dir](std::string_view filename) {
-    return mujoco::studio::LoadFontAsset(assets_dir, filename);
-  });
-
-  if (!NetImgui::Startup()) {
-    LOG(Error, "NetImgui::Startup() failed");
-    return false;
-  }
-
-  return true;
-}
-
-// Release resources.
-// Based on SampleNoBackend::Client_Shutdown() from
-// netimgui/Code/Sample/SampleNoBackend/SampleNoBackend.cpp
-static void Client_Shutdown(ImGuiContext*& context,
-                            ImPlotContext*& implot_context) {
-  NetImgui::Shutdown();
-  if (implot_context) {
-    ImPlot::DestroyContext(implot_context);
-    implot_context = nullptr;
-  }
-  if (context) {
-    ImGui::DestroyContext(context);
-    context = nullptr;
-  }
-}
-
-// Manage connection to the netimgui proxy.
-// Based on SampleNoBackend::Client_Connect() from
-// netimgui/Code/Sample/SampleNoBackend/SampleNoBackend.cpp
-static void Client_Connect(const char* title, int port) {
-  bool connected = NetImgui::IsConnected();
-  bool pending = NetImgui::IsConnectionPending();
-
-  static bool last_connected = false;
-  if (connected != last_connected) {
-    VLOG(1, "Status change: Connected=%s", connected ? "true" : "false");
-    if (last_connected && !connected) {
-      // Reset NetImgui client state on disconnect so ClientInfo::~ClientInfo()
-      // frees tracked CmdTexture buffers and the cached delta-compression
-      // baseline (mpCmdDrawLast) rather than leaking them in ConnectToApp()'s
-      // ContextRestore(). Clear ImGuiBackendFlags_RendererHasTextures and
-      // NetImgui's clipboard callbacks before Startup() so the next session's
-      // ContextOverride() captures clean initial BackendFlags.
-      NetImgui::Shutdown();
-      ImGui::GetIO().BackendFlags &= ~ImGuiBackendFlags_RendererHasTextures;
-      ImGuiPlatformIO& platform_io = ImGui::GetPlatformIO();
-      platform_io.Platform_GetClipboardTextFn = nullptr;
-      platform_io.Platform_SetClipboardTextFn = nullptr;
-      platform_io.Platform_ClipboardUserData = nullptr;
-      NetImgui::Startup();
-      pending = false;
-    }
-    last_connected = connected;
-  }
-
-  if (!connected && !pending) {
-    static std::chrono::steady_clock::time_point last_reconnect_time =
-        std::chrono::steady_clock::now();
-    const std::chrono::steady_clock::time_point now =
-        std::chrono::steady_clock::now();
-    if (now - last_reconnect_time > std::chrono::seconds(1)) {
-      last_reconnect_time = now;
-      VLOG(1, "Retrying ConnectToApp...");
-      NetImgui::ConnectToApp(title, "127.0.0.1", port);
-    }
-  }
-}
-
+// Unlike the native viewer, this does not create a window, initialize a
+// renderer, or read the mouse and keyboard. All rendering and input handling
+// happens in the browser (web_client.cc); this class turns frames into
+// messages and browser input into ImGui input, through a
+// mujoco::studio::HeadlessUiSession.
 class HeadlessUi {
  public:
-  HeadlessUi(const std::string& title, int port, const std::string& assets_dir)
-      : title_(title), port_(port) {
-    if (!Client_Startup(context_, implot_context_, assets_dir)) {
-      return;
+  HeadlessUi(const std::string& title, const std::string& assets_dir)
+      : session_(title) {
+    IMGUI_CHECKVERSION();
+    context_ = ImGui::CreateContext();
+    ImGui::SetCurrentContext(context_);
+    implot_context_ = ImPlot::CreateContext();
+    ImPlot::SetCurrentContext(implot_context_);
+
+    ImGuiIO& io = ImGui::GetIO();
+    io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;
+    // HeadlessUiSession plays the renderer backend's part for textures: it
+    // sends them to the browser, which renders them.
+    io.BackendFlags |= ImGuiBackendFlags_RendererHasTextures;
+    io.BackendPlatformName = "mujoco_studio_headless";
+    io.BackendRendererName = "mujoco_studio_web";
+    io.IniFilename = nullptr;
+    io.ConfigDpiScaleFonts = true;
+    io.ConfigDpiScaleViewports = true;
+    io.DisplaySize = ImVec2(1400, 720);
+
+    // Disable ImGui auto-repeat in headless mode since the browser handles key
+    // repeat at the OS level, avoiding the frame amplification issue where many
+    // frames with identical key-down states trigger unwanted repeats.
+    io.KeyRepeatDelay = 9999.0f;
+
+    // Initialize the main viewport's DPI scale. Without this, the headless
+    // context leaves DpiScale at 0.0f (no platform backend sets it), which
+    // triggers an assertion in ImGui::SetCurrentViewport() when
+    // BeginMainMenuBar() is called.
+    ImGuiViewport* main_vp = ImGui::GetMainViewport();
+    if (main_vp) {
+      main_vp->DpiScale = 1.0f;
     }
+
+    // Forward ImGui::SetClipboardText (used by Studio's Copy buttons and
+    // open-URL commands) to the active browser session over /ui.
+    ImGuiPlatformIO& platform_io = ImGui::GetPlatformIO();
+    platform_io.Platform_ClipboardUserData = &session_;
+    platform_io.Platform_SetClipboardTextFn = [](ImGuiContext* ctx,
+                                                 const char* text) {
+      if (!ctx || !text) return;
+      auto* session = static_cast<mujoco::studio::HeadlessUiSession*>(
+          ctx->PlatformIO.Platform_ClipboardUserData);
+      if (session) {
+        session->QueueClipboard(text);
+      }
+    };
+
+    ImGui::StyleColorsLight();
+
+    // The Studio font set shared with the native viewer and the browser client.
+    mujoco::studio::AddStudioFonts([&assets_dir](std::string_view filename) {
+      return mujoco::studio::LoadFontAsset(assets_dir, filename);
+    });
 
     // Python imgui.Image() calls pass bare integer ImTextureIDs
     // (leaving ImDrawCmd::TexRef._TexData == nullptr). After ImGui::EndFrame()
     // finalizes draw lists, resolve each draw command's TexRef to its
-    // registered ImTextureData so NetImgui::EndFrame() can track and transmit
-    // texture updates to the remote client.
+    // registered ImTextureData, so the browser receives the texture and the
+    // draw command refers to it.
     ImGuiContextHook hook;
     hook.Type = ImGuiContextHookType_EndFramePost;
     hook.UserData = this;
@@ -196,119 +135,85 @@ class HeadlessUi {
       }
     };
     ImGui::AddContextHook(context_, &hook);
-
-    VLOG(1, "Calling ConnectToApp('%s', '127.0.0.1', %d)", title_.c_str(),
-         port_);
-    bool connect_result =
-        NetImgui::ConnectToApp(title_.c_str(), "127.0.0.1", port_);
-    VLOG(1, "ConnectToApp returned: %s", connect_result ? "true" : "false");
-    VLOG(1, "IsConnected: %s, IsConnectionPending: %s",
-         NetImgui::IsConnected() ? "true" : "false",
-         NetImgui::IsConnectionPending() ? "true" : "false");
   }
 
   ~HeadlessUi() {
-    if (context_) {
-      ImGui::SetCurrentContext(context_);
-      for (auto& [id, tex] : textures_) {
-        if (tex) {
-          ImGui::UnregisterUserTexture(tex.get());
-        }
+    ImGui::SetCurrentContext(context_);
+    for (auto& [id, tex] : textures_) {
+      if (tex) {
+        ImGui::UnregisterUserTexture(tex.get());
       }
     }
     textures_.clear();
-    Client_Shutdown(context_, implot_context_);
+    ImPlot::DestroyContext(implot_context_);
+    ImGui::DestroyContext(context_);
   }
 
+  // Starts a headless ImGui frame and returns true, once a browser controls the
+  // UI and has sent its first input (its screen size). Returns false (no frame)
+  // after a short wait otherwise, so the caller's loop keeps running and can
+  // drain messages (e.g., to respond to an ExitEvent for shutdown).
   bool NewFrame() {
     py::gil_scoped_release no_gil;
     ImGui::SetCurrentContext(context_);
-    static int frame_count = 0;
-    frame_count++;
-
-    // Returns true with an active ImGui frame once a browser is connected and
-    // ready. Returns false (no frame) while no browser is connected so the
-    // caller's loop keeps running and can drain messages (e.g., to respond to
-    // an ExitEvent for shutdown).
-    std::chrono::steady_clock::time_point last_signal_check =
-        std::chrono::steady_clock::now();
-    while (true) {
-      // While no browser is connected, periodically check for
-      // Python signals so Ctrl+C interrupts the wait instead of hanging.
-      const std::chrono::steady_clock::time_point now =
-          std::chrono::steady_clock::now();
-      if (now - last_signal_check > std::chrono::milliseconds(200)) {
-        last_signal_check = now;
-        py::gil_scoped_acquire acquire;
-        if (PyErr_CheckSignals() != 0) {
-          throw py::error_already_set();
-        }
-      }
-
-      Client_Connect(title_.c_str(), port_);
-
-      if (!NetImgui::IsConnected()) {
-        // Not connected; return false so the caller's loop is not blocked.
-        is_drawing_remote_ = false;
-        std::this_thread::sleep_for(std::chrono::milliseconds(10));
-        return false;
-      }
-
-      // Limit frame rate to 60 FPS (~16.6 ms per frame). Unlike native desktop
-      // viewers whose frame loops are throttled by hardware display VSync,
-      // headless rendering has no VSync and would otherwise spin unthrottled
-      // at 1000+ FPS, starving the simulation thread of CPU cycles and GIL
-      // access. Note: this sleep occurs while GIL is released, allowing the
-      // simulation thread full uninterrupted execution.
-      //
-      // Schedule each frame from the previous frame's deadline rather than from
-      // the time the sleep returned, so sleep overshoot does not accumulate and
-      // slow the frame rate below 60 FPS. If more than a frame behind (e.g.
-      // after a reconnect), resync to avoid bursting to catch up.
-      constexpr auto kFramePeriod =
-          std::chrono::duration_cast<std::chrono::steady_clock::duration>(
-              kTargetFrameDuration);
-      const auto frame_now = std::chrono::steady_clock::now();
-      auto deadline = last_frame_time_ + kFramePeriod;
-      if (deadline + kFramePeriod < frame_now) {
-        deadline = frame_now;
-      }
-      std::this_thread::sleep_until(deadline);
-      last_frame_time_ = deadline;
-
-      bool new_frame_result = NetImgui::NewFrame(false);
-      is_drawing_remote_ = new_frame_result;
-      if (!new_frame_result) {
-        // Connected but NetImgui not ready for a draw — wait and retry.
-        std::this_thread::sleep_for(std::chrono::milliseconds(1));
-        continue;
-      }
-
-      break;
+    if (!session_.HasInput()) {
+      std::this_thread::sleep_for(std::chrono::milliseconds(10));
+      return false;
     }
 
-    VLOG(1, "Frame %d: DrawingRemote=%s", frame_count,
-         is_drawing_remote_ ? "Y" : "N");
+    // Limit frame rate to 60 FPS (~16.6 ms per frame). Unlike native desktop
+    // viewers whose frame loops are throttled by hardware display VSync,
+    // headless rendering has no VSync and would otherwise spin unthrottled
+    // at 1000+ FPS, starving the simulation thread of CPU cycles and GIL
+    // access. Note: this sleep occurs while GIL is released, allowing the
+    // simulation thread full uninterrupted execution.
+    //
+    // Schedule each frame from the previous frame's deadline rather than from
+    // the time the sleep returned, so sleep overshoot does not accumulate and
+    // slow the frame rate below 60 FPS. If more than a frame behind (e.g.
+    // after a reconnect), resync to avoid bursting to catch up.
+    constexpr auto kFramePeriod =
+        std::chrono::duration_cast<std::chrono::steady_clock::duration>(
+            kTargetFrameDuration);
+    const auto frame_now = std::chrono::steady_clock::now();
+    auto deadline = frame_deadline_ + kFramePeriod;
+    if (deadline + kFramePeriod < frame_now) {
+      deadline = frame_now;
+    }
+    std::this_thread::sleep_until(deadline);
+    frame_deadline_ = deadline;
+
+    const auto now = std::chrono::steady_clock::now();
+    // Clamped: a session can start after a long idle time, and ImGui expects
+    // a positive time step.
+    const float delta_time =
+        std::chrono::duration<float>(now - last_frame_time_).count();
+    ImGui::GetIO().DeltaTime = std::clamp(delta_time, 1e-3f, 0.1f);
+    last_frame_time_ = now;
+
+    session_.ApplyInput();
+    ImGui::NewFrame();
+    is_drawing_ = true;
     return true;
   }
 
+  // Ends the frame started by NewFrame() and queues it for the browser.
   void EndFrame() {
     py::gil_scoped_release no_gil;
     ImGui::SetCurrentContext(context_);
-    static int end_frame_count = 0;
-    end_frame_count++;
-    if (!is_drawing_remote_) {
-      // No frame was started — nothing to end.
-      return;
+    if (!is_drawing_) {
+      return;  // No frame was started.
     }
-    VLOG(1, "EndFrame %d: sending remote draw data", end_frame_count);
-    NetImgui::EndFrame();
+    is_drawing_ = false;
+    const ImGuiMouseCursor cursor = ImGui::GetMouseCursor();
+    ImGui::Render();
+    session_.CaptureFrame(cursor);
   }
 
-  // Uploads an RGB/RGBA image to the browser over the NetImgui texture
-  // channel so handlers can display it with imgui.Image(). Returns the
-  // texture id to use (allocates one when tex_id == 0). This is the UI-link
-  // counterpart of the native renderer's UploadImage.
+  // Uploads an RGB/RGBA image to the browser over the UI stream so handlers can
+  // display it with imgui.Image(). Returns the texture id to use (allocates one
+  // when tex_id == 0). This is the UI stream's counterpart of the native
+  // renderer's UploadImage.
   uintptr_t UploadImage(uintptr_t tex_id, const py::bytes& pixels, int width,
                         int height, int bpp) {
     if (tex_id == 0) {
@@ -322,16 +227,16 @@ class HeadlessUi {
       return tex_id;
     }
 
-    // NetImgui transfers RGBA8; expand RGB if needed.
-    std::vector<uint8_t> rgba;
-    const void* upload_data = data.data();
+    // Textures are sent as RGBA8; expand RGB if needed.
+    std::vector<std::byte> rgba;
+    const std::byte* upload_data = std::as_bytes(std::span(data)).data();
     if (bpp == 3) {
       rgba.resize(static_cast<size_t>(width) * height * 4);
       for (size_t p = 0; p < static_cast<size_t>(width) * height; ++p) {
-        rgba[p * 4 + 0] = data[p * 3 + 0];
-        rgba[p * 4 + 1] = data[p * 3 + 1];
-        rgba[p * 4 + 2] = data[p * 3 + 2];
-        rgba[p * 4 + 3] = 255;
+        rgba[p * 4 + 0] = static_cast<std::byte>(data[p * 3 + 0]);
+        rgba[p * 4 + 1] = static_cast<std::byte>(data[p * 3 + 1]);
+        rgba[p * 4 + 2] = static_cast<std::byte>(data[p * 3 + 2]);
+        rgba[p * 4 + 3] = std::byte{0xFF};
       }
       upload_data = rgba.data();
     } else if (bpp != 4) {
@@ -378,21 +283,64 @@ class HeadlessUi {
     return reinterpret_cast<intptr_t>(implot_context_);
   }
 
+  // ---- The UI stream, called from the web server's thread. -----------------
+
+  py::bytes StartSession(const py::bytes& handshake) {
+    const std::string data = handshake;
+    std::string reply;
+    std::string error;
+    bool started = false;
+    {
+      py::gil_scoped_release no_gil;
+      started =
+          session_.StartSession(std::as_bytes(std::span(data)), &reply, &error);
+    }
+    if (!started) {
+      throw py::value_error(error);
+    }
+    return py::bytes(reply);
+  }
+
+  void EndSession() {
+    py::gil_scoped_release no_gil;
+    session_.EndSession();
+  }
+
+  bool PushInput(const py::bytes& message) {
+    const std::string data = message;
+    py::gil_scoped_release no_gil;
+    return session_.PushInput(std::as_bytes(std::span(data)));
+  }
+
+  py::list TakeMessages() {
+    std::vector<std::string> messages;
+    {
+      py::gil_scoped_release no_gil;
+      messages = session_.TakeMessages();
+    }
+    py::list result;
+    for (const std::string& message : messages) {
+      result.append(py::bytes(message));
+    }
+    return result;
+  }
+
  private:
-  std::string title_;
-  int port_;
-  ImGuiContext* context_ = nullptr;
-  ImPlotContext* implot_context_ = nullptr;
-  bool is_drawing_remote_ = false;
-  std::unordered_map<uintptr_t, std::unique_ptr<ImTextureData>> textures_;
-  std::chrono::steady_clock::time_point last_frame_time_ =
-      std::chrono::steady_clock::now();
   static constexpr auto kTargetFrameDuration =
       std::chrono::duration<double>(1.0 / 60.0);
-  // User texture ids start well above the ids ImGui's managed texture system
-  // (font atlas) hands out, so the two can never collide in the browser's
-  // texture map.
+
+  mujoco::studio::HeadlessUiSession session_;
+  std::unordered_map<uintptr_t, std::unique_ptr<ImTextureData>> textures_;
+  ImGuiContext* context_ = nullptr;
+  ImPlotContext* implot_context_ = nullptr;
+  std::chrono::steady_clock::time_point frame_deadline_ =
+      std::chrono::steady_clock::now();
+  std::chrono::steady_clock::time_point last_frame_time_ =
+      std::chrono::steady_clock::now();
+  // User texture ids start well above the ids ImGui hands out for its own
+  // textures (font atlas), so Python handles can never be mistaken for them.
   uintptr_t next_tex_id_ = 0x10000;
+  bool is_drawing_ = false;
 };
 
 }  // namespace
@@ -400,21 +348,38 @@ class HeadlessUi {
 namespace mujoco::python::studio {
 
 void InitHeadlessUi(py::module_& m) {
-  m.doc() = "MuJoCo web viewer headless Studio UI, streamed via NetImgui";
+  m.doc() = "MuJoCo web viewer headless Studio UI, streamed to the browser";
 
   py::class_<HeadlessUi>(m, "HeadlessUi")
-      .def(py::init<const std::string&, int, const std::string&>(),
-           py::arg("title"), py::arg("port") = 8888, py::arg("assets_dir") = "")
+      .def(py::init<const std::string&, const std::string&>(), py::arg("title"),
+           py::arg("assets_dir") = "")
       .def("new_frame", &HeadlessUi::NewFrame,
            "Starts a headless ImGui frame, returning True once the frame is "
-           "active. When a browser is viewing the page (via the URL printed "
-           "at startup), this returns at the browser's requested frame rate. "
-           "When no browser is viewing, it returns False (no frame) after a "
-           "short wait, so the caller's loop keeps running and can shut down.")
-      .def("end_frame", &HeadlessUi::EndFrame)
+           "active. While a browser controls the UI, this returns at up to 60 "
+           "frames per second (from its first input on). While no browser "
+           "does, it returns False (no frame) after a short wait, so the "
+           "caller's loop keeps running and can shut down.")
+      .def("end_frame", &HeadlessUi::EndFrame,
+           "Ends the frame and queues it for the browser (see take_messages).")
       .def("get_context", &HeadlessUi::GetContext)
       .def("get_implot_context", &HeadlessUi::GetImPlotContext)
-      .def("upload_image", &HeadlessUi::UploadImage);
+      .def("upload_image", &HeadlessUi::UploadImage)
+      .def("start_session", &HeadlessUi::StartSession, py::arg("handshake"),
+           "Starts streaming to a newly connected browser. Takes the browser's "
+           "first /ui message (its NetImgui Version command) and returns the "
+           "reply to send back. Raises ValueError for an incompatible "
+           "browser. The first frame of a session re-sends everything.")
+      .def("end_session", &HeadlessUi::EndSession,
+           "Stops streaming; new_frame() returns False until the next "
+           "start_session().")
+      .def("push_input", &HeadlessUi::PushInput, py::arg("message"),
+           "Queues a NetImgui Input command from the browser for the next "
+           "frame. Returns False, ignoring the message, if it is not one.")
+      .def("take_messages", &HeadlessUi::TakeMessages,
+           "Returns the messages to send to the browser now, one NetImgui "
+           "command each: none until a new frame is ready, then the texture "
+           "changes since the last frame returned followed by the newest "
+           "frame, compressed against that last frame.");
 }
 
 }  // namespace mujoco::python::studio

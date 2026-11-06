@@ -19,8 +19,9 @@ public port:
   * Plain HTTP GET   serves static files (index.html, WASM, assets), /model,
                      and cached model bundles by content hash
                      (/model?crc32=...), which browsers prefetch and cache.
-  * WebSocket /ui    serves the bridge to the headless NetImgui client, which
-                     connects over loopback TCP (see headless_ui.cc).
+  * WebSocket /ui    streams the headless Studio UI to the controlling browser
+                     and its input back, one NetImgui command per WebSocket
+                     message (see UiSession and headless_ui_session.h).
   * WebSocket /state serves the latest-wins state payload broadcast at ~60Hz
                      (see state_payload.h) as binary frames, and session roster
                      and model prefetch updates as text frames.
@@ -31,8 +32,8 @@ Because everything is served through one port, one firewall rule, port-forward,
 or HTTPS tunnel exposes the whole viewer. The browser derives its WebSocket URLs
 from the page origin so no client configuration is needed.
 
-One browser at a time controls the interactive session (it owns the /ui bridge);
-later browsers are rejected from /ui with WebSocket close code
+One browser at a time controls the interactive session (it owns the /ui
+stream); later browsers are rejected from /ui with WebSocket close code
 _WS_CLOSE_CONTROLLER_TAKEN and can take the controller slot once it frees up.
 /state connections beyond the spectator limit are closed with close code
 _WS_CLOSE_SESSION_FULL.
@@ -51,7 +52,7 @@ import socket
 import struct
 import sys
 import threading
-from typing import Any, Awaitable, Callable, cast
+from typing import Any, Awaitable, Callable, Protocol
 import urllib.parse
 import zlib
 
@@ -142,16 +143,6 @@ _SPECTATOR_SILENT_KICK_SEC = 300.0
 _DEFAULT_HTTP_PORT = 8080
 _PORT_SCAN_COUNT = 20
 
-# NetImgui's CmdVersion handshake packet is always 120 bytes.
-_NETIMGUI_CMD_VERSION_SIZE = 120
-
-# How long a browser holding the controller slot waits for the headless NetImgui
-# client to (re)connect over loopback before the slot is released. The client
-# reconnects within ~1s in the normal case; this only bounds the pathological
-# one where it never appears (e.g., the headless UI failed to start), so a stuck
-# controller cannot lock every other browser out forever.
-_UI_TCP_WAIT_SEC = 30.0
-
 # Content types for the static files the HTTP handler serves.
 _CONTENT_TYPES = {
     ".html": "text/html; charset=utf-8",
@@ -171,6 +162,44 @@ class _SessionMessage(enum.StrEnum):
   LEAVE_QUEUE = "leave_queue"
   FORCE_CONTROL = "force_control"
   HEARTBEAT = "heartbeat"
+
+
+class UiSession(Protocol):
+  """The headless UI as the /ui stream sees it (headless_ui.HeadlessUi).
+
+  The UI streams to one browser at a time, the controller. A session lasts while
+  that browser is connected: it starts with the browser's handshake, and its
+  first messages re-send everything the browser needs to draw the UI. Every
+  message is one NetImgui command, sent as one binary WebSocket message.
+
+  The server thread calls these; the viewer thread runs the UI frames.
+  """
+
+  def start_session(self, handshake: bytes) -> bytes:
+    """Starts a session and returns the reply to the browser's handshake.
+
+    Args:
+      handshake: The browser's first /ui message (NetImgui Version command).
+
+    Raises:
+      ValueError: The browser cannot talk to this viewer.
+    """
+    ...
+
+  def end_session(self) -> None:
+    """Ends the session; frames are no longer recorded for the browser."""
+    ...
+
+  def push_input(self, message: bytes) -> bool:
+    """Queues browser input for the next frame; False if it is not input."""
+    ...
+
+  def take_messages(self) -> list[bytes]:
+    """Returns the messages to send to the browser now, possibly none.
+
+    A non-empty list ends with one draw frame, after any texture changes.
+    """
+    ...
 
 
 def _roster_line(
@@ -323,25 +352,6 @@ def bind_public_socket(host: str, port: int = 0) -> socket.socket:
   )
 
 
-def bind_loopback_socket(port: int = 0) -> socket.socket:
-  """Binds the loopback socket the headless NetImgui client connects to.
-
-  Defaults to an OS-assigned ephemeral port: both endpoints live in this process
-  tree, so no fixed number is needed and collisions between viewer instances are
-  impossible.
-
-  Args:
-    port: A specific port, or 0 to take the first free port.
-
-  Returns:
-    The bound, listening socket.
-  """
-  sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-  sock.bind(("127.0.0.1", port))
-  sock.listen()
-  return sock
-
-
 def _session_id(ws: ServerConnection) -> str:
   """The page's session id (?sid=...), tying its /ui and /state together."""
   path = ws.request.path if ws.request else ""
@@ -400,7 +410,6 @@ def _run_server(
   """The server thread: HTTP + /ui + /state on one port, one event loop."""
 
   http_sock = server.http_sock
-  tcp_sock = server.tcp_sock
   static_dir = server.static_files_dir
   static_root = os.path.realpath(static_dir) if static_dir else None
 
@@ -532,11 +541,14 @@ def _run_server(
     )
 
   async def main_loop() -> None:
-    # The NetImgui client connection (from HeadlessUi, loopback TCP). The client
-    # retries every second, so after a teardown a fresh connection is fast.
-    tcp_reader = None
-    tcp_writer = None
-    tcp_connected = asyncio.Event()
+    # Wakes the /ui sender when the viewer thread has a new UI frame for the
+    # browser (see WebServer.notify_ui_frame()).
+    ui_frame_ready = asyncio.Event()
+    server._wake_ui_stream = (  # pylint: disable=protected-access
+        functools.partial(
+            asyncio.get_running_loop().call_soon_threadsafe, ui_frame_ready.set
+        )
+    )
 
     # The browser controlling the UI (single slot) and all browsers receiving
     # the state broadcast (controller + spectators), keyed by session id.
@@ -577,6 +589,9 @@ def _run_server(
     last_heartbeat: dict[str, float] = {}
     last_controller_input = [0.0]
     loop_time = asyncio.get_event_loop().time
+
+    # Whether a browser the UI cannot talk to was logged (see ui_handler).
+    ui_rejection_logged = False
 
     async def broadcast_roster() -> None:
       """Sends every browser the counts, its role and its queue position."""
@@ -727,32 +742,19 @@ def _run_server(
             except (ConnectionClosed, ConnectionError):
               pass
 
-    async def handle_tcp_client(
-        reader: asyncio.StreamReader, writer: asyncio.StreamWriter
-    ) -> None:
-      nonlocal tcp_reader, tcp_writer
-      if tcp_writer is not None:
-        logger.debug("[UiBridge] Replacing previous NetImgui TCP connection")
-        tcp_writer.close()
-      tcp_reader = reader
-      tcp_writer = writer
-      # Disable Nagle's algorithm so small packets (CmdInput ~80 bytes) are
-      # sent immediately instead of being buffered for up to 200ms.
-      sock = writer.get_extra_info("socket")
-      if sock:
-        sock.setsockopt(socket.IPPROTO_TCP, socket.TCP_NODELAY, 1)
-      tcp_connected.set()
-      logger.debug("[UiBridge] NetImgui TCP connection accepted")
-
-    # --- /ui: bridge the browser to the NetImgui client ----------------------
+    # --- /ui: stream the headless UI to the controlling browser -------------
 
     async def ui_handler(ws: ServerConnection) -> None:
       nonlocal active_ui_ws, controller_sid, pending_grant_sid
-      nonlocal tcp_reader, tcp_writer
+      nonlocal ui_rejection_logged
+      ui = server.ui
+      if ui is None:
+        await ws.close(_WS_CLOSE_CONTROLLER_TAKEN, "controller unavailable")
+        return
       if active_ui_ws is not None:
         # One controller at a time. The rejected browser spectates and may retry
         # via its "Take control" button once the controller leaves.
-        logger.debug("[UiBridge] Controller slot taken; rejecting new browser")
+        logger.debug("[UiStream] Controller slot taken; rejecting new browser")
         await ws.close(_WS_CLOSE_CONTROLLER_TAKEN, "controller slot taken")
         return
       sid = _session_id(ws)
@@ -769,83 +771,43 @@ def _run_server(
       last_controller_input[0] = loop_time()
       await broadcast_roster()
 
-      # Each browser needs a fresh NetImgui session (full handshake, textures
-      # and draw state). Drop any connection used by a previous bridge and
-      # wait for the client's automatic reconnect.
-      if tcp_writer is not None:
-        tcp_writer.close()
-        tcp_reader = None
-        tcp_writer = None
-        tcp_connected.clear()
-      logger.debug("[UiBridge] Waiting for NetImgui TCP connection...")
-
-      async def wait_for_tcp() -> None:
-        # Loop: the connection can be replaced (and the event cleared)
-        # between the event firing and this task waking up.
-        while tcp_writer is None:
-          await tcp_connected.wait()
-
-      # Wait for the client, but not forever and not blind to the browser: if
-      # the client never appears (bounded by _UI_TCP_WAIT_SEC) or the browser
-      # leaves first, release the controller slot instead of holding it
-      # against every future browser.
-      tcp_task = asyncio.create_task(wait_for_tcp())
-      close_task = asyncio.create_task(ws.wait_closed())
-      done, still_pending = await asyncio.wait(
-          [tcp_task, close_task],
-          timeout=_UI_TCP_WAIT_SEC,
-          return_when=asyncio.FIRST_COMPLETED,
-      )
-      for task in still_pending:
-        task.cancel()
-      if tcp_task not in done or tcp_task.cancelled():
-        logger.debug("[UiBridge] No NetImgui connection; releasing slot")
-        if active_ui_ws is ws:
-          active_ui_ws = None
-          controller_sid = None
-          await grant_next()
-          await broadcast_roster()
-        await ws.close(_WS_CLOSE_CONTROLLER_TAKEN, "controller unavailable")
-        return
-      if tcp_reader is None or tcp_writer is None:
-        logger.debug("[UiBridge] NetImgui reader/writer None; releasing slot")
-        if active_ui_ws is ws:
-          active_ui_ws = None
-          controller_sid = None
-          await grant_next()
-          await broadcast_roster()
-        await ws.close(_WS_CLOSE_CONTROLLER_TAKEN, "controller unavailable")
-        return
-      my_reader = cast(asyncio.StreamReader, tcp_reader)
-      my_writer = cast(asyncio.StreamWriter, tcp_writer)
-
       try:
-        # Handshake: browser CmdVersion -> client; client CmdVersion -> browser.
-        browser_version = await ws.recv()
-        my_writer.write(browser_version)  # pyrefly: ignore[bad-argument-type]
-        await my_writer.drain()
-        server_version = await my_reader.readexactly(_NETIMGUI_CMD_VERSION_SIZE)
-        await ws.send(server_version)
-        logger.debug("[UiBridge] Handshake complete. Bridging.")
+        # Handshake: the browser's NetImgui Version command, answered with the
+        # UI's. A new session then re-sends everything the browser needs.
+        handshake = await ws.recv()
+        if not isinstance(handshake, bytes):
+          await ws.close(CloseCode.POLICY_VIOLATION, "expected a handshake")
+          return
+        try:
+          reply = ui.start_session(handshake)
+        except ValueError as e:
+          # Such a page (e.g. one still running an older client) retries every
+          # second: say why once.
+          if not ui_rejection_logged:
+            ui_rejection_logged = True
+            logger.warning("[UiStream] Rejected a browser: %s", e)
+          await ws.close(CloseCode.POLICY_VIOLATION, _close_reason(str(e)))
+          return
+        await ws.send(reply)
+        logger.debug("[UiStream] Session started.")
 
-        async def ws_to_tcp() -> None:
+        async def send_frames() -> None:
+          while True:
+            await ui_frame_ready.wait()
+            ui_frame_ready.clear()
+            for message in ui.take_messages():
+              await ws.send(message)
+
+        async def receive_input() -> None:
           async for message in ws:
             if isinstance(message, bytes):
               last_controller_input[0] = loop_time()
-              my_writer.write(message)
-              await my_writer.drain()
-
-        async def tcp_to_ws() -> None:
-          while True:
-            data = await my_reader.read(65536)
-            if not data:
-              break
-            await ws.send(data)
+              ui.push_input(message)
 
         done, pending = await asyncio.wait(
             [
-                asyncio.create_task(ws_to_tcp()),
-                asyncio.create_task(tcp_to_ws()),
+                asyncio.create_task(send_frames()),
+                asyncio.create_task(receive_input()),
             ],
             return_when=asyncio.FIRST_COMPLETED,
         )
@@ -853,18 +815,12 @@ def _run_server(
           task.cancel()
         for task in done:
           task.exception()  # Retrieve to avoid "exception never retrieved".
-      except (ConnectionClosed, ConnectionError, asyncio.IncompleteReadError):
+      except (ConnectionClosed, ConnectionError):
         pass
       finally:
-        logger.debug("[UiBridge] Bridge closed.")
-        # Tear down this bridge's TCP connection so the NetImgui client
-        # reconnects and re-sends everything to the next browser.
-        if my_writer is not None:
-          my_writer.close()
-        if tcp_writer is my_writer:
-          tcp_reader = None
-          tcp_writer = None
-          tcp_connected.clear()
+        logger.debug("[UiStream] Session ended.")
+        # Only this handler can have started a session: it holds the slot.
+        ui.end_session()
         if active_ui_ws is ws:
           active_ui_ws = None
           controller_sid = None
@@ -1161,8 +1117,6 @@ def _run_server(
       await stopped.wait()
       logger.debug("[Http] Stop event received; shutting down.")
 
-    tcp_server = await asyncio.start_server(handle_tcp_client, sock=tcp_sock)
-
     # NetImgui does its own delta compression and the state payload is small;
     # permessage-deflate would only add latency at 60Hz.
     ws_server = await serve(
@@ -1179,13 +1133,10 @@ def _run_server(
         max_size=2**26,
     )
     http_host, http_port = http_sock.getsockname()[:2]
-    tcp_port = tcp_sock.getsockname()[1]
     logger.debug(
-        "[Http] Serving on http://%s:%d "
-        "(/, /model, /ui, /state; NetImgui TCP on 127.0.0.1:%d)",
+        "[Http] Serving on http://%s:%d (/, /model, /ui, /state, /drop)",
         http_host,
         http_port,
-        tcp_port,
     )
 
     enforcer = asyncio.create_task(enforce_activity())
@@ -1194,6 +1145,7 @@ def _run_server(
     finally:
       server._wake_state_streams = None
       enforcer.cancel()
+      server._wake_ui_stream = None  # pylint: disable=protected-access
       if server.stop_reason:
         # Tell the browsers why the viewer stopped, so the page can show it;
         # ws_server.close() below only says "going away". Bounded: a browser
@@ -1214,7 +1166,6 @@ def _run_server(
           pass
       # Close listeners explicitly to prevent hanging on open client sockets.
       ws_server.close()
-      tcp_server.close()
 
   _run_cancellable(main_loop)
 
@@ -1222,10 +1173,10 @@ def _run_server(
 class WebServer:
   """The Web Viewer's single-port server.
 
-  Serves the browser page, WASM, and model over HTTP; bridges the NetImgui UI
-  stream at /ui; and broadcasts the state payload at /state on a single public
-  port from a background daemon thread.  State payloads are handed over through
-  a lock-protected reference with latest-wins semantics: update_state() may be
+  Serves the browser page, WASM, and model over HTTP; streams the headless UI at
+  /ui; and broadcasts the state payload at /state on a single public port from a
+  background daemon thread.  State payloads are handed over through a
+  lock-protected reference with latest-wins semantics: update_state() may be
   called at any rate from the viewer thread; browsers only ever see the newest
   payload.  The server thread is started once and persists.  When the model
   changes, update_model() swaps the bytes served at /model, without any restart.
@@ -1238,26 +1189,25 @@ class WebServer:
   def __init__(
       self,
       http_sock: socket.socket,
-      tcp_sock: socket.socket,
+      ui: UiSession | None = None,
       static_files_dir: str | None = None,
       mjb_data: bytes | None = None,
       drop_queue: queue.Queue[Any] | None = None,
   ) -> None:
-    """Initializes the server around pre-bound listening sockets.
+    """Initializes the server around a pre-bound listening socket.
 
-    The sockets are bound by the viewer (see bind_public_socket /
-    bind_loopback_socket) and shared with the server thread, so bind failures
-    can't occur here.
+    The socket is bound by the viewer (see bind_public_socket) and shared with
+    the server thread, so bind failures can't occur here.
 
     Args:
       http_sock: The listening socket for HTTP and WebSocket traffic.
-      tcp_sock: The listening socket for NetImgui traffic.
+      ui: The headless UI to stream at /ui. Without it, /ui rejects browsers.
       static_files_dir: The directory containing the static files to serve.
       mjb_data: The model data to serve from /model.
       drop_queue: The queue to put dropped files onto.
     """
     self.http_sock = http_sock
-    self.tcp_sock = tcp_sock
+    self.ui = ui
     self.static_files_dir = static_files_dir or _find_static_files_dir()
     self.mjb_data = mjb_data
 
@@ -1291,6 +1241,9 @@ class WebServer:
     if mjb_data:
       self.update_model(mjb_data)
 
+    # Wakes the /ui stream's sender; set while the server's event loop runs.
+    self._wake_ui_stream: Callable[[], Any] | None = None
+
     self._stop_event = threading.Event()
     self._thread: threading.Thread | None = None
     # Why the viewer stopped, when not normally (see stop()); read by the
@@ -1314,6 +1267,20 @@ class WebServer:
         wake()
       except RuntimeError:
         pass  # The server's event loop has just closed.
+
+  def notify_ui_frame(self) -> None:
+    """Tells the /ui stream that the UI has a new frame for the browser.
+
+    Called from the viewer thread after each HeadlessUi.end_frame(), so the
+    frame goes out right away.
+    """
+    wake = self._wake_ui_stream
+    if wake is None:
+      return
+    try:
+      wake()
+    except RuntimeError:
+      pass  # The server's event loop has just closed.
 
   def update_model(self, mjb_data: bytes, crc32: int | None = None) -> None:
     """Makes ``mjb_data`` the current model, served at /model.

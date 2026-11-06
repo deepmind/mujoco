@@ -160,6 +160,8 @@ else()
 
   target_sources(_studio PRIVATE
     ${CMAKE_CURRENT_SOURCE_DIR}/headless_ui.cc
+    ${CMAKE_CURRENT_SOURCE_DIR}/headless_ui_session.cc
+    ${CMAKE_CURRENT_SOURCE_DIR}/headless_ui_session.h
     ${CMAKE_CURRENT_SOURCE_DIR}/state_payload_py.cc
     ${CMAKE_CURRENT_SOURCE_DIR}/state_payload.cc
     ${CMAKE_CURRENT_SOURCE_DIR}/state_payload.h
