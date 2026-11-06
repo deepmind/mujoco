@@ -21,8 +21,17 @@ set(Python3_VERSION "${Python3_VERSION_MAJOR}.${Python3_VERSION_MINOR}")
 if(NOT Python3_INCLUDE_DIR AND Python3_INCLUDE_DIRS)
   list(GET Python3_INCLUDE_DIRS 0 Python3_INCLUDE_DIR)
 endif()
-if(NOT Python3_LIBRARY AND Python3_LIBRARIES)
-  list(GET Python3_LIBRARIES 0 Python3_LIBRARY)
+if(NOT Python3_LIBRARY)
+  if(Python3_LIBRARY_RELEASE)
+    set(Python3_LIBRARY "${Python3_LIBRARY_RELEASE}")
+  elseif(Python3_LIBRARIES)
+    foreach(_mj_py_lib ${Python3_LIBRARIES})
+      if(NOT _mj_py_lib MATCHES "^(optimized|debug|general)$")
+        set(Python3_LIBRARY "${_mj_py_lib}")
+        break()
+      endif()
+    endforeach()
+  endif()
 endif()
 if(UNIX AND (NOT Python3_LIBRARY OR IS_DIRECTORY "${Python3_LIBRARY}" OR NOT EXISTS "${Python3_LIBRARY}"))
   set(_dummy_py_lib "${CMAKE_CURRENT_BINARY_DIR}/libpython${Python3_VERSION}.a")
@@ -33,15 +42,87 @@ endif()
 if(WIN32)
   add_compile_definitions(NOMINMAX)
 elseif(UNIX AND NOT APPLE)
-  # Match PyPI's manylinux2014 usd-core wheel, which is built with the pre-C++11
-  # libstdc++ string ABI (_GLIBCXX_USE_CXX11_ABI=0).
-  add_compile_definitions(_GLIBCXX_USE_CXX11_ABI=0)
+  # Match PyPI's manylinux2014 usd-core wheel, which is built with GCC against
+  # the pre-C++11 libstdc++ ABI (_GLIBCXX_USE_CXX11_ABI=0 and
+  # ARCH_HAS_GNU_STL_EXTENSIONS).
+  add_compile_definitions(_GLIBCXX_USE_CXX11_ABI=0 ARCH_HAS_GNU_STL_EXTENSIONS)
 endif()
 
 find_package(
   pxr REQUIRED
   HINTS "${MUJOCO_LIBRARY_DIR}/.." "${MUJOCO_FRAMEWORK_DIR}" "${CMAKE_BINARY_DIR}/_deps/openusd-build"
 )
+
+# OpenUSD's generated pxrTargets.cmake hardcodes the Python include paths from
+# the host used to build OpenUSD (e.g. C:/Python313/Include) directly on
+# imported targets such as python, tf, gf, vt, ar, sdf, pcp, and usd. Strip
+# those stale include paths and bind to the active wheel's Python headers/module
+# target instead.
+set(_mj_pxr_targets ${PXR_LIBRARIES} python boost pxr_boost_python arch)
+if(TARGET usd_m)
+  get_target_property(_mj_usd_m_deps usd_m INTERFACE_LINK_LIBRARIES)
+  if(_mj_usd_m_deps)
+    list(APPEND _mj_pxr_targets ${_mj_usd_m_deps})
+  endif()
+endif()
+list(REMOVE_DUPLICATES _mj_pxr_targets)
+
+set(_mj_pxr_own_inc ${PXR_INCLUDE_DIRS})
+if(TARGET arch)
+  get_target_property(_mj_arch_inc arch INTERFACE_INCLUDE_DIRECTORIES)
+  if(_mj_arch_inc)
+    list(APPEND _mj_pxr_own_inc ${_mj_arch_inc})
+  endif()
+endif()
+set(_mj_stale_py_inc "")
+if(TARGET python)
+  foreach(_mj_inc_prop INTERFACE_SYSTEM_INCLUDE_DIRECTORIES INTERFACE_INCLUDE_DIRECTORIES)
+    get_target_property(_mj_py_inc python ${_mj_inc_prop})
+    if(_mj_py_inc)
+      list(APPEND _mj_stale_py_inc ${_mj_py_inc})
+    endif()
+  endforeach()
+endif()
+if(_mj_stale_py_inc)
+  list(REMOVE_DUPLICATES _mj_stale_py_inc)
+  if(_mj_pxr_own_inc)
+    list(REMOVE_ITEM _mj_stale_py_inc ${_mj_pxr_own_inc})
+  endif()
+  if(Python3_INCLUDE_DIRS)
+    list(REMOVE_ITEM _mj_stale_py_inc ${Python3_INCLUDE_DIRS})
+  endif()
+endif()
+
+foreach(_mj_tgt ${_mj_pxr_targets})
+  if(TARGET ${_mj_tgt})
+    if(_mj_stale_py_inc)
+      foreach(_mj_inc_prop INTERFACE_INCLUDE_DIRECTORIES INTERFACE_SYSTEM_INCLUDE_DIRECTORIES)
+        get_target_property(_mj_tgt_inc ${_mj_tgt} ${_mj_inc_prop})
+        if(_mj_tgt_inc)
+          list(REMOVE_ITEM _mj_tgt_inc ${_mj_stale_py_inc})
+          set_target_properties(${_mj_tgt} PROPERTIES ${_mj_inc_prop} "${_mj_tgt_inc}")
+        endif()
+      endforeach()
+    endif()
+    get_target_property(_mj_tgt_libs ${_mj_tgt} INTERFACE_LINK_LIBRARIES)
+    if(_mj_tgt_libs)
+      if(UNIX)
+        list(FILTER _mj_tgt_libs EXCLUDE REGEX "^Python3::")
+      elseif(TARGET Python3::Module)
+        list(TRANSFORM _mj_tgt_libs REPLACE "^Python3::.*$" "Python3::Module")
+      endif()
+      set_target_properties(${_mj_tgt} PROPERTIES INTERFACE_LINK_LIBRARIES "${_mj_tgt_libs}")
+    endif()
+  endif()
+endforeach()
+if(TARGET python AND Python3_INCLUDE_DIRS)
+  set_property(
+    TARGET python APPEND PROPERTY INTERFACE_INCLUDE_DIRECTORIES ${Python3_INCLUDE_DIRS}
+  )
+  set_property(
+    TARGET python APPEND PROPERTY INTERFACE_SYSTEM_INCLUDE_DIRECTORIES ${Python3_INCLUDE_DIRS}
+  )
+endif()
 
 find_library(
   MUJOCO_USD_LIB
@@ -79,7 +160,11 @@ endif()
 
 mujoco_pybind11_module(writer writer_module.cc)
 target_include_directories(
-  writer PRIVATE ${PXR_INCLUDE_DIRS} ${MUJOCO_INCLUDE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}
+  writer
+  PRIVATE ${Python3_INCLUDE_DIRS}
+          ${PXR_INCLUDE_DIRS}
+          ${MUJOCO_INCLUDE_DIR}
+          ${CMAKE_CURRENT_SOURCE_DIR}
 )
 target_compile_options(writer PRIVATE -Wno-deprecated)
 target_link_libraries(
@@ -91,7 +176,11 @@ target_link_libraries(
 
 mujoco_pybind11_module(layer_sink layer_sink_module.cc)
 target_include_directories(
-  layer_sink PRIVATE ${PXR_INCLUDE_DIRS} ${MUJOCO_INCLUDE_DIR} ${CMAKE_CURRENT_SOURCE_DIR}
+  layer_sink
+  PRIVATE ${Python3_INCLUDE_DIRS}
+          ${PXR_INCLUDE_DIRS}
+          ${MUJOCO_INCLUDE_DIR}
+          ${CMAKE_CURRENT_SOURCE_DIR}
 )
 target_compile_options(layer_sink PRIVATE -Wno-deprecated)
 target_link_libraries(

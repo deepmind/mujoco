@@ -251,8 +251,8 @@ void AssignShaderInput(mjSpec* spec, mjsMaterial* material, T* val,
     }
   } else if (resolved_input.sampler.has_value()) {
     mjsTexture* texture = resolved_input.sampler.value();
-    auto name = mjs_getName(texture->element);
-    mjs_setInStringVec(material->textures, texrole, name->c_str());
+    mjs_setInStringVec(material->textures, texrole,
+                       mjs_getString(mjs_getName(texture->element)));
   } else {
     mju_warning("No value or texture for shader input.");
   }

@@ -1044,7 +1044,7 @@ void ParseMjcPhysicsCollisionAPI(
       mju_warning(
           "solref attribute for geom %s has incorrect size %zu, "
           "expected %d.",
-          mjs_getName(geom->element)->c_str(), solref.size(), mjNREF);
+          mjs_getString(mjs_getName(geom->element)), solref.size(), mjNREF);
     }
   }
 
@@ -1060,7 +1060,7 @@ void ParseMjcPhysicsCollisionAPI(
       mju_warning(
           "solimp attribute for geom %s has incorrect size %zu, "
           "expected %d.",
-          mjs_getName(geom->element)->c_str(), solimp.size(), mjNIMP);
+          mjs_getString(mjs_getName(geom->element)), solimp.size(), mjNIMP);
     }
   }
 
@@ -1719,7 +1719,7 @@ void ParseMjcPhysicsJointAPI(mjsJoint* mj_joint,
       mju_warning(
           "springdamper attribute for joint %s has incorrect size %zu, "
           "expected 2.",
-          mjs_getName(mj_joint->element)->c_str(), springdamper.size());
+          mjs_getString(mjs_getName(mj_joint->element)), springdamper.size());
     }
   }
 
@@ -1735,7 +1735,8 @@ void ParseMjcPhysicsJointAPI(mjsJoint* mj_joint,
       mju_warning(
           "solreflimit attribute for joint %s has incorrect size %zu, "
           "expected %d.",
-          mjs_getName(mj_joint->element)->c_str(), solreflimit.size(), mjNREF);
+          mjs_getString(mjs_getName(mj_joint->element)), solreflimit.size(),
+          mjNREF);
     }
   }
 
@@ -1751,7 +1752,8 @@ void ParseMjcPhysicsJointAPI(mjsJoint* mj_joint,
       mju_warning(
           "solimplimit attribute for joint %s has incorrect size %zu, "
           "expected %d.",
-          mjs_getName(mj_joint->element)->c_str(), solimplimit.size(), mjNIMP);
+          mjs_getString(mjs_getName(mj_joint->element)), solimplimit.size(),
+          mjNIMP);
     }
   }
 
@@ -1767,7 +1769,7 @@ void ParseMjcPhysicsJointAPI(mjsJoint* mj_joint,
       mju_warning(
           "solreffriction attribute for joint %s has incorrect size %zu, "
           "expected %d.",
-          mjs_getName(mj_joint->element)->c_str(), solreffriction.size(),
+          mjs_getString(mjs_getName(mj_joint->element)), solreffriction.size(),
           mjNREF);
     }
   }
@@ -1784,7 +1786,7 @@ void ParseMjcPhysicsJointAPI(mjsJoint* mj_joint,
       mju_warning(
           "solimpfriction attribute for joint %s has incorrect size %zu, "
           "expected %d.",
-          mjs_getName(mj_joint->element)->c_str(), solimpfriction.size(),
+          mjs_getString(mjs_getName(mj_joint->element)), solimpfriction.size(),
           mjNIMP);
     }
   }
@@ -2077,7 +2079,8 @@ mjsGeom* ParseUsdGeomGprim(mjSpec* spec, const pxr::UsdPrim& gprim,
       }
     }
     if (material) {
-      mjs_setString(geom->material, mjs_getName(material->element)->c_str());
+      mjs_setString(geom->material,
+                    mjs_getString(mjs_getName(material->element)));
     }
   }
 
@@ -2152,7 +2155,8 @@ void ParseUsdPhysicsCollider(mjSpec* spec,
       }
     }
     if (material) {
-      mjs_setString(geom->material, mjs_getName(material->element)->c_str());
+      mjs_setString(geom->material,
+                    mjs_getString(mjs_getName(material->element)));
     }
   }
 
@@ -2644,9 +2648,8 @@ void ParseMjcPhysicsKeyframe(mjSpec* spec,
   auto mpos_attr = keyframe.GetMjcMposAttr();
   auto mquat_attr = keyframe.GetMjcMquatAttr();
 
-  auto setKeyframeData = [](mjsKey* key, const pxr::UsdAttribute& attr,
-                            std::vector<double>** key_data,
-                            double* time = nullptr) {
+  auto setKeyframeData = [](const pxr::UsdAttribute& attr,
+                            mjDoubleVec* key_data, double* time = nullptr) {
     if (attr.HasAuthoredValue()) {
       pxr::VtDoubleArray data;
       if (time == nullptr) {
@@ -2654,7 +2657,7 @@ void ParseMjcPhysicsKeyframe(mjSpec* spec,
       } else {
         attr.Get(&data, *time);
       }
-      *key_data = new std::vector<double>(data.begin(), data.end());
+      mjs_setDouble(key_data, data.cdata(), static_cast<int>(data.size()));
     }
   };
 
@@ -2670,12 +2673,12 @@ void ParseMjcPhysicsKeyframe(mjSpec* spec,
     SetUsdPrimPathUserValue(key->element, prim.GetPath());
 
     mjs_setName(key->element, prim.GetName().GetString().c_str());
-    setKeyframeData(key, qpos_attr, &key->qpos);
-    setKeyframeData(key, qvel_attr, &key->qvel);
-    setKeyframeData(key, act_attr, &key->act);
-    setKeyframeData(key, ctrl_attr, &key->ctrl);
-    setKeyframeData(key, mpos_attr, &key->mpos);
-    setKeyframeData(key, mquat_attr, &key->mquat);
+    setKeyframeData(qpos_attr, key->qpos);
+    setKeyframeData(qvel_attr, key->qvel);
+    setKeyframeData(act_attr, key->act);
+    setKeyframeData(ctrl_attr, key->ctrl);
+    setKeyframeData(mpos_attr, key->mpos);
+    setKeyframeData(mquat_attr, key->mquat);
   } else {
     // If time samples, we create a keyframe for each time sample.
     std::vector<double> times;
@@ -2690,12 +2693,12 @@ void ParseMjcPhysicsKeyframe(mjSpec* spec,
           prim.GetName().GetString() + "_" + std::to_string(keyframe_id++);
       mjs_setName(key->element, key_name.c_str());
       key->time = time;
-      setKeyframeData(key, qpos_attr, &key->qpos, &time);
-      setKeyframeData(key, qvel_attr, &key->qvel, &time);
-      setKeyframeData(key, act_attr, &key->act, &time);
-      setKeyframeData(key, ctrl_attr, &key->ctrl, &time);
-      setKeyframeData(key, mpos_attr, &key->mpos, &time);
-      setKeyframeData(key, mquat_attr, &key->mquat, &time);
+      setKeyframeData(qpos_attr, key->qpos, &time);
+      setKeyframeData(qvel_attr, key->qvel, &time);
+      setKeyframeData(act_attr, key->act, &time);
+      setKeyframeData(ctrl_attr, key->ctrl, &time);
+      setKeyframeData(mpos_attr, key->mpos, &time);
+      setKeyframeData(mquat_attr, key->mquat, &time);
     }
   }
 }

@@ -22,7 +22,7 @@ else()
   set(CMAKE_INSTALL_RPATH "${CMAKE_INSTALL_LIBDIR}")
 endif()
 if(UNIX AND NOT APPLE)
-  add_compile_definitions(_GLIBCXX_USE_CXX11_ABI=0)
+  add_compile_definitions(_GLIBCXX_USE_CXX11_ABI=0 ARCH_HAS_GNU_STL_EXTENSIONS)
   string(REPLACE "-stdlib=libc++" "" CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS}")
   foreach(
     _flag
@@ -75,7 +75,6 @@ target_compile_options(usd_decoder_plugin PRIVATE
   ${MUJOCO_MACOS_COMPILE_OPTIONS}
   ${EXTRA_COMPILE_OPTIONS}
   ${MUJOCO_CXX_FLAGS}
-  -UPXR_PYTHON_SUPPORT_ENABLED
   -Wno-deprecated # pxr Tf lib uses deprecated header
 )
 target_link_options(usd_decoder_plugin PRIVATE

@@ -48,6 +48,7 @@ include-package-data = false
 [tool.setuptools.packages.find]
 include = [
     "mujoco._usd*",
+    "mujoco.usd",
     "mujoco.usd.MjcPhysics*",
 ]
 

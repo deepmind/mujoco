@@ -54,9 +54,12 @@ cp -r "${python_dir}"/mujoco/util/* mujoco/util/
 cp "${python_dir}"/mujoco/usd/_usd_init.py mujoco/_usd/__init__.py
 cp "${python_dir}"/mujoco/usd/CMakeLists.txt \
    "${python_dir}"/mujoco/usd/layer_sink_module.cc \
+   "${python_dir}"/mujoco/usd/layer_sink_test.py \
    "${python_dir}"/mujoco/usd/pybind.h \
    "${python_dir}"/mujoco/usd/pybind_boost_py_utils.h \
+   "${python_dir}"/mujoco/usd/test_utils.py \
    "${python_dir}"/mujoco/usd/writer_module.cc \
+   "${python_dir}"/mujoco/usd/writer_test.py \
    mujoco/usd/
 cp -r "${python_dir}"/mujoco/usd/MjcPhysics/* mujoco/usd/MjcPhysics/
 

@@ -38,20 +38,16 @@ set(DEFAULT_CXX_VISIBILITY_PROPS
   CXX_VISIBILITY_PRESET default
 )
 
-# Pure C++ USD targets do not embed a Python interpreter; disable inline
-# Boost.Python VtValue proxies so they do not emit direct references to
-# _Py_NoneStruct / _Py_Dealloc when OpenUSD is built with Python enabled.
-add_compile_options(-UPXR_PYTHON_SUPPORT_ENABLED)
-
 if(UNIX AND NOT APPLE)
-  # OpenUSD (and PyPI's manylinux2014 usd-core wheel) is built against
-  # libstdc++ with _GLIBCXX_USE_CXX11_ABI=0 on Linux, so strip any global
-  # -stdlib=libc++ / -lc++ flags inherited from the root MuJoCo build.
+  # Prebuilt OpenUSD (and PyPI's manylinux2014 usd-core wheel) is built with GCC
+  # against libstdc++ (_GLIBCXX_USE_CXX11_ABI=0 and ARCH_HAS_GNU_STL_EXTENSIONS
+  # for TfHashMap/TfHashSet) on Linux, so strip any global -stdlib=libc++ /
+  # -lc++ flags inherited from the root MuJoCo build.
   # Link -lstdc++ before OpenUSD and hide static libstdc++_nonshared.a symbols
   # so each library embeds its own hidden copy of symbols such as
   # _ZSt28__throw_bad_array_new_lengthv instead of binding to the build-time
   # libusd_ms.so.
-  add_compile_definitions(_GLIBCXX_USE_CXX11_ABI=0)
+  add_compile_definitions(_GLIBCXX_USE_CXX11_ABI=0 ARCH_HAS_GNU_STL_EXTENSIONS)
   list(PREPEND OPENUSD_CORE_LIBS -Wl,-lstdc++ -Wl,--exclude-libs,libstdc++_nonshared.a)
   string(REPLACE "-stdlib=libc++" "" CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS}")
   foreach(

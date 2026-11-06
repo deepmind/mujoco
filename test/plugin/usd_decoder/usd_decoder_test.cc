@@ -1340,5 +1340,71 @@ def PhysicsScene "PhysicsScene" (prepend apiSchemas = ["MjcSceneAPI"]) {
   EXPECT_EQ(spec->option.disableactuator, (1 << 0) | (1 << 2));
 }
 
+TEST_F(UsdPreservationSemanticsTest, KeyframesCompileIntoModel) {
+  auto stage = pxr::UsdStage::CreateInMemory();
+  ASSERT_TRUE(stage->GetRootLayer()->ImportFromString(R"(#usda 1.0
+(metersPerUnit = 1)
+def Xform "body" (
+    prepend apiSchemas = ["PhysicsRigidBodyAPI", "PhysicsArticulationRootAPI"]
+) {
+    def Sphere "geom" (prepend apiSchemas = ["PhysicsCollisionAPI"]) {
+        double radius = 0.1
+    }
+    def PhysicsPrismaticJoint "slide" {
+        rel physics:body1 = </body>
+        uniform token physics:axis = "Z"
+    }
+}
+def MjcActuator "motor" {
+    rel mjc:target = </body/slide>
+}
+def MjcKeyframe "home" {
+    double[] mjc:qpos = [0.5]
+    double[] mjc:qvel = [1.5]
+    double[] mjc:ctrl = [0.25]
+}
+def MjcKeyframe "rollout" {
+    double[] mjc:qpos.timeSamples = {
+        1: [2.0],
+        2.5: [3.0],
+    }
+    double[] mjc:qvel.timeSamples = {
+        1: [4.0],
+        2.5: [5.0],
+    }
+    double[] mjc:ctrl.timeSamples = {
+        1: [0.5],
+        2.5: [0.75],
+    }
+}
+)"));
+  auto spec = Parse(stage);
+  ASSERT_NE(spec, nullptr);
+  MjModelPtr model(mj_compile(spec.get(), nullptr));
+  ASSERT_NE(model, nullptr) << mjs_getError(spec.get());
+  ASSERT_EQ(model->nkey, 3);
+
+  int home_id = mj_name2id(model.get(), mjOBJ_KEY, "home");
+  int rollout0_id = mj_name2id(model.get(), mjOBJ_KEY, "rollout_0");
+  int rollout1_id = mj_name2id(model.get(), mjOBJ_KEY, "rollout_1");
+  ASSERT_GE(home_id, 0);
+  ASSERT_GE(rollout0_id, 0);
+  ASSERT_GE(rollout1_id, 0);
+
+  EXPECT_MJTNUM_EQ(model->key_qpos[home_id], 0.5);
+  EXPECT_MJTNUM_EQ(model->key_qvel[home_id], 1.5);
+  EXPECT_MJTNUM_EQ(model->key_ctrl[home_id], 0.25);
+
+  EXPECT_MJTNUM_EQ(model->key_time[rollout0_id], 1.0);
+  EXPECT_MJTNUM_EQ(model->key_qpos[rollout0_id], 2.0);
+  EXPECT_MJTNUM_EQ(model->key_qvel[rollout0_id], 4.0);
+  EXPECT_MJTNUM_EQ(model->key_ctrl[rollout0_id], 0.5);
+
+  EXPECT_MJTNUM_EQ(model->key_time[rollout1_id], 2.5);
+  EXPECT_MJTNUM_EQ(model->key_qpos[rollout1_id], 3.0);
+  EXPECT_MJTNUM_EQ(model->key_qvel[rollout1_id], 5.0);
+  EXPECT_MJTNUM_EQ(model->key_ctrl[rollout1_id], 0.75);
+}
+
 }  // namespace
 }  // namespace mujoco

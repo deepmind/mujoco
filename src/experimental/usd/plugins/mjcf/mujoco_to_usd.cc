@@ -299,6 +299,34 @@ class ModelWriter {
     return pxr::TfToken(pxr::TfMakeValidIdentifier(name));
   }
 
+  std::string ElementName(mjsElement *element) const {
+    return mjs_getString(mjs_getName(element));
+  }
+
+  mjsTexture *GetMaterialTexture(const mjsMaterial *material,
+                                 mjtTextureRole role) const {
+    int mat_id = mjs_getId(material->element);
+    if (mat_id < 0 || mat_id >= model_->nmat) {
+      return nullptr;
+    }
+    int tex_id = model_->mat_texid[mat_id * mjNTEXROLE + role];
+    if (tex_id < 0) {
+      return nullptr;
+    }
+    const char *tex_name = mj_id2name(model_, mjOBJ_TEXTURE, tex_id);
+    if (!tex_name || tex_name[0] == '\0') {
+      return nullptr;
+    }
+    return mjs_asTexture(mjs_findElement(spec_, mjOBJ_TEXTURE, tex_name));
+  }
+
+  pxr::VtDoubleArray GetDoubleArray(const mjDoubleVec *vec) const {
+    int size = 0;
+    const double *data = mjs_getDouble(vec, &size);
+    return size > 0 ? pxr::VtDoubleArray(data, data + size)
+                    : pxr::VtDoubleArray();
+  }
+
   struct BodyPathComponents {
     pxr::SdfPath parent_path;
     pxr::TfToken body_name;
@@ -387,14 +415,15 @@ class ModelWriter {
   }
 
   void WriteMesh(const mjsMesh *mesh, const pxr::SdfPath &parent_path) {
-    auto name = GetAvailablePrimName(*mjs_getName(mesh->element),
-                                     pxr::UsdGeomTokens->Mesh, parent_path);
+    const std::string mesh_name = ElementName(mesh->element);
+    auto name = GetAvailablePrimName(mesh_name, pxr::UsdGeomTokens->Mesh,
+                                     parent_path);
     auto subcomponent_spec =
         CreatePrimSpec(layer_, parent_path, name, pxr::UsdGeomTokens->Xform);
     auto mesh_spec =
         CreatePrimSpec(layer_, subcomponent_spec->GetPath(), kTokens->sourceMesh,
                        pxr::UsdGeomTokens->Mesh);
-    mesh_paths_[*mjs_getName(mesh->element)] = subcomponent_spec->GetPath();
+    mesh_paths_[mesh_name] = subcomponent_spec->GetPath();
 
     ApplyApiSchema(layer_, mesh_spec, MjcPhysicsTokens->MjcMeshCollisionAPI);
 
@@ -904,7 +933,7 @@ class ModelWriter {
                                   pxr::UsdGeomTokens->Scope);
     }
 
-    auto name = GetAvailablePrimName(*mjs_getName(geom->element),
+    auto name = GetAvailablePrimName(ElementName(geom->element),
                                      pxr::UsdShadeTokens->Material, scope_path);
     auto material_spec =
         CreatePrimSpec(layer_, scope_spec->GetPath(), name, pxr::UsdShadeTokens->Material);
@@ -940,7 +969,7 @@ class ModelWriter {
   void WriteMaterial(mjsMaterial *material, const pxr::SdfPath &parent_path) {
     // Create a Material prim.
     auto name =
-        GetAvailablePrimName(*mjs_getName(material->element),
+        GetAvailablePrimName(ElementName(material->element),
                              pxr::UsdShadeTokens->Material, parent_path);
     auto material_spec =
         CreatePrimSpec(layer_, parent_path, name, pxr::UsdShadeTokens->Material);
@@ -984,7 +1013,6 @@ class ModelWriter {
     // Add an st (uv) Shader, a prim var reader for the UV coordinates.
     const pxr::SdfAttributeSpecHandle &uvmap_st_output_attr =
         AddUVTextureShader(material_spec, pxr::TfToken("uvmap"));
-    const mjStringVec &textures = *(material->textures);
 
     // Set the values of metallic, roughness and occlusion. These can come from
     // an ORM packed texture, as individual textures, or as a values defined in
@@ -996,114 +1024,102 @@ class ModelWriter {
         layer_, preview_surface_shader_spec, kTokens->inputsRoughness,
         pxr::SdfValueTypeNames->Float);
     // Find the occlusion, roughness, and metallic textures.
-    if (mjTEXROLE_ORM < textures.size()) {
-      std::string orm_texture_name = textures[mjTEXROLE_ORM];
-      mjsTexture *orm_texture = mjs_asTexture(
-          mjs_findElement(spec_, mjOBJ_TEXTURE, orm_texture_name.c_str()));
-      std::string occlusion_texture_name = textures[mjTEXROLE_OCCLUSION];
-      mjsTexture *occlusion_texture = mjs_asTexture(mjs_findElement(
-          spec_, mjOBJ_TEXTURE, occlusion_texture_name.c_str()));
-      std::string roughness_texture_name = textures[mjTEXROLE_ROUGHNESS];
-      mjsTexture *roughness_texture = mjs_asTexture(mjs_findElement(
-          spec_, mjOBJ_TEXTURE, roughness_texture_name.c_str()));
-      std::string metallic_texture_name = textures[mjTEXROLE_METALLIC];
-      mjsTexture *metallic_texture = mjs_asTexture(
-          mjs_findElement(spec_, mjOBJ_TEXTURE, metallic_texture_name.c_str()));
-      if (orm_texture) {
-        // Create the ORM shader and connect its output to the preview
-        // surface ORM attrs.
-        const std::vector<pxr::SdfAttributeSpecHandle> orm_output_attrs =
-            AddTextureShader(
-                material_spec, orm_texture->file->c_str(),
-                pxr::TfToken("orm_packed"), uvmap_st_output_attr,
-                {kTokens->outputsR, kTokens->outputsG, kTokens->outputsB});
-        if (orm_output_attrs.size() == 3) {
-          auto occlusion_attr = CreateAttributeSpec(
-              layer_, preview_surface_shader_spec, kTokens->inputsOcclusion,
-              pxr::SdfValueTypeNames->Float);
-          AddAttributeConnection(layer_, occlusion_attr, orm_output_attrs[0]);
-          AddAttributeConnection(layer_, roughness_attr, orm_output_attrs[1]);
-          AddAttributeConnection(layer_, metallic_attr, orm_output_attrs[2]);
+    mjsTexture *orm_texture = GetMaterialTexture(material, mjTEXROLE_ORM);
+    mjsTexture *occlusion_texture =
+        GetMaterialTexture(material, mjTEXROLE_OCCLUSION);
+    mjsTexture *roughness_texture =
+        GetMaterialTexture(material, mjTEXROLE_ROUGHNESS);
+    mjsTexture *metallic_texture =
+        GetMaterialTexture(material, mjTEXROLE_METALLIC);
+    if (orm_texture) {
+      // Create the ORM shader and connect its output to the preview
+      // surface ORM attrs.
+      const std::vector<pxr::SdfAttributeSpecHandle> orm_output_attrs =
+          AddTextureShader(
+              material_spec, mjs_getString(orm_texture->file),
+              pxr::TfToken("orm_packed"), uvmap_st_output_attr,
+              {kTokens->outputsR, kTokens->outputsG, kTokens->outputsB});
+      if (orm_output_attrs.size() == 3) {
+        auto occlusion_attr = CreateAttributeSpec(
+            layer_, preview_surface_shader_spec, kTokens->inputsOcclusion,
+            pxr::SdfValueTypeNames->Float);
+        AddAttributeConnection(layer_, occlusion_attr, orm_output_attrs[0]);
+        AddAttributeConnection(layer_, roughness_attr, orm_output_attrs[1]);
+        AddAttributeConnection(layer_, metallic_attr, orm_output_attrs[2]);
+      }
+    } else {
+      if (metallic_texture) {
+        const std::vector<pxr::SdfAttributeSpecHandle> metallic_output_attrs =
+            AddTextureShader(material_spec,
+                             mjs_getString(metallic_texture->file),
+                             pxr::TfToken("metallic"), uvmap_st_output_attr,
+                             {kTokens->outputsRgb});
+        if (metallic_output_attrs.size() == 1) {
+          AddAttributeConnection(layer_, metallic_attr,
+                                 metallic_output_attrs[0]);
         }
       } else {
-        if (metallic_texture) {
-          const std::vector<pxr::SdfAttributeSpecHandle> metallic_output_attrs =
-              AddTextureShader(material_spec, metallic_texture->file->c_str(),
-                               pxr::TfToken("metallic"), uvmap_st_output_attr,
-                               {kTokens->outputsRgb});
-          if (metallic_output_attrs.size() == 1) {
-            AddAttributeConnection(layer_, metallic_attr,
-                                   metallic_output_attrs[0]);
-          }
-        } else {
-          SetAttributeDefault(layer_, metallic_attr, material->metallic);
-        }
-        if (roughness_texture) {
-          const std::vector<pxr::SdfAttributeSpecHandle> roughness_output_attrs =
-              AddTextureShader(material_spec, roughness_texture->file->c_str(),
-                               pxr::TfToken("roughness"), uvmap_st_output_attr,
-                               {kTokens->outputsRgb});
-          if (roughness_output_attrs.size() == 1) {
-            AddAttributeConnection(layer_, roughness_attr,
-                                   roughness_output_attrs[0]);
-          }
-        } else {
-          SetAttributeDefault(layer_, roughness_attr, material->roughness);
-        }
-        if (occlusion_texture) {
-          auto occlusion_attr = CreateAttributeSpec(
-              layer_, preview_surface_shader_spec, kTokens->inputsOcclusion,
-              pxr::SdfValueTypeNames->Float);
-          const std::vector<pxr::SdfAttributeSpecHandle> occlusion_output_attrs =
-              AddTextureShader(material_spec, occlusion_texture->file->c_str(),
-                               pxr::TfToken("occlusion"), uvmap_st_output_attr,
-                               {kTokens->outputsRgb});
-          if (occlusion_output_attrs.size() == 1) {
-            AddAttributeConnection(layer_, occlusion_attr,
-                                   occlusion_output_attrs[0]);
-          }
-        }
+        SetAttributeDefault(layer_, metallic_attr, material->metallic);
       }
-    }
-    // Find the normal texture if specified.
-    if (mjTEXROLE_NORMAL < textures.size()) {
-      std::string normal_texture_name = textures[mjTEXROLE_NORMAL];
-      mjsTexture *normal_texture = mjs_asTexture(
-          mjs_findElement(spec_, mjOBJ_TEXTURE, normal_texture_name.c_str()));
-      if (normal_texture) {
-        auto normal_attr = CreateAttributeSpec(
-            layer_, preview_surface_shader_spec, kTokens->inputsNormal,
-            pxr::SdfValueTypeNames->Normal3f);
-        // Create the normal map shader and connect its output to the preview
-        // surface normal attr.
-        const std::vector<pxr::SdfAttributeSpecHandle> normal_map_output_attrs =
-            AddTextureShader(material_spec, normal_texture->file->c_str(),
-                             pxr::TfToken("normal"), uvmap_st_output_attr,
+      if (roughness_texture) {
+        const std::vector<pxr::SdfAttributeSpecHandle> roughness_output_attrs =
+            AddTextureShader(material_spec,
+                             mjs_getString(roughness_texture->file),
+                             pxr::TfToken("roughness"), uvmap_st_output_attr,
                              {kTokens->outputsRgb});
-        if (normal_map_output_attrs.size() == 1) {
-          AddAttributeConnection(layer_, normal_attr,
-                                 normal_map_output_attrs[0]);
+        if (roughness_output_attrs.size() == 1) {
+          AddAttributeConnection(layer_, roughness_attr,
+                                 roughness_output_attrs[0]);
+        }
+      } else {
+        SetAttributeDefault(layer_, roughness_attr, material->roughness);
+      }
+      if (occlusion_texture) {
+        auto occlusion_attr = CreateAttributeSpec(
+            layer_, preview_surface_shader_spec, kTokens->inputsOcclusion,
+            pxr::SdfValueTypeNames->Float);
+        const std::vector<pxr::SdfAttributeSpecHandle> occlusion_output_attrs =
+            AddTextureShader(material_spec,
+                             mjs_getString(occlusion_texture->file),
+                             pxr::TfToken("occlusion"), uvmap_st_output_attr,
+                             {kTokens->outputsRgb});
+        if (occlusion_output_attrs.size() == 1) {
+          AddAttributeConnection(layer_, occlusion_attr,
+                                 occlusion_output_attrs[0]);
         }
       }
     }
 
+    // Find the normal texture if specified.
+    if (mjsTexture *normal_texture =
+            GetMaterialTexture(material, mjTEXROLE_NORMAL)) {
+      auto normal_attr = CreateAttributeSpec(
+          layer_, preview_surface_shader_spec, kTokens->inputsNormal,
+          pxr::SdfValueTypeNames->Normal3f);
+      // Create the normal map shader and connect its output to the preview
+      // surface normal attr.
+      const std::vector<pxr::SdfAttributeSpecHandle> normal_map_output_attrs =
+          AddTextureShader(material_spec, mjs_getString(normal_texture->file),
+                           pxr::TfToken("normal"), uvmap_st_output_attr,
+                           {kTokens->outputsRgb});
+      if (normal_map_output_attrs.size() == 1) {
+        AddAttributeConnection(layer_, normal_attr, normal_map_output_attrs[0]);
+      }
+    }
+
     // Connect an emissive texture if specified.
-    if (mjTEXROLE_EMISSIVE < textures.size()) {
-      std::string emissive_texture_name = textures[mjTEXROLE_EMISSIVE];
-      mjsTexture *emissive_texture = mjs_asTexture(
-          mjs_findElement(spec_, mjOBJ_TEXTURE, emissive_texture_name.c_str()));
-      if (emissive_texture) {
-        auto emissive_attr = CreateAttributeSpec(
-            layer_, preview_surface_shader_spec, kTokens->inputsEmissiveColor,
-            pxr::SdfValueTypeNames->Color3f);
-        const std::vector<pxr::SdfAttributeSpecHandle> emissive_map_output_attrs =
-            AddTextureShader(material_spec, emissive_texture->file->c_str(),
-                             pxr::TfToken("emissive"), uvmap_st_output_attr,
-                             {kTokens->outputsRgb});
-        if (emissive_map_output_attrs.size() == 1) {
-          AddAttributeConnection(layer_, emissive_attr,
-                                 emissive_map_output_attrs[0]);
-        }
+    if (mjsTexture *emissive_texture =
+            GetMaterialTexture(material, mjTEXROLE_EMISSIVE)) {
+      auto emissive_attr = CreateAttributeSpec(
+          layer_, preview_surface_shader_spec, kTokens->inputsEmissiveColor,
+          pxr::SdfValueTypeNames->Color3f);
+      const std::vector<pxr::SdfAttributeSpecHandle> emissive_map_output_attrs =
+          AddTextureShader(material_spec, mjs_getString(emissive_texture->file),
+                           pxr::TfToken("emissive"), uvmap_st_output_attr,
+                           {kTokens->outputsRgb});
+      if (emissive_map_output_attrs.size() == 1) {
+        AddAttributeConnection(layer_, emissive_attr,
+                               emissive_map_output_attrs[0]);
       }
     }
 
@@ -1114,15 +1130,13 @@ class ModelWriter {
         pxr::SdfValueTypeNames->Color3f);
 
     // Find the main texture if specified.
-    std::string main_texture_name = textures[mjTEXROLE_RGB];
-    mjsTexture *main_texture = mjs_asTexture(
-        mjs_findElement(spec_, mjOBJ_TEXTURE, main_texture_name.c_str()));
-    if (main_texture) {
+    if (mjsTexture *main_texture =
+            GetMaterialTexture(material, mjTEXROLE_RGB)) {
       // Create the texture shader and connect it to the diffuse color
       // attribute.
       const std::vector<pxr::SdfAttributeSpecHandle>
           texture_diffuse_output_attrs =
-              AddTextureShader(material_spec, main_texture->file->c_str(),
+              AddTextureShader(material_spec, mjs_getString(main_texture->file),
                                pxr::TfToken("diffuse"), uvmap_st_output_attr,
                                {kTokens->outputsRgb});
       if (texture_diffuse_output_attrs.size() == 1) {
@@ -1182,50 +1196,33 @@ class ModelWriter {
       auto qpos_attr =
           CreateAttributeSpec(layer_, keyframe_spec, MjcPhysicsTokens->mjcQpos,
                               pxr::SdfValueTypeNames->DoubleArray);
-      set_attribute_data(
-          qpos_attr,
-          pxr::VtDoubleArray(keyframe->qpos->begin(), keyframe->qpos->end()),
-          keyframe);
+      set_attribute_data(qpos_attr, GetDoubleArray(keyframe->qpos), keyframe);
 
       auto qvel_attr =
           CreateAttributeSpec(layer_, keyframe_spec, MjcPhysicsTokens->mjcQvel,
                               pxr::SdfValueTypeNames->DoubleArray);
-      set_attribute_data(
-          qvel_attr,
-          pxr::VtDoubleArray(keyframe->qvel->begin(), keyframe->qvel->end()),
-          keyframe);
+      set_attribute_data(qvel_attr, GetDoubleArray(keyframe->qvel), keyframe);
 
       auto act_attr =
           CreateAttributeSpec(layer_, keyframe_spec, MjcPhysicsTokens->mjcAct,
                               pxr::SdfValueTypeNames->DoubleArray);
-      set_attribute_data(
-          act_attr,
-          pxr::VtDoubleArray(keyframe->act->begin(), keyframe->act->end()),
-          keyframe);
+      set_attribute_data(act_attr, GetDoubleArray(keyframe->act), keyframe);
 
       auto ctrl_attr =
           CreateAttributeSpec(layer_, keyframe_spec, MjcPhysicsTokens->mjcCtrl,
                               pxr::SdfValueTypeNames->DoubleArray);
-      set_attribute_data(
-          ctrl_attr,
-          pxr::VtDoubleArray(keyframe->ctrl->begin(), keyframe->ctrl->end()),
-          keyframe);
+      set_attribute_data(ctrl_attr, GetDoubleArray(keyframe->ctrl), keyframe);
 
       auto mpos_attr =
           CreateAttributeSpec(layer_, keyframe_spec, MjcPhysicsTokens->mjcMpos,
                               pxr::SdfValueTypeNames->DoubleArray);
-      set_attribute_data(
-          mpos_attr,
-          pxr::VtDoubleArray(keyframe->mpos->begin(), keyframe->mpos->end()),
-          keyframe);
+      set_attribute_data(mpos_attr, GetDoubleArray(keyframe->mpos), keyframe);
 
       auto mquat_attr_path =
           CreateAttributeSpec(layer_, keyframe_spec, MjcPhysicsTokens->mjcMquat,
                               pxr::SdfValueTypeNames->DoubleArray);
-      set_attribute_data(
-          mquat_attr_path,
-          pxr::VtDoubleArray(keyframe->mquat->begin(), keyframe->mquat->end()),
-          keyframe);
+      set_attribute_data(mquat_attr_path, GetDoubleArray(keyframe->mquat),
+                         keyframe);
     }
   }
 
@@ -1234,9 +1231,9 @@ class ModelWriter {
     mjsKey *keyframe = mjs_asKey(mjs_firstElement(spec_, mjOBJ_KEY));
     while (keyframe) {
       if (ShouldWrite(keyframe->element)) {
-        std::string keyframe_name = mjs_getName(keyframe->element)->empty()
-                                        ? kTokens->keyframe
-                                        : *mjs_getName(keyframe->element);
+        std::string raw_name = ElementName(keyframe->element);
+        std::string keyframe_name =
+            raw_name.empty() ? std::string(kTokens->keyframe) : raw_name;
         keyframes_map[keyframe_name].push_back(keyframe);
       }
       keyframe = mjs_asKey(mjs_nextElement(spec_, keyframe->element));
@@ -1251,7 +1248,8 @@ class ModelWriter {
   }
 
   void WriteActuator(mjsActuator *actuator, const pxr::SdfPath &parent_path) {
-    const pxr::TfToken valid_name = GetValidPrimName(*mjs_getName(actuator->element));
+    const pxr::TfToken valid_name =
+        GetValidPrimName(ElementName(actuator->element));
     const pxr::SdfPath actuator_path = parent_path.AppendChild(valid_name);
     pxr::SdfPrimSpecHandle actuator_spec;
     if (layer_->HasSpec(actuator_path)) {
@@ -1261,16 +1259,17 @@ class ModelWriter {
                      pxr::MjcPhysicsTokens->MjcActuator);
     }
 
+    const char *target_name = mjs_getString(actuator->target);
     pxr::SdfPath target_path;
     if (actuator->trntype == mjtTrn::mjTRN_BODY) {
-      int body_id = mj_name2id(model_, mjOBJ_BODY, actuator->target->c_str());
+      int body_id = mj_name2id(model_, mjOBJ_BODY, target_name);
       target_path = body_paths_[body_id];
     } else if (actuator->trntype == mjtTrn::mjTRN_SITE ||
                actuator->trntype == mjtTrn::mjTRN_SLIDERCRANK) {
-      int site_id = mj_name2id(model_, mjOBJ_SITE, actuator->target->c_str());
+      int site_id = mj_name2id(model_, mjOBJ_SITE, target_name);
       target_path = site_paths_[site_id];
     } else if (actuator->trntype == mjtTrn::mjTRN_JOINT) {
-      int joint_id = mj_name2id(model_, mjOBJ_JOINT, actuator->target->c_str());
+      int joint_id = mj_name2id(model_, mjOBJ_JOINT, target_name);
       target_path = joint_paths_[joint_id];
     } else {
       TF_WARN(UnsupportedActuatorTypeError,
@@ -1285,17 +1284,17 @@ class ModelWriter {
     WriteUniformAttribute(actuator_spec, pxr::SdfValueTypeNames->Int,
                           MjcPhysicsTokens->mjcGroup, actuator->group);
 
-    if (!actuator->refsite->empty()) {
-      int refsite_id =
-          mj_name2id(model_, mjOBJ_SITE, actuator->refsite->c_str());
+    const char *refsite_name = mjs_getString(actuator->refsite);
+    if (refsite_name[0] != '\0') {
+      int refsite_id = mj_name2id(model_, mjOBJ_SITE, refsite_name);
       pxr::SdfPath refsite_path = site_paths_[refsite_id];
       CreateRelationshipSpec(layer_, actuator_spec, MjcPhysicsTokens->mjcRefSite,
                              refsite_path, pxr::SdfVariabilityUniform);
     }
 
-    if (!actuator->slidersite->empty()) {
-      int slidersite_id =
-          mj_name2id(model_, mjOBJ_SITE, actuator->slidersite->c_str());
+    const char *slidersite_name = mjs_getString(actuator->slidersite);
+    if (slidersite_name[0] != '\0') {
+      int slidersite_id = mj_name2id(model_, mjOBJ_SITE, slidersite_name);
       pxr::SdfPath slidersite_path = site_paths_[slidersite_id];
       CreateRelationshipSpec(layer_, actuator_spec,
                              MjcPhysicsTokens->mjcSliderSite, slidersite_path,
@@ -1421,16 +1420,16 @@ class ModelWriter {
 
   pxr::SdfPrimSpecHandle WriteMeshGeom(const mjsGeom *geom,
                              const pxr::SdfPath &body_path) {
-    std::string mj_name = mjs_getName(geom->element)->empty()
-                              ? *geom->meshname
-                              : *mjs_getName(geom->element);
+    const std::string geom_name = ElementName(geom->element);
+    const std::string mesh_name = mjs_getString(geom->meshname);
+    std::string mj_name = geom_name.empty() ? mesh_name : geom_name;
     auto name =
         GetAvailablePrimName(mj_name, pxr::UsdGeomTokens->Mesh, body_path);
     auto subcomponent_spec =
         CreatePrimSpec(layer_, body_path, name, pxr::UsdGeomTokens->Xform);
 
     // Reference the mesh asset written in WriteMeshes.
-    AddPrimReference(layer_, subcomponent_spec, mesh_paths_[*geom->meshname]);
+    AddPrimReference(layer_, subcomponent_spec, mesh_paths_[mesh_name]);
 
     // We want to use instancing with meshes, and it requires creating a parent
     // scope to be referenced, with the Mesh prim as a child.
@@ -1445,7 +1444,7 @@ class ModelWriter {
 
   pxr::SdfPrimSpecHandle WriteSiteGeom(const mjsSite *site,
                              const pxr::SdfPath &body_path) {
-    auto name = GetAvailablePrimName(*mjs_getName(site->element),
+    auto name = GetAvailablePrimName(ElementName(site->element),
                                      pxr::UsdGeomTokens->Cube, body_path);
 
     int site_idx = mjs_getId(site->element);
@@ -1502,7 +1501,7 @@ class ModelWriter {
 
   pxr::SdfPrimSpecHandle WriteBoxGeom(const mjsGeom *geom,
                             const pxr::SdfPath &body_path) {
-    auto name = GetAvailablePrimName(*mjs_getName(geom->element),
+    auto name = GetAvailablePrimName(ElementName(geom->element),
                                      pxr::UsdGeomTokens->Cube, body_path);
 
     int geom_idx = mjs_getId(geom->element);
@@ -1530,7 +1529,7 @@ class ModelWriter {
 
   pxr::SdfPrimSpecHandle WriteCapsuleGeom(const mjsGeom *geom,
                                 const pxr::SdfPath &body_path) {
-    auto name = GetAvailablePrimName(*mjs_getName(geom->element),
+    auto name = GetAvailablePrimName(ElementName(geom->element),
                                      pxr::UsdGeomTokens->Capsule, body_path);
     int geom_idx = mjs_getId(geom->element);
     mjtNum *geom_size = &model_->geom_size[geom_idx * 3];
@@ -1558,7 +1557,7 @@ class ModelWriter {
 
   pxr::SdfPrimSpecHandle WriteCylinderGeom(const mjsGeom *geom,
                                  const pxr::SdfPath &body_path) {
-    auto name = GetAvailablePrimName(*mjs_getName(geom->element),
+    auto name = GetAvailablePrimName(ElementName(geom->element),
                                      pxr::UsdGeomTokens->Cylinder, body_path);
 
     int geom_idx = mjs_getId(geom->element);
@@ -1588,7 +1587,7 @@ class ModelWriter {
 
   pxr::SdfPrimSpecHandle WriteEllipsoidGeom(const mjsGeom *geom,
                                   const pxr::SdfPath &body_path) {
-    auto name = GetAvailablePrimName(*mjs_getName(geom->element),
+    auto name = GetAvailablePrimName(ElementName(geom->element),
                                      pxr::UsdGeomTokens->Sphere, body_path);
     int geom_idx = mjs_getId(geom->element);
     mjtNum *geom_size = &model_->geom_size[geom_idx * 3];
@@ -1610,7 +1609,7 @@ class ModelWriter {
 
   pxr::SdfPrimSpecHandle WriteSphereGeom(const mjsGeom *geom,
                                const pxr::SdfPath &body_path) {
-    auto name = GetAvailablePrimName(*mjs_getName(geom->element),
+    auto name = GetAvailablePrimName(ElementName(geom->element),
                                      pxr::UsdGeomTokens->Sphere, body_path);
     int geom_idx = mjs_getId(geom->element);
     mjtNum *geom_size = &model_->geom_size[geom_idx * 3];
@@ -1647,7 +1646,7 @@ class ModelWriter {
 
   pxr::SdfPrimSpecHandle WritePlaneGeom(const mjsGeom *geom,
                               const pxr::SdfPath &body_path) {
-    auto name = GetAvailablePrimName(*mjs_getName(geom->element),
+    auto name = GetAvailablePrimName(ElementName(geom->element),
                                      pxr::UsdGeomTokens->Plane, body_path);
     int geom_idx = mjs_getId(geom->element);
     mjtNum *geom_size = &model_->geom_size[geom_idx * 3];
@@ -1657,7 +1656,7 @@ class ModelWriter {
   void WriteSite(mjsSite *site, const mjsBody *body) {
     const int body_id = mjs_getId(body->element);
     const auto &body_path = body_paths_[body_id];
-    auto name = GetAvailablePrimName(*mjs_getName(site->element),
+    auto name = GetAvailablePrimName(ElementName(site->element),
                                      pxr::UsdGeomTokens->Xform, body_path);
 
     // Create a geom primitive and set its purpose to guide so it won't be
@@ -1834,7 +1833,7 @@ class ModelWriter {
 
     mjsDefault *spec_default = mjs_getDefault(geom->element);
     pxr::TfToken valid_class_name =
-        GetValidPrimName(*mjs_getName(spec_default->element));
+        GetValidPrimName(ElementName(spec_default->element));
     pxr::SdfPath geom_class_path = class_path_.AppendChild(valid_class_name);
     if (!layer_->HasSpec(geom_class_path)) {
       auto class_spec =
@@ -1847,11 +1846,12 @@ class ModelWriter {
     }
 
     // Bind material if it exists.
-    if (!geom->material->empty()) {
+    const char *geom_material = mjs_getString(geom->material);
+    if (geom_material[0] != '\0') {
       pxr::SdfPath material_path =
           body_paths_[kWorldIndex]
               .AppendChild(kTokens->materialsScope)
-              .AppendChild(GetValidPrimName(*geom->material));
+              .AppendChild(GetValidPrimName(geom_material));
       if (layer_->HasSpec(material_path)) {
         ApplyApiSchema(layer_, geom_spec,
                        pxr::UsdShadeTokens->MaterialBindingAPI);
@@ -1943,7 +1943,7 @@ class ModelWriter {
           break;
         default:
           TF_WARN("Unsupported joint type '%d' for joint '%s'. Skipping.",
-                  (int)type, mjs_getName(joint->element)->c_str());
+                  (int)type, mjs_getString(mjs_getName(joint->element)));
           return;
       }
     }
@@ -1956,7 +1956,8 @@ class ModelWriter {
     int body0_id_usd = model_->body_parentid[body_id];
 
     const pxr::SdfPath &body1_path_usd = body_paths_[body1_id_usd];
-    auto joint_name = joint ? *mjs_getName(joint->element) : "FixedJoint";
+    std::string joint_name =
+        joint ? ElementName(joint->element) : "FixedJoint";
     pxr::TfToken joint_name_token =
         GetAvailablePrimName(joint_name, kTokens->joint, body1_path_usd);
     auto joint_spec = CreatePrimSpec(layer_, body1_path_usd,
@@ -2198,7 +2199,7 @@ class ModelWriter {
 
   void WriteCamera(mjsCamera *spec_cam, const mjsBody *body) {
     const auto &body_path = body_paths_[mjs_getId(body->element)];
-    auto name = GetAvailablePrimName(*mjs_getName(spec_cam->element),
+    auto name = GetAvailablePrimName(ElementName(spec_cam->element),
                                      pxr::UsdGeomTokens->Camera, body_path);
     // Create a root Xform for the world body with the model name if it exists
     // otherwise called 'World'.
@@ -2258,7 +2259,7 @@ class ModelWriter {
 
   void WriteLight(mjsLight *light, const mjsBody *body) {
     const auto &body_path = body_paths_[mjs_getId(body->element)];
-    auto name = GetAvailablePrimName(*mjs_getName(light->element),
+    auto name = GetAvailablePrimName(ElementName(light->element),
                                      kTokens->light, body_path);
     // Create a root Xform for the world body with the model name if it exists
     // otherwise called 'World'.
@@ -2300,7 +2301,8 @@ class ModelWriter {
     mjsBody *parent = mjs_getParent(body->element);
     int parent_id = mjs_getId(parent->element);
     pxr::SdfPath parent_path = body_paths_[parent_id];
-    pxr::TfToken body_name = GetValidPrimName(*mjs_getName(body->element));
+    const std::string raw_body_name = ElementName(body->element);
+    pxr::TfToken body_name = GetValidPrimName(raw_body_name);
 
     // Create Xform prim for body.
     auto body_spec = CreatePrimSpec(layer_, parent_path, body_name,
@@ -2370,7 +2372,7 @@ class ModelWriter {
     mjsDefault *spec_default = mjs_getDefault(body->element);
 
     pxr::TfToken body_class_name =
-        GetValidPrimName(*mjs_getName(spec_default->element));
+        GetValidPrimName(ElementName(spec_default->element));
     pxr::SdfPath body_class_path = class_path_.AppendChild(body_class_name);
     if (!layer_->HasSpec(body_class_path)) {
       CreateClassSpec(layer_, class_path_, body_class_name);
@@ -2393,7 +2395,7 @@ class ModelWriter {
                       pxr::VtArray<pxr::TfToken>{kTokens->xformOpTransform});
 
     pxr::VtDictionary customData;
-    customData[kTokens->body_name] = *mjs_getName(body->element);
+    customData[kTokens->body_name] = raw_body_name;
     body_spec->SetField(pxr::SdfFieldKeys->CustomData, customData);
 
     body_paths_[body_id] = body_spec->GetPath();
@@ -2425,7 +2427,8 @@ class ModelWriter {
   pxr::SdfPrimSpecHandle WriteWorldBody(const size_t body_index) {
     // Create a root Xform for the world body with the model name if it exists
     // otherwise called 'World'.
-    auto name = GetAvailablePrimName(*spec_->modelname, kTokens->world,
+    auto name = GetAvailablePrimName(mjs_getString(spec_->modelname),
+                                     kTokens->world,
                                      pxr::SdfPath::AbsoluteRootPath());
     auto world_group_spec =
         CreatePrimSpec(layer_, pxr::SdfPath::AbsoluteRootPath(), name,
