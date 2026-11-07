@@ -3426,4 +3426,122 @@ TEST_F(MjGjkTest, TouchingEllipsoids) {
   EXPECT_NEAR(dist, -5e-7, MjTol(1e-11, 1e-6));
 }
 
+// Regression for https://github.com/google-deepmind/mujoco/issues/3714.
+TEST_F(MjGjkTest, SmallTriangleDistance) {
+  // The origin projects to (0.03, 0.04, 0.05), inside a small triangle in
+  // the plane with normal (0.03, 0.04, 0.05). Its distance is sqrt(0.005).
+  for (mjtNum h : {1e-3, 1e-4, 1e-5, 1e-6, 1e-7, 1e-8}) {
+    SCOPED_TRACE(h);
+    mjCCDObj triangle = {};
+    triangle.geom = -1;
+    triangle.geom_type = mjGEOM_MESH;
+    const mjtNum x = 0.03, y = 0.04, z = 0.05;
+    const mjtNum a = 1.4, b = 0.2, c = 0.8;
+    mjtNum vertices[3][3] = {{x - h, y - h, z + a * h},
+                             {x + h, y - h, z + b * h},
+                             {x, y + h, z - c * h}};
+    for (int i = 0; i < 3; ++i) {
+      mju_copy3(triangle.data.hfield.prism[i], vertices[i]);
+    }
+    // Start at a vertex so that GJK has to recover the interior projection.
+    triangle.center = [](mjtNum res[3], const mjCCDObj* obj) {
+      mju_copy3(res, obj->data.hfield.prism[0]);
+    };
+    triangle.support = [](mjtNum res[3], mjCCDObj* obj, const mjtNum dir[3]) {
+      int best = 0;
+      for (int i = 1; i < 3; ++i) {
+        if (mju_dot3(dir, obj->data.hfield.prism[i]) >
+            mju_dot3(dir, obj->data.hfield.prism[best])) {
+          best = i;
+        }
+      }
+      mju_copy3(res, obj->data.hfield.prism[best]);
+    };
+    mjCCDObj point = {};
+    point.geom = -1;
+    point.geom_type = mjGEOM_MESH;
+    point.center = [](mjtNum res[3], const mjCCDObj* obj) { mju_zero3(res); };
+    point.support = [](mjtNum res[3], mjCCDObj* obj, const mjtNum dir[3]) {
+      mju_zero3(res);
+    };
+    mjCCDConfig config = {};
+    config.max_iterations = kMaxIterations;
+    config.tolerance = 1e-12;
+    config.dist_cutoff = mjMAX_LIMIT;
+    mjCCDStatus status;
+    mjtNum distance = mjc_ccd(&config, &status, &triangle, &point);
+    EXPECT_NEAR(distance, mju_sqrt(0.005), MjTol(1e-15, 1e-7));
+    EXPECT_LT(status.gjk_iterations, kMaxIterations);
+  }
+}
+
+// Geometry reported by son-engr-kr in issue #3714.
+TEST_F(MjGjkTest, CapsuleEllipsoidTightTolerance) {
+  static constexpr char xml[] = R"(
+  <mujoco>
+    <worldbody>
+      <body quat="-0.082870159271056565 -0.38233442870678819
+                   0.82287290409712244 -0.41210812298547522">
+        <freejoint/>
+        <geom type="capsule" size="0.055992527792059175 0.036247722803144172"
+              margin="0.0005"/>
+      </body>
+      <body pos="-0.035777798749378815 0.11241061696669587 -0.039297918685986907"
+            quat="-0.0001396171787340407 -0.12623376577971315
+                  -0.3040966018805199 0.94424058036542591">
+        <freejoint/>
+        <geom type="ellipsoid" size="0.078853740277202697 0.089210918938727207
+                                     0.045059853654884796" margin="0.0005"/>
+      </body>
+    </worldbody>
+  </mujoco>)";
+
+  MjModelPtr model = LoadModelFromString(xml);
+  ASSERT_NE(model, nullptr);
+  MjDataPtr data = MakeData(model);
+  // Independently minimize point-to-ellipsoid distance along the capsule axis.
+  // The closest axis point is its negative endpoint; subtract the capsule
+  // radius.
+  const mjtNum normal[3] = {-0.05579216483193726, 0.7010799568120819,
+                            -0.7108967073349933};
+  for (mjtNum tolerance : {1e-6, 1e-7, 1e-8, 1e-10, 1e-12}) {
+    SCOPED_TRACE(tolerance);
+    model->opt.ccd_tolerance = tolerance;
+    mj_forward(model.get(), data.get());
+    ASSERT_EQ(data->ncon, 1);
+    EXPECT_NEAR(data->contact[0].dist, 1.9899367727234385e-5,
+                MjTol(1e-11, 1e-7));
+    for (int i = 0; i < 3; ++i) {
+      EXPECT_NEAR(data->contact[0].frame[i], normal[i], MjTol(1e-4, 1e-3));
+    }
+
+    // Check the same geometry at different scales without changing the CCD
+    // tolerance.
+    for (mjtNum scale : {0.1, 1.0, 10.0}) {
+      SCOPED_TRACE(scale);
+      mjCCDObj capsule, ellipsoid;
+      mjc_initCCDObj(&capsule, model.get(), data.get(), 0, 0);
+      mjc_initCCDObj(&ellipsoid, model.get(), data.get(), 1, 0);
+      mju_scl3(capsule.pos, capsule.pos, scale);
+      mju_scl3(capsule.size, capsule.size, scale);
+      mju_scl3(ellipsoid.pos, ellipsoid.pos, scale);
+      mju_scl3(ellipsoid.size, ellipsoid.size, scale);
+      mjCCDConfig config = {};
+      config.max_iterations = kMaxIterations;
+      config.tolerance = tolerance;
+      config.dist_cutoff = mjMAX_LIMIT;
+      mjCCDStatus status;
+      mjtNum distance = mjc_ccd(&config, &status, &capsule, &ellipsoid);
+      EXPECT_NEAR(distance / scale, 1.9899367727234385e-5, MjTol(1e-8, 1e-7));
+      ASSERT_EQ(status.nx, 1);
+      mjtNum direction[3];
+      mju_sub3(direction, status.x2, status.x1);
+      mju_normalize3(direction);
+      for (int i = 0; i < 3; ++i) {
+        EXPECT_NEAR(direction[i], normal[i], MjTol(1e-3, 2e-3));
+      }
+    }
+  }
+}
+
 }  // namespace mujoco
