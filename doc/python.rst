@@ -687,6 +687,58 @@ For reference, the deprecated ``assets`` dictionary approach looked like this:
   spec.assets = {'image.png': b'image_data'}
   model = spec.compile()
 
+.. _PyResourceProvider:
+
+Resource providers
+^^^^^^^^^^^^^^^^^^
+
+Assets can also be served by a Python *resource provider*, which implements the :ref:`mjpResourceProvider` callbacks.
+Unlike a ``MjVfs``, a provider does not need to hold all assets in memory at once, so it is suitable for models with
+many assets or assets which are fetched on demand.
+
+A provider is registered globally with a URI scheme as its ``prefix``. Assets whose file name starts with
+``{prefix}:`` are then served by its callbacks:
+
+.. code-block:: python
+
+  import mujoco
+
+  FILES = {"pyasset:box.obj": b"v -1 -1 -1\nv 1 -1 -1\n..."}
+
+  def open_callback(resource):
+    if resource.name not in FILES:
+      return False
+    # data is an arbitrary Python object which is available in read and close
+    resource.data = FILES[resource.name]
+    return True
+
+  def read_callback(resource):
+    return resource.data
+
+  def close_callback(resource):
+    resource.data = None
+
+  provider = mujoco.mjpResourceProvider()
+  provider.prefix = "pyasset"
+  provider.open = open_callback
+  provider.read = read_callback
+  provider.close = close_callback
+  mujoco.mjp_registerProvider(provider)
+
+  model = mujoco.MjModel.from_xml_string(
+      '<mujoco><asset><mesh file="pyasset:box.obj"/></asset></mujoco>'
+  )
+
+The ``open`` callback receives a ``MjResource`` and returns whether the asset exists. The ``read`` callback returns
+the asset contents as a bytes-like object, and the ``close`` callback releases any resources associated with it. The
+optional ``mount`` and ``unmount`` callbacks are called when the prefix is first used and when the provider is
+unmounted, respectively. The optional ``modified`` callback is used to check whether an asset is newer than a
+timestamp.
+
+A registered provider stays available for the lifetime of the process. Registering a prefix which is already in use, or
+using a prefix which is not a valid URI scheme, raises a ``ValueError``. ``mujoco.mjp_findProvider`` returns the
+provider matching a resource name, and ``mujoco.mjp_defaultProvider`` resets a provider to its default state.
+
 Save to XML
 -----------
 

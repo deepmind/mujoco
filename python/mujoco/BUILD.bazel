@@ -124,15 +124,30 @@ cc_library(
     deps = ["//:libmujoco_hdrs"],
 )
 
+pybind_library(
+    name = "resource_provider_header",
+    hdrs = ["resource_provider.h"],
+    conlyopts = ["-std=c11"],
+    cxxopts = ["-std=c++20"],
+    deps = [
+        ":gil_header",
+        "//:libmujoco_hdrs",
+    ],
+)
+
 mujoco_pybind_extension(
     name = "_callbacks",
-    srcs = ["callbacks.cc"],
+    srcs = [
+        "callbacks.cc",
+        "resource_provider.cc",
+    ],
     conlyopts = ["-std=c11"],
     cxxopts = ["-std=c++20"],
     deps = [
         ":errors_header",
         ":gil_header",
         ":raw",
+        ":resource_provider_header",
         ":structs_header",
         "//:mujoco",  # buildcleaner: keep
     ],
