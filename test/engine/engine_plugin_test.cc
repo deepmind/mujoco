@@ -818,21 +818,23 @@ TEST_F(EnginePluginTest, ArchiveProviderRegistration) {
   ASSERT_THAT(found2, NotNull());
 }
 
-#if !defined(_WIN32) && !defined(__CYGWIN__)
 // a library that fails to load is skipped with a warning (rather than mju_error
 // aborting the scan), without invoking the callback or leaving the plugin table
 // locked; leaks are detected when running under asan
 TEST_F(MujocoTest, LoadAllPluginLibrariesSkipsUnloadableLibrary) {
-  #if defined(__APPLE__)
+#if defined(_WIN32) || defined(__CYGWIN__)
+  const char* suffix = ".dll";
+#elif defined(__APPLE__)
   const char* suffix = ".dylib";
-  #else
+#else
   const char* suffix = ".so";
-  #endif
+#endif
   std::filesystem::path dir =
       std::filesystem::temp_directory_path() /
       "mujoco_load_all_plugin_libraries_error_directory_longer_than_sso";
   std::filesystem::create_directories(dir);
-  std::ofstream(dir / (std::string("not_a_library") + suffix)) << "not an ELF";
+  std::ofstream(dir / (std::string("not_a_library") + suffix))
+      << "not a library";
 
   int nplugin_before = mjp_pluginCount();
   static int callback_calls = 0;
@@ -856,7 +858,19 @@ TEST_F(MujocoTest, LoadAllPluginLibrariesSkipsUnloadableLibrary) {
   }
   EXPECT_TRUE(*done) << "plugin table lock was not released";
 }
-#endif
+
+// loading a single library that cannot be loaded is an error that names it
+TEST_F(MujocoTest, LoadPluginLibraryErrorNamesLibrary) {
+  std::filesystem::path path =
+      std::filesystem::temp_directory_path() / "mujoco_not_a_plugin_library";
+  std::ofstream(path) << "not a library";
+  std::string err =
+      MjuErrorMessageFrom(mj_loadPluginLibrary)(path.string().c_str());
+  EXPECT_THAT(err, HasSubstr("Error loading plugin library"));
+  EXPECT_THAT(err, HasSubstr(path.filename().string()));
+  EXPECT_THAT(err, testing::Not(testing::EndsWith("\n")));
+  std::filesystem::remove(path);
+}
 
 TEST_F(EnginePluginTest, ResetDataStatelessPluginNullMemcpy) {
   static constexpr char stateless_xml[] = R"(
@@ -967,19 +981,14 @@ TEST_F(MujocoTest, LoadAllPluginLibrariesUtf8Path) {
 
   std::ofstream(utf8_dir / filename) << "not a library";
 
-#if defined(_WIN32) || defined(__CYGWIN__)
-  static char loaded_file[256] = "";
-  loaded_file[0] = '\0';
-  mj_loadAllPluginLibraries(
-      dir_u8.c_str(), +[](const char* name, int first, int count) {
-        std::snprintf(loaded_file, sizeof(loaded_file), "%s", name);
-      });
-  EXPECT_EQ(std::string(loaded_file), filename_u8);
-#else
-  // the file is not a loadable library: the warning must name it in UTF-8
+  // the file is not a loadable library: it is skipped with a warning that
+  // names it in UTF-8, and the callback is not invoked
+  static int load_calls = 0;
+  load_calls = 0;
   mock_warning_handler.ExpectWarnings(filename_u8);
-  mj_loadAllPluginLibraries(dir_u8.c_str(), nullptr);
-#endif
+  mj_loadAllPluginLibraries(
+      dir_u8.c_str(), +[](const char*, int, int) { ++load_calls; });
+  EXPECT_EQ(load_calls, 0);
 
   std::filesystem::remove_all(utf8_dir);
 }

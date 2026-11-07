@@ -814,22 +814,20 @@ static std::string WideToUtf8(std::wstring_view wstr) {
 // load plugins from a dynamic library, return false and write error message on failure
 static bool LoadPluginLibrary(const char* path, char* error, int error_sz) {
 #if defined(_WIN32) || defined(__CYGWIN__)
-  (void)error;
-  (void)error_sz;
-  if (path) {
-    std::wstring wpath = Utf8ToWide(path);
-    if (!wpath.empty()) {
-      LoadLibraryW(wpath.c_str());
-    }
+  std::wstring wpath = path ? Utf8ToWide(path) : std::wstring();
+  if (wpath.empty() || !LoadLibraryW(wpath.c_str())) {
+    std::snprintf(error, error_sz, "Error loading plugin library '%s': error %lu",
+                  path ? path : "", static_cast<unsigned long>(GetLastError()));
+    return false;
   }
 #else
   void* handle = dlopen(path, RTLD_NOW | RTLD_LOCAL);
   if (!handle) {
     const char* dlerr = dlerror();
     if (dlerr) {
-      std::snprintf(error, error_sz, "Error loading plugin library '%s': %s\n", path, dlerr);
+      std::snprintf(error, error_sz, "Error loading plugin library '%s': %s", path, dlerr);
     } else {
-      std::snprintf(error, error_sz, "Unknown error loading plugin library '%s'\n", path);
+      std::snprintf(error, error_sz, "Unknown error loading plugin library '%s'", path);
     }
     return false;
   }
