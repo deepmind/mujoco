@@ -77,7 +77,7 @@ fragment {
 
     // Planar reflection: Fresnel-weighted additive post-lighting.
     vec4 refl_clip = materialParams.ReflectionViewProj * vec4(getUserWorldPosition(), 1.0);
-    vec2 refl_uv = refl_clip.xy / refl_clip.w * 0.5 + 0.5;
+    vec2 refl_uv = uvToRenderTargetUV(refl_clip.xy / refl_clip.w * 0.5 + 0.5);
     vec3 reflection = sampleReflection(refl_uv, material.roughness);
     vec3 f0 = mix(vec3(materialParams.Reflectance), material.baseColor.rgb,
                   material.metallic);
