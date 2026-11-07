@@ -314,8 +314,12 @@ def _map_states(from_array, to_array, from_names, to_mapping, map_offset):
   for name in from_names:
     _, indices = to_mapping[name]
     width = indices.shape[0]
+    if i + width > len(from_array):
+      raise ValueError(f"Not enough values for named state '{name}'.")
     to_array[indices - map_offset] = from_array[i:i+width]
     i += width
+  if i != len(from_array):
+    raise ValueError("More values than required for the named states.")
   return to_array
 
 def create_initial_state(
@@ -346,23 +350,10 @@ def create_initial_state(
   """
   data = mujoco.MjData(model)
 
-  if qpos_names is not None and len(qpos_names) != qpos.shape[0]:
-    raise ValueError(
-      f"Expected qpos to have shape {len(qpos_names)}, got {qpos.shape[0]}"
-    )
   if qvel is None and qvel_names is not None:
     raise ValueError("Expected qvel to not be None when qvel_names is not None")
-  if qvel_names is not None and qvel is not None and len(qvel_names) != qvel.shape[0]:
-    raise ValueError(
-        f"Expected qvel to have shape {len(qvel_names)}, got {qvel.shape[0]}"
-    )
-  if act_names is not None:
-    if act is None:
-      raise ValueError("Expected act to not be None when act_names is not None")
-    if len(act_names) != act.shape[0]:
-      raise ValueError(
-          f"Expected act to have shape {len(act_names)}, got {act.shape[0]}"
-      )
+  if act is None and act_names is not None:
+    raise ValueError("Expected act to not be None when act_names is not None")
 
   if (qpos_names is not None
       or qvel_names is not None
