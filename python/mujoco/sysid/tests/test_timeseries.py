@@ -451,3 +451,25 @@ def test_state_mapping_ball_plus_hinge():
   </mujoco>
   """
   _verify_state_mapping(mujoco.MjModel.from_xml_string(xml))
+
+
+def test_compound_body_with_six_dofs_is_not_a_free_joint():
+  xml = """
+    <mujoco><worldbody><body name="compound">
+      <joint name="x" type="slide" axis="1 0 0"/>
+      <joint name="y" type="slide" axis="0 1 0"/>
+      <joint name="z" type="slide" axis="0 0 1"/>
+      <joint name="rx" axis="1 0 0"/>
+      <joint name="ry" axis="0 1 0"/>
+      <joint name="rz" axis="0 0 1"/>
+      <geom size=".1"/>
+    </body></worldbody></mujoco>
+  """
+  model = mujoco.MjModel.from_xml_string(xml)
+  qpos, qvel, _, _ = TimeSeries.compute_all_state_mappings(model)
+  assert "compound_qpos" not in qpos
+  assert "compound_qvel" not in qvel
+  np.testing.assert_array_equal(qpos["rz_qpos"][1], [5])
+  with pytest.raises(ValueError, match="Could not resolve"):
+    TimeSeries.from_names(np.array([0.]), np.zeros((1, 7)), model,
+                          ["compound_qpos"])
