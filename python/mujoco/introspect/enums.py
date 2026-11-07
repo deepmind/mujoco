@@ -692,6 +692,7 @@ ENUMS: Mapping[str, EnumDecl] = dict([
              ('mjMESH_INERTIA_EXACT', 1),
              ('mjMESH_INERTIA_LEGACY', 2),
              ('mjMESH_INERTIA_SHELL', 3),
+             ('mjMESH_INERTIA_NONE', 4),
          ]),
      )),
     ('mjtMeshBuiltin',

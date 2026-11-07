@@ -255,6 +255,7 @@ void mjs_defaultMesh(mjsMesh* mesh) {
   mesh->scale[0] = mesh->scale[1] = mesh->scale[2] = 1;
   mesh->maxhullvert                                = -1;
   mesh->inertia                                    = mjMESH_INERTIA_LEGACY;
+  mesh->convexhull                                 = 1;
   mesh->octree_maxdepth                            = 6;
 }
 

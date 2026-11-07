@@ -6903,6 +6903,11 @@ void mjCModel::CompileTree(const mjVFS* vfs, bool textures, bool keyframes) {
     if (geoms_[i]->mesh &&
         (geoms_[i]->spec.type == mjGEOM_MESH || geoms_[i]->spec.type == mjGEOM_SDF) &&
         (geoms_[i]->spec.contype || geoms_[i]->spec.conaffinity || is_in_pair)) {
+      if (!geoms_[i]->mesh->spec.convexhull) {
+        throw mjCError(geoms_[i],
+                       "mesh '%s' has convexhull='false' but is used for contacts",
+                       geoms_[i]->mesh->name.c_str());
+      }
       geoms_[i]->mesh->SetNeedHull(true);
     }
   }
@@ -6910,11 +6915,18 @@ void mjCModel::CompileTree(const mjVFS* vfs, bool textures, bool keyframes) {
   // convex inertia is computed from the hull, so it is needed whether or not
   // any geom references the mesh
   for (mjCMesh* mesh : CompiledMeshes()) {
-    if (mesh->spec.inertia == mjMESH_INERTIA_CONVEX) { mesh->SetNeedHull(true); }
+    if (mesh->spec.inertia == mjMESH_INERTIA_CONVEX) {
+      if (!mesh->spec.convexhull) {
+        throw mjCError(mesh, "mesh has convexhull='false' but inertia='convex'");
+      }
+      mesh->SetNeedHull(true);
+    }
   }
 
   for (int i = 0; i < sites_.size(); i++) {
-    if (sites_[i]->mesh && sites_[i]->spec.type == mjGEOM_MESH) {
+    if (sites_[i]->mesh &&
+        sites_[i]->spec.type == mjGEOM_MESH &&
+        sites_[i]->mesh->spec.convexhull) {
       sites_[i]->mesh->SetNeedHull(true);
     }
   }

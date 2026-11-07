@@ -1434,12 +1434,13 @@ The full list of processing steps applied by the compiler to each mesh is as fol
    Note that normals cannot be provided with STL meshes;
 #. Scale, translate and rotate the vertices and normals, re-normalize the normals in case of scaling. Save these
    transformations in ``mjModel.mesh_{pos, quat, scale}``.
-#. Construct the convex hull if specified;
-#. Find the centroid of all triangle faces, and construct the union-of-pyramids representation. Triangles whose area is
-   too small (below the :ref:`mjMINVAL <glNumericEngine>` value of 1E-14) result in compile error;
-#. Compute the center of mass and inertia matrix of the union-of-pyramids. Use eigenvalue decomposition to find the
-   principal axes of inertia. Center and align the mesh, saving the translational and rotational offsets for subsequent
-   geom-related computations.
+#. Construct the convex hull if needed;
+#. Unless :ref:`inertia<asset-mesh-inertia>` is :at-val:`none`, find the centroid of all triangle faces, and construct
+   the union-of-pyramids representation. Triangles whose area is too small (below the :ref:`mjMINVAL <glNumericEngine>`
+   value of 1E-14) result in compile error;
+#. Unless :ref:`inertia<asset-mesh-inertia>` is :at-val:`none`, compute the center of mass and inertia matrix of the
+   union-of-pyramids. Use eigenvalue decomposition to find the principal axes of inertia. Center and align the mesh,
+   saving the translational and rotational offsets for subsequent geom-related computations.
 
 .. _asset-mesh-name:
 
@@ -1475,7 +1476,7 @@ The full list of processing steps applied by the compiler to each mesh is as fol
 
 .. _asset-mesh-inertia:
 
-:at:`inertia`: :at-val:`[convex, exact, legacy, shell], "legacy"`
+:at:`inertia`: :at-val:`[convex, exact, legacy, shell, none], "legacy"`
    This attribute controls how the mesh is used when mass and inertia are
    :ref:`inferred from geometry<compiler-inertiafromgeom>`. The default value is :at-val:`legacy` for backward
    compatibility, but :at-val:`convex` is recommended.
@@ -1490,6 +1491,19 @@ The full list of processing steps applied by the compiler to each mesh is as fol
 
    :at-val:`shell`: Assume mass is concentrated on the surface of the mesh. Use the mesh's surface to compute
    the inertia, assuming uniform surface density.
+
+   :at-val:`none`: Do not compute the mesh's volume, inertia or center of mass, and do not use it for inertia
+   inference. This is intended for meshes which are only used for visualization. A geom which uses such a mesh cannot
+   contribute to the inferred inertia of its body.
+
+.. _asset-mesh-convexhull:
+
+:at:`convexhull`: :at-val:`[false, true], "true"`
+   If false, MuJoCo does not compute the mesh's convex hull. This is intended for meshes which are only used for
+   visualization, since a convex hull is needed to use a mesh for contacts. Using a geom with such a mesh for collision
+   (non-zero geom :ref:`contype<body-geom-contype>` or :ref:`conaffinity<body-geom-conaffinity>`, or a
+   :ref:`pair<contact-pair>`), or setting :ref:`inertia<asset-mesh-inertia>` to :at-val:`convex`, results in a compile
+   error.
 
 .. _asset-mesh-smoothnormal:
 
@@ -10208,11 +10222,14 @@ if omitted.
 
 .. _default-mesh-inertia:
 
+.. _default-mesh-convexhull:
+
 :el-prefix:`default/` |-| **mesh** |?|
 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
 
 | This element sets the attributes of the dummy :ref:`mesh <asset-mesh>` element of the defaults class.
-| The available attributes are: :ref:`scale <asset-mesh-scale>` and :ref:`maxhullvert <asset-mesh-maxhullvert>`.
+| The available attributes are: :ref:`scale <asset-mesh-scale>`, :ref:`maxhullvert <asset-mesh-maxhullvert>`,
+  :ref:`inertia <asset-mesh-inertia>` and :ref:`convexhull <asset-mesh-convexhull>`.
 
 
 .. _default-texture:

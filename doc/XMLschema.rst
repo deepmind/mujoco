@@ -429,6 +429,9 @@
                :ref:`inertia<asset-mesh-inertia>`
 
             .. grid-item::
+               :ref:`convexhull<asset-mesh-convexhull>`
+
+            .. grid-item::
                :ref:`builtin<asset-mesh-builtin>`
 
             .. grid-item::
@@ -5335,6 +5338,9 @@
 
             .. grid-item::
                :ref:`inertia<default-mesh-inertia>`
+
+            .. grid-item::
+               :ref:`convexhull<default-mesh-convexhull>`
 
 
       .. dropdown:: :ref:`texture<default-texture>` :octicon:`dot`

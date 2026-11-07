@@ -9051,7 +9051,12 @@ STRUCTS: Mapping[str, StructDecl] = dict([
              StructFieldDecl(
                  name='inertia',
                  type=ValueType(name='mjtMeshInertia'),
-                 doc='inertia type (convex, legacy, exact, shell)',
+                 doc='inertia type (convex, legacy, exact, shell, none)',
+             ),
+             StructFieldDecl(
+                 name='convexhull',
+                 type=ValueType(name='mjtBool'),
+                 doc='if false, mesh is never used for contacts',
              ),
              StructFieldDecl(
                  name='smoothnormal',

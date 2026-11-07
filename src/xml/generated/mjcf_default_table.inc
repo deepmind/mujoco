@@ -433,6 +433,7 @@ static const mjXDefaultEntry kDefaults_mjsMesh[] = {
   {"smoothnormal", (int)offsetof(mjsMesh, smoothnormal), 3, 1, 0, 0, {0}},
   {"maxhullvert", (int)offsetof(mjsMesh, maxhullvert), 2, 1, 1, 0, {-1.0}},
   {"inertia", (int)offsetof(mjsMesh, inertia), 2, 1, 1, 0, {(double)mjMESH_INERTIA_LEGACY}},
+  {"convexhull", (int)offsetof(mjsMesh, convexhull), 3, 1, 1, 0, {1}},
 };
 
 static const mjXDefaultEntry kDefaults_mjsNumeric[] = {

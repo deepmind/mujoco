@@ -437,6 +437,7 @@
       <xs:enumeration value="legacy"/>
       <xs:enumeration value="exact"/>
       <xs:enumeration value="shell"/>
+      <xs:enumeration value="none"/>
     </xs:restriction>
   </xs:simpleType>
 
@@ -1307,6 +1308,7 @@
     <xs:attribute name="scale" type="double3" default="1 1 1"/>
     <xs:attribute name="maxhullvert" type="xs:int" default="-1"/>
     <xs:attribute name="inertia" type="kw_meshinertia" default="legacy"/>
+    <xs:attribute name="convexhull" type="kw_bool" default="true"/>
   </xs:complexType>
 
   <xs:complexType name="default_texture">
@@ -1984,6 +1986,7 @@
     <xs:attribute name="smoothnormal" type="kw_bool"/>
     <xs:attribute name="maxhullvert" type="xs:int" default="-1"/>
     <xs:attribute name="inertia" type="kw_meshinertia" default="legacy"/>
+    <xs:attribute name="convexhull" type="kw_bool" default="true"/>
     <xs:attribute name="builtin" type="kw_meshbuiltin"/>
     <xs:attribute name="params" type="doublelist"/>
     <xs:attribute name="material" type="xs:string"/>

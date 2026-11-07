@@ -410,6 +410,7 @@ enum meshinertia : mjtMeshInertia {
   legacy   = mjMESH_INERTIA_LEGACY
   exact    = mjMESH_INERTIA_EXACT
   shell    = mjMESH_INERTIA_SHELL
+  none     = mjMESH_INERTIA_NONE
 }
 
 enum meshbuiltin : mjtMeshBuiltin {
@@ -908,6 +909,7 @@ element mesh : mjsMesh {
   smoothnormal       : bool (nodefault)
   maxhullvert        : int = -1 (reading=custom)
   inertia            : enum<meshinertia> = legacy
+  convexhull         : bool = true
   builtin            : enum<meshbuiltin> (nodefault, reading=custom)
   params             : double[] (nodefault, reading=custom, dim=custom)
   material           : ref<material> (nodefault)

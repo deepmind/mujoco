@@ -238,6 +238,7 @@ inline constexpr mjXAttr kMeshAttrs[] = {
   {"scale", mjXAttr::kDouble, 3, true, false, false, false, (int)offsetof(mjsMesh, scale)},
   {"smoothnormal", mjXAttr::kBool, 1, true, false, true, false, (int)offsetof(mjsMesh, smoothnormal)},
   {"inertia", mjXAttr::kEnum, 1, true, false, false, false, (int)offsetof(mjsMesh, inertia), meshinertia_map, meshinertia_sz},
+  {"convexhull", mjXAttr::kBool, 1, true, false, false, false, (int)offsetof(mjsMesh, convexhull)},
   {"material", mjXAttr::kString, 1, true, false, true, false, (int)offsetof(mjsMesh, material)},
 };
 inline constexpr int kMeshAttrsN = sizeof(kMeshAttrs) / sizeof(kMeshAttrs[0]);

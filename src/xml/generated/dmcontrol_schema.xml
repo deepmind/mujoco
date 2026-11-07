@@ -262,7 +262,8 @@
               <attributes>
                 <attribute name="scale" type="array" array_type="float" array_size="3" default="1 1 1"/>
                 <attribute name="maxhullvert" type="int" default="-1"/>
-                <attribute name="inertia" type="keyword" valid_values="convex legacy exact shell" default="legacy"/>
+                <attribute name="inertia" type="keyword" valid_values="convex legacy exact shell none" default="legacy"/>
+                <attribute name="convexhull" type="keyword" valid_values="false true" default="true"/>
               </attributes>
             </element>
             <element name="texture">
@@ -686,7 +687,8 @@
           <attributes>
             <attribute name="scale" type="array" array_type="float" array_size="3" default="1 1 1"/>
             <attribute name="maxhullvert" type="int" default="-1"/>
-            <attribute name="inertia" type="keyword" valid_values="convex legacy exact shell" default="legacy"/>
+            <attribute name="inertia" type="keyword" valid_values="convex legacy exact shell none" default="legacy"/>
+            <attribute name="convexhull" type="keyword" valid_values="false true" default="true"/>
           </attributes>
         </element>
         <element name="texture">
@@ -1147,7 +1149,8 @@
             <attribute name="scale" type="array" array_type="float" array_size="3" default="1 1 1"/>
             <attribute name="smoothnormal" type="keyword" valid_values="false true"/>
             <attribute name="maxhullvert" type="int" default="-1"/>
-            <attribute name="inertia" type="keyword" valid_values="convex legacy exact shell" default="legacy"/>
+            <attribute name="inertia" type="keyword" valid_values="convex legacy exact shell none" default="legacy"/>
+            <attribute name="convexhull" type="keyword" valid_values="false true" default="true"/>
             <attribute name="builtin" type="keyword" valid_values="none sphere hemisphere cone supertorus supersphere wedge plate grid box cylinder ellipsoid square disc"/>
             <attribute name="params" type="array" array_type="float"/>
             <attribute name="material" type="reference" reference_namespace="material"/>
