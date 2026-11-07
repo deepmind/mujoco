@@ -55,6 +55,22 @@ dependencies (``glfw`` and ``pyopengl``). Depending on your environment, you can
 - ``pip install mujoco[usd]`` or ``pip install mujoco-usd``: OpenUSD importer, exporter, and physics schemas; see
   :ref:`USD exporter<PyUSDexport>` and :doc:`OpenUSD/index`.
 
+Building native modules
+-----------------------
+
+The package also contains the MuJoCo headers and a linkable copy of the library, so C and C++ extensions and
+:ref:`engine plugins<exPlugin>` can be built against an installed ``mujoco`` wheel without a separate MuJoCo
+installation:
+
+.. code-block:: shell
+
+   # Print the include and library directories of the installed package.
+   python -c "import mujoco, os; d = os.path.dirname(mujoco.__file__); print(d, os.path.join(d, 'include'))"
+
+On Linux and macOS, link with ``-L<package directory> -lmujoco`` and add
+``-Wl,-rpath,<package directory>`` so the library is found at runtime. On Windows, link against ``mujoco.lib`` in the
+same directory.
+
 .. _PyViewer:
 
 Interactive viewer

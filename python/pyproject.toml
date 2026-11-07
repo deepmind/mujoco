@@ -57,8 +57,11 @@ exclude = [
 [tool.setuptools.package-data]
 mujoco = [
     "libmujoco.*.dylib",
+    "libmujoco.dylib",
     "libmujoco*.so.*",
+    "libmujoco.so",
     "mujoco.dll",
+    "mujoco.lib",
     "include/mujoco/*.h",
     "doc/*.rst",
     "doc/*/*.rst",
