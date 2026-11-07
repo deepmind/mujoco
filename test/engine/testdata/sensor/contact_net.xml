@@ -9,7 +9,7 @@
     <light pos="0 0 3"/>
     <geom name="floor" type="plane" size=".5 1 .01"/>
 
-    <body name="b1" pos="0 0 .4" euler="5 4 3">
+    <body name="b1" pos="0 0 .4" euler="5 5 5">
       <freejoint/>
       <geom type="box" pos="0 0 .06" size=".15 .15 .03" rgba=".8 .2 .1 .2"/>
       <geom type="box" pos="-.05 0 .005" size=".04 .04 .025" rgba=".8 .2 .1 1" euler="1 1 1"/>

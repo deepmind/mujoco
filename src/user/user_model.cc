@@ -7514,7 +7514,8 @@ uint64_t mjCModel::Signature() {
   for (unsigned int i = 0; i < tendons_.size(); ++i) { tree << "<tendon/>\n"; }
   for (unsigned int i = 0; i < actuators_.size(); ++i) { tree << "<actuator/>\n"; }
   for (unsigned int i = 0; i < sensors_.size(); ++i) {
-    tree << "<sensor>" << std::to_string(sensors_[i]->spec.type) << "<sensor/>\n";
+    tree << "<sensor>" << std::to_string(sensors_[i]->spec.type) << " "
+         << std::to_string(sensors_[i]->spec.dim) << "<sensor/>\n";
   }
   for (unsigned int i = 0; i < keys_.size(); ++i) { tree << "<key/>\n"; }
   return mj_hashString(tree.str().c_str(), UINT64_MAX);

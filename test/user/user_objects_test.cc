@@ -636,6 +636,32 @@ TEST_F(SensorTest, OjbtypeParsedButNotRequired) {
   EXPECT_EQ(model->sensor_objid[1], 0);
 }
 
+TEST_F(SensorTest, UserSensorDimAffectsModelSignature) {
+  static constexpr char xml1[] = R"(
+  <mujoco>
+    <sensor>
+      <user name="user_sensor" dim="100"/>
+    </sensor>
+  </mujoco>
+  )";
+  static constexpr char xml2[] = R"(
+  <mujoco>
+    <sensor>
+      <user name="user_sensor" dim="200"/>
+    </sensor>
+  </mujoco>
+  )";
+  MjModelPtr model1 = LoadModelFromString(xml1, 0, 0);
+  MjModelPtr model2 = LoadModelFromString(xml2, 0, 0);
+  ASSERT_THAT(model1.get(), NotNull());
+  ASSERT_THAT(model2.get(), NotNull());
+  EXPECT_EQ(model1->nsensordata, 100);
+  EXPECT_EQ(model2->nsensordata, 200);
+  // User sensors with different dims produce different memory layouts, so the
+  // model signature must differ (regression test for #3307).
+  EXPECT_NE(model1->signature, model2->signature);
+}
+
 TEST_F(SensorTest, NegativeIntervalError) {
   static constexpr char xml[] = R"(
   <mujoco>

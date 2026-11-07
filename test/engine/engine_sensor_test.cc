@@ -1013,8 +1013,11 @@ TEST_F(SensorTest, ContactNet) {
 
     // for each timestep, compare the net force computation to qfrc_constraint
     // data->ncon varies in [0, 6]
+    // the loop is bounded by step count rather than by data->time: a divergence resets
+    // mjData and rewinds the clock, so a time-based condition would never terminate
     int nconmax = 0;
-    while (data->time < 0.2) {
+    int nstep = mju_round(0.2 / model->opt.timestep);
+    for (int step = 0; step < nstep; step++) {
       mj_step(model, data);
       vector<mjtNum> qfrc_expected = AsVector(data->qfrc_constraint, nv);
 
