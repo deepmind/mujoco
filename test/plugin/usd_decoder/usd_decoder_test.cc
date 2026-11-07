@@ -250,7 +250,7 @@ INSTANTIATE_TEST_SUITE_P(MassModel, UsdNewtonMassModelTest,
                          testing::Combine(testing::Bool(), testing::Bool(),
                                           testing::Bool(), testing::Bool()));
 
-TEST_F(UsdMassModelTest, DeprecatedMeshInertiaOverridesConvexApproximation) {
+TEST_F(UsdMassModelTest, MeshInertiaOverridesConvexApproximation) {
   for (bool collider : {false, true}) {
     for (const char* inertia : {"exact", "convex", "legacy", "shell"}) {
       SCOPED_TRACE(collider);
@@ -259,7 +259,14 @@ TEST_F(UsdMassModelTest, DeprecatedMeshInertiaOverridesConvexApproximation) {
       ASSERT_TRUE(
           stage->GetAttributeAtPath(pxr::SdfPath("/body/geom.mjc:inertia"))
               .Set(pxr::TfToken(inertia)));
-      mock_warning_handler.ExpectWarnings("deprecated mjc:inertia");
+      if (std::string(inertia) == "shell") {
+        mock_warning_handler.ExpectWarnings("newton:massModel = 'shell'");
+      } else if (std::string(inertia) == "convex") {
+        mock_warning_handler.ExpectWarnings(
+            "physics:approximation = 'convexHull'");
+      } else {
+        EXPECT_CALL(mock_warning_handler, Warn(testing::_)).Times(0);
+      }
       mjtMeshInertia expected_inertia = mjMESH_INERTIA_LEGACY;
       if (std::string(inertia) == "exact") {
         expected_inertia = mjMESH_INERTIA_EXACT;
@@ -270,6 +277,7 @@ TEST_F(UsdMassModelTest, DeprecatedMeshInertiaOverridesConvexApproximation) {
       }
       CheckStage(stage, true, std::string(inertia) == "shell",
                  expected_inertia);
+      testing::Mock::VerifyAndClearExpectations(&mock_warning_handler);
     }
   }
 }

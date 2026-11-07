@@ -153,8 +153,11 @@ class MjcPhysicsMeshCollisionAPI : public UsdAPISchemaBase {
   // --------------------------------------------------------------------- //
   // INERTIA
   // --------------------------------------------------------------------- //
-  /// DEPRECATED: Use NewtonMassAPI's newton:massModel or UsdPhysics's
-  /// physics:approximation instead.
+  /// The legacy and exact modes are supported and have no equivalent in
+  /// NewtonMassAPI or UsdPhysics.
+  ///
+  /// DEPRECATED for shell and convex: Use newton:massModel = 'shell' or
+  /// physics:approximation = 'convexHull', respectively.
   ///
   /// Controls how a mesh is used when mass and inertia are inferred from
   /// geometry.

@@ -377,7 +377,9 @@ class "MjcMeshCollisionAPI" (
     uniform token mjc:inertia = "legacy" (
         allowedTokens = ["legacy", "convex", "exact", "shell"]
         displayName = "Inertia"
-        doc = """DEPRECATED: Use NewtonMassAPI's newton:massModel or UsdPhysics's physics:approximation instead.
+        doc = """The legacy and exact modes are supported and have no equivalent in NewtonMassAPI or UsdPhysics.
+
+        DEPRECATED for shell and convex: Use newton:massModel = 'shell' or physics:approximation = 'convexHull', respectively.
 
         Controls how a mesh is used when mass and inertia are inferred from geometry."""
     )
@@ -797,4 +799,3 @@ class MjcTendon "MjcTendon" (
         doc = "Radius of the cross-section area of the spatial tendon, used for rendering in MuJoCo. Parts of the tendon that wrap around geom obstacles are rendered with reduced width."
     )
 }
-

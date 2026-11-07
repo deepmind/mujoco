@@ -1126,10 +1126,15 @@ void ParseMjcPhysicsMeshCollisionAPI(
     } else {
       mesh->inertia = mjtMeshInertia::mjMESH_INERTIA_LEGACY;
     }
-    mju_warning(
-        "Prim '%s' uses deprecated mjc:inertia. "
-        "Please migrate to NewtonMassAPI's newton:massModel.",
-        mesh_collision_api.GetPrim().GetPath().GetText());
+    if (inertia == MjcPhysicsTokens->shell ||
+        inertia == MjcPhysicsTokens->convex) {
+      const char* replacement = inertia == MjcPhysicsTokens->shell
+                                    ? "newton:massModel = 'shell'"
+                                    : "physics:approximation = 'convexHull'";
+      mju_warning(
+          "Prim '%s' uses deprecated mjc:inertia. Please migrate to %s.",
+          mesh_collision_api.GetPrim().GetPath().GetText(), replacement);
+    }
   } else {
     pxr::TfToken mass_model;
     bool is_shell = false;
