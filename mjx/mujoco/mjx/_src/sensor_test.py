@@ -105,6 +105,44 @@ class SensorTest(parameterized.TestCase):
     expected = np.asarray(dx.sensordata)
     _assert_eq(actual, np.broadcast_to(expected, actual.shape), 'sensordata')
 
+  def test_acc_sensors_dofless_body(self):
+    """Tests acceleration sensors on static and mocap bodies are zero."""
+    m = mujoco.MjModel.from_xml_string("""
+      <mujoco>
+        <worldbody>
+          <site name="world" pos=".1 0 0"/>
+          <body name="mocap" mocap="true" pos="0 0 1">
+            <site name="mocap"/>
+          </body>
+          <body name="static" pos="0 1 1">
+            <geom size=".1"/>
+            <site name="static"/>
+          </body>
+          <body pos="1 0 1">
+            <joint type="hinge" axis="0 1 0"/>
+            <geom size=".1" pos=".2 0 0"/>
+            <site name="hinge" pos=".2 0 0"/>
+          </body>
+        </worldbody>
+        <sensor>
+          <accelerometer site="world"/>
+          <accelerometer site="mocap"/>
+          <accelerometer site="static"/>
+          <accelerometer site="hinge"/>
+          <framelinacc objtype="site" objname="world"/>
+          <framelinacc objtype="body" objname="mocap"/>
+          <frameangacc objtype="xbody" objname="static"/>
+          <framelinacc objtype="site" objname="hinge"/>
+        </sensor>
+      </mujoco>
+    """)
+    d = mujoco.MjData(m)
+    mujoco.mj_forward(m, d)
+    mx = mjx.put_model(m)
+    dx = jax.jit(mjx.forward)(mx, mjx.put_data(m, d))
+    _assert_eq(d.sensordata, dx.sensordata, 'sensordata')
+    np.testing.assert_array_equal(d.sensordata[:9], 0.0)
+
   def test_disable_sensor(self):
     """Tests disabling sensor."""
     m = test_util.load_test_file('sensor/sensor.xml')

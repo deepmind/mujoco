@@ -766,6 +766,9 @@ def sensor_acc(m: Model, d: Data) -> Data:
       dif = d.site_xpos[objid] - d.subtree_com[m.body_rootid[bodyid]]
 
       sensor = _accelerometer(cvel, cacc, dif, rot)
+      # dof-less body (static or mocap): match mj_objectAcceleration
+      dofless = m.body_dofnum[m.body_weldid[bodyid]] == 0
+      sensor = jp.where(dofless[:, None], 0.0, sensor)
       adr = (adr[:, None] + np.arange(3)[None]).reshape(-1)
     elif sensor_type == SensorType.FORCE:
       bodyid = m.site_bodyid[objid]
@@ -827,6 +830,11 @@ def sensor_acc(m: Model, d: Data) -> Data:
           sensor = cacc[:, :3].reshape(-1)
         else:
           raise ValueError(f'Unknown sensor type: {sensor_type}')
+
+        # dof-less body (static or mocap): match mj_objectAcceleration
+        dofless = m.body_dofnum[m.body_weldid[bodyid]] == 0
+        sensor = jp.where(dofless[:, None], 0.0, sensor.reshape(-1, 3))
+        sensor = sensor.reshape(-1)
 
         adrt = adr[idxt, None] + np.arange(3)[None]
 
