@@ -2283,6 +2283,19 @@ static int cylinderEdgeNormals(mjtNum res[9], mjtNum endverts[9], int dim, mjCCD
 }
 
 
+// recover cylinder support segment facing the selected flat face
+// the edge-face alignment test ensures a nonzero radial projection
+static void cylinderSupportEdge(mjtNum edge[6], const mjCCDObj* obj, const mjtNum normal[3]) {
+  mjtNum axis[3] = {obj->mat[2], obj->mat[5], obj->mat[8]};
+  mjtNum radial[3], center[3];
+  addScl3(radial, normal, axis, -dot3(normal, axis));
+  mju_normalize3(radial);
+  addScl3(center, obj->pos, radial, -obj->size[0]);
+  addScl3(edge, center, axis, -obj->size[1]);
+  addScl3(edge + 3, center, axis, obj->size[1]);
+}
+
+
 // recover edge of a capsule from witness point
 static int capsuleEdgeNormals(mjtNum res[3], mjtNum endverts[3], mjCCDObj* obj,
                               mjtNum v[3], const mjtNum w[3]) {
@@ -2649,6 +2662,9 @@ int mjc_multicontact(mjCCDObj* obj1, mjCCDObj* obj2, mjtNum* x1, mjtNum* x2, mjt
   if (edgecon1) {
     copy3(face1, triface1);
     copy3(face1 + 3, endverts + 3*i);
+    if (obj1->geom_type == mjGEOM_CYLINDER && obj1->margin == 0) {
+      cylinderSupportEdge(face1, obj1, n2 + 3*j);
+    }
     nface1 = 2;
   } else {
     if (obj1->geom_type == mjGEOM_BOX) {
@@ -2669,6 +2685,9 @@ int mjc_multicontact(mjCCDObj* obj1, mjCCDObj* obj2, mjtNum* x1, mjtNum* x2, mjt
   if (edgecon2) {
     copy3(face2, triface2);
     copy3(face2 + 3, endverts + 3*i);
+    if (obj2->geom_type == mjGEOM_CYLINDER && obj2->margin == 0) {
+      cylinderSupportEdge(face2, obj2, n1 + 3*j);
+    }
     nface2 = 2;
   } else {
     if (obj2->geom_type == mjGEOM_BOX) {

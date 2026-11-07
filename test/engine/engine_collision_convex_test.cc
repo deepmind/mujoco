@@ -538,5 +538,72 @@ TEST_F(MjcConvexTest, HFieldMarginAndGap) {
   EXPECT_GT(nflex, 0);
 }
 
+TEST_F(MjcConvexTest, HorizontalCylinderBoxSupportLine) {
+  static constexpr char xml[] = R"(
+    <mujoco><worldbody>
+      <geom type="box" size="0.12 0.12 0.02"/>
+      <body pos="0.006 -0.004 0.0528" quat="1 1 0 0">
+        <freejoint/><geom type="cylinder" size="0.033 0.0615" mass="0.05"/>
+      </body>
+    </worldbody></mujoco>)";
+  MjModelPtr model = LoadModelFromString(xml);
+  ASSERT_THAT(model, NotNull());
+  for (int degrees : {0, 15, 30, 60, 90}) {
+    SCOPED_TRACE(degrees);
+    MjDataPtr data = MakeData(model);
+    mjtNum angle = degrees * mjPI / 180;
+    data->qpos[3] = data->qpos[4] = mju_cos(angle / 2) / mju_sqrt(2);
+    data->qpos[5] = data->qpos[6] = mju_sin(angle / 2) / mju_sqrt(2);
+    mj_forward(model.get(), data.get());
+    ASSERT_EQ(data->ncon, 2);
+    for (int i = 0; i < data->ncon; ++i) {
+      const mjContact& contact = data->contact[i];
+      mjtNum offset = (contact.pos[0] - 0.006) * mju_cos(angle) +
+                      (contact.pos[1] + 0.004) * mju_sin(angle);
+      EXPECT_NEAR(offset, 0, MjTol(1e-10, 1e-7));
+      EXPECT_NEAR(mju_abs(contact.frame[2]), 1, MjTol(1e-12, 1e-6));
+      EXPECT_NEAR(contact.dist, -0.0002, MjTol(1e-10, 1e-7));
+    }
+
+    // Call both collider argument orders directly; the driver may reorder
+    // geoms.
+    for (int g1 : {0, 1}) {
+      SCOPED_TRACE(g1);
+      mjPreContact contacts[mjMAXCONPAIR];
+      ASSERT_EQ(mjc_Convex(model.get(), data.get(), contacts, g1, 1 - g1, 0),
+                2);
+      for (int i = 0; i < 2; ++i) {
+        mjtNum offset = (contacts[i].pos[0] - 0.006) * mju_cos(angle) +
+                        (contacts[i].pos[1] + 0.004) * mju_sin(angle);
+        EXPECT_NEAR(offset, 0, MjTol(1e-10, 1e-7));
+        EXPECT_NEAR(contacts[i].normal[2], g1 == 0 ? 1 : -1,
+                    MjTol(1e-12, 1e-6));
+        EXPECT_NEAR(contacts[i].dist, -0.0002, MjTol(1e-10, 1e-7));
+      }
+    }
+  }
+}
+
+TEST_F(MjcConvexTest, HorizontalCylinderBoxRemainsAtRest) {
+  static constexpr char xml[] = R"(
+    <mujoco><option timestep="0.002"/><worldbody>
+      <geom type="box" size="0.12 0.12 0.02"/>
+      <body pos="0 0 0.053" quat="1 1 0 0">
+        <freejoint/><geom type="cylinder" size="0.033 0.0615" mass="0.05"/>
+      </body>
+    </worldbody></mujoco>)";
+  MjModelPtr model = LoadModelFromString(xml);
+  ASSERT_THAT(model, NotNull());
+  MjDataPtr data = MakeData(model);
+  mjtNum max_displacement = 0;
+  for (int i = 0; i < 2500; ++i) {
+    mj_step(model.get(), data.get());
+    max_displacement = mju_max(max_displacement, mju_abs(data->qpos[0]));
+    max_displacement = mju_max(max_displacement, mju_abs(data->qpos[1]));
+    ASSERT_GT(data->qpos[2], 0.02);
+  }
+  EXPECT_NEAR(max_displacement, 0, MjTol(1e-7, 1e-5));
+}
+
 }  // namespace
 }  // namespace mujoco
