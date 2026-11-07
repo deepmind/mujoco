@@ -488,7 +488,7 @@ if(MUJOCO_PYTHON_BUILD_CORE)
               tuple_tools
   )
 
-  mujoco_pybind11_module(_callbacks callbacks.cc)
+  mujoco_pybind11_module(_callbacks callbacks.cc resource_provider.cc)
   target_link_libraries(
     _callbacks
     PRIVATE errors_header

@@ -25,6 +25,7 @@
 #include "errors.h"
 #include "gil.h"
 #include "raw.h"
+#include "resource_provider.h"
 #include "structs.h"
 #include <pybind11/eval.h>
 #include <pybind11/pybind11.h>
@@ -552,6 +553,8 @@ PYBIND11_MODULE(_callbacks, pymodule, pybind11::mod_gil_not_used()) {
   pymodule.def("get_mjcb_act_bias", []() {
     return GetCallback(&py_mjcb_act_bias);
   });
+
+  InitResourceProvider(pymodule);
 }  // PYBIND11_MODULE
 
 }  // namespace
