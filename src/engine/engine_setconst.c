@@ -1453,7 +1453,7 @@ static void setEfm0Factor(mjModel* m, mjData* d) {
   int* LT_rownnz = mjSTACKALLOC(d, nbd, int);
   int* LT_rowadr = mjSTACKALLOC(d, nbd, int);
   int nnz = mju_cholFactorSymbolic(NULL, m->efm0_L_rownnz, m->efm0_L_rowadr,
-                                   NULL, LT_rownnz, LT_rowadr, NULL,
+                                   NULL, LT_rownnz, LT_rowadr, NULL, NULL,
                                    Hu_rownnz, Hu_rowadr, Hu_colind, nbd, d);
   if (nnz != m->nefm0L) {
     mj_freeStack(d);
@@ -1465,15 +1465,16 @@ static void setEfm0Factor(mjModel* m, mjData* d) {
   // symbolic factorization: filling phase
   int* LT_colind = mjSTACKALLOC(d, nnz, int);
   int* LT_map = mjSTACKALLOC(d, nnz, int);
+  int* L_super = mjSTACKALLOC(d, nbd, int);
   mju_cholFactorSymbolic(m->efm0_L_colind, m->efm0_L_rownnz, m->efm0_L_rowadr,
-                         LT_colind, LT_rownnz, LT_rowadr, LT_map,
+                         LT_colind, LT_rownnz, LT_rowadr, LT_map, L_super,
                          Hu_rownnz, Hu_rowadr, Hu_colind, nbd, d);
 
   // numeric factorization
   mjtNum* scratch = mjSTACKALLOC(d, nbd, mjtNum);
   int rank = mju_cholFactorNumeric(m->efm0_L, nbd, mjMINVAL,
                                    m->efm0_L_rownnz, m->efm0_L_rowadr, m->efm0_L_colind,
-                                   LT_rownnz, LT_rowadr, LT_colind, LT_map,
+                                   LT_rownnz, LT_rowadr, LT_colind, LT_map, L_super,
                                    Hl_val, Hl_rownnz, Hl_rowadr, Hl_colind, scratch);
   if (rank != nbd) {
     // The factor is consumed only when no per-step flex stiffness is assembled (bending-only

@@ -2439,6 +2439,7 @@ void mjCModel::SetSizes() {
                                                   LT_rownnz.data(),
                                                   LT_rowadr.data(),
                                                   NULL,
+                                                  NULL,
                                                   u_rownnz.data(),
                                                   u_rowadr.data(),
                                                   u_colind.data(),

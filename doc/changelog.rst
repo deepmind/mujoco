@@ -7,6 +7,10 @@ Upcoming Version (not yet released)
 
 Bug fixes
 ^^^^^^^^^
+
+- Fixed a bug in the sparse Cholesky factorization introduced in 4.0.0, which merged rows with different descendants
+  into one supernode and gave the Newton solver a wrong Hessian factor when the constraint Jacobian is sparse, causing
+  slow convergence, wrong accelerations and divergence (:issue:`3767`).
 - :ref:`mj_loadAllPluginLibraries` now skips a dynamic library that fails to load with a warning instead of calling
   :ref:`mju_error`, so one unloadable library in the plugin directory no longer aborts :ref:`simulate<saSimulate>` at
   startup. In the 4.0.0 macOS and Linux archives this happened with the USD decoder plugin, which can only be loaded

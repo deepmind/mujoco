@@ -40,13 +40,15 @@ MJAPI int mju_cholFactorSparse(mjtNum* mat, int n, mjtNum mindiag,
 // symbolic reverse-Cholesky: compute both L (CSR) and LT (CSC) structures
 //   if L_colind is NULL, perform counting logic (fill rownnz/rowadr arrays and return total nnz)
 //   if L_colind is not NULL, assume rownnz/rowadr are precomputed and fill colind/map arrays
+//   if L_colind is not NULL, also fill L_super (n x 1): the number of rows r, r-1, ... (up to 3)
+//   that can be factored together as a supernode with top row r
 //   reads pattern from upper triangle
 //   d may be NULL: scratch is then heap-allocated
 //   based on ldl_symbolic from 'Algorithm 8xx: a concise sparse Cholesky factorization package'
 MJAPI int mju_cholFactorSymbolic(int* L_colind, int* L_rownnz, int* L_rowadr,
                                  int* LT_colind, int* LT_rownnz, int* LT_rowadr, int* LT_map,
-                                 const int* rownnz, const int* rowadr, const int* colind,
-                                 int n, mjData* d);
+                                 int* L_super, const int* rownnz, const int* rowadr,
+                                 const int* colind, int n, mjData* d);
 
 // symbolic reverse-Cholesky of a matrix of dense bs x bs blocks, from its block pattern: the same
 // L arrays, entry for entry, as mju_cholFactorSymbolic computes from the dof-level pattern that
@@ -66,12 +68,12 @@ MJAPI int mju_cholFactorSymbolicBlocked(int* L_colind, int* L_rownnz, int* L_row
 
 // numeric reverse-Cholesky: compute L values given fixed sparsity pattern, returns rank
 //  L_colind must already contain the correct sparsity pattern (from mju_cholFactorSymbolic)
-//  LT_map[k] gives index in L for LT_colind[k]
+//  LT_map[k] gives index in L for LT_colind[k], L_super gives supernode sizes
 //  scratch: caller-provided workspace of size n, contents ignored
 MJAPI int mju_cholFactorNumeric(mjtNum* L, int n, mjtNum mindiag,
                                 const int* L_rownnz, const int* L_rowadr, const int* L_colind,
                                 const int* LT_rownnz, const int* LT_rowadr, const int* LT_colind,
-                                const int* LT_map, const mjtNum* H,
+                                const int* LT_map, const int* L_super, const mjtNum* H,
                                 const int* H_rownnz, const int* H_rowadr, const int* H_colind,
                                 mjtNum* scratch);
 

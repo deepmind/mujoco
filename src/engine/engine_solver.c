@@ -1084,6 +1084,7 @@ typedef struct {
   int* L_colind;          // Cholesky factor column indices               (nL x 1)
   int* LT_colind;         // Cholesky factor transpose column indices     (nL x 1)
   int* LT_map;            // CSC-to-CSR index mapping                     (nL x 1)
+  int* L_super;           // Cholesky factor supernode sizes              (nv x 1)
   mjtNum* L;              // Cholesky factor                              (nL x 1)
   mjtNum* Lcone;          // Cholesky factor with cone contributions      (nL x 1)
 
@@ -2989,13 +2990,13 @@ static int MakeHessian(const mjModel* m, mjData* d, mjPrimalContext* ctx) {
 
     // count total and row non-zeros of reverse-Cholesky factors L and LT
     ctx->nL = mju_cholFactorSymbolic(NULL, ctx->L_rownnz, ctx->L_rowadr, NULL,
-                                     ctx->LT_rownnz, ctx->LT_rowadr, NULL,
+                                     ctx->LT_rownnz, ctx->LT_rowadr, NULL, NULL,
                                      ctx->HT_rownnz, ctx->HT_rowadr, ctx->HT_colind,
                                      nv, d);
 
     // nL is known: check stack space, then allocate L_colind, LT_colind, LT_map, L, Lcone
-    // L_colind + LT_colind + LT_map + pathcost
-    size_t nL_int = 3*(size_t)ctx->nL + (size_t)nv;
+    // L_colind + LT_colind + LT_map + pathcost + L_super
+    size_t nL_int = 3*(size_t)ctx->nL + 2*(size_t)nv;
     size_t nL_num = ctx->is_elliptic ? 2*(size_t)ctx->nL : (size_t)ctx->nL;  // L + Lcone
     size_t L_bytes =
         mj_stackBytes(nL_int * sizeof(int), _Alignof(int)) +
@@ -3012,13 +3013,14 @@ static int MakeHessian(const mjModel* m, mjData* d, mjPrimalContext* ctx) {
     ctx->LT_colind     = L_intblock + ctx->nL;
     ctx->LT_map        = L_intblock + 2*ctx->nL;
     ctx->pathcost      = L_intblock + 3*ctx->nL;
+    ctx->L_super       = L_intblock + 3*ctx->nL + nv;
     ctx->L             = L_numblock;
     ctx->Lcone         = ctx->is_elliptic ? L_numblock + ctx->nL : NULL;
 
     // symbolic Cholesky: populate L_colind and LT structures
     mju_cholFactorSymbolic(ctx->L_colind, ctx->L_rownnz, ctx->L_rowadr,
                            ctx->LT_colind, ctx->LT_rownnz, ctx->LT_rowadr, ctx->LT_map,
-                           ctx->HT_rownnz, ctx->HT_rowadr, ctx->HT_colind,
+                           ctx->L_super, ctx->HT_rownnz, ctx->HT_rowadr, ctx->HT_colind,
                            nv, d);
 
     // fold gate inputs, fixed for the solve since the L pattern is fixed:
@@ -3174,7 +3176,7 @@ static void FactorizeHessian(mjData* d, mjPrimalContext* ctx, int flg_recompute)
       mju_cholFactorNumeric(
           ctx->L, nv, mjMINVAL,
           ctx->L_rownnz, ctx->L_rowadr, ctx->L_colind,
-          ctx->LT_rownnz, ctx->LT_rowadr, ctx->LT_colind, ctx->LT_map,
+          ctx->LT_rownnz, ctx->LT_rowadr, ctx->LT_colind, ctx->LT_map, ctx->L_super,
           ctx->H, ctx->H_rownnz, ctx->H_rowadr, ctx->H_colind, ctx->cholscratch);
       ctx->flg_Lvalid = 1;
     }
@@ -3244,7 +3246,7 @@ static void HessianConeFolded(mjData* d, mjPrimalContext* ctx) {
   int rank = mju_cholFactorNumeric(
       ctx->Lcone, nv, mjMINVAL,
       ctx->L_rownnz, ctx->L_rowadr, ctx->L_colind,
-      ctx->LT_rownnz, ctx->LT_rowadr, ctx->LT_colind, ctx->LT_map,
+      ctx->LT_rownnz, ctx->LT_rowadr, ctx->LT_colind, ctx->LT_map, ctx->L_super,
       Hcone, ctx->H_rownnz, ctx->H_rowadr, ctx->H_colind,
       ctx->cholscratch);
   if (rank < nv && ctx->flg_Hdirty) {
@@ -3499,7 +3501,7 @@ static void HessianIncremental(mjData* d, mjPrimalContext* ctx, const int* oldst
     rank = mju_cholFactorNumeric(
         ctx->L, nv, mjMINVAL,
         ctx->L_rownnz, ctx->L_rowadr, ctx->L_colind,
-        ctx->LT_rownnz, ctx->LT_rowadr, ctx->LT_colind, ctx->LT_map,
+        ctx->LT_rownnz, ctx->LT_rowadr, ctx->LT_colind, ctx->LT_map, ctx->L_super,
         ctx->H, ctx->H_rownnz, ctx->H_rowadr, ctx->H_colind, ctx->cholscratch);
     ctx->flg_Lvalid = 1;
     if (rank < nv && ctx->flg_Hdirty) {
