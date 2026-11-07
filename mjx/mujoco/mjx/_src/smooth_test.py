@@ -244,6 +244,48 @@ class SmoothTest(absltest.TestCase):
     )
     _assert_eq(moment, dx._impl.actuator_moment, 'actuator_moment')
 
+  def test_mocap_children(self):
+    """Tests that bodies attached below a mocap body follow the mocap pose."""
+    m = mujoco.MjModel.from_xml_string("""
+        <mujoco>
+          <worldbody>
+            <body mocap="true" pos="0 1 0">
+              <geom size=".05"/>
+            </body>
+            <body mocap="true" pos="0 0 1">
+              <geom size=".05"/>
+              <site/>
+              <body pos="0 0 -.2">
+                <joint type="hinge" axis="0 1 0"/>
+                <geom size=".05"/>
+                <site pos=".1 0 0"/>
+                <body pos=".2 0 0">
+                  <joint type="ball"/>
+                  <geom type="capsule" size=".05" fromto="0 0 0 .1 0 0"/>
+                </body>
+              </body>
+            </body>
+          </worldbody>
+        </mujoco>
+    """)
+    d = mujoco.MjData(m)
+    d.qpos = np.random.random(m.nq)
+    # moved and rotated away from the default pose, with unnormalized quats
+    d.mocap_pos = np.random.random(d.mocap_pos.shape)
+    d.mocap_quat = np.random.random(d.mocap_quat.shape)
+    mujoco.mj_kinematics(m, d)
+
+    dx = jax.jit(mjx.kinematics)(mjx.put_model(m), mjx.put_data(m, d))
+    _assert_attr_eq(d, dx, 'xanchor')
+    _assert_attr_eq(d, dx, 'xaxis')
+    _assert_attr_eq(d, dx, 'xpos')
+    _assert_attr_eq(d, dx, 'xquat')
+    _assert_eq(d.xmat.reshape((-1, 3, 3)), dx.xmat, 'xmat')
+    _assert_attr_eq(d, dx, 'geom_xpos')
+    _assert_eq(d.geom_xmat.reshape((-1, 3, 3)), dx.geom_xmat, 'geom_xmat')
+    _assert_attr_eq(d, dx, 'site_xpos')
+    _assert_eq(d.site_xmat.reshape((-1, 3, 3)), dx.site_xmat, 'site_xmat')
+
   def test_disable_gravity(self):
     m = mujoco.MjModel.from_xml_string("""
         <mujoco>
