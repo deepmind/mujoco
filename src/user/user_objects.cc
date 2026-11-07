@@ -4786,6 +4786,14 @@ void mjCGeom::Compile(void) {
 
   // compute geom mass and inertia
   if (inferinertia) {
+    if (mesh &&
+        (type == mjGEOM_MESH || type == mjGEOM_SDF) &&
+        mesh->spec.inertia == mjMESH_INERTIA_NONE) {
+      throw mjCError(this,
+                     "mesh '%s' has inertia='none' and cannot be used to infer inertia",
+                     mesh->name.c_str());
+    }
+
     // mass is defined
     if (mjuu_defined(mass)) {
       if (mass == 0) {

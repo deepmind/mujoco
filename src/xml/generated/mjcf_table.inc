@@ -73,7 +73,7 @@ std::vector<const char*> MJCF[] = {
 
     {"default", "R", "class"},
     {"<"},
-        {"mesh", "?", "scale", "maxhullvert", "inertia"},
+        {"mesh", "?", "scale", "maxhullvert", "inertia", "convexhull"},
         {"texture", "?", "type", "colorspace", "gridsize", "gridlayout", "builtin", "rgb1", "rgb2",
             "mark", "markrgb", "random", "width", "height", "hflip", "vflip", "nchannel", "embed"},
         {"material", "?", "texture", "texrepeat", "texuniform", "emission", "specular",
@@ -156,7 +156,7 @@ std::vector<const char*> MJCF[] = {
     {"<"},
         {"mesh", "*", "name", "class", "content_type", "file", "vertex", "normal", "texcoord",
             "face", "refpos", "refquat", "scale", "smoothnormal", "maxhullvert", "inertia",
-            "builtin", "params", "material"},
+            "convexhull", "builtin", "params", "material"},
         {"<"},
             {"plugin", "*", "plugin", "instance"},
             {"<"},

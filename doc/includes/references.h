@@ -1856,7 +1856,8 @@ typedef enum mjtMeshInertia {      // type of mesh inertia
   mjMESH_INERTIA_CONVEX = 0,       // convex mesh inertia
   mjMESH_INERTIA_EXACT,            // exact mesh inertia
   mjMESH_INERTIA_LEGACY,           // legacy mesh inertia
-  mjMESH_INERTIA_SHELL             // shell mesh inertia
+  mjMESH_INERTIA_SHELL,            // shell mesh inertia
+  mjMESH_INERTIA_NONE              // no inertia, for visualization only
 } mjtMeshInertia;
 typedef enum mjtMeshBuiltin {      // type of built-in procedural mesh
   mjMESH_BUILTIN_NONE = 0,         // no built-in mesh
@@ -2317,7 +2318,8 @@ typedef struct mjsMesh_ {          // mesh specification
   double refpos[3];                // reference position
   double refquat[4];               // reference orientation
   double scale[3];                 // rescale mesh
-  mjtMeshInertia inertia;          // inertia type (convex, legacy, exact, shell)
+  mjtMeshInertia inertia;          // inertia type (convex, legacy, exact, shell, none)
+  mjtBool convexhull;              // if false, mesh is never used for contacts
   mjtBool smoothnormal;            // do not exclude large-angle faces from normals
   mjtBool needsdf;                 // compute sdf from mesh
   int maxhullvert;                 // maximum vertex count for the convex hull

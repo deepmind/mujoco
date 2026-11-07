@@ -911,6 +911,193 @@ TEST_F(MjCMeshTest, VolumeSmallAllowedShell) {
   EXPECT_LE(mju_abs(model->geom_size[2]), 1);
 }
 
+TEST_F(MjCMeshTest, InertiaNoneSkipsInertiaAndCentering) {
+  static constexpr char xml[] = R"(
+  <mujoco>
+    <asset>
+      <mesh name="plane" inertia="none"
+        vertex="1 2 3  2 2 3  2 3 3  1 3 3"
+        face="0 1 2  0 2 3"/>
+    </asset>
+    <worldbody>
+      <body>
+        <geom type="mesh" mesh="plane" group="6" contype="0" conaffinity="0"/>
+      </body>
+    </worldbody>
+  </mujoco>
+  )";
+  char error[1024];
+  MjModelPtr model = LoadModelFromString(xml, error, sizeof(error));
+  ASSERT_THAT(model.get(), NotNull()) << error;
+
+  // a planar mesh has no volume, so it can only compile if inertia is skipped
+  EXPECT_EQ(model->mesh_vertnum[0], 4);
+  EXPECT_EQ(model->mesh_graphadr[0], -1);
+
+  // the mesh is not centered, so its authored frame and vertices are preserved
+  for (int i = 0; i < 3; i++) {
+    EXPECT_FLOAT_EQ(model->mesh_pos[i], 0);
+  }
+  EXPECT_FLOAT_EQ(model->mesh_quat[0], 1);
+  EXPECT_FLOAT_EQ(model->mesh_quat[1], 0);
+  EXPECT_FLOAT_EQ(model->mesh_quat[2], 0);
+  EXPECT_FLOAT_EQ(model->mesh_quat[3], 0);
+  EXPECT_FLOAT_EQ(model->mesh_vert[0], 1);
+  EXPECT_FLOAT_EQ(model->mesh_vert[1], 2);
+  EXPECT_FLOAT_EQ(model->mesh_vert[2], 3);
+
+  // the BVH is still built, since it is used for ray casting
+  EXPECT_GT(model->mesh_bvhnum[0], 0);
+}
+
+TEST_F(MjCMeshTest, InertiaNoneCannotInferInertia) {
+  static constexpr char xml[] = R"(
+  <mujoco>
+    <asset>
+      <mesh name="tetra" inertia="none"
+        vertex="0 0 0  1 0 0  0 1 0  0 0 1"
+        face="0 2 1  0 1 3  1 2 3  2 0 3"/>
+    </asset>
+    <worldbody>
+      <body>
+        <geom type="mesh" mesh="tetra"/>
+      </body>
+    </worldbody>
+  </mujoco>
+  )";
+  std::array<char, 1024> error;
+  MjModelPtr model = LoadModelFromString(xml, error.data(), error.size());
+  EXPECT_THAT(model.get(), IsNull());
+  EXPECT_THAT(error.data(), HasSubstr("inertia='none'"));
+}
+
+TEST_F(MjCMeshTest, InertiaNoneAllowedWithExplicitInertial) {
+  static constexpr char xml[] = R"(
+  <mujoco>
+    <asset>
+      <mesh name="tetra" inertia="none"
+        vertex="0 0 0  1 0 0  0 1 0  0 0 1"
+        face="0 2 1  0 1 3  1 2 3  2 0 3"/>
+    </asset>
+    <worldbody>
+      <body>
+        <inertial pos="0 0 0" mass="1" diaginertia="1 1 1"/>
+        <geom type="mesh" mesh="tetra" contype="0" conaffinity="0"/>
+      </body>
+    </worldbody>
+  </mujoco>
+  )";
+  std::array<char, 1024> error;
+  MjModelPtr model = LoadModelFromString(xml, error.data(), error.size());
+  EXPECT_THAT(model.get(), NotNull()) << error.data();
+}
+
+TEST_F(MjCMeshTest, ConvexHullFalseSkipsHull) {
+  static constexpr char xml[] = R"(
+  <mujoco>
+    <asset>
+      <mesh name="tetra" convexhull="false"
+        vertex="0 0 0  1 0 0  0 1 0  0 0 1"
+        face="0 2 1  0 1 3  1 2 3  2 0 3"/>
+    </asset>
+    <worldbody>
+      <body>
+        <geom type="mesh" mesh="tetra" contype="0" conaffinity="0"/>
+      </body>
+    </worldbody>
+  </mujoco>
+  )";
+  char error[1024];
+  MjModelPtr model = LoadModelFromString(xml, error, sizeof(error));
+  ASSERT_THAT(model.get(), NotNull()) << error;
+
+  EXPECT_EQ(model->mesh_graphadr[0], -1);
+  // the BVH is still built, since it is used for ray casting
+  EXPECT_GT(model->mesh_bvhnum[0], 0);
+}
+
+TEST_F(MjCMeshTest, ConvexHullFalseRejectsContacts) {
+  static constexpr char xml[] = R"(
+  <mujoco>
+    <asset>
+      <mesh name="tetra" convexhull="false"
+        vertex="0 0 0  1 0 0  0 1 0  0 0 1"
+        face="0 2 1  0 1 3  1 2 3  2 0 3"/>
+    </asset>
+    <worldbody>
+      <body>
+        <geom type="mesh" mesh="tetra"/>
+      </body>
+    </worldbody>
+  </mujoco>
+  )";
+  std::array<char, 1024> error;
+  MjModelPtr model = LoadModelFromString(xml, error.data(), error.size());
+  EXPECT_THAT(model.get(), IsNull());
+  EXPECT_THAT(error.data(), HasSubstr("convexhull='false'"));
+}
+
+TEST_F(MjCMeshTest, ConvexHullFalseRejectsPair) {
+  static constexpr char xml[] = R"(
+  <mujoco>
+    <asset>
+      <mesh name="tetra" convexhull="false"
+        vertex="0 0 0  1 0 0  0 1 0  0 0 1"
+        face="0 2 1  0 1 3  1 2 3  2 0 3"/>
+    </asset>
+    <worldbody>
+      <body>
+        <geom name="g1" type="mesh" mesh="tetra" contype="0" conaffinity="0"/>
+        <geom name="g2" type="mesh" mesh="tetra" contype="0" conaffinity="0"/>
+      </body>
+    </worldbody>
+    <contact>
+      <pair geom1="g1" geom2="g2"/>
+    </contact>
+  </mujoco>
+  )";
+  std::array<char, 1024> error;
+  MjModelPtr model = LoadModelFromString(xml, error.data(), error.size());
+  EXPECT_THAT(model.get(), IsNull());
+  EXPECT_THAT(error.data(), HasSubstr("convexhull='false'"));
+}
+
+TEST_F(MjCMeshTest, ConvexHullFalseRejectsConvexInertia) {
+  static constexpr char xml[] = R"(
+  <mujoco>
+    <asset>
+      <mesh name="tetra" convexhull="false" inertia="convex"
+        vertex="0 0 0  1 0 0  0 1 0  0 0 1"
+        face="0 2 1  0 1 3  1 2 3  2 0 3"/>
+    </asset>
+    <worldbody/>
+  </mujoco>
+  )";
+  std::array<char, 1024> error;
+  MjModelPtr model = LoadModelFromString(xml, error.data(), error.size());
+  EXPECT_THAT(model.get(), IsNull());
+  EXPECT_THAT(error.data(), HasSubstr("convexhull='false'"));
+}
+
+TEST_F(MjCMeshTest, ConvexHullFalseAllowsSite) {
+  static constexpr char xml[] = R"(
+  <mujoco>
+    <asset>
+      <mesh name="tetra" convexhull="false"
+        vertex="0 0 0  1 0 0  0 1 0  0 0 1"
+        face="0 2 1  0 1 3  1 2 3  2 0 3"/>
+    </asset>
+    <worldbody>
+      <site type="mesh" mesh="tetra"/>
+    </worldbody>
+  </mujoco>
+  )";
+  char error[1024];
+  MjModelPtr model = LoadModelFromString(xml, error, sizeof(error));
+  ASSERT_THAT(model.get(), NotNull()) << error;
+  EXPECT_EQ(model->mesh_graphadr[0], -1);
+}
+
 // Check the compiled stiffness against continuum strain energies on a unit
 // cube. Affine fields test the Lamé coefficients; quadratic fields also test
 // quadrature.

@@ -333,6 +333,7 @@
     XVEC( double,          refquat,          4 ) \
     XVEC( double,          scale,            3 ) \
     X   ( mjtMeshInertia,  inertia,          1 ) \
+    X   ( mjtBool,         convexhull,       1 ) \
     X   ( mjtBool,         smoothnormal,     1 ) \
     X   ( mjtBool,         needsdf,          1 ) \
     X   ( int,             maxhullvert,      1 ) \

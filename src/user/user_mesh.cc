@@ -302,7 +302,7 @@ void mjCMesh::NameSpace(const mjCModel* m) {
 std::string mjCMesh::AssetKey() const {
 #define X(type, name, dim) +1
 #define XVEC(type, name, dim) +1
-  static_assert((0 MJSMESH_FIELDS) == 22,
+  static_assert((0 MJSMESH_FIELDS) == 23,
                 "a field was added to mjsMesh: decide whether AssetKey reads it");
 #undef X
 #undef XVEC
@@ -315,6 +315,7 @@ std::string mjCMesh::AssetKey() const {
   mjuu_addkey(key, s.refquat);
   mjuu_addkey(key, s.scale);
   mjuu_addkey(key, s.inertia);
+  mjuu_addkey(key, s.convexhull);
   mjuu_addkey(key, s.smoothnormal);
   mjuu_addkey(key, s.needsdf);
   mjuu_addkey(key, s.maxhullvert);
@@ -999,6 +1000,11 @@ void mjCMesh::CopyPolygonNormals(mjtNum* arr) {
 void mjCMesh::FitGeom(mjCGeom* geom, double center[3]) {
   // use inertial box
   if (!model->compiler.fitaabb) {
+    if (inertia == mjMESH_INERTIA_NONE) {
+      throw mjCError(this,
+                     "mesh '%s' has inertia='none' and cannot be used to fit a geom",
+                     name.c_str());
+    }
     // get inertia box type (shell or volume)
     double* boxsz = GetInertiaBoxPtr();
     switch (geom->type) {
@@ -1556,66 +1562,71 @@ void mjCMesh::Process() {
   }
 
   // compute inertia and transform mesh. The mesh is transformed such that it is
-  // centered at the CoM and the axes are the principle axes of inertia
-  double CoM[3]   = {0, 0, 0};
-  double inert[6] = {0, 0, 0, 0, 0, 0};
+  // centered at the CoM and the axes are the principle axes of inertia.
+  // Meshes with inertia none are only used for visualization, so they skip the
+  // volume, inertia and centering computations and keep the authored frame.
+  double CoM[3]     = {0, 0, 0};
+  double quattmp[4] = {1, 0, 0, 0};
+  if (inertia != mjMESH_INERTIA_NONE) {
+    double inert[6] = {0, 0, 0, 0, 0, 0};
 
-  // compute CoM and volume/area
-  if (inertia == mjMESH_INERTIA_SHELL) {
-    surface_ = ComputeSurfaceArea(CoM, facecen, dvert.data());
-    if (surface_ < mjMINVAL) {
-      throw mjCError(this, "mesh surface area is too small: %s", name.c_str());
-    }
-  } else {
-    if ((volume_ = ComputeVolume(CoM, facecen, dvert.data())) < mjMINVAL) {
-      if (volume_ < 0) {
-        throw mjCError(this, "mesh volume is negative (misoriented triangles): %s", name.c_str());
-      } else {
-        throw mjCError(this,
-                       "mesh volume is too small: %s . Try setting inertia to shell",
-                       name.c_str());
+    // compute CoM and volume/area
+    if (inertia == mjMESH_INERTIA_SHELL) {
+      surface_ = ComputeSurfaceArea(CoM, facecen, dvert.data());
+      if (surface_ < mjMINVAL) {
+        throw mjCError(this, "mesh surface area is too small: %s", name.c_str());
+      }
+    } else {
+      if ((volume_ = ComputeVolume(CoM, facecen, dvert.data())) < mjMINVAL) {
+        if (volume_ < 0) {
+          throw mjCError(this, "mesh volume is negative (misoriented triangles): %s", name.c_str());
+        } else {
+          throw mjCError(this,
+                         "mesh volume is too small: %s . Try setting inertia to shell",
+                         name.c_str());
+        }
       }
     }
-  }
 
-  // compute inertia
-  double total_volume = ComputeInertia(inert, CoM, dvert.data());
-  if (inertia == mjMESH_INERTIA_SHELL) {
-    surface_ = total_volume;
-  } else {
-    volume_ = total_volume;
-  }
+    // compute inertia
+    double total_volume = ComputeInertia(inert, CoM, dvert.data());
+    if (inertia == mjMESH_INERTIA_SHELL) {
+      surface_ = total_volume;
+    } else {
+      volume_ = total_volume;
+    }
 
-  // get quaternion and diagonal inertia (vertices are float32, so stop at 1e-7 relative)
-  double eigval[3], eigvec[9], quattmp[4];
-  double full[9] =
-      {inert[0], inert[3], inert[4], inert[3], inert[1], inert[5], inert[4], inert[5], inert[2]};
-  mjuu_eig3(eigval, eigvec, quattmp, full, 1e-7);
+    // get quaternion and diagonal inertia (vertices are float32, so stop at 1e-7 relative)
+    double eigval[3], eigvec[9];
+    double full[9] =
+        {inert[0], inert[3], inert[4], inert[3], inert[1], inert[5], inert[4], inert[5], inert[2]};
+    mjuu_eig3(eigval, eigvec, quattmp, full, 1e-7);
 
-  constexpr double inequality_atol = 1e-9;
-  constexpr double inequality_rtol = 1e-6;
+    constexpr double inequality_atol = 1e-9;
+    constexpr double inequality_rtol = 1e-6;
 
-  // check eigval - SHOULD NOT OCCUR
-  if (eigval[2] <= 0) {
-    throw mjCError(this, "eigenvalue of mesh inertia must be positive: %s", name.c_str());
-  }
+    // check eigval - SHOULD NOT OCCUR
+    if (eigval[2] <= 0) {
+      throw mjCError(this, "eigenvalue of mesh inertia must be positive: %s", name.c_str());
+    }
 
-  if (eigval[0] + eigval[1] < eigval[2] * (1.0 - inequality_rtol) - inequality_atol ||
-      eigval[0] + eigval[2] < eigval[1] * (1.0 - inequality_rtol) - inequality_atol ||
-      eigval[1] + eigval[2] < eigval[0] * (1.0 - inequality_rtol) - inequality_atol) {
-    throw mjCError(this, "eigenvalues of mesh inertia violate A + B >= C: %s", name.c_str());
-  }
+    if (eigval[0] + eigval[1] < eigval[2] * (1.0 - inequality_rtol) - inequality_atol ||
+        eigval[0] + eigval[2] < eigval[1] * (1.0 - inequality_rtol) - inequality_atol ||
+        eigval[1] + eigval[2] < eigval[0] * (1.0 - inequality_rtol) - inequality_atol) {
+      throw mjCError(this, "eigenvalues of mesh inertia violate A + B >= C: %s", name.c_str());
+    }
 
-  // compute sizes of equivalent inertia box
-  double volume = GetVolumeRef();
-  boxsz_[0]     = 0.5 * std::sqrt(6 * (eigval[1] + eigval[2] - eigval[0]) / volume);
-  boxsz_[1]     = 0.5 * std::sqrt(6 * (eigval[0] + eigval[2] - eigval[1]) / volume);
-  boxsz_[2]     = 0.5 * std::sqrt(6 * (eigval[0] + eigval[1] - eigval[2]) / volume);
+    // compute sizes of equivalent inertia box
+    double volume = GetVolumeRef();
+    boxsz_[0]     = 0.5 * std::sqrt(6 * (eigval[1] + eigval[2] - eigval[0]) / volume);
+    boxsz_[1]     = 0.5 * std::sqrt(6 * (eigval[0] + eigval[2] - eigval[1]) / volume);
+    boxsz_[2]     = 0.5 * std::sqrt(6 * (eigval[0] + eigval[1] - eigval[2]) / volume);
 
-  // prevent reorientation if the mesh was autogenerated using marching cubes
-  if (!needreorient_) {
-    mjuu_setvec(CoM, 0, 0, 0);
-    mjuu_setvec(quattmp, 1, 0, 0, 0);
+    // prevent reorientation if the mesh was autogenerated using marching cubes
+    if (!needreorient_) {
+      mjuu_setvec(CoM, 0, 0, 0);
+      mjuu_setvec(quattmp, 1, 0, 0, 0);
+    }
   }
 
   // transform CoM to origin

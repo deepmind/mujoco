@@ -423,8 +423,9 @@ inline constexpr mjMap meshinertia_map[] = {
   {"legacy",  mjMESH_INERTIA_LEGACY},
   {"exact",   mjMESH_INERTIA_EXACT},
   {"shell",   mjMESH_INERTIA_SHELL},
+  {"none",    mjMESH_INERTIA_NONE},
 };
-inline constexpr int meshinertia_sz = 4;
+inline constexpr int meshinertia_sz = 5;
 
 // enum meshbuiltin
 inline constexpr mjMap meshbuiltin_map[] = {
