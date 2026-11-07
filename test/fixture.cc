@@ -52,6 +52,10 @@ bool IsBenignWarning(const std::string& msg) {
   static const char* const kBenignWarnings[] = {
       "is not rigid and has no equality constraints",
       "Attach conflict",
+      // MujocoTest scans MUJOCO_PLUGIN_DIR on startup. On Windows that is the
+      // shared bin/ directory, where libraries that are not plugins (such as
+      // the Python-linked USD DLLs) fail to load.
+      "Error loading plugin library",
   };
   for (const char* warning : kBenignWarnings) {
     if (absl::StrContains(msg, warning)) {
