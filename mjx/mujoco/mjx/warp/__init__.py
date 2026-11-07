@@ -27,17 +27,21 @@ if not typing.TYPE_CHECKING:
   WARP_INSTALLED: bool = False
 
   # pylint: disable=g-import-not-at-top
+  # The warp backend is optional, so any failure to import it must leave MJX
+  # usable through the JAX implementation. For example, warp-lang older than
+  # the version required by the bundled mujoco_warp raises TypeError during
+  # mujoco_warp's initialization.
   try:
     import warp
     WARP_INSTALLED = True
-  except (ImportError, RuntimeError) as e:
+  except Exception as e:  # pylint: disable=broad-exception-caught
     print('Failed to import warp:', e)
     WARP_INSTALLED = False
   try:
     from mujoco.mjx.third_party import mujoco_warp
     from mujoco.mjx.third_party.mujoco_warp._src import types as mjwp_types
     from mujoco.mjx.third_party.mujoco_warp._src import io as mjwp_io
-  except (ImportError, RuntimeError) as e:
+  except Exception as e:  # pylint: disable=broad-exception-caught
     print('Failed to import mujoco_warp:', e)
     pass
   # pylint: enable=g-import-not-at-top
