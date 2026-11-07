@@ -89,7 +89,8 @@ def _sensor_contact(
       return jp.argsort(pos * mask, descending=False)
     if reduction == 2:  # maxforce
       return jp.argsort(force_mag * mask, descending=True)  # pyrefly: ignore[unbound-name]
-    return jp.arange(mask.size)
+    # unsorted: stable sort keeps active matches first, in contact order
+    return jp.argsort(~(mask & is_contact))
 
   # number of data elements per slot
   def nslotdata(dataspec):
