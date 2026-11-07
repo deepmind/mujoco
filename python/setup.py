@@ -60,6 +60,16 @@ def get_mujoco_lib_pattern():
     return 'libmujoco.so.*'
 
 
+def get_linker_lib_name():
+  """Returns the unversioned name used by `-lmujoco` when linking."""
+  if platform.system() == 'Windows':
+    return 'mujoco.lib'
+  elif platform.system() == 'Darwin':
+    return 'libmujoco.dylib'
+  else:
+    return 'libmujoco.so'
+
+
 def get_external_lib_patterns():
   if platform.system() == 'Windows':
     return ['mujoco.dll']
@@ -196,6 +206,49 @@ class BuildCMakeExtension(build_ext.build_ext):
           shutil.copyfile(
               os.path.join(directory, filename), os.path.join(dst, filename)
           )
+    self._copy_linker_library(dst)
+
+  def _copy_linker_library(self, dst):
+    """Copies an unversioned library so that `-lmujoco` works when linking.
+
+    Downstream native modules and C extensions need a library whose name the
+    linker searches for (`libmujoco.dylib`, `libmujoco.so`, or `mujoco.lib`).
+    Wheels only contain the versioned shared library on POSIX, and do not
+    contain the Windows import library at all. Since wheels are zip archives
+    and cannot reliably carry symlinks, the library is copied under its
+    unversioned name next to the versioned one.
+    """
+    linker_name = get_linker_lib_name()
+    if fnmatch.filter(os.listdir(dst), linker_name):
+      return  # already present, e.g. when building from a prebuilt wheel
+
+    # On Windows the import library uses a different pattern from the runtime
+    # DLL, so it needs its own search. On POSIX the versioned library matches
+    # get_external_lib_patterns().
+    is_windows = platform.system() == 'Windows'
+    if is_windows:
+      patterns = [get_mujoco_lib_pattern()]
+    else:
+      patterns = get_external_lib_patterns()
+
+    matches = []
+    for directory, _, filenames in os.walk(os.environ[MUJOCO_PATH]):
+      for pattern in patterns:
+        for filename in fnmatch.filter(filenames, pattern):
+          # On POSIX prefer a versioned library over an unversioned copy that
+          # may already be present in MUJOCO_PATH.
+          if is_windows or filename != linker_name:
+            matches.append((filename, os.path.join(directory, filename)))
+
+    if not matches:
+      raise RuntimeError(
+          f'Cannot find {linker_name} or a versioned MuJoCo library'
+      )
+
+    # prefer the most fully versioned name (e.g. libmujoco.so.4.0.0 over
+    # libmujoco.so.4), which matches the SONAME of the built extensions
+    _, src = max(matches, key=lambda match: len(match[0]))
+    shutil.copyfile(src, os.path.join(dst, linker_name))
 
   def _copy_plugin_libraries(self):
     dst = os.path.join(
