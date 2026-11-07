@@ -115,6 +115,25 @@ def test_save_and_load_with_signal_mapping(
     np.testing.assert_array_equal(state_map[key][1], state_mapping[key][1])
 
 
+def test_get_sensordata_slice_interleaved(sample_trajectory):
+  model = mujoco.MjModel.from_xml_string("""
+    <mujoco>
+      <worldbody><body><joint name="j"/><geom size=".1"/></body></worldbody>
+      <sensor>
+        <jointpos joint="j"/><jointvel joint="j"/><jointpos joint="j"/>
+      </sensor>
+    </mujoco>
+  """)
+  values = np.arange(9).reshape(3, 3)
+  traj, *_ = sample_trajectory
+  traj = traj.replace(model=model, sensordata=timeseries.TimeSeries(
+      traj.sensordata.times, values
+  ))
+  np.testing.assert_array_equal(traj.get_sensordata_slice("joint_pos"),
+                                values[:, [0, 2]])
+  assert traj.get_sensordata_slice("joint_torque").shape == (3, 0)
+
+
 def test_create_initial_state(box_model):
   """The initial MuJoCo state (qpos, qvel, act) is packed into a flat vector for rollout."""
   qpos = np.zeros(box_model.nq)
